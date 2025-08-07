@@ -1,41 +1,44 @@
-const scene = new THREE.Scene();
+const THREE = require('three')
 
-const camera = new THREE.PerspectiveCamera(
-  75,
-  window.innerWidth / window.innerHeight,
-  0.1,
-  1000
-);
-camera.position.z = 5;
+let scene, camera, renderer
+let cubeList = []
+let container = document.getElementById('viewport')
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-document.body.appendChild(renderer.domElement);
+function init() {
+  scene = new THREE.Scene()
+  camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000)
+  camera.position.set(5, 5, 5)
+  camera.lookAt(0, 0, 0)
 
-const materials = [
-  new THREE.MeshBasicMaterial({ color: 0xff0000 }), // 오른쪽
-  new THREE.MeshBasicMaterial({ color: 0x00ff00 }), // 왼쪽
-  new THREE.MeshBasicMaterial({ color: 0x0000ff }), // 위
-  new THREE.MeshBasicMaterial({ color: 0xffff00 }), // 아래
-  new THREE.MeshBasicMaterial({ color: 0xff00ff }), // 앞
-  new THREE.MeshBasicMaterial({ color: 0x00ffff }), // 뒤
-];
+  renderer = new THREE.WebGLRenderer()
+  renderer.setSize(container.clientWidth, container.clientHeight)
+  container.appendChild(renderer.domElement)
 
-const geometry = new THREE.BoxGeometry();
-const cube = new THREE.Mesh(geometry, materials);
-scene.add(cube);
+  const light = new THREE.DirectionalLight(0xffffff, 1)
+  light.position.set(10, 10, 10).normalize()
+  scene.add(light)
 
-function animate() {
-  requestAnimationFrame(animate);
-  cube.rotation.x += 0.01;
-  cube.rotation.y += 0.01;
-  renderer.render(scene, camera);
+  animate()
 }
 
-animate();
+function animate() {
+  requestAnimationFrame(animate)
+  renderer.render(scene, camera)
+}
 
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-});
+function addCube() {
+  const geometry = new THREE.BoxGeometry()
+  const material = new THREE.MeshLambertMaterial({ color: Math.random() * 0xffffff })
+  const cube = new THREE.Mesh(geometry, material)
+  cube.position.set(Math.floor(Math.random() * 5), 0, 0)
+  scene.add(cube)
+  cubeList.push(cube)
+
+  const cubeItem = document.createElement('div')
+  cubeItem.textContent = `Cube ${cubeList.length}`
+  document.getElementById('cubeList').appendChild(cubeItem)
+}
+
+document.getElementById('addCube').addEventListener('click', addCube)
+
+init()
