@@ -2,20 +2,20 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Blockbench Clone</title>
-  <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; }
-    #ui { position: absolute; top: 0; left: 0; width: 250px; height: 100%; background: #222; color: white; padding: 10px; box-sizing: border-box; }
-    #viewport { position: absolute; top: 0; left: 250px; right: 0; bottom: 0; }
-    button { display: block; margin-bottom: 10px; }
-  </style>
+  <title>PDE</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="ui">
-    <button id="addCube">Add Cube</button>
-    <div id="cubeList"></div>
+  <div id="main-menu">
+    <h1>Blockbench Clone</h1>
+    <button id="new-project">새 프로젝트</button>
   </div>
-  <div id="viewport"></div>
-  <script src="renderer.js"></script>
+
+  <script>
+    const btn = document.getElementById('new-project')
+    btn.addEventListener('click', () => {
+      window.location.href = 'editor.html'  // 이게 핵심!
+    })
+  </script>
 </body>
 </html>
