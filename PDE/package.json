@@ -1,19 +1,66 @@
 {
   "name": "pangch-display-editor",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "main": "main.js",
+  "type": "module",
   "scripts": {
+    "dev:renderer": "vite",
+    "dev:main": "cross-env NODE_ENV=development nodemon --watch main.js --exec electron .",
+    "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
+    "build": "vite build",
     "start": "electron .",
-    "pack": "electron-builder --win"
+    "pack": "electron-builder --dir",
+    "dist": "npm run build && electron-builder"
   },
   "devDependencies": {
+    "concurrently": "^9.2.0",
+    "cross-env": "^10.0.0",
     "electron": "^37.2.6",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "nodemon": "^3.1.10",
+    "vite": "^7.1.1"
+  },
+  "dependencies": {
+    "lil-gui": "^0.20.0",
+    "three": "^0.179.1"
+  },
+  "author": {
+    "name": "Pangch"
   },
   "build": {
-    "appId": "com.example.pde",
+    "extraResources": [
+      "resources/Pangch-Face.ico"
+    ],
+    "productName": "pde-001",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "dist/**/*",
+      "main.js"
+    ],
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": false,
+      "shortcutName": "PDE",
+      "artifactName": "PDE-${version}-Setup.exe",
+      "uninstallDisplayName": "팽치류 디플편집기",
+      "installerIcon": "resources/Pangch-Face.ico",
+      "uninstallerIcon": "resources/Pangch-Face.ico",
+      "installerHeaderIcon": "resources/Pangch-Face.ico"
     }
   }
 }
