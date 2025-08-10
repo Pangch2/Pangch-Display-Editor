@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-
 let scene, camera, renderer, cube, controls;
 
 // XYZ 축을 양/음 방향으로 모두 표시하는 헬퍼
@@ -128,30 +127,6 @@ function init() {
     const axes = createFullAxesHelper(150); // size: 150, radius, scaleY, scaleX
     scene.add(axes);
 
-    // ===== lil-gui 기반 Custom UI =====
-    // 화면 상단 전체에 고정된 상단 바 생성
-    const topBar = document.createElement('div');
-    topBar.style.position = 'fixed';
-    topBar.style.top = '0';
-    topBar.style.left = '0';
-    topBar.style.width = '100vw';
-    topBar.style.height = '3vh'; // 얇은 바 (조정 가능)
-    topBar.style.background = '#161616';
-    topBar.style.zIndex = '1001'; // customPanel보다 위에 표시되도록
-    document.body.appendChild(topBar);
-
-    // 오른쪽 패널 생성
-    const customPanel = document.createElement('div');
-    customPanel.style.position = 'fixed';
-    customPanel.style.top = '3vh'; // 상단 바 바로 아래
-    customPanel.style.right = '0';
-    customPanel.style.width = '10vw';
-    customPanel.style.height = '97vh'; // 나머지 화면을 채움
-    customPanel.style.background = '#161616';
-    customPanel.style.borderTopLeftRadius = '2px';
-    customPanel.style.borderBottomLeftRadius = '2px';
-    customPanel.style.zIndex = '1000';
-    document.body.appendChild(customPanel);
 
     // 8. 렌더링 시작
     animate();
@@ -168,25 +143,13 @@ function animate() {
 
     renderer.render(scene, camera);
 }
-function resizeRendererArea() {
-    const width = window.innerWidth * 0.9; // 오른쪽 10% 제외
-    const height = window.innerHeight * 0.97; // 상단 3% 제외
-    const x = 0;
-    const y = window.innerHeight * 0.03;
-
-    renderer.setSize(window.innerWidth, window.innerHeight); // 전체 사이즈 설정
-    renderer.setViewport(x, y, width, height);
-    renderer.setScissor(x, y, width, height);
-    
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-}
 
 function onWindowResize() {
-    resizeRendererArea();
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
 
 window.addEventListener('resize', onWindowResize, false);
 init();
-resizeRendererArea();
