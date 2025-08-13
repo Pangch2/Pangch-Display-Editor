@@ -40,7 +40,9 @@
       "dist/**/*",
       "main.js"
     ],
+    "icon": "resources/Pangch-Face.ico",
     "win": {
+      "icon": "resources/Pangch-Face.ico",
       "target": [
         {
           "target": "nsis",

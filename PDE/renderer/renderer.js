@@ -86,9 +86,12 @@ function init() {
     camera.lookAt(0, 0, 0);
 
     // 3. 렌더러(Renderer)
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        canvas: document.querySelector('#renderCanvas')
+        });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
+    // document.body.appendChild(renderer.domElement);
 
     //카메라
     // 1. OrbitControls 생성
@@ -116,10 +119,10 @@ function init() {
 
     // 6. 헬퍼(Helper)
     // 세부 격자
-    const fineGrid = createGrid(10, 160, 0x2C2C2C, true);
+    const fineGrid = createGrid(20, 320, 0x2C2C2C, true);
     scene.add(fineGrid);
     // 큰 격자
-    const customGrid = createGrid(10, 10, 0x3D3D3D, true);
+    const customGrid = createGrid(20, 20, 0x3D3D3D, true);
     scene.add(customGrid);
 
 
@@ -145,11 +148,13 @@ function animate() {
 }
 
 function onWindowResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-}
+    const mainContent = document.getElementById('main-content');
+    if (!mainContent) return;
 
+    camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
+}
 
 window.addEventListener('resize', onWindowResize, false);
 init();
