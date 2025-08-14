@@ -139,6 +139,7 @@
   </div>
   
   <script type="module" src="./renderer.js"></script>
+  <script type="module" src="./upload-pbde.js"></script>
 
   <script>
     const leftSidebar = document.getElementById('left-sidebar');
@@ -181,7 +182,7 @@
         }
 
         // 최소/최대 너비 제한
-        if (newWidth > 100 && newWidth < 500) {
+        if (newWidth > 100 && newWidth < 700) {
           sidebar.style.width = newWidth + 'px';
           updateMainContentLayout();
         }

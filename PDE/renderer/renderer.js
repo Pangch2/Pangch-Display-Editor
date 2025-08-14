@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-let scene, camera, renderer, cube, controls;
+let scene, camera, renderer, controls;
 
 // XYZ 축을 양/음 방향으로 모두 표시하는 헬퍼
 function createFullAxesHelper(size = 50) {
@@ -67,7 +67,6 @@ function createGrid(size = 10, divisions = 10, color = 0x3D3D3D, skipCenterLine 
 }
 
 
-
 function init() {
 
     // 1. 장면(Scene)
@@ -77,7 +76,7 @@ function init() {
     // 2. 카메라(Camera)
 
     camera = new THREE.PerspectiveCamera(
-        75,
+        81,
         window.innerWidth / window.innerHeight,
         0.01,
         1000
@@ -110,12 +109,6 @@ function init() {
     const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
     dirLight.position.set(5, 10, 7);
     scene.add(dirLight);
-
-    // 5. 큐브(Object)
-    //const geometry = new THREE.BoxGeometry();
-    //const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
-    //cube = new THREE.Mesh(geometry, material);
-    //scene.add(cube);
 
     // 6. 헬퍼(Helper)
     // 세부 격자
@@ -156,5 +149,7 @@ function onWindowResize() {
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
 }
 
+export { scene };
 window.addEventListener('resize', onWindowResize, false);
 init();
+onWindowResize(); // 초기 로드 시 뷰포트 크기 강제 조정
