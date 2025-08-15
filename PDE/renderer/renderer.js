@@ -103,11 +103,11 @@ function init() {
     
 
     // 4. 조명(Lights)
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.154);
     scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
-    dirLight.position.set(5, 10, 7);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.154);
+    dirLight.position.set(0, 100, 0);
     scene.add(dirLight);
 
     // 6. 헬퍼(Helper)

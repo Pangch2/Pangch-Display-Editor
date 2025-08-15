@@ -25,6 +25,8 @@ function apply_transforms(parent, child) {
  * @param {Array} children - 원본 children 배열
  * @returns {Array} 처리된 children 배열
  */
+
+
 function split_children(children) {
     if (!children) return [];
     return children.map(item => {
@@ -45,9 +47,16 @@ function split_children(children) {
             newItem.brightness = item.brightness;
         }
 
-        // 조건 4: tagHead, options 조건부 포함
+        // 조건 4: tagHead, options, paintTexture, textureValueList 조건부 포함
         if (item.tagHead) newItem.tagHead = item.tagHead;
         if (item.options) newItem.options = item.options;
+        if (item.paintTexture) newItem.paintTexture = item.paintTexture;
+        if (item.textureValueList) newItem.textureValueList = item.textureValueList;
+        //console.log("tagHead 포함됨:", item.tagHead);
+        //console.log("options 포함됨:", item.options);
+        //console.log("paintTexture 포함됨:", item.paintTexture);
+        //console.log("textureValueList 포함됨:", item.textureValueList);
+
 
         // 조건 5: transforms 항상 포함
         newItem.transforms = item.transforms || "";
@@ -56,7 +65,7 @@ function split_children(children) {
         if (item.children) {
             newItem.children = split_children(item.children);
         }
-
+        //console.log("split_children 결과:", JSON.stringify(newItem, null, 2));
         return newItem;
     });
 }
@@ -84,6 +93,11 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
                 isBlockDisplay: node.isBlockDisplay,
                 isItemDisplay: node.isItemDisplay,
                 isTextDisplay: node.isTextDisplay,
+                tagHead: node.tagHead,
+                options: node.options,
+                paintTexture: node.paintTexture,
+                textureValueList: node.textureValueList,
+                brightness: node.brightness
             });
         }
 
