@@ -11,6 +11,7 @@ scene.add(loadedObjectGroup);
 const textureLoader = new THREE.TextureLoader();
 const textureCache = new Map();
 
+
 /**
  * 마인크래프트 머리 텍스처를 위한 재질 배열을 생성합니다.
  * 텍스처의 각 부분을 잘라내어 큐브의 6개 면에 매핑합니다.
@@ -47,9 +48,10 @@ function createHeadMaterials(texture, isLayer = false) {
     const order = ['right', 'left', 'top', 'bottom', 'back', 'front'];
     return order.map(face => {
         const [x, y, width, height] = uvs[face];
-        const material = new THREE.MeshStandardMaterial({
+        const material = new THREE.MeshLambertMaterial({
             map: texture.clone(),
             transparent: isLayer,
+            flatShading: true
         });
         //마크다운 그래픽 가져오기
         material.toneMapped = false;
@@ -172,6 +174,7 @@ function loadpbde(file) {
                     
                     // --- 텍스처 적용 및 큐브 생성 ---
                         const onTextureLoad = (texture) => {
+                            
                             // 기본 머리
                             const headMaterials = createHeadMaterials(texture, false);
                             const headGeometry = new THREE.BoxGeometry(1, 1, 1);

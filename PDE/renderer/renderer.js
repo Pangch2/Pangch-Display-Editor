@@ -103,13 +103,21 @@ function init() {
     
 
     // 4. 조명(Lights)
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.154);
+    const ambientLight = new THREE.AmbientLight(0x6c6c6c, 2.83);
     scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.154);
-    dirLight.position.set(0, 100, 0);
-    scene.add(dirLight);
+    const dirLight1 = new THREE.DirectionalLight(0x6c6c6c, 7.7);
+    dirLight1.position.set(0, 0, 100);
+    scene.add(dirLight1);
 
+    const dirLight2 = new THREE.DirectionalLight(0x6c6c6c, 7.7);
+    dirLight2.position.set(0, 0, -100);
+    scene.add(dirLight2);
+
+    const dirLight3 = new THREE.DirectionalLight(0x6c6c6c, 15.0);
+    dirLight3.position.set(0, 100, 0);
+    scene.add(dirLight3);
+    
     // 6. 헬퍼(Helper)
     // 세부 격자
     const fineGrid = createGrid(20, 320, 0x2C2C2C, true);
