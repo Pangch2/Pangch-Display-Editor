@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, ipcMain } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -13,16 +14,17 @@ function createWindow() {
     webPreferences: {
       // preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,         // ❗ import 쓰려면 false로
-      contextIsolation: true          // 보안상 true 권장
+      contextIsolation: true,         // 보안상 true 권장
+    experimentalFeatures: true,         
     }
   });
 
   // Vite에서 빌드한 파일 로드
-  win.loadFile(path.join(__dirname, 'dist', 'index.html'));  // ✅ 이 부분 수정
+  //win.loadFile(path.join(__dirname, 'dist', 'index.html'));  // ✅ 이 부분 수정
 
   if (process.env.NODE_ENV === 'development') {
     win.loadURL('http://localhost:5173');  // Vite 개발 서버 주소
-    //win.webContents.openDevTools();
+    win.webContents.openDevTools();
   } else {
     win.loadFile(path.join(__dirname, 'dist', 'index.html'));
   }
@@ -30,4 +32,7 @@ function createWindow() {
   Menu.setApplicationMenu(null);
 }
 
+// WebGPU 활성화를 위한 플래그 추가
+//app.commandLine.appendSwitch('enable-unsafe-webgpu');
+app.commandLine.appendSwitch('enable-features', 'WebGPU');
 app.whenReady().then(createWindow);

@@ -1,5 +1,6 @@
-import * as THREE from 'three';
+//import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import * as THREE from 'three/webgpu'
 
 let scene, camera, renderer, controls;
 
@@ -67,7 +68,7 @@ function createGrid(size = 10, divisions = 10, color = 0x3D3D3D, skipCenterLine 
 }
 
 
-function init() {
+async function init() {
 
     // 1. 장면(Scene)
     scene = new THREE.Scene();
@@ -85,11 +86,12 @@ function init() {
     camera.lookAt(0, 0, 0);
 
     // 3. 렌더러(Renderer)
-    renderer = new THREE.WebGLRenderer({
+    renderer = new THREE.WebGPURenderer({
         antialias: true,
         canvas: document.querySelector('#renderCanvas')
         });
     renderer.setSize(window.innerWidth, window.innerHeight);
+    await renderer.init();
     // document.body.appendChild(renderer.domElement);
 
     //카메라
@@ -150,6 +152,13 @@ function animate() {
 
 function onWindowResize() {
     const mainContent = document.getElementById('main-content');
+    if (!mainContent || mainContent.clientWidth === 0 || mainContent.clientHeight === 0) return;
+
+    camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
+
+
     if (!mainContent) return;
 
     camera.aspect = mainContent.clientWidth / mainContent.clientHeight;

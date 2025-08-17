@@ -1,5 +1,5 @@
 import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { scene } from './renderer.js'; // renderer.js에서 scene을 export 해야 함
 
 let worker;
@@ -7,27 +7,134 @@ let worker;
 const loadedObjectGroup = new THREE.Group();
 scene.add(loadedObjectGroup);
 
+//여기가 시작
 // 텍스처 로더 및 캐시
 const textureLoader = new THREE.TextureLoader();
 const textureCache = new Map();
-
+/**
+ * 두 개의 4x4 행렬(1차원 배열)을 곱합니다.
+ * @param {number[]} parent - 부모 행렬 (16개 요소)
+ * @param {number[]} child - 자식 행렬 (16개 요소)
+ * @returns {number[]} 결과 행렬 (16개 요소)
+ */
+function apply_transforms(parent, child) {
+    const result = new Array(16);
+    for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+            result[i * 4 + j] =
+                parent[i * 4 + 0] * child[0 + j] +
+                parent[i * 4 + 1] * child[4 + j] +
+                parent[i * 4 + 2] * child[8 + j] +
+                parent[i * 4 + 3] * child[12 + j];
+        }
+    }
+    return result;
+}
 
 /**
- * 마인크래프트 머리 텍스처를 위한 재질 배열을 생성합니다.
- * 텍스처의 각 부분을 잘라내어 큐브의 6개 면에 매핑합니다.
+ * JSON 데이터의 children 배열을 순회하며 조건에 맞게 데이터를 필터링하고 정제합니다.
+ * @param {Array} children - 원본 children 배열
+ * @returns {Array} 처리된 children 배열
+ */
+
+
+function split_children(children) {
+    if (!children) return [];
+    return children.map(item => {
+        const newItem = {};
+
+        // 조건 1: 특정 display 키 포함
+        if (item.isCollection) newItem.isCollection = true;
+        if (item.isItemDisplay) newItem.isItemDisplay = true;
+        if (item.isBlockDisplay) newItem.isBlockDisplay = true;
+        if (item.isTextDisplay) newItem.isTextDisplay = true;
+
+        // 조건 2: name, nbt 항상 포함
+        newItem.name = item.name || "";
+        newItem.nbt = item.nbt || "";
+
+        // 조건 3: brightness 조건부 포함
+        if (item.brightness && (item.brightness.sky !== 15 || item.brightness.block !== 0)) {
+            newItem.brightness = item.brightness;
+        }
+
+        // 조건 4: tagHead, options, paintTexture, textureValueList 조건부 포함
+        if (item.tagHead) newItem.tagHead = item.tagHead;
+        if (item.options) newItem.options = item.options;
+        if (item.paintTexture) newItem.paintTexture = item.paintTexture;
+        if (item.textureValueList) newItem.textureValueList = item.textureValueList;
+
+
+
+        // 조건 5: transforms 항상 포함
+        newItem.transforms = item.transforms || "";
+
+        // 조건 6: children 재귀적 포함
+        if (item.children) {
+            newItem.children = split_children(item.children);
+        }
+        //console.log("split_children 결과:", JSON.stringify(newItem, null, 2));
+        return newItem;
+    });
+}
+
+/**
+ * 재귀적으로 모델 계층을 순회하며 각 객체의 최종 월드 변환 행렬을 계산하여
+ * 평탄화된 렌더링 목록을 생성합니다.
+ * @param {Array} nodes - 처리할 노드 배열
+ * @param {number[]} parentTransform - 부모의 월드 변환 행렬
+ * @param {Array} renderList - 최종 렌더링 목록 (평탄화된 배열)
+ */
+function processNodesAndFlatten(nodes, parentTransform, renderList) {
+    if (!nodes) return;
+
+    for (const node of nodes) {
+        // 노드의 로컬 변환 행렬과 부모의 월드 변환 행렬을 곱하여 현재 노드의 월드 변환 행렬을 계산합니다.
+        const worldTransform = apply_transforms(parentTransform, node.transforms);
+
+        // 렌더링이 필요한 객체만(isBlockDisplay 등) 최종 목록에 추가합니다.
+        if (node.isBlockDisplay || node.isItemDisplay || node.isTextDisplay) {
+            renderList.push({
+                name: node.name,
+                transform: worldTransform, // 최종 계산된 월드 변환 행렬
+                nbt: node.nbt,
+                isBlockDisplay: node.isBlockDisplay,
+                isItemDisplay: node.isItemDisplay,
+                isTextDisplay: node.isTextDisplay,
+                tagHead: node.tagHead,
+                options: node.options,
+                paintTexture: node.paintTexture,
+                textureValueList: node.textureValueList,
+                brightness: node.brightness
+            });
+        }
+
+        // 자식 노드가 있으면, 현재 계산된 월드 변환 행렬을 부모 행렬로 하여 재귀 호출합니다.
+        if (node.children) {
+            processNodesAndFlatten(node.children, worldTransform, renderList);
+        }
+    }
+}
+//여기까지
+
+/**
+ * WebGPU에 최적화된 마인크래프트 머리 모델을 생성합니다.
+ * 단일 재질과 커스텀 UV를 사용하여 성능을 극대화합니다.
  * @param {THREE.Texture} texture - 64x64 머리 텍스처
  * @param {boolean} isLayer - 오버레이 레이어(모자)인지 여부
- * @returns {THREE.MeshStandardMaterial[]} 큐브의 각 면에 적용될 6개의 재질 배열
+ * @returns {THREE.Mesh} 최적화된 머리 메시 객체
  */
-function createHeadMaterials(texture, isLayer = false) {
+function createOptimizedHead(texture, isLayer = false) {
     texture.magFilter = THREE.NearestFilter;
     texture.minFilter = THREE.NearestFilter;
+
+    const scale = isLayer ? 1.0625 : 1.0;
+    const geometry = new THREE.BoxGeometry(scale, scale, scale);
+    geometry.translate(0, -0.5, 0);
+
     const w = 64; // 텍스처 너비
     const h = 64; // 텍스처 높이
-    // UV 좌표 계산 함수
-    const uv = (x, y, width, height) => new THREE.Vector2(x / w, 1 - (y + height) / h);
-    const uvSize = (width, height) => new THREE.Vector2(width / w, height / h);
-    // 각 면의 UV 좌표 (x, y, 너비, 높이)
+
     const faceUVs = {
         right:  [0, 8, 8, 8],
         left:   [16, 8, 8, 8],
@@ -36,6 +143,7 @@ function createHeadMaterials(texture, isLayer = false) {
         front:  [8, 8, 8, 8],
         back:   [24, 8, 8, 8]
     };
+
     const layerUVs = {
         right:  [32, 8, 8, 8],
         left:   [48, 8, 8, 8],
@@ -44,34 +152,50 @@ function createHeadMaterials(texture, isLayer = false) {
         front:  [40, 8, 8, 8],
         back:   [56, 8, 8, 8]
     };
-    const uvs = isLayer ? layerUVs : faceUVs;
-    const order = ['right', 'left', 'top', 'bottom', 'back', 'front'];
-    return order.map(face => {
-        const [x, y, width, height] = uvs[face];
-        const material = new THREE.MeshLambertMaterial({
-            map: texture.clone(),
-            transparent: isLayer,
-            flatShading: true
-        });
-        //마크다운 그래픽 가져오기
-        material.toneMapped = false;
-        material.map.colorSpace = THREE.SRGBColorSpace;
-        material.map.offset = uv(x, y, width, height);
-        material.map.repeat = uvSize(width, height);
-        if (face === 'top' || face === 'bottom') {
-            // For 'top' and 'bottom' faces, flip horizontally
-            material.map.repeat.x *= -1;
-            material.map.offset.x += (width / w);
-        
-            // Only for the 'top' face, also flip vertically
-            if (face === 'top') {
-                material.map.repeat.y *= -1;
-                material.map.offset.y += (width / w);
-            }
-        }
 
-        return material;
+    const uvs = isLayer ? layerUVs : faceUVs;
+    
+    // BoxGeometry의 면 순서: right, left, top, bottom, front, back
+    const order = ['right', 'left', 'top', 'bottom', 'front', 'back'];
+    const uvAttr = geometry.getAttribute('uv');
+    
+    for (let i = 0; i < order.length; i++) {
+        const faceName = order[i];
+        const [x, y, width, height] = uvs[faceName];
+
+        // UV 좌표 계산
+        const u0 = x / w;
+        const v0 = 1 - (y + height) / h;
+        const u1 = (x + width) / w;
+        const v1 = 1 - y / h;
+
+        // 각 면에 해당하는 4개의 정점에 대한 UV 설정
+        // 정점 순서: (1,1), (0,1), (1,0), (0,0) -> 텍스처 좌표계
+        const faceIndex = i * 4;
+        uvAttr.setXY(faceIndex, u1, v1);
+        uvAttr.setXY(faceIndex + 1, u0, v1);
+        uvAttr.setXY(faceIndex + 2, u1, v0);
+        uvAttr.setXY(faceIndex + 3, u0, v0);
+    }
+    uvAttr.needsUpdate = true;
+
+    const material = new THREE.MeshStandardMaterial({
+        map: texture,
+        transparent: isLayer,
+        roughness: 0.8, // 거칠기를 높여 빛 반사를 줄임 (마인크래프트 스타일)
+        metalness: 0.0  // 비금속
     });
+
+    material.toneMapped = false;
+    if (material.map) {
+        material.map.colorSpace = THREE.SRGBColorSpace;
+    }
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+
+    return mesh;
 }
 
 
@@ -80,34 +204,42 @@ function createHeadMaterials(texture, isLayer = false) {
  * @param {File} file - 불러올 .pbde 또는 .bde 파일
  */
 function loadpbde(file) {
-    // 1. 새 파일 로드 전, 이전에 있던 객체들의 리소스를 해제
+        // 1. 이전 객체 및 리소스 완벽 해제
+    
+    // 1-1. 캐시된 텍스처 및 리소스 완벽 해제
+    textureCache.forEach(cachedItem => {
+        // 로딩 플레이스홀더가 아닌, 실제 THREE.Texture 객체만 dispose
+        if (cachedItem && cachedItem instanceof THREE.Texture) {
+            cachedItem.dispose();
+        }
+    });
+    textureCache.clear();
+
+    // 1-2. 씬에 있는 객체의 지오메트리 및 재질 해제
     loadedObjectGroup.traverse(object => {
         if (object.isMesh) {
             if (object.geometry) {
                 object.geometry.dispose();
             }
             if (object.material) {
-                // 재질이 배열인 경우와 아닌 경우 모두 처리
                 const materials = Array.isArray(object.material) ? object.material : [object.material];
-
                 materials.forEach(material => {
-                    // ✨ 가장 중요: 재질이 사용하던 텍스처를 명시적으로 해제합니다.
                     if (material.map) {
                         material.map.dispose();
                     }
-                    // 다른 맵 타입(normalMap 등)도 있다면 여기서 해제해야 합니다.
-
-                    // 재질 자체를 해제합니다.
                     material.dispose();
                 });
             }
         }
     });
 
-    // 2. 그룹에서 모든 자식 객체들을 제거 (이 부분은 원래 코드도 잘 동작합니다)
-    while(loadedObjectGroup.children.length > 0){
+    // 1-3. 그룹에서 모든 자식 객체 제거
+    while (loadedObjectGroup.children.length > 0) {
         loadedObjectGroup.remove(loadedObjectGroup.children[0]);
     }
+
+    // 1-4. Three.js 전역 캐시 비우기
+    THREE.Cache.clear();
 
     if (worker) {
         worker.terminate(); // 기존 워커가 있다면 종료
@@ -117,9 +249,18 @@ function loadpbde(file) {
 
     // 3. 워커로부터 메시지(처리된 데이터) 수신
     worker.onmessage = (e) => {
+        //if (e.data.success) {
+        //    const flatRenderList = e.data.data;
+        //    //console.log("Main Thread: Received flattened render list.", flatRenderList);
         if (e.data.success) {
-            const flatRenderList = e.data.data;
-            console.log("Main Thread: Received flattened render list.", flatRenderList);
+            // 1. 메인 스레드에서 JSON 파싱
+            const jsonData = JSON.parse(e.data.data);
+        
+            // 2. 데이터 정제 및 평탄화 (이 함수들을 메인 스레드로 이동)
+            const processedChildren = split_children(jsonData[0].children);
+            const flatRenderList = [];
+            const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+            processNodesAndFlatten(processedChildren, identityMatrix, flatRenderList);
 
             flatRenderList.forEach(item => {
                 if (item.isBlockDisplay) {
@@ -128,6 +269,8 @@ function loadpbde(file) {
                     const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
                     material.toneMapped = false;
                     const cube = new THREE.Mesh(geometry, material);
+                    cube.castShadow = true;
+                    cube.receiveShadow = true;
 
                     const finalMatrix = new THREE.Matrix4();
                     finalMatrix.fromArray(item.transform);
@@ -146,7 +289,7 @@ function loadpbde(file) {
                     const defaultTextureValue = 'eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZDk0ZTE2ODZhZGI2NzgyM2M3ZTUxNDhjMmMwNmUyZDk1YzFiNjYzNzQ0MDllOTZiMzJkYzEzMTAzOTdlMTcxMSJ9fX0=';
                     let nbtData = {};
                     try {
-                        if (item.nbt) nbtData = JSON.parse(item.nbt);
+                        if (item.nbt) nbtData = item.nbt;
                     } catch (err) { console.error("NBT 파싱 오류:", err); }
 
                         if (item.tagHead && item.tagHead.Value) {
@@ -174,30 +317,36 @@ function loadpbde(file) {
                     
                     // --- 텍스처 적용 및 큐브 생성 ---
                         const onTextureLoad = (texture) => {
-                            
                             // 기본 머리
-                            const headMaterials = createHeadMaterials(texture, false);
-                            const headGeometry = new THREE.BoxGeometry(1, 1, 1);
-                            headGeometry.translate(0, -0.5, 0);
-                            const headCube = new THREE.Mesh(headGeometry, headMaterials);
+                            const headCube = createOptimizedHead(texture, false);
                             headGroup.add(headCube);
 
                             // 머리 레이어
-                            const layerMaterials = createHeadMaterials(texture, true);
-                            const layerGeometry = new THREE.BoxGeometry(1.0625, 1.0625, 1.0625);
-                            layerGeometry.translate(0, -0.5, 0);
-                            const layerCube = new THREE.Mesh(layerGeometry, layerMaterials);
+                            const layerCube = createOptimizedHead(texture, true);
                             headGroup.add(layerCube);
                     };
 
                     if (textureCache.has(textureUrl)) {
-                        onTextureLoad(textureCache.get(textureUrl));
+                        const cached = textureCache.get(textureUrl);
+                        if (cached instanceof THREE.Texture) {
+                            // 텍스처가 완전히 로드된 경우, 즉시 사용
+                            onTextureLoad(cached);
+                        } else {
+                            // 텍스처가 현재 로딩 중인 경우, 콜백을 대기열에 추가
+                            cached.callbacks.push(onTextureLoad);
+                        }
                     } else {
+                        // 텍스처가 캐시에도 없고 로딩 중도 아니므로, 로딩 시작
+                        const loadingPlaceholder = { callbacks: [onTextureLoad] };
+                        textureCache.set(textureUrl, loadingPlaceholder); // 로딩 시작을 알리는 플레이스홀더를 즉시 캐시에 저장
+
                         textureLoader.load(textureUrl, (texture) => {
-                            textureCache.set(textureUrl, texture);
-                            onTextureLoad(texture);
+                            textureCache.set(textureUrl, texture); // 플레이스홀더를 실제 텍스처로 교체
+                            // 이 텍스처를 기다리던 모든 콜백들을 실행
+                            loadingPlaceholder.callbacks.forEach(callback => callback(texture));
                         }, undefined, (err) => {
                             console.error('텍스처 로드 실패:', err);
+                            textureCache.delete(textureUrl); // 에러 발생 시 캐시에서 플레이스홀더 제거
                         });
                     }
 
@@ -216,6 +365,8 @@ function loadpbde(file) {
                     const material = new THREE.MeshStandardMaterial({ color: 0x0000ff }); // 파란색
                     material.toneMapped = false;
                     const cube = new THREE.Mesh(geometry, material);
+                    cube.castShadow = true;
+                    cube.receiveShadow = true;
 
                     const finalMatrix = new THREE.Matrix4();
                     finalMatrix.fromArray(item.transform);
@@ -305,11 +456,13 @@ function createDropModal(file) {
         }
     });
     // ESC 키 눌렀을 때 모달 닫기
-    document.addEventListener('keydown', (e) => {
+    const handleEscKey = (e) => {
         if (e.key === 'Escape') {
             closeDropModal();
         }
-    });
+    };
+    modalOverlay.escHandler = handleEscKey; // 핸들러를 DOM 요소에 저장
+    document.addEventListener('keydown', handleEscKey);
 
     // 버튼 이벤트 리스너
     document.getElementById('new-project-btn').addEventListener('click', () => {
@@ -328,6 +481,11 @@ function createDropModal(file) {
 function closeDropModal() {
     const modal = document.getElementById('drop-modal-overlay');
     if (modal) {
+        // 등록된 ESC 키 핸들러가 있다면 제거하여 메모리 누수 방지
+        if (modal.escHandler) {
+            document.removeEventListener('keydown', modal.escHandler);
+        }
+
         //애니메이션 끝
         const modalContent = modal.querySelector('div');
         closeWithAnimation(modalContent).then(() => {
