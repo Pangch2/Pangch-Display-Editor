@@ -96,7 +96,7 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
         if (node.isBlockDisplay || node.isItemDisplay || node.isTextDisplay) {
             renderList.push({
                 name: node.name,
-                transform: worldTransform, // 최종 계산된 월드 변환 행렬
+                transform: worldTransform.map(v => parseFloat(v)), // 최종 계산된 월드 변환 행렬
                 nbt: node.nbt,
                 isBlockDisplay: node.isBlockDisplay,
                 isItemDisplay: node.isItemDisplay,
@@ -136,54 +136,71 @@ function createOptimizedHead(texture, isLayer = false) {
     const h = 64; // 텍스처 높이
 
     const faceUVs = {
-        right:  [0, 8, 8, 8],
-        left:   [16, 8, 8, 8],
+        right:  [16, 8, 8, 8],
+        left:   [0, 8, 8, 8],
         top:    [8, 0, 8, 8],
         bottom: [16, 0, 8, 8],
-        front:  [8, 8, 8, 8],
-        back:   [24, 8, 8, 8]
+        front:  [24, 8, 8, 8],
+        back:   [8, 8, 8, 8]
     };
 
     const layerUVs = {
-        right:  [32, 8, 8, 8],
-        left:   [48, 8, 8, 8],
+        right:  [48, 8, 8, 8],
+        left:   [32, 8, 8, 8],
         top:    [40, 0, 8, 8],
         bottom: [48, 0, 8, 8],
-        front:  [40, 8, 8, 8],
-        back:   [56, 8, 8, 8]
+        front:  [56, 8, 8, 8],
+        back:   [40, 8, 8, 8]
     };
 
     const uvs = isLayer ? layerUVs : faceUVs;
     
-    // BoxGeometry의 면 순서: right, left, top, bottom, front, back
-    const order = ['right', 'left', 'top', 'bottom', 'front', 'back'];
+    // BoxGeometry의 면 순서: left, right, top, bottom, front, back
+    const order = ['left', 'right', 'top', 'bottom', 'front', 'back'];
     const uvAttr = geometry.getAttribute('uv');
     
     for (let i = 0; i < order.length; i++) {
         const faceName = order[i];
         const [x, y, width, height] = uvs[faceName];
 
-        // UV 좌표 계산
-        const u0 = x / w;
-        const v0 = 1 - (y + height) / h;
-        const u1 = (x + width) / w;
-        const v1 = 1 - y / h;
+    // UV 좌표 계산
+    const inset = 1/128;
+        
+    // 픽셀 좌표(x, y, width, height)에 inset을 먼저 적용하고
+    const u0 = (x + inset) / w;
+    const v0 = 1 - (y + height - inset) / h;
+    const u1 = (x + width - inset) / w;
+    const v1 = 1 - (y + inset) / h;
 
         // 각 면에 해당하는 4개의 정점에 대한 UV 설정
-        // 정점 순서: (1,1), (0,1), (1,0), (0,0) -> 텍스처 좌표계
         const faceIndex = i * 4;
-        uvAttr.setXY(faceIndex, u1, v1);
-        uvAttr.setXY(faceIndex + 1, u0, v1);
-        uvAttr.setXY(faceIndex + 2, u1, v0);
-        uvAttr.setXY(faceIndex + 3, u0, v0);
+        
+        if (faceName === 'top') {
+            // top: 180-degree rotated and horizontally flipped
+            uvAttr.setXY(faceIndex + 0, u1, v0);
+            uvAttr.setXY(faceIndex + 1, u0, v0);
+            uvAttr.setXY(faceIndex + 2, u1, v1);
+            uvAttr.setXY(faceIndex + 3, u0, v1);
+        } else if (faceName === 'bottom') {
+            // bottom: initial state (original mapping, no flip)
+            uvAttr.setXY(faceIndex + 0, u1, v1);
+            uvAttr.setXY(faceIndex + 1, u0, v1);
+            uvAttr.setXY(faceIndex + 2, u1, v0);
+            uvAttr.setXY(faceIndex + 3, u0, v0);
+        } else {
+            // all other faces: original mapping, horizontally flipped
+            uvAttr.setXY(faceIndex + 0, u0, v1);
+            uvAttr.setXY(faceIndex + 1, u1, v1);
+            uvAttr.setXY(faceIndex + 2, u0, v0);
+            uvAttr.setXY(faceIndex + 3, u1, v0);
+        }
     }
     uvAttr.needsUpdate = true;
 
-    const material = new THREE.MeshStandardMaterial({
+    const material = new THREE.MeshLambertMaterial({
         map: texture,
         transparent: isLayer,
-        roughness: 0.8, // 거칠기를 높여 빛 반사를 줄임 (마인크래프트 스타일)
-        metalness: 0.0  // 비금속
+        alphaTest: 0.5
     });
 
     material.toneMapped = false;
@@ -250,8 +267,8 @@ function loadpbde(file) {
     // 3. 워커로부터 메시지(처리된 데이터) 수신
     worker.onmessage = (e) => {
         //if (e.data.success) {
-        //    const flatRenderList = e.data.data;
-        //    //console.log("Main Thread: Received flattened render list.", flatRenderList);
+        //  const flatRenderList = e.data.data;
+            //console.log("Main Thread: Received flattened render list.", flatRenderList);
         if (e.data.success) {
             // 1. 메인 스레드에서 JSON 파싱
             const jsonData = JSON.parse(e.data.data);
@@ -319,10 +336,12 @@ function loadpbde(file) {
                         const onTextureLoad = (texture) => {
                             // 기본 머리
                             const headCube = createOptimizedHead(texture, false);
+                            headCube.renderOrder = 1; // 1번 레이어를 먼저 렌더링
                             headGroup.add(headCube);
 
                             // 머리 레이어
                             const layerCube = createOptimizedHead(texture, true);
+                            layerCube.renderOrder = 2; // 2번 레이어를 나중에 렌더링
                             headGroup.add(layerCube);
                     };
 

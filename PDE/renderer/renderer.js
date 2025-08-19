@@ -77,9 +77,9 @@ async function init() {
     // 2. 카메라(Camera)
 
     camera = new THREE.PerspectiveCamera(
-        81,
+        80,
         window.innerWidth / window.innerHeight,
-        0.01,
+        0.05,
         1000
     );
     camera.position.set(3, 3, 3);
@@ -87,8 +87,9 @@ async function init() {
 
     // 3. 렌더러(Renderer)
     renderer = new THREE.WebGPURenderer({
-        antialias: true,
-        canvas: document.querySelector('#renderCanvas')
+        //antialias: false,
+        canvas: document.querySelector('#renderCanvas'),
+        logarithmicDepthBuffer: true // ✨ 깊이 정밀도 문제 해결을 위한 옵션
         });
     renderer.setSize(window.innerWidth, window.innerHeight);
     await renderer.init();
