@@ -78,27 +78,52 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
     if (!nodes) return;
 
     for (const node of nodes) {
-        // 노드의 로컬 변환 행렬과 부모의 월드 변환 행렬을 곱하여 현재 노드의 월드 변환 행렬을 계산합니다.
         const worldTransform = apply_transforms(parentTransform, node.transforms);
 
-        // 렌더링이 필요한 객체만(isBlockDisplay 등) 최종 목록에 추가합니다.
         if (node.isBlockDisplay || node.isItemDisplay || node.isTextDisplay) {
-            renderList.push({
+            const renderItem = {
                 name: node.name,
-                transform: worldTransform, // 최종 계산된 월드 변환 행렬
+                transform: worldTransform,
                 nbt: node.nbt,
                 isBlockDisplay: node.isBlockDisplay,
                 isItemDisplay: node.isItemDisplay,
                 isTextDisplay: node.isTextDisplay,
-                tagHead: node.tagHead,
                 options: node.options,
-                paintTexture: node.paintTexture,
-                textureValueList: node.textureValueList,
                 brightness: node.brightness
-            });
+            };
+
+            // isItemDisplay가 player_head일 경우 텍스처 URL 처리 로직 추가
+            if (node.isItemDisplay && node.name.toLowerCase().startsWith('player_head')) {
+                let textureUrl = null;
+                const defaultTextureValue = 'eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZDk0ZTE2ODZhZGI2NzgyM2M3ZTUxNDhjMmMwNmUyZDk1YzFiNjYzNzQ0MDllOTZiMzJkYzEzMTAzOTdlMTcxMSJ9fX0=';
+
+                if (node.tagHead && node.tagHead.Value) {
+                    try {
+                        textureUrl = JSON.parse(atob(node.tagHead.Value)).textures.SKIN.url;
+                    } catch (err) {
+                        console.error("Worker: tagHead 처리 오류:", err);
+                    }
+                } else if (node.paintTexture) {
+                    if (node.paintTexture.startsWith('data:image')) {
+                        textureUrl = node.paintTexture;
+                    } else {
+                        textureUrl = `data:image/png;base64,${node.paintTexture}`;
+                    }
+                }
+
+                if (!textureUrl) {
+                    try {
+                        textureUrl = JSON.parse(atob(defaultTextureValue)).textures.SKIN.url;
+                    } catch (err) {
+                        console.error("Worker: 기본 텍스처 처리 오류:", err);
+                    }
+                }
+                renderItem.textureUrl = textureUrl; // 계산된 URL 추가
+            }
+
+            renderList.push(renderItem);
         }
 
-        // 자식 노드가 있으면, 현재 계산된 월드 변환 행렬을 부모 행렬로 하여 재귀 호출합니다.
         if (node.children) {
             processNodesAndFlatten(node.children, worldTransform, renderList);
         }

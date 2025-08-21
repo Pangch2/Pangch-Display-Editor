@@ -1,6 +1,7 @@
-//import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as THREE from 'three/webgpu'
+import { initAssets } from './asset-manager.js';
+import { loadedObjectGroup } from './upload-pbde.js';
 
 let scene, camera, renderer, controls;
 
@@ -10,7 +11,7 @@ function createFullAxesHelper(size = 50) {
 
     const createAxisLine = (start, end, color) => {
         const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-        const material = new THREE.LineBasicMaterial({ color: color });
+        const material = new THREE.LineBasicMaterial({ color: color , depthTest: false, depthWrite: false });
         return new THREE.Line(geometry, material);
     };
 
@@ -34,47 +35,20 @@ function createFullAxesHelper(size = 50) {
         new THREE.Vector3(0, 0, size / 2),
         0x437FD0
     ));
-
     return axesGroup;
 }
 
 
-// 커스텀 그리드 생성 함수
-function createGrid(size = 10, divisions = 10, color = 0x3D3D3D, skipCenterLine = true) {
-    const halfSize = size / 2;
-    const step = size / divisions;
-
-    const vertices = [];
-    
-    for (let i = -halfSize; i <= halfSize; i += step) {
-        if (skipCenterLine && i === 0) continue; // 중심선 스킵
-
-        // 수평선 (x 방향)
-        vertices.push(-halfSize, 0, i, halfSize, 0, i);
-        // 수직선 (z 방향)
-        vertices.push(i, 0, -halfSize, i, 0, halfSize);
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    const material = new THREE.LineBasicMaterial({ color: color });
-    const grid = new THREE.LineSegments(geometry, material);
-    grid.renderOrder = 0; // 렌더링 순서 지정
-    return grid;
-    //const material = new THREE.LineBasicMaterial({
-    //    color: color,
-    //    transparent: true,
-    //    opacity: 0.5
-    //});
-    //return new THREE.LineSegments(geometry, material);
-}
-
 
 async function init() {
+
+    // 에셋 초기화 (캐시 확인 및 다운로드 요청)
+    await initAssets();
 
     // 1. 장면(Scene)
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x1F1F1F); // 어두운 회색 배경
+    scene.add(loadedObjectGroup); // 로드된 객체 그룹을 씬에 추가
 
     // 2. 카메라(Camera)
 
@@ -89,7 +63,7 @@ async function init() {
 
     // 3. 렌더러(Renderer)
     renderer = new THREE.WebGPURenderer({
-        //antialias: false,
+        //antialias: true,
         canvas: document.querySelector('#renderCanvas'),
         logarithmicDepthBuffer: true // ✨ 깊이 정밀도 문제 해결을 위한 옵션
         });
@@ -124,18 +98,20 @@ async function init() {
     scene.add(dirLight3);
     
     // 6. 헬퍼(Helper)
-    // 세부 격자
-    const fineGrid = createGrid(20, 320, 0x2C2C2C, true);
-    scene.add(fineGrid);
-    // 큰 격자
-    const customGrid = createGrid(20, 20, 0x3D3D3D, true);
-    scene.add(customGrid);
-
-
     // 축
     const axes = createFullAxesHelper(150); // size: 150, radius, scaleY, scaleX
+    axes.renderOrder = 1; // 축 렌더 순서 설정
     scene.add(axes);
 
+    // 세부 격자 - 기본 GridHelper로 대체
+    const detailGrid = new THREE.GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
+    detailGrid.renderOrder = 0;
+    scene.add(detailGrid);
+        
+    // 큰 격자 - 기본 GridHelper로 대체
+    const Grid = new THREE.GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
+    Grid.renderOrder = 2;
+    scene.add(Grid);
 
     // 8. 렌더링 시작
     animate();
@@ -145,11 +121,6 @@ function animate() {
     //카메라
     controls.update();
     requestAnimationFrame(animate);
-
-    // 큐브 회전
-    //cube.rotation.x += 0.01;
-    //cube.rotation.y += 0.01;
-
     renderer.render(scene, camera);
 }
 
@@ -157,19 +128,18 @@ function onWindowResize() {
     const mainContent = document.getElementById('main-content');
     if (!mainContent || mainContent.clientWidth === 0 || mainContent.clientHeight === 0) return;
 
-    camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
-
-
-    if (!mainContent) return;
-
-    camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
+    // camera와 renderer가 초기화되었는지 확인
+    if (camera && renderer) {
+        camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
+    }
 }
 
 export { scene };
 window.addEventListener('resize', onWindowResize, false);
-init();
-onWindowResize(); // 초기 로드 시 뷰포트 크기 강제 조정
+
+// init()이 완료된 후 onWindowResize를 호출하도록 수정
+init().then(() => {
+    onWindowResize(); // 초기 로드 시 뷰포트 크기 강제 조정
+});

@@ -5,7 +5,8 @@ import { scene } from './renderer.js'; // renderer.js에서 scene을 export 해�
 let worker;
 // 로드된 모든 객체를 담을 그룹
 const loadedObjectGroup = new THREE.Group();
-scene.add(loadedObjectGroup);
+
+export { loadedObjectGroup };
 
 
 // 텍스처 로더 및 캐시
@@ -60,7 +61,8 @@ function createOptimizedHead(texture, isLayer = false) {
         const [x, y, width, height] = uvs[faceName];
 
     // UV 좌표 계산
-    const inset = 1/128;
+    //const inset = 1/128;
+    const inset = 0.0078125
         
     // 픽셀 좌표(x, y, width, height)에 inset을 먼저 적용하고
     const u0 = (x + inset) / w;
@@ -96,7 +98,8 @@ function createOptimizedHead(texture, isLayer = false) {
     const material = new THREE.MeshLambertMaterial({
         map: texture,
         transparent: isLayer,
-        alphaTest: 0.5
+        alphaTest: 0.5,
+        depthWrite: true
     });
 
     material.toneMapped = false;
@@ -173,7 +176,7 @@ function loadpbde(file) {
                 if (item.isBlockDisplay) {
                     const geometry = new THREE.BoxGeometry(1, 1, 1);
                     geometry.translate(0.5, 0.5, 0.5);
-                    const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+                    const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 ,transparent: true});
                     material.toneMapped = false;
                     const cube = new THREE.Mesh(geometry, material);
                     cube.castShadow = true;
@@ -187,105 +190,63 @@ function loadpbde(file) {
                     cube.matrix.copy(finalMatrix);
                     loadedObjectGroup.add(cube);
                 } else if (item.isItemDisplay) {
-                    if (item.name.toLowerCase().startsWith('player_head')) {
-                        const headGroup = new THREE.Group(); // headGroup을 여기서 선언
+                    if (item.textureUrl) { // 워커가 전달해준 textureUrl 사용
+                        const headGroup = new THREE.Group();
                         headGroup.userData.isPlayerHead = true;
 
-                    // --- 텍스처 로드 로직 ---
-                    let textureUrl = null;
-                    const defaultTextureValue = 'eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZDk0ZTE2ODZhZGI2NzgyM2M3ZTUxNDhjMmMwNmUyZDk1YzFiNjYzNzQ0MDllOTZiMzJkYzEzMTAzOTdlMTcxMSJ9fX0=';
-                    let nbtData = {};
-                    try {
-                        if (item.nbt) nbtData = item.nbt;
-                    } catch (err) { console.error("NBT 파싱 오류:", err); }
-
-                        if (item.tagHead && item.tagHead.Value) {
-                            try {
-                                textureUrl = JSON.parse(atob(item.tagHead.Value)).textures.SKIN.url;
-                            } catch (err) { console.error("tagHead 처리 오류:", err); }
-                        // item 객체에서 직접 paintTexture를 찾습니다.
-                        } else if (item.paintTexture) {
-                            // item.paintTexture가 이미 완전한 data URL 형식인지 확인합니다.
-                            if (item.paintTexture.startsWith('data:image')) {
-                                // 이미 URL 형식이므로 그대로 사용합니다.
-                                textureUrl = item.paintTexture;
-                            } else {
-                                // 순수한 base64 데이터이므로 접두사를 추가합니다.
-                                textureUrl = `data:image/png;base64,${item.paintTexture}`;
-                            }
-                        }
-
-                    if (!textureUrl) {
-                        try {
-                            const decodedDefault = atob(defaultTextureValue);            
-                            textureUrl = JSON.parse(atob(defaultTextureValue)).textures.SKIN.url;
-                        } catch (err) { console.error("기본 텍스처 처리 오류:", err); }
-                    }
-                    
-                    // --- 텍스처 적용 및 큐브 생성 ---
                         const onTextureLoad = (texture) => {
-                            // 기본 머리
-                            const headCube = createOptimizedHead(texture, false);
-                            headCube.renderOrder = 1; // 1번 레이어를 먼저 렌더링
-                            headGroup.add(headCube);
+                            headGroup.add(createOptimizedHead(texture, false)); // Base
+                            headGroup.add(createOptimizedHead(texture, true));  // Layer
+                        };
 
-                            // 머리 레이어
-                            const layerCube = createOptimizedHead(texture, true);
-                            layerCube.renderOrder = 2; // 2번 레이어를 나중에 렌더링
-                            headGroup.add(layerCube);
-                    };
+                        // --- 단순화된 텍스처 로드 및 캐싱 --- 
+                        if (textureCache.has(item.textureUrl)) {
+                            const cached = textureCache.get(item.textureUrl);
+                            if (cached instanceof THREE.Texture) {
+                                onTextureLoad(cached);
+                            } else { // 로딩 중
+                                cached.callbacks.push(onTextureLoad);
+                            }
+                        } else { // 새로 로드
+                            const loadingPlaceholder = { callbacks: [onTextureLoad] };
+                            textureCache.set(item.textureUrl, loadingPlaceholder);
 
-                    if (textureCache.has(textureUrl)) {
-                        const cached = textureCache.get(textureUrl);
-                        if (cached instanceof THREE.Texture) {
-                            // 텍스처가 완전히 로드된 경우, 즉시 사용
-                            onTextureLoad(cached);
-                        } else {
-                            // 텍스처가 현재 로딩 중인 경우, 콜백을 대기열에 추가
-                            cached.callbacks.push(onTextureLoad);
+                            textureLoader.load(item.textureUrl, (texture) => {
+                                textureCache.set(item.textureUrl, texture);
+                                loadingPlaceholder.callbacks.forEach(cb => cb(texture));
+                            }, undefined, (err) => {
+                                console.error('텍스처 로드 실패:', err);
+                                textureCache.delete(item.textureUrl);
+                            });
                         }
-                    } else {
-                        // 텍스처가 캐시에도 없고 로딩 중도 아니므로, 로딩 시작
-                        const loadingPlaceholder = { callbacks: [onTextureLoad] };
-                        textureCache.set(textureUrl, loadingPlaceholder); // 로딩 시작을 알리는 플레이스홀더를 즉시 캐시에 저장
 
-                        textureLoader.load(textureUrl, (texture) => {
-                            textureCache.set(textureUrl, texture); // 플레이스홀더를 실제 텍스처로 교체
-                            // 이 텍스처를 기다리던 모든 콜백들을 실행
-                            loadingPlaceholder.callbacks.forEach(callback => callback(texture));
-                        }, undefined, (err) => {
-                            console.error('텍스처 로드 실패:', err);
-                            textureCache.delete(textureUrl); // 에러 발생 시 캐시에서 플레이스홀더 제거
-                        });
+                        // --- 행렬 적용 ---
+                        const finalMatrix = new THREE.Matrix4();
+                        finalMatrix.fromArray(item.transform);
+                        finalMatrix.transpose();
+                        const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
+                        finalMatrix.multiply(scaleMatrix);
+                        headGroup.matrixAutoUpdate = false;
+                        headGroup.matrix.copy(finalMatrix);
+
+                        loadedObjectGroup.add(headGroup);
+                    } else { // 그 외 다른 아이템 디스플레이 처리 (player_head가 아닌 경우)
+                        const geometry = new THREE.BoxGeometry(1, 1, 1);
+                        const material = new THREE.MeshStandardMaterial({ color: 0x0000ff ,transparent: true}); // 파란색
+                        material.toneMapped = false;
+                        const cube = new THREE.Mesh(geometry, material);
+                        cube.castShadow = true;
+                        cube.receiveShadow = true;
+
+                        const finalMatrix = new THREE.Matrix4();
+                        finalMatrix.fromArray(item.transform);
+                        finalMatrix.transpose();
+
+                        cube.matrixAutoUpdate = false;
+                        cube.matrix.copy(finalMatrix);
+
+                        loadedObjectGroup.add(cube);
                     }
-
-                    // --- 행렬 적용 ---
-                    const finalMatrix = new THREE.Matrix4();
-                    finalMatrix.fromArray(item.transform);
-                    finalMatrix.transpose();
-                    const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
-                    finalMatrix.multiply(scaleMatrix);
-                    headGroup.matrixAutoUpdate = false;
-                    headGroup.matrix.copy(finalMatrix);
-
-                    loadedObjectGroup.add(headGroup);
-                } else { // 그 외 다른 아이템 디스플레이 처리
-                    const geometry = new THREE.BoxGeometry(1, 1, 1);
-                    const material = new THREE.MeshStandardMaterial({ color: 0x0000ff }); // 파란색
-                    material.toneMapped = false;
-                    const cube = new THREE.Mesh(geometry, material);
-                    cube.castShadow = true;
-                    cube.receiveShadow = true;
-
-                    const finalMatrix = new THREE.Matrix4();
-                    finalMatrix.fromArray(item.transform);
-                    finalMatrix.transpose();
-
-                    cube.matrixAutoUpdate = false;
-                    cube.matrix.copy(finalMatrix);
-
-                    loadedObjectGroup.add(cube);
-                }
             }
         });
     } else {
