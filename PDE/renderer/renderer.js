@@ -57,14 +57,16 @@ function createGrid(size = 10, divisions = 10, color = 0x3D3D3D, skipCenterLine 
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-
-    const material = new THREE.LineBasicMaterial({
-        color: color,
-        transparent: true,
-        opacity: 0.5
-    });
-
-    return new THREE.LineSegments(geometry, material);
+    const material = new THREE.LineBasicMaterial({ color: color });
+    const grid = new THREE.LineSegments(geometry, material);
+    grid.renderOrder = 0; // 렌더링 순서 지정
+    return grid;
+    //const material = new THREE.LineBasicMaterial({
+    //    color: color,
+    //    transparent: true,
+    //    opacity: 0.5
+    //});
+    //return new THREE.LineSegments(geometry, material);
 }
 
 

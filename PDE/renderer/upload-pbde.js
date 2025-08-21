@@ -7,115 +7,11 @@ let worker;
 const loadedObjectGroup = new THREE.Group();
 scene.add(loadedObjectGroup);
 
-//여기가 시작
+
 // 텍스처 로더 및 캐시
 const textureLoader = new THREE.TextureLoader();
 const textureCache = new Map();
-/**
- * 두 개의 4x4 행렬(1차원 배열)을 곱합니다.
- * @param {number[]} parent - 부모 행렬 (16개 요소)
- * @param {number[]} child - 자식 행렬 (16개 요소)
- * @returns {number[]} 결과 행렬 (16개 요소)
- */
-function apply_transforms(parent, child) {
-    const result = new Array(16);
-    for (let i = 0; i < 4; i++) {
-        for (let j = 0; j < 4; j++) {
-            result[i * 4 + j] =
-                parent[i * 4 + 0] * child[0 + j] +
-                parent[i * 4 + 1] * child[4 + j] +
-                parent[i * 4 + 2] * child[8 + j] +
-                parent[i * 4 + 3] * child[12 + j];
-        }
-    }
-    return result;
-}
 
-/**
- * JSON 데이터의 children 배열을 순회하며 조건에 맞게 데이터를 필터링하고 정제합니다.
- * @param {Array} children - 원본 children 배열
- * @returns {Array} 처리된 children 배열
- */
-
-
-function split_children(children) {
-    if (!children) return [];
-    return children.map(item => {
-        const newItem = {};
-
-        // 조건 1: 특정 display 키 포함
-        if (item.isCollection) newItem.isCollection = true;
-        if (item.isItemDisplay) newItem.isItemDisplay = true;
-        if (item.isBlockDisplay) newItem.isBlockDisplay = true;
-        if (item.isTextDisplay) newItem.isTextDisplay = true;
-
-        // 조건 2: name, nbt 항상 포함
-        newItem.name = item.name || "";
-        newItem.nbt = item.nbt || "";
-
-        // 조건 3: brightness 조건부 포함
-        if (item.brightness && (item.brightness.sky !== 15 || item.brightness.block !== 0)) {
-            newItem.brightness = item.brightness;
-        }
-
-        // 조건 4: tagHead, options, paintTexture, textureValueList 조건부 포함
-        if (item.tagHead) newItem.tagHead = item.tagHead;
-        if (item.options) newItem.options = item.options;
-        if (item.paintTexture) newItem.paintTexture = item.paintTexture;
-        if (item.textureValueList) newItem.textureValueList = item.textureValueList;
-
-
-
-        // 조건 5: transforms 항상 포함
-        newItem.transforms = item.transforms || "";
-
-        // 조건 6: children 재귀적 포함
-        if (item.children) {
-            newItem.children = split_children(item.children);
-        }
-        //console.log("split_children 결과:", JSON.stringify(newItem, null, 2));
-        return newItem;
-    });
-}
-
-/**
- * 재귀적으로 모델 계층을 순회하며 각 객체의 최종 월드 변환 행렬을 계산하여
- * 평탄화된 렌더링 목록을 생성합니다.
- * @param {Array} nodes - 처리할 노드 배열
- * @param {number[]} parentTransform - 부모의 월드 변환 행렬
- * @param {Array} renderList - 최종 렌더링 목록 (평탄화된 배열)
- */
-function processNodesAndFlatten(nodes, parentTransform, renderList) {
-    if (!nodes) return;
-
-    for (const node of nodes) {
-        // 노드의 로컬 변환 행렬과 부모의 월드 변환 행렬을 곱하여 현재 노드의 월드 변환 행렬을 계산합니다.
-        const worldTransform = apply_transforms(parentTransform, node.transforms);
-
-        // 렌더링이 필요한 객체만(isBlockDisplay 등) 최종 목록에 추가합니다.
-        if (node.isBlockDisplay || node.isItemDisplay || node.isTextDisplay) {
-            renderList.push({
-                name: node.name,
-                transform: worldTransform.map(v => parseFloat(v)), // 최종 계산된 월드 변환 행렬
-                nbt: node.nbt,
-                isBlockDisplay: node.isBlockDisplay,
-                isItemDisplay: node.isItemDisplay,
-                isTextDisplay: node.isTextDisplay,
-                tagHead: node.tagHead,
-                options: node.options,
-                paintTexture: node.paintTexture,
-                textureValueList: node.textureValueList,
-                brightness: node.brightness
-            });
-        }
-
-        // 자식 노드가 있으면, 현재 계산된 월드 변환 행렬을 부모 행렬로 하여 재귀 호출합니다.
-        if (node.children) {
-            processNodesAndFlatten(node.children, worldTransform, renderList);
-        }
-    }
-}
-//여기까지
 
 /**
  * WebGPU에 최적화된 마인크래프트 머리 모델을 생성합니다.
@@ -266,19 +162,13 @@ function loadpbde(file) {
 
     // 3. 워커로부터 메시지(처리된 데이터) 수신
     worker.onmessage = (e) => {
-        //if (e.data.success) {
-        //  const flatRenderList = e.data.data;
-            //console.log("Main Thread: Received flattened render list.", flatRenderList);
         if (e.data.success) {
-            // 1. 메인 스레드에서 JSON 파싱
-            const jsonData = JSON.parse(e.data.data);
-        
-            // 2. 데이터 정제 및 평탄화 (이 함수들을 메인 스레드로 이동)
-            const processedChildren = split_children(jsonData[0].children);
-            const flatRenderList = [];
-            const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-            processNodesAndFlatten(processedChildren, identityMatrix, flatRenderList);
-
+          const flatRenderList = e.data.data;
+          console.log("Main Thread: Received flattened render list.", flatRenderList);
+        //if (e.data.success) {
+        //    // 1. 메인 스레드에서 JSON 파싱
+        //    const jsonData = JSON.parse(e.data.data);
+     
             flatRenderList.forEach(item => {
                 if (item.isBlockDisplay) {
                     const geometry = new THREE.BoxGeometry(1, 1, 1);
