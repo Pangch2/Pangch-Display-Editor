@@ -1,9 +1,47 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import * as THREE from 'three/webgpu'
+import * as THREE from 'three/webgpu';
 import { initAssets } from './asset-manager.js';
 import { loadedObjectGroup } from './upload-pbde.js';
+import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
 
+// 전역 변수로 선언
 let scene, camera, renderer, controls;
+
+// 앱 시작 로직을 비동기 함수로 감싸기
+async function startApp() {
+  // --- 1. 로딩 화면 준비 ---
+  const loadingOverlay = document.getElementById('loading-overlay');
+  const loadingIcon = document.getElementById('loading-icon');
+
+  // 메인 프로세스로부터 아이콘 Data URL 받아오기
+  const iconResult = await window.ipcApi.invoke('get-loading-icon');
+  if (iconResult.success) {
+    loadingIcon.src = iconResult.dataUrl;
+  }
+
+  // --- 2. 로딩 화면 표시 및 에셋 캐싱 ---
+  openWithAnimation(loadingOverlay);
+  loadingOverlay.classList.add('visible');
+
+  try {
+    // 에셋 캐싱/준비가 완료될 때까지 기다림
+    await initAssets();
+  } catch (error) {
+    console.error("Asset initialization failed:", error);
+    // 에러 발생 시 사용자에게 알림 (예: 로딩 텍스트 변경)
+    document.getElementById('loading-text').textContent = '에셋 로딩 실패!';
+    return; // 앱 시작 중단
+  }
+
+  // --- 3. 로딩 화면 숨기기 ---
+  await closeWithAnimation(loadingOverlay);
+  loadingOverlay.classList.remove('visible');
+
+  // --- 4. Three.js 씬 초기화 (기존 코드) ---
+  await initScene();
+  animate();
+  onWindowResize(); // 초기 뷰포트 크기 설정
+}
 
 // XYZ 축을 양/음 방향으로 모두 표시하는 헬퍼
 function createFullAxesHelper(size = 50) {
@@ -11,7 +49,7 @@ function createFullAxesHelper(size = 50) {
 
     const createAxisLine = (start, end, color) => {
         const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-        const material = new THREE.LineBasicMaterial({ color: color , depthTest: false, depthWrite: false });
+        const material = new THREE.LineBasicMaterial({ color: color , depthTest: false });
         return new THREE.Line(geometry, material);
     };
 
@@ -38,23 +76,17 @@ function createFullAxesHelper(size = 50) {
     return axesGroup;
 }
 
-
-
-async function init() {
-
-    // 에셋 초기화 (캐시 확인 및 다운로드 요청)
-    await initAssets();
-
+async function initScene() {
     // 1. 장면(Scene)
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x1F1F1F); // 어두운 회색 배경
     scene.add(loadedObjectGroup); // 로드된 객체 그룹을 씬에 추가
 
     // 2. 카메라(Camera)
-
+    const mainContent = document.getElementById('main-content');
     camera = new THREE.PerspectiveCamera(
         80,
-        window.innerWidth / window.innerHeight,
+        mainContent.clientWidth / mainContent.clientHeight,
         0.05,
         1000
     );
@@ -63,25 +95,17 @@ async function init() {
 
     // 3. 렌더러(Renderer)
     renderer = new THREE.WebGPURenderer({
-        //antialias: true,
         canvas: document.querySelector('#renderCanvas'),
-        logarithmicDepthBuffer: true // ✨ 깊이 정밀도 문제 해결을 위한 옵션
-        });
-    renderer.setSize(window.innerWidth, window.innerHeight);
+        logarithmicDepthBuffer: true
+    });
+    renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
     await renderer.init();
-    // document.body.appendChild(renderer.domElement);
 
-    //카메라
-    // 1. OrbitControls 생성
+    // 4. 컨트롤(Controls)
     controls = new OrbitControls(camera, renderer.domElement);
-    
-    // 2. 컨트롤 옵션 (선택사항)
-    //controls.enableDamping = false; // 부드러운 움직임
-    //controls.dampingFactor = 0.05;
     controls.screenSpacePanning = true;
-    
 
-    // 4. 조명(Lights)
+    // 5. 조명(Lights)
     const ambientLight = new THREE.AmbientLight(0x6c6c6c, 2.83);
     scene.add(ambientLight);
 
@@ -98,37 +122,31 @@ async function init() {
     scene.add(dirLight3);
     
     // 6. 헬퍼(Helper)
-    // 축
-    const axes = createFullAxesHelper(150); // size: 150, radius, scaleY, scaleX
-    axes.renderOrder = 1; // 축 렌더 순서 설정
+    const axes = createFullAxesHelper(150);
+    axes.renderOrder = 1;
     scene.add(axes);
 
-    // 세부 격자 - 기본 GridHelper로 대체
     const detailGrid = new THREE.GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
     detailGrid.renderOrder = 0;
     scene.add(detailGrid);
         
-    // 큰 격자 - 기본 GridHelper로 대체
     const Grid = new THREE.GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
     Grid.renderOrder = 2;
     scene.add(Grid);
-
-    // 8. 렌더링 시작
-    animate();
 }
 
 function animate() {
-    //카메라
-    controls.update();
     requestAnimationFrame(animate);
-    renderer.render(scene, camera);
+    if (controls) controls.update();
+    if (renderer && scene && camera) {
+        renderer.render(scene, camera);
+    }
 }
 
 function onWindowResize() {
     const mainContent = document.getElementById('main-content');
     if (!mainContent || mainContent.clientWidth === 0 || mainContent.clientHeight === 0) return;
 
-    // camera와 renderer가 초기화되었는지 확인
     if (camera && renderer) {
         camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
         camera.updateProjectionMatrix();
@@ -139,7 +157,6 @@ function onWindowResize() {
 export { scene };
 window.addEventListener('resize', onWindowResize, false);
 
-// init()이 완료된 후 onWindowResize를 호출하도록 수정
-init().then(() => {
-    onWindowResize(); // 초기 로드 시 뷰포트 크기 강제 조정
-});
+// 앱 시작!
+startApp();
+

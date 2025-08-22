@@ -6,7 +6,7 @@
   "scripts": {
     "dev:renderer": "vite",
     "dev:main": "cross-env NODE_ENV=development nodemon --watch main.js --exec electron .",
-    "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
+    "dev": "concurrently --kill-others-on-fail -n \"main,renderer\" \"npm:dev:main\" \"npm:dev:renderer\"",
     "build": "vite build",
     "start": "electron .",
     "pack": "electron-builder --dir",
@@ -24,14 +24,18 @@
   "dependencies": {
     "axios": "^1.11.0",
     "three": "^0.179.1",
-    "unzipper": "^0.12.3"
+    "unzipper": "^0.12.3",
+    "pako" : "^2.1.0"
   },
   "author": {
     "name": "Pangch"
   },
   "build": {
     "extraResources": [
-      "resources/Pangch-Face.ico"
+      {
+        "from": "resources/Pangch-Face.ico",
+        "to": "Pangch-Face.ico"
+      }
     ],
     "productName": "pde-001",
     "asar": true,
@@ -40,7 +44,8 @@
     },
     "files": [
       "dist/**/*",
-      "main.js"
+      "main.js",
+      "preload.js"
     ],
     "icon": "resources/Pangch-Face.ico",
     "win": {

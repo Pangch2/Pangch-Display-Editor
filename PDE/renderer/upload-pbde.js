@@ -1,6 +1,7 @@
 import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
 import * as THREE from 'three/webgpu';
-import { scene } from './renderer.js'; // renderer.js에서 scene을 export 해야 함
+import PbdeWorker from './pbde-worker.js?worker&inline';
+
 
 let worker;
 // 로드된 모든 객체를 담을 그룹
@@ -99,7 +100,8 @@ function createOptimizedHead(texture, isLayer = false) {
         map: texture,
         transparent: isLayer,
         alphaTest: 0.5,
-        depthWrite: true
+        depthWrite: true,
+        transparent:true
     });
 
     material.toneMapped = false;
@@ -161,18 +163,23 @@ function loadpbde(file) {
         worker.terminate(); // 기존 워커가 있다면 종료
     }
     // 2. 웹 워커 생성
-    worker = new Worker('./pbde-worker.js', { type: 'module' });
+    worker = new PbdeWorker();
 
     // 3. 워커로부터 메시지(처리된 데이터) 수신
     worker.onmessage = (e) => {
+        console.log("[Debug] Message received from worker:", e.data);
+
         if (e.data.success) {
-          const flatRenderList = e.data.data;
-          console.log("Main Thread: Received flattened render list.", flatRenderList);
-        //if (e.data.success) {
-        //    // 1. 메인 스레드에서 JSON 파싱
-        //    const jsonData = JSON.parse(e.data.data);
-     
-            flatRenderList.forEach(item => {
+            const flatRenderList = e.data.data;
+            
+            if (!flatRenderList || flatRenderList.length === 0) {
+                console.warn("[Debug] Worker returned success, but the render list is empty. Nothing to render.");
+            } else {
+                console.log(`[Debug] Processing ${flatRenderList.length} items from worker.`);
+            }
+
+            flatRenderList.forEach((item, index) => {
+                // ... (기존 객체 생성 로직은 동일)
                 if (item.isBlockDisplay) {
                     const geometry = new THREE.BoxGeometry(1, 1, 1);
                     geometry.translate(0.5, 0.5, 0.5);
@@ -247,17 +254,21 @@ function loadpbde(file) {
 
                         loadedObjectGroup.add(cube);
                     }
-            }
-        });
-    } else {
-        console.error("Worker Error:", e.data.error);
-    }
-    worker.terminate();
-    worker = null;
-};
+                }
+            });
+
+            console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
+        } else {
+            console.error("[Debug] Worker reported an error:", e.data.error);
+        }
+
+        console.log("[Debug] Terminating worker.");
+        worker.terminate();
+        worker = null;
+    };
 
     worker.onerror = (error) => {
-        //console.error("Worker Error:", error);
+        console.error("Worker Error:", error);
         worker.terminate();
         worker = null;
     };
@@ -292,7 +303,7 @@ function createDropModal(file) {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        zIndex: 10000,
+        zIndex: 10000
     });
 
     const modalContent = document.createElement('div');

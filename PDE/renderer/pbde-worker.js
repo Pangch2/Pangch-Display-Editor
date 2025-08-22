@@ -1,4 +1,4 @@
-import * as pako from 'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.esm.mjs';
+import * as pako from 'pako';
 
 /**
  * 두 개의 4x4 행렬(1차원 배열)을 곱합니다.
@@ -131,13 +131,13 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
 }
 //워커 메시지 리스너
 self.onmessage = (e) => {
-    // e.data는 파일에서 읽은 Base64 문자열입니다.
-    const base64Content = e.data;
-    let inflatedData, jsonData; // try-finally에서 접근 가능하도록 스코프 이동
+    // e.data는 파일에서 읽은 텍스트 문자열입니다.
+    const fileContent = e.data;
+    let inflatedData, jsonData;
 
     try {
         // 1. Base64 디코딩
-        const decodedData = atob(base64Content);
+        const decodedData = atob(fileContent);
 
         // 2. 바이너리 문자열을 Uint8Array로 변환
         const uint8Array = new Uint8Array(decodedData.length);

@@ -17,6 +17,15 @@ contextBridge.exposeInMainWorld('ipcApi', {
       ipcRenderer.send(channel, data);
     }
   },
+  // Renderer -> Main (양방향 통신, 요청-응답)
+  invoke: (channel, ...args) => {
+    const validChannels = ['get-asset-content', 'get-loading-icon'];
+    if (validChannels.includes(channel)) {
+      return ipcRenderer.invoke(channel, ...args);
+    }
+    // 허용되지 않은 채널에 대한 호출은 거부하거나 에러 처리
+    return Promise.reject(new Error(`Invalid invoke channel: ${channel}`));
+  },
   // 리스너 정리 (메모리 누수 방지)
   removeAllListeners: (channel) => {
     const validChannels = ['assets-downloaded', 'assets-download-failed'];
