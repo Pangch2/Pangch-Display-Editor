@@ -76,6 +76,51 @@ function createFullAxesHelper(size = 50) {
     return axesGroup;
 }
 
+// 'Z>' 모양을 XZ 평면(바닥) 위에 그리는 헬퍼
+// position: 중심 위치(Vector3), size: 전체 높이/폭 스칼라, color: 라인 색상
+function createZGreaterSymbol(position = new THREE.Vector3(0.5, 0, 0.5), size = 0.5, color = 0x515151) {
+    const group = new THREE.Group();
+    group.position.copy(position);
+
+    const material = new THREE.LineBasicMaterial({ color, depthTest: false });
+
+    const s = size;
+    const half = s / 2;
+    const gap = s * 0.15;           // Z와 > 사이 간격
+    const arrowWidth = s * 0.45;    // > 화살표 가로 길이
+
+    // Z: 위, 대각선, 아래
+    const lines = [];
+
+    const addLine = (ax, az, bx, bz) => {
+        const geometry = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(ax, 0, az),
+            new THREE.Vector3(bx, 0, bz)
+        ]);
+        const line = new THREE.Line(geometry, material);
+        group.add(line);
+        lines.push(line);
+    };
+
+    // Top horizontal
+    addLine(-half, -half, half, -half);
+    // Diagonal
+    addLine(half, -half, -half, half);
+    // Bottom horizontal
+    addLine(-half, half, half, half);
+
+    // '>' 화살표 (Z 오른쪽에 배치)
+    const rightStartX = half + gap;
+    const arrowTipX = rightStartX + arrowWidth;
+    // 위쪽 꼭짓점 -> 팁 -> 아래쪽 꼭짓점 (두 개의 선)
+    addLine(rightStartX, -half, arrowTipX, 0);
+    addLine(arrowTipX, 0, rightStartX, half);
+
+    // 90도 Y축 회전
+    group.rotation.y = Math.PI / 2;
+    return group;
+}
+
 async function initScene() {
     // 1. 장면(Scene)
     scene = new THREE.Scene();
@@ -133,7 +178,13 @@ async function initScene() {
     const Grid = new THREE.GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
     Grid.renderOrder = 2;
     scene.add(Grid);
+
+    // 7. 사용자 정의 기호(Z>): 격자 위 (0.5, 0, -0.25) 위치에 'Z>' 모양 라인 추가
+    const zSymbol = createZGreaterSymbol(new THREE.Vector3(0.5, 0, -0.25), 0.125, 0x515151);
+    zSymbol.renderOrder = 3; // 그리드 위로 오도록
+    scene.add(zSymbol);
 }
+
 
 function animate() {
     requestAnimationFrame(animate);
