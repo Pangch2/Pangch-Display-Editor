@@ -172,22 +172,43 @@ async function initScene() {
     scene.add(axes);
 
     const detailGrid = new THREE.GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
-    detailGrid.renderOrder = 0;
+    detailGrid.renderOrder = -2; // 큐브보다 먼저 그리기
     scene.add(detailGrid);
-        
+
     const Grid = new THREE.GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
-    Grid.renderOrder = 2;
+    Grid.renderOrder = -1; // 큐브보다 먼저 그리기
     scene.add(Grid);
+
+    // 격자 라인이 깊이 버퍼를 덮지 않도록 하여 뒤에 있도록 (큐브가 항상 위에)
+    [detailGrid, Grid].forEach(helper => {
+        const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
+        materials.forEach(m => { m.depthWrite = false; });
+    });
 
     // 7. 사용자 정의 기호(Z>): 격자 위 (0.5, 0, -0.25) 위치에 'Z>' 모양 라인 추가
     const zSymbol = createZGreaterSymbol(new THREE.Vector3(0.5, 0, -0.25), 0.125, 0x515151);
-    zSymbol.renderOrder = 3; // 그리드 위로 오도록
+    zSymbol.renderOrder = 10; // 그리드/객체 위로 UI 표시성 높임
     scene.add(zSymbol);
 }
-
+//fps표시용1
+let lastTime = performance.now();
+let frameCount = 0;
+const fpsCounterElement = document.getElementById('fps-counter');
 
 function animate() {
     requestAnimationFrame(animate);
+    //fps표시용2
+    const currentTime = performance.now();
+    frameCount++;
+    if (currentTime - lastTime >= 1000) {
+        const fps = frameCount;
+        if (fpsCounterElement) {
+            fpsCounterElement.textContent = `FPS: ${fps}`;
+        }
+        frameCount = 0;
+        lastTime = currentTime;
+    }
+
     if (controls) controls.update();
     if (renderer && scene && camera) {
         renderer.render(scene, camera);

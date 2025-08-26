@@ -99,7 +99,6 @@ function createOptimizedHead(texture, isLayer = false) {
     const material = new THREE.MeshLambertMaterial({
         map: texture,
         transparent: isLayer,
-        alphaTest: 0.5,
         depthWrite: true,
         transparent:true
     });
@@ -178,8 +177,7 @@ function loadpbde(file) {
                 console.log(`[Debug] Processing ${flatRenderList.length} items from worker.`);
             }
 
-            flatRenderList.forEach((item, index) => {
-                // ... (기존 객체 생성 로직은 동일)
+            flatRenderList.forEach((item) => {
                 if (item.isBlockDisplay) {
                     const geometry = new THREE.BoxGeometry(1, 1, 1);
                     geometry.translate(0.5, 0.5, 0.5);
@@ -235,7 +233,6 @@ function loadpbde(file) {
                         finalMatrix.multiply(scaleMatrix);
                         headGroup.matrixAutoUpdate = false;
                         headGroup.matrix.copy(finalMatrix);
-
                         loadedObjectGroup.add(headGroup);
                     } else { // 그 외 다른 아이템 디스플레이 처리 (player_head가 아닌 경우)
                         const geometry = new THREE.BoxGeometry(1, 1, 1);
