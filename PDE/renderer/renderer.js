@@ -151,21 +151,29 @@ async function initScene() {
     controls.screenSpacePanning = true;
 
     // 5. 조명(Lights)
-    const ambientLight = new THREE.AmbientLight(0x6c6c6c, 2.83);
+    const ambientLight = new THREE.AmbientLight(0x6c6c6c, 2.9);
     scene.add(ambientLight);
 
     const dirLight1 = new THREE.DirectionalLight(0x6c6c6c, 7.7);
-    dirLight1.position.set(0, 0, 100);
+    dirLight1.position.set(0, 0, 1);
     scene.add(dirLight1);
 
     const dirLight2 = new THREE.DirectionalLight(0x6c6c6c, 7.7);
-    dirLight2.position.set(0, 0, -100);
+    dirLight2.position.set(0, 0, -1);
     scene.add(dirLight2);
 
-    const dirLight3 = new THREE.DirectionalLight(0x6c6c6c, 15.0);
-    dirLight3.position.set(0, 100, 0);
+    const dirLight3 = new THREE.DirectionalLight(0x6c6c6c, 1.0);
+    dirLight3.position.set(0, 10, 0);
     scene.add(dirLight3);
-    
+
+    const dirLight4 = new THREE.DirectionalLight(0x6c6c6c, 10.8);
+    dirLight4.position.set(1, 10, 0);
+    scene.add(dirLight4);
+
+    const dirLight5 = new THREE.DirectionalLight(0x6c6c6c, 10.8);
+    dirLight5.position.set(-1, 10, 0);
+    scene.add(dirLight5);
+
     // 6. 헬퍼(Helper)
     const axes = createFullAxesHelper(150);
     axes.renderOrder = 1;
