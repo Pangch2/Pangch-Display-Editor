@@ -49,7 +49,7 @@ function createFullAxesHelper(size = 50) {
 
     const createAxisLine = (start, end, color) => {
         const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-        const material = new THREE.LineBasicMaterial({ color: color , depthTest: false });
+        const material = new THREE.LineBasicMaterial({ color: color });
         return new THREE.Line(geometry, material);
     };
 
@@ -82,7 +82,7 @@ function createZGreaterSymbol(position = new THREE.Vector3(0.5, 0, 0.5), size = 
     const group = new THREE.Group();
     group.position.copy(position);
 
-    const material = new THREE.LineBasicMaterial({ color, depthTest: false });
+    const material = new THREE.LineBasicMaterial({ color });
 
     const s = size;
     const half = s / 2;
@@ -150,29 +150,6 @@ async function initScene() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
 
-    // 5. 조명(Lights)
-    const ambientLight = new THREE.AmbientLight(0x6c6c6c, 2.9);
-    scene.add(ambientLight);
-
-    const dirLight1 = new THREE.DirectionalLight(0x6c6c6c, 7.7);
-    dirLight1.position.set(0, 0, 1);
-    scene.add(dirLight1);
-
-    const dirLight2 = new THREE.DirectionalLight(0x6c6c6c, 7.7);
-    dirLight2.position.set(0, 0, -1);
-    scene.add(dirLight2);
-
-    const dirLight3 = new THREE.DirectionalLight(0x6c6c6c, 1.0);
-    dirLight3.position.set(0, 10, 0);
-    scene.add(dirLight3);
-
-    const dirLight4 = new THREE.DirectionalLight(0x6c6c6c, 10.8);
-    dirLight4.position.set(1, 10, 0);
-    scene.add(dirLight4);
-
-    const dirLight5 = new THREE.DirectionalLight(0x6c6c6c, 10.8);
-    dirLight5.position.set(-1, 10, 0);
-    scene.add(dirLight5);
 
     // 6. 헬퍼(Helper)
     const axes = createFullAxesHelper(150);
@@ -186,6 +163,10 @@ async function initScene() {
     const Grid = new THREE.GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
     Grid.renderOrder = -1; // 큐브보다 먼저 그리기
     scene.add(Grid);
+    
+    // 그림자 비활성화(문제생기면 끄기)
+    renderer.shadowMap.enabled = false;
+    
 
     // 격자 라인이 깊이 버퍼를 덮지 않도록 하여 뒤에 있도록 (큐브가 항상 위에)
     [detailGrid, Grid].forEach(helper => {

@@ -1,6 +1,7 @@
 import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
 import * as THREE from 'three/webgpu';
 import PbdeWorker from './pbde-worker.js?worker&inline';
+import { createEntityMaterial } from './entityMaterial.js';
 
 
 let worker;
@@ -102,30 +103,70 @@ function createHeadGeometries() {
  * @param {boolean} isLayer - 오버레이 레이어(모자)인지 여부
  * @returns {THREE.Mesh} 최적화된 머리 메시 객체
  */
-function createOptimizedHead(texture, isLayer = false) {
-    // 최적화: 미리 생성된 지오메트리 사용
+const materialCache = new WeakMap();
+
+function createOptimizedHead(texture, isLayer) {
+    // 미리 생성된 지오메트리 가져오기
     const geometry = isLayer ? headGeometries.layer : headGeometries.base;
 
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
+    // 텍스처 필터 및 컬러스페이스는 최초 1회만 설정
+    if (!texture.__optimizedSetupDone) {
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.NearestFilter;
+        texture.generateMipmaps = false;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.__optimizedSetupDone = true;
+    }
 
-    const material = new THREE.MeshLambertMaterial({
-        map: texture,
-        depthWrite: true,
-        transparent:true
-    });
+    // material 캐시 처리 (재사용)
+    let material = materialCache.get(texture);
+    if (!material) {
+        // createEntityMaterial 함수가 texture를 인자로 받아서 material을 생성하는 것으로 보임
+        const matData = createEntityMaterial(texture);
+        material = matData.material;
 
-    material.toneMapped = false;
-    if (material.map) {
-        material.map.colorSpace = THREE.SRGBColorSpace;
+        material.toneMapped = false;
+        materialCache.set(texture, material);
     }
 
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
 
     return mesh;
 }
+
+
+//function createOptimizedHead(texture, isLayer ) {
+//    // 최적화: 미리 생성된 지오메트리 사용
+//    const { material, blockLightLevel, skyLightLevel } = createEntityMaterial(texture);
+//    blockLightLevel.value = 0.0;
+//    skyLightLevel.value = 1.0;
+//    const geometry = isLayer ? headGeometries.layer : headGeometries.base;
+//
+//    texture.magFilter = THREE.NearestFilter;
+//    texture.minFilter = THREE.NearestFilter;
+//
+//    //const material = new THREE.MeshLambertMaterial({
+//    //    map: texture,
+//    //    depthWrite: true,
+//    //    transparent:true
+//    //});
+//
+//    material.toneMapped = false;
+//    material.renderOrder = 0;
+//    texture.colorSpace = THREE.SRGBColorSpace;
+//
+//    //if (material.map) {
+//    //    material.map.colorSpace = THREE.SRGBColorSpace;
+//    //}
+//
+//    const mesh = new THREE.Mesh(geometry, material);
+//    mesh.castShadow = true;
+//    mesh.receiveShadow = true;
+//
+//    return mesh;
+//}
 
 
 /**
