@@ -96,8 +96,8 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
             // isItemDisplay가 player_head일 경우 텍스처 URL 처리 로직 추가
             if (node.isItemDisplay && node.name.toLowerCase().startsWith('player_head')) {
                 let textureUrl = null;
-                const defaultTextureValue = 'eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZDk0ZTE2ODZhZGI2NzgyM2M3ZTUxNDhjMmMwNmUyZDk1YzFiNjYzNzQ0MDllOTZiMzJkYzEzMTAzOTdlMTcxMSJ9fX0=';
-
+                //const defaultTextureValue = 'eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZDk0ZTE2ODZhZGI2NzgyM2M3ZTUxNDhjMmMwNmUyZDk1YzFiNjYzNzQ0MDllOTZiMzJkYzEzMTAzOTdlMTcxMSJ9fX0=';
+                const defaultTextureValue = 'http://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
                 if (node.tagHead && node.tagHead.Value) {
                     try {
                         textureUrl = JSON.parse(atob(node.tagHead.Value)).textures.SKIN.url;
@@ -114,7 +114,8 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
 
                 if (!textureUrl) {
                     try {
-                        textureUrl = JSON.parse(atob(defaultTextureValue)).textures.SKIN.url;
+                        //textureUrl = JSON.parse(atob(defaultTextureValue)).textures.SKIN.url;
+                        textureUrl = defaultTextureValue;
                     } catch (err) {
                         console.error("Worker: 기본 텍스처 처리 오류:", err);
                     }

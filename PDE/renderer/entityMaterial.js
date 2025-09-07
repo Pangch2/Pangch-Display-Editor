@@ -26,10 +26,11 @@ export function createEntityMaterial(diffuseTex) {
     TSL.float(0.25)
   );
 
-  const litColor = TSL.mul(TSL.mul(diffuseNode, lightAccum), lightMapColor);
+  const litColor = TSL.vec4(TSL.mul(TSL.mul(diffuseNode.xyz, lightAccum), lightMapColor), diffuseNode.w);
 
   const material = new THREE.MeshBasicNodeMaterial();
   material.colorNode = litColor;
+  material.transparent = true;
   material.alphaTest = 0.1;
 
   return { material, blockLightLevel, skyLightLevel };

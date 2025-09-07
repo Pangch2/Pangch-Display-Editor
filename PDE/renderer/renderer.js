@@ -220,4 +220,3 @@ window.addEventListener('resize', onWindowResize, false);
 
 // 앱 시작!
 startApp();
-

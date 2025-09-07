@@ -19,6 +19,53 @@ const textureCache = new Map();
 let headGeometries = null;
 
 /**
+ * 주의: BoxGeometry는 인덱스가 있는 BufferGeometry를 반환합니다.
+ * 병합을 위해 toNonIndexed()로 변환한 뒤 attribute들을 concat 합니다.
+ */
+function mergeNonIndexedGeometries(geometries) {
+    // 모든 geometry는 non-indexed 상태여야 한다 (toNonIndexed()로 보장)
+    if (!geometries || geometries.length === 0) return null;
+
+    const first = geometries[0];
+    const merged = new THREE.BufferGeometry();
+
+    // 합쳐야 할 attribute 이름 목록을 수집 (position, normal, uv 등)
+    const attrNames = Object.keys(first.attributes);
+
+    attrNames.forEach(name => {
+        const arrays = [];
+        let itemSize = null;
+        let ArrayType = Float32Array;
+
+        for (let g of geometries) {
+            const attr = g.getAttribute(name);
+            if (!attr) {
+                console.warn(`mergeNonIndexedGeometries: geometry missing attribute ${name}`);
+                continue;
+            }
+            arrays.push(attr.array);
+            itemSize = attr.itemSize;
+            ArrayType = attr.array.constructor; // 유지되는 typed array 타입 사용
+        }
+
+        // 총 길이 계산
+        let totalLen = arrays.reduce((s, a) => s + a.length, 0);
+        const mergedArray = new ArrayType(totalLen);
+        let offset = 0;
+        for (let a of arrays) {
+            mergedArray.set(a, offset);
+            offset += a.length;
+        }
+        merged.setAttribute(name, new THREE.BufferAttribute(mergedArray, itemSize));
+    });
+
+    // 인덱스는 이미 non-indexed 이므로 설정할 필요 없음
+    merged.computeBoundingBox();
+    merged.computeBoundingSphere();
+    return merged;
+}
+
+/**
  * 재사용 가능한 머리 지오메트리들을 생성하고 UV를 한 번만 설정합니다.
  */
 function createHeadGeometries() {
@@ -89,10 +136,27 @@ function createHeadGeometries() {
         return geometry;
     };
 
-    headGeometries = {
-        base: createGeometry(false),
-        layer: createGeometry(true)
-    };
+    const base = createGeometry(false);
+    const layer = createGeometry(true);
+
+    // 병합 지오메트리 생성 (non-indexed로 변환 후 concat)
+    try {
+        const baseNI = base.toNonIndexed();
+        const layerNI = layer.toNonIndexed();
+        const merged = mergeNonIndexedGeometries([baseNI, layerNI]);
+        headGeometries = {
+            base: base,
+            layer: layer,
+            merged: merged
+        };
+    } catch (err) {
+        console.warn("createHeadGeometries: merge failed, falling back to separate geometries", err);
+        headGeometries = {
+            base: base,
+            layer: layer,
+            merged: null
+        };
+    }
 }
 
 
@@ -100,14 +164,17 @@ function createHeadGeometries() {
  * WebGPU에 최적화된 마인크래프트 머리 모델을 생성합니다.
  * 미리 생성된 지오메트리를 사용하여 성능을 향상시킵니다.
  * @param {THREE.Texture} texture - 64x64 머리 텍스처
- * @param {boolean} isLayer - 오버레이 레이어(모자)인지 여부
+ * @param {boolean} isLayer - (호환용) true면 layer 지오메트리, false면 base 지오메트리 반환
  * @returns {THREE.Mesh} 최적화된 머리 메시 객체
  */
 const materialCache = new WeakMap();
 
-function createOptimizedHead(texture, isLayer) {
-    // 미리 생성된 지오메트리 가져오기
-    const geometry = isLayer ? headGeometries.layer : headGeometries.base;
+
+/**
+ * 병합된(merged) 지오메트리를 사용하는 단일 메시 생성 (base+layer -> 1 draw call)
+ */
+function createOptimizedHeadMerged(texture) {
+    const geometry = headGeometries.merged || headGeometries.base;
 
     // 텍스처 필터 및 컬러스페이스는 최초 1회만 설정
     if (!texture.__optimizedSetupDone) {
@@ -118,55 +185,22 @@ function createOptimizedHead(texture, isLayer) {
         texture.__optimizedSetupDone = true;
     }
 
-    // material 캐시 처리 (재사용)
     let material = materialCache.get(texture);
     if (!material) {
-        // createEntityMaterial 함수가 texture를 인자로 받아서 material을 생성하는 것으로 보임
         const matData = createEntityMaterial(texture);
         material = matData.material;
 
         material.toneMapped = false;
+        // material.alphaTest = 0.5;
+
         materialCache.set(texture, material);
     }
 
     const mesh = new THREE.Mesh(geometry, material);
     mesh.castShadow = false;
     mesh.receiveShadow = false;
-
     return mesh;
 }
-
-
-//function createOptimizedHead(texture, isLayer ) {
-//    // 최적화: 미리 생성된 지오메트리 사용
-//    const { material, blockLightLevel, skyLightLevel } = createEntityMaterial(texture);
-//    blockLightLevel.value = 0.0;
-//    skyLightLevel.value = 1.0;
-//    const geometry = isLayer ? headGeometries.layer : headGeometries.base;
-//
-//    texture.magFilter = THREE.NearestFilter;
-//    texture.minFilter = THREE.NearestFilter;
-//
-//    //const material = new THREE.MeshLambertMaterial({
-//    //    map: texture,
-//    //    depthWrite: true,
-//    //    transparent:true
-//    //});
-//
-//    material.toneMapped = false;
-//    material.renderOrder = 0;
-//    texture.colorSpace = THREE.SRGBColorSpace;
-//
-//    //if (material.map) {
-//    //    material.map.colorSpace = THREE.SRGBColorSpace;
-//    //}
-//
-//    const mesh = new THREE.Mesh(geometry, material);
-//    mesh.castShadow = true;
-//    mesh.receiveShadow = true;
-//
-//    return mesh;
-//}
 
 
 /**
@@ -188,7 +222,7 @@ function loadpbde(file) {
     loadedObjectGroup.traverse(object => {
         if (object.isMesh) {
             // 최적화: 재사용되는 지오메트리는 dispose하지 않도록 예외 처리
-            if (object.geometry && object.geometry !== headGeometries?.base && object.geometry !== headGeometries?.layer) {
+            if (object.geometry && object.geometry !== headGeometries?.base && object.geometry !== headGeometries?.layer && object.geometry !== headGeometries?.merged) {
                 object.geometry.dispose();
             }
             if (object.material) {
@@ -256,8 +290,9 @@ function loadpbde(file) {
                         headGroup.userData.isPlayerHead = true;
 
                         const onTextureLoad = (texture) => {
-                            headGroup.add(createOptimizedHead(texture, false)); // Base
-                            headGroup.add(createOptimizedHead(texture, true));  // Layer
+                            // 변경점: base + layer 를 각각 추가하지 않고,
+                            // 병합된 하나의 메시(merged geometry)만 추가해서 draw call 1회로 줄입니다.
+                            headGroup.add(createOptimizedHeadMerged(texture));
                         };
 
                         if (textureCache.has(item.textureUrl)) {
