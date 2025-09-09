@@ -53,7 +53,7 @@ async function getAssetUrl(assetPath) {
   await assetsReadyPromise;
 
   // IPC를 통해 메인 프로세스에서 파일 내용 요청
-  const result = await window.ipcApi.invoke('get-asset-content', assetPath);
+  const result = await window.ipcApi.getAssetContent(assetPath);
   if (result.success) {
     // Buffer/Uint8Array를 Blob으로 변환
     const blob = new Blob([result.content]);

@@ -46,7 +46,7 @@ function createWindow() {
     createdDirs.add(dirPath);
   }
 
-  ipcMain.handle('get-asset-content', async (assetPath) => {
+  ipcMain.handle('get-asset-content', async (event, assetPath) => {
     const fullPath = path.join(CACHE_DIR, assetPath);
     try {
       const resolvedPath = path.resolve(fullPath);
@@ -59,6 +59,20 @@ function createWindow() {
       console.error(`Failed to read cached asset '${assetPath}':`, error.code);
       return { success: false, error: error.message };
     }
+  });
+
+  const requiredPrefixes = [
+    'assets/minecraft/items/',
+    'assets/minecraft/blockstates/',
+    'assets/minecraft/models/',
+    'assets/minecraft/textures/item/',
+    'assets/minecraft/textures/particle/',
+    'assets/minecraft/textures/block/',
+    'assets/minecraft/textures/font/',
+  ];
+
+  ipcMain.handle('get-required-prefixes', () => {
+    return requiredPrefixes;
   });
 
   ipcMain.on('download-assets', async (event) => {
@@ -85,16 +99,6 @@ function createWindow() {
         // ✅ node-stream-zip 으로 압축 열기
         const zip = new StreamZip.async({ file: jarPath });
         const entries = await zip.entries();
-
-        const requiredPrefixes = [
-          'assets/minecraft/items/',
-          'assets/minecraft/blockstates/',
-          'assets/minecraft/models/',
-          'assets/minecraft/textures/item/',
-          'assets/minecraft/textures/particle/',
-          'assets/minecraft/textures/block/',
-          'assets/minecraft/textures/font/',
-        ];
 
         // ✅ 사전 필터링
         const assetEntries = Object.keys(entries).filter(entryName =>

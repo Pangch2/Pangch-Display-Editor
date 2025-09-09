@@ -18,14 +18,14 @@ contextBridge.exposeInMainWorld('ipcApi', {
     }
   },
   // Renderer -> Main (양방향 통신, 요청-응답)
-  invoke: (channel, ...args) => {
-    const validChannels = ['get-asset-content', 'get-loading-icon'];
-    if (validChannels.includes(channel)) {
-      return ipcRenderer.invoke(channel, ...args);
+  getAssetContent: (assetPath) => {
+    if (typeof assetPath !== 'string') {
+      return Promise.reject(new TypeError('assetPath must be a string.'));
     }
-    // 허용되지 않은 채널에 대한 호출은 거부하거나 에러 처리
-    return Promise.reject(new Error(`Invalid invoke channel: ${channel}`));
+    return ipcRenderer.invoke('get-asset-content', assetPath);
   },
+  getLoadingIcon: () => ipcRenderer.invoke('get-loading-icon'),
+  getRequiredPrefixes: () => ipcRenderer.invoke('get-required-prefixes'),
   // 리스너 정리 (메모리 누수 방지)
   removeAllListeners: (channel) => {
     const validChannels = ['assets-downloaded', 'assets-download-failed'];
