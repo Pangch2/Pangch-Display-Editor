@@ -106,7 +106,7 @@ function createWindow() {
         );
 
         //병렬 제한 32
-        const limit = pLimit(16);
+        const limit = pLimit(32);
         let savedCount = 0;
 
         await Promise.all(assetEntries.map(entryName =>

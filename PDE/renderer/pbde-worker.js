@@ -122,6 +122,14 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
                 renderItem.textureUrl = textureUrl; // 계산된 URL 추가
             }
 
+            // isBlockDisplay일 경우 blockstate JSON 파일 처리 로직 추가
+            if (node.isBlockDisplay && node.name) {
+                const baseName = node.name.split('[')[0].toLowerCase(); // [ 이전 부분만 사용
+                const blockstatePath = `assets/minecraft/blockstates/${baseName}.json`;
+                console.log(`✅ 콘솔 접근 성공: blockstatePath = ${blockstatePath}`);
+            }
+
+
             renderList.push(renderItem);
         }
 

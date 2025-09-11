@@ -283,6 +283,30 @@ function loadpbde(file) {
 
                     cube.matrixAutoUpdate = false;
                     cube.matrix.copy(finalMatrix);
+
+                    // 블록스테이트 데이터 로드 시도
+                    if (item.blockstatePath) {
+                        window.ipcApi.getAssetContent(item.blockstatePath)
+                            .then(result => {
+                                if (result.success) {
+                                    try {
+                                        const blockstateData = JSON.parse(result.content.toString());
+                                        console.log(`[Debug] Loaded blockstate for ${item.name}:`, blockstateData);
+                                        // 여기서 blockstate 데이터를 활용하여 블록 모델을 설정할 수 있습니다
+                                        // 예: 다른 색상이나 텍스처 적용
+                                        material.color.setHex(0x8B4513); // 브라운 색상으로 변경 (예시)
+                                    } catch (parseError) {
+                                        console.warn(`[Debug] Failed to parse blockstate JSON for ${item.name}:`, parseError);
+                                    }
+                                } else {
+                                    console.warn(`[Debug] Failed to load blockstate for ${item.name}:`, result.error);
+                                }
+                            })
+                            .catch(error => {
+                                console.error(`[Debug] Error loading blockstate for ${item.name}:`, error);
+                            });
+                    }
+
                     loadedObjectGroup.add(cube);
                 } else if (item.isItemDisplay) {
                     if (item.textureUrl) {
