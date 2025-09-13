@@ -127,6 +127,8 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
                 const baseName = node.name.split('[')[0].toLowerCase(); // [ 이전 부분만 사용
                 const blockstatePath = `assets/minecraft/blockstates/${baseName}.json`;
                 console.log(`✅ 콘솔 접근 성공: blockstatePath = ${blockstatePath}`);
+                // 메인 스레드에서 에셋을 요청할 수 있도록 경로를 전달합니다.
+                renderItem.blockstatePath = blockstatePath;
             }
 
 

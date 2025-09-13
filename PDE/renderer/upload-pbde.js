@@ -290,10 +290,14 @@ function loadpbde(file) {
                             .then(result => {
                                 if (result.success) {
                                     try {
-                                        const blockstateData = JSON.parse(result.content.toString());
-                                        console.log(`[Debug] Loaded blockstate for ${item.name}:`, blockstateData);
-                                        // 여기서 blockstate 데이터를 활용하여 블록 모델을 설정할 수 있습니다
-                                        // 예: 다른 색상이나 텍스처 적용
+                                        // Electron IPC returns a Buffer/Uint8Array. Ensure proper string conversion.
+                                        const decoder = new TextDecoder('utf-8');
+                                        const jsonText = (result.content && typeof result.content === 'object' && 'buffer' in result.content)
+                                            ? decoder.decode(result.content)
+                                            : (result.content?.toString ? result.content.toString('utf-8') : String(result.content));
+                                        const blockstateData = JSON.parse(jsonText);
+                                        console.log(`[Debug] Loaded blockstate for ${item.name} (${item.blockstatePath}):`, blockstateData);
+                                        // 여기서 blockstate 데이터를 활용하여 블록 모델을 설정할 수 있습니다 (예시로 색상 변경)
                                         material.color.setHex(0x8B4513); // 브라운 색상으로 변경 (예시)
                                     } catch (parseError) {
                                         console.warn(`[Debug] Failed to parse blockstate JSON for ${item.name}:`, parseError);
