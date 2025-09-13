@@ -18,6 +18,260 @@ const textureCache = new Map();
 // --- 최적화: 지오메트리 미리 생성 ---
 let headGeometries = null;
 
+// ---- Blockstate/Model/Texture resolve helpers ----
+
+function decodeIpcContentToString(content) {
+    try {
+        if (!content) return '';
+        // Node Buffer-like
+        if (typeof content === 'object' && content.type === 'Buffer' && Array.isArray(content.data)) {
+            return new TextDecoder('utf-8').decode(new Uint8Array(content.data));
+        }
+        // Browser Uint8Array
+        if (content instanceof Uint8Array) {
+            return new TextDecoder('utf-8').decode(content);
+        }
+        // Try generic
+        if (typeof content.toString === 'function') {
+            return content.toString('utf-8');
+        }
+        return String(content);
+    } catch {
+        return String(content);
+    }
+}
+
+async function readJsonAsset(assetPath) {
+    const result = await window.ipcApi.getAssetContent(assetPath);
+    if (!result.success) throw new Error(`Asset read failed: ${assetPath}: ${result.error}`);
+    const text = decodeIpcContentToString(result.content);
+    return JSON.parse(text);
+}
+
+function blockNameToBaseAndProps(fullName) {
+    // e.g., "minecraft:oak_log[axis=y]" -> baseName, props
+    const name = fullName || '';
+    const base = name.split('[')[0];
+    const props = {};
+    const m = name.match(/\[(.*)\]/);
+    if (m && m[1]) {
+        m[1].split(',').forEach(pair => {
+            const [k, v] = pair.split('=');
+            if (k && v) props[k.trim()] = v.trim();
+        });
+    }
+    return { baseName: base, props };
+}
+
+function nsAndPathFromId(id, defaultNs = 'minecraft') {
+    // id like "minecraft:block/stone" or "block/stone"
+    if (!id) return { ns: defaultNs, path: '' };
+    const [nsMaybe, restMaybe] = id.includes(':') ? id.split(':', 2) : [defaultNs, id];
+    return { ns: nsMaybe, path: restMaybe };
+}
+
+function modelIdToAssetPath(modelId) {
+    const { ns, path } = nsAndPathFromId(modelId);
+    return `assets/${ns}/models/${path}.json`;
+}
+
+function textureIdToAssetPath(texId) {
+    const { ns, path } = nsAndPathFromId(texId);
+    return `assets/${ns}/textures/${path}.png`;
+}
+
+function resolveTextureRef(value, textures, guard = 0) {
+    // resolves "#key" chains to final "namespace:path" form
+    if (!value) return null;
+    if (guard > 10) return value; // avoid infinite loops
+    if (value.startsWith('#')) {
+        const key = value.slice(1);
+        const next = textures ? textures[key] : undefined;
+        if (!next) return null;
+        return resolveTextureRef(next, textures, guard + 1);
+    }
+    return value;
+}
+
+async function loadModelJson(assetPath) {
+    return await readJsonAsset(assetPath);
+}
+
+async function resolveModelTree(modelId, cache = new Map()) {
+    if (cache.has(modelId)) return cache.get(modelId);
+    const path = modelIdToAssetPath(modelId);
+    let json;
+    try {
+        json = await loadModelJson(path);
+    } catch (e) {
+        // Some blockstates may point to missing models; report and continue
+        console.warn(`[Model] Missing or unreadable model ${modelId} at ${path}:`, e.message);
+        cache.set(modelId, null);
+        return null;
+    }
+
+    let mergedTextures = { ...(json.textures || {}) };
+    let elements = json.elements || null;
+    let parentChain = [];
+
+    if (json.parent) {
+        const parentRes = await resolveModelTree(json.parent, cache);
+        if (parentRes) {
+            // Parent textures first, then override with child
+            mergedTextures = { ...(parentRes.textures || {}), ...(mergedTextures || {}) };
+            // Child elements replace parent's unless absent
+            elements = elements || parentRes.elements || null;
+            parentChain = [...parentRes.parentChain, json.parent];
+        }
+    }
+
+    const resolved = { id: modelId, json, textures: mergedTextures, elements, parentChain };
+    cache.set(modelId, resolved);
+    return resolved;
+}
+
+function matchVariantKey(variantKey, props) {
+    // variantKey like "axis=y" or "facing=north,half=top" or ""
+    if (variantKey === '') return true;
+    const parts = variantKey.split(',').map(s => s.trim()).filter(Boolean);
+    for (const p of parts) {
+        const [k, v] = p.split('=');
+        if (!k) continue;
+        if (v === undefined) return false;
+        if ((props[k] || '') !== v) return false;
+    }
+    return true;
+}
+
+function whenMatches(when, props) {
+    // when can be {prop: value|[values], ...} or { OR: [ ... ] } in some packs; we support basic object
+    if (!when) return true;
+    // If when has 'OR' array (non-standard in vanilla, but used sometimes), support a simple any-match
+    if (Array.isArray(when)) {
+        // Some syntaxes use array directly as OR of objects
+        return when.some(w => whenMatches(w, props));
+    }
+    if (typeof when === 'object') {
+        // Multi-condition AND
+        for (const [k, v] of Object.entries(when)) {
+            if (Array.isArray(v)) {
+                if (!v.includes(props[k])) return false;
+            } else {
+                if ((props[k] || '') !== v) return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+function gatherFacesTextureRefs(elements) {
+    const refs = new Set();
+    if (!elements) return refs;
+    for (const el of elements) {
+        const faces = el.faces || {};
+        for (const face of Object.values(faces)) {
+            if (face && face.texture) refs.add(face.texture);
+        }
+    }
+    return refs;
+}
+
+async function processBlockDisplayAssets(item, mesh) {
+    try {
+        const blockstate = await readJsonAsset(item.blockstatePath);
+        const { props } = blockNameToBaseAndProps(item.name);
+
+        // Collect candidate models from variants or multipart
+        const modelIds = [];
+        if (blockstate.variants) {
+            // Find best-matching key
+            // Try exact matches; if none, try empty key ""
+            const entries = Object.entries(blockstate.variants);
+            // Prefer keys with more conditions that match
+            let best = null;
+            for (const [key, val] of entries) {
+                if (matchVariantKey(key, props)) {
+                    const weight = key.split(',').filter(Boolean).length; // heuristic
+                    if (!best || weight > best.weight) best = { key, val, weight };
+                }
+            }
+            const picked = best ? best.val : blockstate.variants[''];
+            if (picked) {
+                if (Array.isArray(picked)) {
+                    // Weighted list; pick the first for now
+                    if (picked[0]?.model) modelIds.push(picked[0].model);
+                } else if (picked.model) {
+                    modelIds.push(picked.model);
+                }
+            }
+        } else if (blockstate.multipart) {
+            for (const part of blockstate.multipart) {
+                if (!part) continue;
+                if (!part.when || whenMatches(part.when, props)) {
+                    const apply = part.apply;
+                    if (Array.isArray(apply)) {
+                        for (const a of apply) if (a?.model) modelIds.push(a.model);
+                    } else if (apply?.model) {
+                        modelIds.push(apply.model);
+                    }
+                }
+            }
+        }
+
+        if (modelIds.length === 0) {
+            //console.warn(`[Blockstate] No model resolved for ${item.name} (${item.blockstatePath})`);
+            return;
+        }
+
+        // Resolve models and their textures
+        const modelCache = new Map();
+        for (const modelId of modelIds) {
+            const resolved = await resolveModelTree(modelId, modelCache);
+            if (!resolved) continue;
+            const faceRefs = gatherFacesTextureRefs(resolved.elements);
+            const concreteTextureIds = [];
+            for (const ref of faceRefs) {
+                const tid = resolveTextureRef(ref, resolved.textures);
+                if (tid) concreteTextureIds.push(tid);
+            }
+            // Deduplicate and convert to asset paths
+            const texAssetPaths = [...new Set(concreteTextureIds)].map(textureIdToAssetPath);
+            //console.log(`[Model] ${item.name} uses model '${modelId}' with textures:`, texAssetPaths);
+
+            // Optionally, load the first texture and apply to the mesh with entity material
+            if (texAssetPaths.length > 0) {
+                try {
+                    const texResult = await window.ipcApi.getAssetContent(texAssetPaths[0]);
+                    if (texResult.success) {
+                        const blob = new Blob([texResult.content], { type: 'image/png' });
+                        const url = URL.createObjectURL(blob);
+                        const loader = new THREE.TextureLoader();
+                        loader.load(url, (tex) => {
+                            tex.magFilter = THREE.NearestFilter;
+                            tex.minFilter = THREE.NearestFilter;
+                            tex.colorSpace = THREE.SRGBColorSpace;
+                            const matData = createEntityMaterial(tex);
+                            // keep basic flags similar to item display setup
+                            matData.material.toneMapped = false;
+                            mesh.material = matData.material;
+                            mesh.material.needsUpdate = true;
+                            // cleanup temp url
+                            URL.revokeObjectURL(url);
+                        });
+                    } else {
+                        console.warn(`[Texture] Failed to load ${texAssetPaths[0]}: ${texResult.error}`);
+                    }
+                } catch (e) {
+                    console.warn(`[Texture] Error while loading ${texAssetPaths[0]}:`, e);
+                }
+            }
+        }
+    } catch (e) {
+        console.warn(`[Block] Failed to process block display assets for ${item.name}:`, e);
+    }
+}
+
 /**
  * 주의: BoxGeometry는 인덱스가 있는 BufferGeometry를 반환합니다.
  * 병합을 위해 toNonIndexed()로 변환한 뒤 attribute들을 concat 합니다.
@@ -271,9 +525,12 @@ function loadpbde(file) {
                 if (item.isBlockDisplay) {
                     const geometry = new THREE.BoxGeometry(1, 1, 1);
                     geometry.translate(0.5, 0.5, 0.5);
-                    const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 ,transparent: true});
-                    material.toneMapped = false;
-                    const cube = new THREE.Mesh(geometry, material);
+                    // Placeholder 1x1 white texture for initial entity material
+                    const placeholderTex = new THREE.DataTexture(new Uint8Array([255,255,255,255]), 1, 1);
+                    placeholderTex.needsUpdate = true;
+                    const { material: entityMat } = createEntityMaterial(placeholderTex);
+                    entityMat.toneMapped = false;
+                    const cube = new THREE.Mesh(geometry, entityMat);
                     cube.castShadow = true;
                     cube.receiveShadow = true;
 
@@ -284,31 +541,9 @@ function loadpbde(file) {
                     cube.matrixAutoUpdate = false;
                     cube.matrix.copy(finalMatrix);
 
-                    // 블록스테이트 데이터 로드 시도
+                    // 블록스테이트/모델/텍스처 해석 및 로그 출력 + 엔티티 머티리얼 텍스처 적용
                     if (item.blockstatePath) {
-                        window.ipcApi.getAssetContent(item.blockstatePath)
-                            .then(result => {
-                                if (result.success) {
-                                    try {
-                                        // Electron IPC returns a Buffer/Uint8Array. Ensure proper string conversion.
-                                        const decoder = new TextDecoder('utf-8');
-                                        const jsonText = (result.content && typeof result.content === 'object' && 'buffer' in result.content)
-                                            ? decoder.decode(result.content)
-                                            : (result.content?.toString ? result.content.toString('utf-8') : String(result.content));
-                                        const blockstateData = JSON.parse(jsonText);
-                                        console.log(`[Debug] Loaded blockstate for ${item.name} (${item.blockstatePath}):`, blockstateData);
-                                        // 여기서 blockstate 데이터를 활용하여 블록 모델을 설정할 수 있습니다 (예시로 색상 변경)
-                                        material.color.setHex(0x8B4513); // 브라운 색상으로 변경 (예시)
-                                    } catch (parseError) {
-                                        console.warn(`[Debug] Failed to parse blockstate JSON for ${item.name}:`, parseError);
-                                    }
-                                } else {
-                                    console.warn(`[Debug] Failed to load blockstate for ${item.name}:`, result.error);
-                                }
-                            })
-                            .catch(error => {
-                                console.error(`[Debug] Error loading blockstate for ${item.name}:`, error);
-                            });
+                        processBlockDisplayAssets(item, cube);
                     }
 
                     loadedObjectGroup.add(cube);

@@ -124,8 +124,10 @@ function processNodesAndFlatten(nodes, parentTransform, renderList) {
 
             // isBlockDisplay일 경우 blockstate JSON 파일 처리 로직 추가
             if (node.isBlockDisplay && node.name) {
-                const baseName = node.name.split('[')[0].toLowerCase(); // [ 이전 부분만 사용
-                const blockstatePath = `assets/minecraft/blockstates/${baseName}.json`;
+                const beforeBracket = node.name.split('[')[0].toLowerCase(); // [ 이전 부분만 사용
+                const namePath = beforeBracket.includes(':') ? beforeBracket.split(':', 2)[1] : beforeBracket;
+                const ns = 'minecraft'; // 사용자 요구: ns는 minecraft 고정
+                const blockstatePath = `assets/${ns}/blockstates/${namePath}.json`;
                 console.log(`✅ 콘솔 접근 성공: blockstatePath = ${blockstatePath}`);
                 // 메인 스레드에서 에셋을 요청할 수 있도록 경로를 전달합니다.
                 renderItem.blockstatePath = blockstatePath;
