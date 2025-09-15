@@ -18,7 +18,53 @@ const textureCache = new Map();
 // --- 최적화: 지오메트리 미리 생성 ---
 let headGeometries = null;
 
-// ---- Blockstate/Model/Texture resolve helpers ----
+/*블록디스플레이 시작 */
+
+// Crop any block texture to the first 16x16 tile (e.g., when a texture is 16x64 with repeated 16x16 frames)
+function cropTextureToFirst16(tex) {
+    try {
+        const img = tex && tex.image;
+        const w = img && img.width;
+        const h = img && img.height;
+        // If already 16x16, just enforce pixel-art settings and return
+        if (w === 16 && h === 16) {
+            tex.magFilter = THREE.NearestFilter;
+            tex.minFilter = THREE.NearestFilter;
+            tex.generateMipmaps = false;
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.needsUpdate = true;
+            return tex;
+        }
+        // Create a 16x16 canvas and draw the top-left tile without smoothing
+        const canvas = document.createElement('canvas');
+        canvas.width = 16;
+        canvas.height = 16;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+            ctx.imageSmoothingEnabled = false;
+            if (img && w && h) {
+                // Copy the first 16x16 region
+                ctx.drawImage(img, 0, 0, 16, 16, 0, 0, 16, 16);
+            }
+        }
+        const newTex = new THREE.Texture(canvas);
+        newTex.magFilter = THREE.NearestFilter;
+        newTex.minFilter = THREE.NearestFilter;
+        newTex.generateMipmaps = false;
+        newTex.colorSpace = THREE.SRGBColorSpace;
+        newTex.needsUpdate = true;
+        return newTex;
+    } catch (e) {
+        if (tex) {
+            tex.magFilter = THREE.NearestFilter;
+            tex.minFilter = THREE.NearestFilter;
+            tex.generateMipmaps = false;
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.needsUpdate = true;
+        }
+        return tex;
+    }
+}
 
 function decodeIpcContentToString(content) {
     try {
@@ -144,20 +190,34 @@ function matchVariantKey(variantKey, props) {
 }
 
 function whenMatches(when, props) {
-    // when can be {prop: value|[values], ...} or { OR: [ ... ] } in some packs; we support basic object
+    // Supports vanilla multipart "when" semantics:
+    // - Simple object: {prop: value | [values], ...} -> all must match (AND)
+    // - { OR: [ obj1, obj2, ... ] } -> any matches
+    // - { AND: [ obj1, obj2, ... ] } -> all match
+    // Also supports a top-level array as an OR of objects for convenience.
     if (!when) return true;
-    // If when has 'OR' array (non-standard in vanilla, but used sometimes), support a simple any-match
+    // Treat array as OR of subconditions
     if (Array.isArray(when)) {
-        // Some syntaxes use array directly as OR of objects
         return when.some(w => whenMatches(w, props));
     }
     if (typeof when === 'object') {
-        // Multi-condition AND
-        for (const [k, v] of Object.entries(when)) {
-            if (Array.isArray(v)) {
-                if (!v.includes(props[k])) return false;
-            } else {
-                if ((props[k] || '') !== v) return false;
+        // Handle explicit OR / AND keys if present
+        if (Array.isArray(when.OR)) {
+            return when.OR.some(w => whenMatches(w, props));
+        }
+        if (Array.isArray(when.AND)) {
+            return when.AND.every(w => whenMatches(w, props));
+        }
+        // Default: all entries must match
+        for (const [key, value] of Object.entries(when)) {
+            // Skip logical keys already handled above
+            if (key === 'OR' || key === 'AND') continue;
+
+            const propValue = props[key] || 'false'; // Treat missing prop as "false"
+            const conditionValues = String(value).split('|');
+
+            if (!conditionValues.includes(propValue)) {
+                return false;
             }
         }
         return true;
@@ -181,96 +241,390 @@ async function processBlockDisplayAssets(item, mesh) {
     try {
         const blockstate = await readJsonAsset(item.blockstatePath);
         const { props } = blockNameToBaseAndProps(item.name);
+        const modelCache = new Map();
 
-        // Collect candidate models from variants or multipart
-        const modelIds = [];
+        let modelsToBuild = [];
+
+        // 1. Determine models from 'variants' or 'multipart'
         if (blockstate.variants) {
-            // Find best-matching key
-            // Try exact matches; if none, try empty key ""
             const entries = Object.entries(blockstate.variants);
-            // Prefer keys with more conditions that match
-            let best = null;
-            for (const [key, val] of entries) {
+            let bestMatch = null;
+            for (const [key, value] of entries) {
                 if (matchVariantKey(key, props)) {
-                    const weight = key.split(',').filter(Boolean).length; // heuristic
-                    if (!best || weight > best.weight) best = { key, val, weight };
+                    const specificity = key.split(',').filter(Boolean).length;
+                    if (!bestMatch || specificity > bestMatch.specificity) {
+                        bestMatch = { value, specificity };
+                    }
                 }
             }
-            const picked = best ? best.val : blockstate.variants[''];
+            
+            const picked = bestMatch ? bestMatch.value : blockstate.variants[''];
             if (picked) {
-                if (Array.isArray(picked)) {
-                    // Weighted list; pick the first for now
-                    if (picked[0]?.model) modelIds.push(picked[0].model);
-                } else if (picked.model) {
-                    modelIds.push(picked.model);
+                const applyList = Array.isArray(picked) ? picked : [picked];
+                // Per user request, ignore weight and pick the first model if multiple are present.
+                if (applyList.length > 0) {
+                    modelsToBuild.push(applyList[0]);
                 }
             }
+
         } else if (blockstate.multipart) {
             for (const part of blockstate.multipart) {
                 if (!part) continue;
                 if (!part.when || whenMatches(part.when, props)) {
-                    const apply = part.apply;
-                    if (Array.isArray(apply)) {
-                        for (const a of apply) if (a?.model) modelIds.push(a.model);
-                    } else if (apply?.model) {
-                        modelIds.push(apply.model);
+                    const applyList = Array.isArray(part.apply) ? part.apply : [part.apply];
+                    // Per user request, ignore weight and pick the first model.
+                    if (applyList.length > 0) {
+                        modelsToBuild.push(applyList[0]);
                     }
                 }
             }
         }
 
-        if (modelIds.length === 0) {
-            //console.warn(`[Blockstate] No model resolved for ${item.name} (${item.blockstatePath})`);
+        if (modelsToBuild.length === 0) {
+            console.warn(`[Block] No matching model found for ${item.name} with props`, props);
             return;
         }
 
-        // Resolve models and their textures
-        const modelCache = new Map();
-        for (const modelId of modelIds) {
-            const resolved = await resolveModelTree(modelId, modelCache);
-            if (!resolved) continue;
-            const faceRefs = gatherFacesTextureRefs(resolved.elements);
-            const concreteTextureIds = [];
-            for (const ref of faceRefs) {
-                const tid = resolveTextureRef(ref, resolved.textures);
-                if (tid) concreteTextureIds.push(tid);
-            }
-            // Deduplicate and convert to asset paths
-            const texAssetPaths = [...new Set(concreteTextureIds)].map(textureIdToAssetPath);
-            //console.log(`[Model] ${item.name} uses model '${modelId}' with textures:`, texAssetPaths);
+        // 2. Build the final group from the collected models
+        const finalGroup = new THREE.Group();
+        for (const apply of modelsToBuild) {
+            if (!apply?.model) continue;
 
-            // Optionally, load the first texture and apply to the mesh with entity material
-            if (texAssetPaths.length > 0) {
-                try {
-                    const texResult = await window.ipcApi.getAssetContent(texAssetPaths[0]);
-                    if (texResult.success) {
-                        const blob = new Blob([texResult.content], { type: 'image/png' });
-                        const url = URL.createObjectURL(blob);
-                        const loader = new THREE.TextureLoader();
-                        loader.load(url, (tex) => {
-                            tex.magFilter = THREE.NearestFilter;
-                            tex.minFilter = THREE.NearestFilter;
-                            tex.colorSpace = THREE.SRGBColorSpace;
-                            const matData = createEntityMaterial(tex);
-                            // keep basic flags similar to item display setup
-                            matData.material.toneMapped = false;
-                            mesh.material = matData.material;
-                            mesh.material.needsUpdate = true;
-                            // cleanup temp url
-                            URL.revokeObjectURL(url);
-                        });
-                    } else {
-                        console.warn(`[Texture] Failed to load ${texAssetPaths[0]}: ${texResult.error}`);
-                    }
-                } catch (e) {
-                    console.warn(`[Texture] Error while loading ${texAssetPaths[0]}:`, e);
-                }
+            const resolved = await resolveModelTree(apply.model, modelCache);
+            if (!resolved || !resolved.elements) continue;
+
+            const modelGroup = await buildBlockModelGroup(resolved, { 
+                uvlock: !!apply.uvlock, 
+                xRot: apply.x || 0, 
+                yRot: apply.y || 0 
+            });
+
+            if (modelGroup) {
+                applyBlockstateRotation(modelGroup, apply.x || 0, apply.y || 0);
+                finalGroup.add(modelGroup);
             }
         }
+
+        // 3. Replace placeholder mesh with the new group
+        if (finalGroup.children.length > 0) {
+            finalGroup.matrixAutoUpdate = false;
+            finalGroup.matrix.copy(mesh.matrix);
+            finalGroup.castShadow = true;
+            finalGroup.receiveShadow = true;
+            
+            const parent = mesh.parent;
+            if (parent) {
+                parent.add(finalGroup);
+                parent.remove(mesh);
+                mesh.geometry.dispose();
+                if(mesh.material.map) mesh.material.map.dispose();
+                mesh.material.dispose();
+            }
+        }
+
     } catch (e) {
         console.warn(`[Block] Failed to process block display assets for ${item.name}:`, e);
     }
 }
+
+function applyBlockstateRotation(group, rotX = 0, rotY = 0) {
+    if (rotX === 0 && rotY === 0) return;
+
+    const pivot = new THREE.Vector3(0.5, 0.5, 0.5);
+    const t1 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
+    const t2 = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
+    // Minecraft's Y-axis rotation is clockwise, while Three.js's is counter-clockwise.
+    // Negating the angle aligns them.
+    const rx = new THREE.Matrix4().makeRotationX(THREE.MathUtils.degToRad(rotX));
+    const ry = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(-rotY));
+    
+    // Apply Y then X, which is standard for Minecraft
+    const r = new THREE.Matrix4().multiply(ry).multiply(rx);
+    const m = new THREE.Matrix4().multiply(t2).multiply(r).multiply(t1);
+    
+    group.updateMatrix();
+    group.applyMatrix4(m);
+}
+
+function uvRotated(uv, rotation) {
+    // uv: [[u0,v0],[u1,v1],[u2,v2],[u3,v3]] in TL,TR,BR,BL order baseline; rotation in degrees 0/90/180/270 CW
+    const r = ((rotation % 360) + 360) % 360;
+    if (r === 0) return uv;
+    if (r === 90) return [uv[3], uv[0], uv[1], uv[2]];
+    if (r === 180) return [uv[2], uv[3], uv[0], uv[1]];
+    if (r === 270) return [uv[1], uv[2], uv[3], uv[0]];
+    return uv;
+}
+
+// --- Minecraft vs Three.js UV alignment helpers ---
+// Some Minecraft block faces may look rotated/flipped when compared to a default Three.js cube UV expectation.
+// You can control each face below without touching the model building logic.
+// - rot: additional rotation in degrees (0, 90, 180, 270) applied AFTER model/uvlock rotations
+// - flipU: swaps left/right on the face UVs
+// - flipV: swaps top/bottom on the face UVs
+// Tweak these if you find a face looking mirrored or rotated compared to vanilla.
+const FACE_UV_ADJUST = {
+    north: { rot: 0, flipU: false, flipV: false },
+    south: { rot: 0, flipU: false, flipV: false },
+    west:  { rot: 0, flipU: false, flipV: false },
+    east:  { rot: 0, flipU: false, flipV: false },
+    up:    { rot: 0, flipU: false, flipV: false },
+    down:  { rot: 0, flipU: false, flipV: false },
+};
+
+function flipUCorners(c) {
+    // TL,TR,BR,BL -> TR,TL,BL,BR
+    return [c[1], c[0], c[3], c[2]];
+}
+
+function flipVCorners(c) {
+    // TL,TR,BR,BL -> BL,BR,TR,TL
+    return [c[3], c[2], c[1], c[0]];
+}
+
+function pushQuad(buff, a, b, c, d, n, uvTL, uvTR, uvBR, uvBL) {
+    const base = buff.positions.length / 3;
+    buff.positions.push(
+        a.x, a.y, a.z,
+        b.x, b.y, b.z,
+        c.x, c.y, c.z,
+        d.x, d.y, d.z
+    );
+    buff.normals.push(
+        n.x, n.y, n.z,
+        n.x, n.y, n.z,
+        n.x, n.y, n.z,
+        n.x, n.y, n.z
+    );
+    buff.uvs.push(
+        uvTL[0], uvTL[1],
+        uvTR[0], uvTR[1],
+        uvBR[0], uvBR[1],
+        uvBL[0], uvBL[1]
+    );
+    buff.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+}
+
+function getFaceVertices(dir, from, to) {
+    const x1 = from[0] / 16, y1 = from[1] / 16, z1 = from[2] / 16;
+    const x2 = to[0] / 16,   y2 = to[1] / 16,   z2 = to[2] / 16;
+    switch (dir) {
+        case 'north': // -Z
+            return {
+                a: new THREE.Vector3(x1, y2, z1),
+                b: new THREE.Vector3(x2, y2, z1),
+                c: new THREE.Vector3(x2, y1, z1),
+                d: new THREE.Vector3(x1, y1, z1),
+                n: new THREE.Vector3(0, 0, -1)
+            };
+        case 'south': // +Z
+            return {
+                a: new THREE.Vector3(x2, y2, z2),
+                b: new THREE.Vector3(x1, y2, z2),
+                c: new THREE.Vector3(x1, y1, z2),
+                d: new THREE.Vector3(x2, y1, z2),
+                n: new THREE.Vector3(0, 0, 1)
+            };
+        case 'west': // -X
+            return {
+                a: new THREE.Vector3(x1, y2, z2),
+                b: new THREE.Vector3(x1, y2, z1),
+                c: new THREE.Vector3(x1, y1, z1),
+                d: new THREE.Vector3(x1, y1, z2),
+                n: new THREE.Vector3(-1, 0, 0)
+            };
+        case 'east': // +X
+            return {
+                a: new THREE.Vector3(x2, y2, z1),
+                b: new THREE.Vector3(x2, y2, z2),
+                c: new THREE.Vector3(x2, y1, z2),
+                d: new THREE.Vector3(x2, y1, z1),
+                n: new THREE.Vector3(1, 0, 0)
+            };
+        case 'up': // +Y
+            return {
+                a: new THREE.Vector3(x1, y2, z1),
+                b: new THREE.Vector3(x1, y2, z2),
+                c: new THREE.Vector3(x2, y2, z2),
+                d: new THREE.Vector3(x2, y2, z1),
+                n: new THREE.Vector3(0, 1, 0)
+            };
+        case 'down': // -Y
+            return {
+                a: new THREE.Vector3(x2, y1, z1),
+                b: new THREE.Vector3(x2, y1, z2),
+                c: new THREE.Vector3(x1, y1, z2),
+                d: new THREE.Vector3(x1, y1, z1),
+                n: new THREE.Vector3(0, -1, 0)
+            };
+    }
+    return null;
+}
+
+async function buildBlockModelGroup(resolved, opts = undefined) {
+    const elements = resolved.elements;
+    if (!elements || elements.length === 0) return null;
+
+    // buffers per textureAssetPath
+    const buffers = new Map();
+    const addBuffer = (texPath) => {
+        if (!buffers.has(texPath)) buffers.set(texPath, { positions: [], normals: [], uvs: [], indices: [] });
+        return buffers.get(texPath);
+    };
+    const usedTextures = new Set();
+
+    for (const el of elements) {
+        const faces = el.faces || {};
+        const from = el.from || [0,0,0];
+        const to = el.to || [16,16,16];
+        const rot = el.rotation || null;
+        const hasRot = rot && typeof rot.angle === 'number' && rot.angle !== 0 && typeof rot.axis === 'string' && Array.isArray(rot.origin);
+        const rescale = hasRot && rot.rescale === true;
+        const pivot = hasRot ? new THREE.Vector3(rot.origin[0]/16, rot.origin[1]/16, rot.origin[2]/16) : null;
+        const angleRad = hasRot ? (rot.angle * Math.PI) / 180 : 0;
+        const rotMat = new THREE.Matrix4();
+        const rotOnly = new THREE.Matrix4();
+        const tNeg = new THREE.Matrix4();
+        const tPos = new THREE.Matrix4();
+        if (hasRot) {
+            switch (rot.axis) {
+                case 'x': rotOnly.makeRotationX(angleRad); break;
+                case 'y': rotOnly.makeRotationY(angleRad); break;
+                case 'z': rotOnly.makeRotationZ(angleRad); break;
+                default: rotOnly.identity(); break;
+            }
+            tNeg.makeTranslation(-pivot.x, -pivot.y, -pivot.z);
+            tPos.makeTranslation(pivot.x, pivot.y, pivot.z);
+
+            rotMat.copy(tPos).multiply(rotOnly);
+
+            if (rescale) {
+                const scaleFactor = 1.0 / Math.cos(angleRad);
+                const scaleMat = new THREE.Matrix4();
+                if (rot.axis === 'x') {
+                    scaleMat.makeScale(1, scaleFactor, scaleFactor);
+                } else if (rot.axis === 'y') {
+                    scaleMat.makeScale(scaleFactor, 1, scaleFactor);
+                } else if (rot.axis === 'z') {
+                    scaleMat.makeScale(scaleFactor, scaleFactor, 1);
+                }
+                rotMat.multiply(scaleMat);
+            }
+            
+            rotMat.multiply(tNeg);
+        } else {
+            rotOnly.identity();
+            rotMat.identity();
+        }
+        for (const dir of ['north','south','west','east','up','down']) {
+            const face = faces[dir];
+            if (!face || !face.texture) continue;
+            const texId = resolveTextureRef(face.texture, resolved.textures);
+            if (!texId) continue;
+            const texAssetPath = textureIdToAssetPath(texId);
+            usedTextures.add(texAssetPath);
+            const buff = addBuffer(texAssetPath);
+            const v = getFaceVertices(dir, from, to);
+            if (!v) continue;
+
+            // Apply element rotation to vertices and normal
+            if (hasRot) {
+                v.a.applyMatrix4(rotMat);
+                v.b.applyMatrix4(rotMat);
+                v.c.applyMatrix4(rotMat);
+                v.d.applyMatrix4(rotMat);
+                const n3 = new THREE.Matrix3().setFromMatrix4(rotOnly);
+                v.n.applyMatrix3(n3).normalize();
+            }
+
+            const uv = face.uv || [0,0,16,16];
+            const u0 = uv[0] / 16, v0 = 1 - uv[1] / 16;
+            const u1 = uv[2] / 16, v1 = 1 - uv[3] / 16;
+            // Baseline TL,TR,BR,BL matching push order
+            let corners = [
+                [u0, v0], // TL
+                [u1, v0], // TR
+                [u1, v1], // BR
+                [u0, v1]  // BL
+            ];
+            // Compute extra UV rotation when uvlock is enabled in blockstate apply
+            let extraUVRot = 0;
+            if (opts && opts.uvlock) {
+                const yRotNorm = ((opts.yRot || 0) % 360 + 360) % 360;
+                const xRotNorm = ((opts.xRot || 0) % 360 + 360) % 360;
+                // When rotating around Y, rotate UVs on north/south/east/west faces to keep texture locked to world
+                if (dir === 'north' || dir === 'south' || dir === 'east' || dir === 'west') extraUVRot = (extraUVRot + yRotNorm) % 360;
+                // When rotating around X, rotate UVs on up/down faces to keep texture locked to world
+                if (dir === 'up' || dir === 'down') extraUVRot = (extraUVRot + xRotNorm) % 360;
+            }
+            const faceRot = ((face.rotation || 0) + extraUVRot) % 360;
+            corners = uvRotated(corners, faceRot);
+
+            // Optional per-face UV corrections to reconcile Minecraft vs Three.js expectations
+            const adj = FACE_UV_ADJUST[dir];
+            if (adj) {
+                if (adj.rot) corners = uvRotated(corners, adj.rot);
+                if (adj.flipU) corners = flipUCorners(corners);
+                if (adj.flipV) corners = flipVCorners(corners);
+            }
+
+            pushQuad(buff, v.a, v.b, v.c, v.d, v.n, corners[0], corners[1], corners[2], corners[3]);
+        }
+    }
+
+    const group = new THREE.Group();
+    // build meshes per texture and start async texture loading to swap materials
+    for (const [texAssetPath, buff] of buffers.entries()) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(buff.positions), 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(buff.normals), 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(buff.uvs), 2));
+        geom.setIndex(buff.indices);
+        geom.computeBoundingBox();
+        geom.computeBoundingSphere();
+
+        const placeholderTex = new THREE.DataTexture(new Uint8Array([255,255,255,255]), 1, 1);
+        placeholderTex.needsUpdate = true;
+        const { material } = createEntityMaterial(placeholderTex);
+        material.toneMapped = false;
+
+        const mesh = new THREE.Mesh(geom, material);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        group.add(mesh);
+
+        // async load actual texture and replace material (crop to 16x16 if needed)
+            (async () => {
+                try {
+                    const texResult = await window.ipcApi.getAssetContent(texAssetPath);
+                    if (!texResult.success) {
+                        console.warn(`[Texture] Failed to load ${texAssetPath}: ${texResult.error}`);
+                        return;
+                    }
+                    const blob = new Blob([texResult.content], { type: 'image/png' });
+                    const url = URL.createObjectURL(blob);
+                    const loader = new THREE.TextureLoader();
+                    loader.load(url, (tex) => {
+                        const tex16 = cropTextureToFirst16(tex);
+                        const matData = createEntityMaterial(tex16);
+                        matData.material.toneMapped = false;
+                        mesh.material = matData.material;
+                        mesh.material.needsUpdate = true;
+                        URL.revokeObjectURL(url);
+                        if (tex16 !== tex) {
+                            tex.dispose();
+                        }
+                    });
+                } catch (e) {
+                    console.warn(`[Texture] Error while loading ${texAssetPath}:`, e);
+                }
+            })();
+    }
+
+    return group;
+}
+
+/*블록디스플레이 끝 */
 
 /**
  * 주의: BoxGeometry는 인덱스가 있는 BufferGeometry를 반환합니다.
