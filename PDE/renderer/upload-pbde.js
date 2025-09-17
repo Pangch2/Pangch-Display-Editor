@@ -43,8 +43,10 @@ function cropTextureToFirst16(tex) {
         if (ctx) {
             ctx.imageSmoothingEnabled = false;
             if (img && w && h) {
-                // Copy the first 16x16 region
-                ctx.drawImage(img, 0, 0, 16, 16, 0, 0, 16, 16);
+                // Copy the source image (up to 16x16) without stretching
+                const sWidth = Math.min(w || 0, 16);
+                const sHeight = Math.min(h || 0, 16);
+                ctx.drawImage(img, 0, 0, sWidth, sHeight, 0, 0, sWidth, sHeight);
             }
         }
         const newTex = new THREE.Texture(canvas);
@@ -364,12 +366,15 @@ function uvRotated(uv, rotation) {
 // - flipV: swaps top/bottom on the face UVs
 // Tweak these if you find a face looking mirrored or rotated compared to vanilla.
 const FACE_UV_ADJUST = {
-    north: { rot: 0, flipU: false, flipV: false },
-    south: { rot: 0, flipU: false, flipV: false },
-    west:  { rot: 0, flipU: false, flipV: false },
-    east:  { rot: 0, flipU: false, flipV: false },
-    up:    { rot: 0, flipU: false, flipV: false },
-    down:  { rot: 0, flipU: false, flipV: false },
+    // Front/back
+    north: { rot: 180,   flipU: false, flipV: true },//west
+    south: { rot: 0,   flipU: true,  flipV: false },//east
+    // Left/right
+    west:  { rot: 0,   flipU: true,  flipV: false },//south
+    east:  { rot: 0,   flipU: true, flipV: false },//north
+    // Top/bottom: swap U/V; adjust V so it increases southwards like MC
+    up:    { rot: 90,  flipU: true, flipV: false  },//up
+    down:  { rot: 90, flipU: false, flipV: true  },//down
 };
 
 function flipUCorners(c) {
@@ -527,6 +532,8 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
             const v = getFaceVertices(dir, from, to);
             if (!v) continue;
 
+            let effectiveDir = dir;
+
             // Apply element rotation to vertices and normal
             if (hasRot) {
                 v.a.applyMatrix4(rotMat);
@@ -535,33 +542,108 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
                 v.d.applyMatrix4(rotMat);
                 const n3 = new THREE.Matrix3().setFromMatrix4(rotOnly);
                 v.n.applyMatrix3(n3).normalize();
+
+                const { x, y, z } = v.n;
+                if      (Math.abs(x) > 0.99) effectiveDir = x > 0 ? 'east' : 'west';
+                else if (Math.abs(y) > 0.99) effectiveDir = y > 0 ? 'up' : 'down';
+                else if (Math.abs(z) > 0.99) effectiveDir = z > 0 ? 'south' : 'north';
             }
 
-            const uv = face.uv || [0,0,16,16];
+            let faceUV = face.uv;
+            if (!faceUV) {
+                switch (dir) {
+                    case 'north':
+                    case 'south':
+                        faceUV = [from[0], from[1], to[0], to[1]];
+                        break;
+                    case 'west':
+                    case 'east':
+                        faceUV = [from[2], from[1], to[2], to[1]];
+                        break;
+                    case 'up':
+                    case 'down':
+                        faceUV = [from[0], from[2], to[0], to[2]];
+                        break;
+                    default:
+                        faceUV = [0, 0, 16, 16];
+                        break;
+                }
+            }
+
+            // Compute uvlock-driven extra rotation once
+            let extraUVRot = 0;
+            if (opts && opts.uvlock) {
+                const yRotNorm = ((opts.yRot || 0) % 360 + 360) % 360;
+                const xRotNorm = ((opts.xRot || 0) % 360 + 360) % 360;
+                if (dir === 'north' || dir === 'south' || dir === 'east' || dir === 'west') {
+                    extraUVRot = Math.round(xRotNorm / 90) * 90;
+                }
+                if (dir === 'up' || dir === 'down') {
+                    extraUVRot = -Math.round(yRotNorm / 90) * 90;
+                }
+            }
+
+            // On up/down faces, adjust UV rect to match the geometry's texel extents based on final rotation.
+            // Snap target sizes to even texel counts (2-unit steps) and anchor from the min edge (cut "backwards").
+            if (dir === 'up' || dir === 'down') {
+                const preAdjRot = (((face.rotation || 0) + extraUVRot) % 360 + 360) % 360;
+                const geomW = Math.abs(to[0] - from[0]); // X extent in texels
+                const geomH = Math.abs(to[2] - from[2]); // Z extent in texels
+                let ux0 = faceUV[0], vy0 = faceUV[1], ux1 = faceUV[2], vy1 = faceUV[3];
+                const uw = Math.abs(ux1 - ux0);
+                const vh = Math.abs(vy1 - vy0);
+
+                // When rotated 0/180: U maps to X (geomW), V maps to Z (geomH)
+                // When rotated 90/270: U maps to Z (geomH), V maps to X (geomW)
+                let uTarget = (preAdjRot === 0 || preAdjRot === 180) ? geomW : geomH;
+                let vTarget = (preAdjRot === 0 || preAdjRot === 180) ? geomH : geomW;
+
+                // Snap to even texel counts (2-unit steps)
+                const snapEven = (t) => Math.max(0, Math.min(16, Math.round(t / 2) * 2));
+                uTarget = snapEven(uTarget);
+                vTarget = snapEven(vTarget);
+
+                if (Math.abs(uw - uTarget) > 1e-6 || Math.abs(vh - vTarget) > 1e-6) {
+                    // Anchor each axis to its min edge and extend in the original orientation
+                    const uAsc = ux1 >= ux0; // orientation along U
+                    const vAsc = vy1 >= vy0; // orientation along V
+                    const uMin = Math.min(ux0, ux1);
+                    const vMin = Math.min(vy0, vy1);
+
+                    if (uAsc) { ux0 = uMin; ux1 = uMin + uTarget; }
+                    else      { ux1 = uMin; ux0 = uMin + uTarget; }
+
+                    if (vAsc) { vy0 = vMin; vy1 = vMin + vTarget; }
+                    else      { vy1 = vMin; vy0 = vMin + vTarget; }
+
+                    // Shift U into [0,16] without changing size
+                    let uLo = Math.min(ux0, ux1), uHi = Math.max(ux0, ux1);
+                    if (uLo < 0) { const s = -uLo; ux0 += s; ux1 += s; uLo = 0; uHi += s; }
+                    if (uHi > 16) { const s = uHi - 16; ux0 -= s; ux1 -= s; }
+
+                    // Shift V into [0,16] without changing size
+                    let vLo = Math.min(vy0, vy1), vHi = Math.max(vy0, vy1);
+                    if (vLo < 0) { const s = -vLo; vy0 += s; vy1 += s; vLo = 0; vHi += s; }
+                    if (vHi > 16) { const s = vHi - 16; vy0 -= s; vy1 -= s; }
+
+                    faceUV = [ux0, vy0, ux1, vy1];
+                }
+            }
+
+            const uv = faceUV;
             const u0 = uv[0] / 16, v0 = 1 - uv[1] / 16;
             const u1 = uv[2] / 16, v1 = 1 - uv[3] / 16;
-            // Baseline TL,TR,BR,BL matching push order
             let corners = [
                 [u0, v0], // TL
                 [u1, v0], // TR
                 [u1, v1], // BR
                 [u0, v1]  // BL
             ];
-            // Compute extra UV rotation when uvlock is enabled in blockstate apply
-            let extraUVRot = 0;
-            if (opts && opts.uvlock) {
-                const yRotNorm = ((opts.yRot || 0) % 360 + 360) % 360;
-                const xRotNorm = ((opts.xRot || 0) % 360 + 360) % 360;
-                // When rotating around Y, rotate UVs on north/south/east/west faces to keep texture locked to world
-                if (dir === 'north' || dir === 'south' || dir === 'east' || dir === 'west') extraUVRot = (extraUVRot + yRotNorm) % 360;
-                // When rotating around X, rotate UVs on up/down faces to keep texture locked to world
-                if (dir === 'up' || dir === 'down') extraUVRot = (extraUVRot + xRotNorm) % 360;
-            }
+
             const faceRot = ((face.rotation || 0) + extraUVRot) % 360;
             corners = uvRotated(corners, faceRot);
 
-            // Optional per-face UV corrections to reconcile Minecraft vs Three.js expectations
-            const adj = FACE_UV_ADJUST[dir];
+            const adj = FACE_UV_ADJUST[effectiveDir];
             if (adj) {
                 if (adj.rot) corners = uvRotated(corners, adj.rot);
                 if (adj.flipU) corners = flipUCorners(corners);
