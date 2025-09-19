@@ -16,7 +16,7 @@
     "concurrently": "^9.2.1",
     "core-util-is": "^1.0.3",
     "cross-env": "^10.0.0",
-    "electron": "^38.1.1",
+    "electron": "^38.1.2",
     "electron-builder": "^26.0.12",
     "nodemon": "^3.1.10",
     "vite": "^7.1.5"

@@ -358,6 +358,24 @@ function uvRotated(uv, rotation) {
     return uv;
 }
 
+// Rotate UV corners around a pivot in normalized UV space (U right, V up)
+// degreesCW: rotation in degrees clockwise (matching Minecraft's notion)
+function rotateCornersAroundPivot(corners, degreesCW, pivotU = 0.5, pivotV = 0.5) {
+    const r = ((degreesCW % 360) + 360) % 360;
+    if (r === 0) return corners;
+    const rad = -r * Math.PI / 180; // negative for CW in standard math
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const rot = ([u, v]) => {
+        const du = u - pivotU;
+        const dv = v - pivotV;
+        const ru = pivotU + du * cos - dv * sin;
+        const rv = pivotV + du * sin + dv * cos;
+        return [ru, rv];
+    };
+    return [rot(corners[0]), rot(corners[1]), rot(corners[2]), rot(corners[3])];
+}
+
 // --- Minecraft vs Three.js UV alignment helpers ---
 // Some Minecraft block faces may look rotated/flipped when compared to a default Three.js cube UV expectation.
 // You can control each face below without touching the model building logic.
@@ -549,6 +567,7 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
                 else if (Math.abs(z) > 0.99) effectiveDir = z > 0 ? 'south' : 'north';
             }
 
+            const hasExplicitFaceUV = Array.isArray(face.uv) && face.uv.length === 4;
             let faceUV = face.uv;
             if (!faceUV) {
                 switch (dir) {
@@ -570,22 +589,25 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
                 }
             }
 
-            // Compute uvlock-driven extra rotation once
+            // Compute uvlock-driven extra rotation.
+            // Keep up/down behavior, and add an extra +90° CW for side faces when uvlock is true.
             let extraUVRot = 0;
             if (opts && opts.uvlock) {
                 const yRotNorm = ((opts.yRot || 0) % 360 + 360) % 360;
-                const xRotNorm = ((opts.xRot || 0) % 360 + 360) % 360;
-                if (dir === 'north' || dir === 'south' || dir === 'east' || dir === 'west') {
-                    extraUVRot = Math.round(xRotNorm / 90) * 90;
-                }
-                if (dir === 'up' || dir === 'down') {
-                    extraUVRot = -Math.round(yRotNorm / 90) * 90;
+                const step = Math.round(yRotNorm / 90) * 90;
+                if (dir === 'up') {
+                    extraUVRot = step;
+                } else if (dir === 'down') {
+                    extraUVRot = -step;
+                //} else if (dir === 'south' || dir === 'west' || dir === 'north' || dir === 'east') {
+                //    // Sides: align to world with -step, then rotate an extra +90° CW as requested
+                //    extraUVRot = -step + 90;
                 }
             }
 
             // On up/down faces, adjust UV rect to match the geometry's texel extents based on final rotation.
             // Snap target sizes to even texel counts (2-unit steps) and anchor from the min edge (cut "backwards").
-            if (dir === 'up' || dir === 'down') {
+            if ((dir === 'up' || dir === 'down') && !hasExplicitFaceUV) {
                 const preAdjRot = (((face.rotation || 0) + extraUVRot) % 360 + 360) % 360;
                 const geomW = Math.abs(to[0] - from[0]); // X extent in texels
                 const geomH = Math.abs(to[2] - from[2]); // Z extent in texels
@@ -640,8 +662,15 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
                 [u0, v1]  // BL
             ];
 
-            const faceRot = ((face.rotation || 0) + extraUVRot) % 360;
-            corners = uvRotated(corners, faceRot);
+            // Apply local face.rotation first (around its own rect center via index rotation)
+            const faceRotLocal = ((face.rotation || 0) % 360 + 360) % 360;
+            corners = uvRotated(corners, faceRotLocal);
+
+            // Apply uvlock-driven rotation around the entire 16x16 tile center so
+            // multiple UV islands on a plane rotate cohesively around the face center
+            if (extraUVRot) {
+                corners = rotateCornersAroundPivot(corners, extraUVRot, 0.5, 0.5);
+            }
 
             const adj = FACE_UV_ADJUST[effectiveDir];
             if (adj) {
