@@ -11,6 +11,8 @@ const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
 const CACHE_COMPLETE_FLAG = path.join(CACHE_DIR, '.cache-complete');
+const APP_ROOT = __dirname;
+const HARDCODED_DIR = path.join(APP_ROOT, 'hardcoded');
 
 function createWindow() {
   const iconPath = app.isPackaged
@@ -61,6 +63,23 @@ function createWindow() {
     }
   });
 
+  // Serve local hardcoded files from the packaged app directory
+  ipcMain.handle('get-hardcoded-content', async (event, relPath) => {
+    try {
+      const safeRel = relPath.replace(/\\/g, '/');
+      const fullPath = path.join(HARDCODED_DIR, safeRel);
+      const resolvedPath = path.resolve(fullPath);
+      if (!resolvedPath.startsWith(path.resolve(HARDCODED_DIR))) {
+        throw new Error('Access denied: Path is outside the hardcoded directory.');
+      }
+      const content = await fs.readFile(resolvedPath);
+      return { success: true, content };
+    } catch (error) {
+      console.error(`Failed to read hardcoded file '${relPath}':`, error.code || error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
   const requiredPrefixes = [
     'assets/minecraft/items/',
     'assets/minecraft/blockstates/',
@@ -69,6 +88,7 @@ function createWindow() {
     'assets/minecraft/textures/particle/',
     'assets/minecraft/textures/block/',
     'assets/minecraft/textures/font/',
+    'assets/minecraft/textures/entity/'
   ];
 
   ipcMain.handle('get-required-prefixes', () => {

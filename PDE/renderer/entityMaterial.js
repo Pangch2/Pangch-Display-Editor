@@ -1,11 +1,25 @@
 import * as THREE from 'three/webgpu';
 import * as TSL from 'three/tsl';
 
-export function createEntityMaterial(diffuseTex) {
+export function createEntityMaterial(diffuseTex, tintHex = 0xffffff) {
   const blockLightLevel = TSL.uniform(1.0);
   const skyLightLevel = TSL.uniform(1.0);
 
   const diffuseNode = TSL.texture(diffuseTex, TSL.uv());
+
+  // Apply optional tint as a constant multiplier. Incoming hex is in sRGB,
+  // so convert to linear before multiplying with the (linearized) sampled texture.
+  const srgbToLinear = (c) => {
+    const x = Math.min(1, Math.max(0, c));
+    return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+  };
+  const rS = ((tintHex >> 16) & 0xff) / 255;
+  const gS = ((tintHex >> 8) & 0xff) / 255;
+  const bS = (tintHex & 0xff) / 255;
+  const r = srgbToLinear(rS);
+  const g = srgbToLinear(gS);
+  const b = srgbToLinear(bS);
+  const tintVec = TSL.vec3(r, g, b);
 
   const lightDir0 = TSL.normalize(TSL.vec3(0.2, 1.0, -0.7));
   const lightDir1 = TSL.normalize(TSL.vec3(-0.2, 1.0, 0.7));
@@ -26,7 +40,10 @@ export function createEntityMaterial(diffuseTex) {
     TSL.float(0.25)
   );
 
-  const litColor = TSL.vec4(TSL.mul(TSL.mul(diffuseNode.xyz, lightAccum), lightMapColor), diffuseNode.w);
+  const litColor = TSL.vec4(
+    TSL.mul(TSL.mul(TSL.mul(diffuseNode.xyz, tintVec), lightAccum), lightMapColor),
+    diffuseNode.w
+  );
 
   const material = new THREE.MeshBasicNodeMaterial();
   material.colorNode = litColor;

@@ -24,6 +24,13 @@ contextBridge.exposeInMainWorld('ipcApi', {
     }
     return ipcRenderer.invoke('get-asset-content', assetPath);
   },
+  // Read static files bundled with the app under the hardcoded/ folder
+  getHardcodedContent: (relPath) => {
+    if (typeof relPath !== 'string') {
+      return Promise.reject(new TypeError('relPath must be a string.'));
+    }
+    return ipcRenderer.invoke('get-hardcoded-content', relPath);
+  },
   getLoadingIcon: () => ipcRenderer.invoke('get-loading-icon'),
   getRequiredPrefixes: () => ipcRenderer.invoke('get-required-prefixes'),
   // 리스너 정리 (메모리 누수 방지)

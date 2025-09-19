@@ -2,6 +2,7 @@ import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
 import * as THREE from 'three/webgpu';
 import PbdeWorker from './pbde-worker.js?worker&inline';
 import { createEntityMaterial } from './entityMaterial.js';
+import { getTextureColor } from './tintColor.js';
 
 
 let worker;
@@ -90,7 +91,11 @@ function decodeIpcContentToString(content) {
 }
 
 async function readJsonAsset(assetPath) {
-    const result = await window.ipcApi.getAssetContent(assetPath);
+    // Support reading from local hardcoded folder as well as cached assets
+    const isHardcoded = assetPath.startsWith('hardcoded/');
+    const result = isHardcoded
+        ? await window.ipcApi.getHardcodedContent(assetPath.replace(/^hardcoded\//, ''))
+        : await window.ipcApi.getAssetContent(assetPath);
     if (!result.success) throw new Error(`Asset read failed: ${assetPath}: ${result.error}`);
     const text = decodeIpcContentToString(result.content);
     return JSON.parse(text);
@@ -128,6 +133,24 @@ function textureIdToAssetPath(texId) {
     return `assets/${ns}/textures/${path}.png`;
 }
 
+// --- Hardcoded block/model helpers ---
+function isHardcodedKeywordPath(p) {
+    if (!p) return false;
+    return /(chest|conduit|shulker|bed)/i.test(p);
+}
+
+function isHardcodedModelId(modelId) {
+    const { path } = nsAndPathFromId(modelId);
+    // e.g., path like "block/chest", "block/black_bed", "block/shulker_box", "block/conduit"
+    return isHardcodedKeywordPath(path);
+}
+
+function modelIdToHardcodedPath(modelId) {
+    const { path } = nsAndPathFromId(modelId);
+    // Map model id to our local hardcoded models folder
+    return `hardcoded/models/${path}.json`;
+}
+
 function resolveTextureRef(value, textures, guard = 0) {
     // resolves "#key" chains to final "namespace:path" form
     if (!value) return null;
@@ -147,13 +170,24 @@ async function loadModelJson(assetPath) {
 
 async function resolveModelTree(modelId, cache = new Map()) {
     if (cache.has(modelId)) return cache.get(modelId);
-    const path = modelIdToAssetPath(modelId);
+    // Try hardcoded model first for targeted blocks, then fall back to default assets
+    const hardcodedFirst = isHardcodedModelId(modelId);
+    const assetsPath = modelIdToAssetPath(modelId);
+    const hardcodedPath = modelIdToHardcodedPath(modelId);
     let json;
     try {
-        json = await loadModelJson(path);
+        if (hardcodedFirst) {
+            try {
+                json = await loadModelJson(hardcodedPath);
+            } catch (_) {
+                json = await loadModelJson(assetsPath);
+            }
+        } else {
+            json = await loadModelJson(assetsPath);
+        }
     } catch (e) {
         // Some blockstates may point to missing models; report and continue
-        console.warn(`[Model] Missing or unreadable model ${modelId} at ${path}:`, e.message);
+        console.warn(`[Model] Missing or unreadable model ${modelId} at ${hardcodedFirst ? hardcodedPath : assetsPath}:`, e.message);
         cache.set(modelId, null);
         return null;
     }
@@ -241,8 +275,23 @@ function gatherFacesTextureRefs(elements) {
 
 async function processBlockDisplayAssets(item, mesh) {
     try {
-        const blockstate = await readJsonAsset(item.blockstatePath);
-        const { props } = blockNameToBaseAndProps(item.name);
+        // Decide whether this block should use hardcoded blockstate/model overrides
+        const { baseName, props } = blockNameToBaseAndProps(item.name);
+        const basePathOnly = baseName.includes(':') ? baseName.split(':', 2)[1] : baseName;
+        const isHardcoded = isHardcodedKeywordPath(basePathOnly);
+
+        // Prefer hardcoded blockstate if present; fall back to asset blockstate
+        let blockstate;
+        if (isHardcoded) {
+            const hardcodedStatePath = `hardcoded/blockstates/${basePathOnly}.json`;
+            try {
+                blockstate = await readJsonAsset(hardcodedStatePath);
+            } catch (_) {
+                blockstate = await readJsonAsset(item.blockstatePath);
+            }
+        } else {
+            blockstate = await readJsonAsset(item.blockstatePath);
+        }
         const modelCache = new Map();
 
         let modelsToBuild = [];
@@ -488,11 +537,13 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
     const elements = resolved.elements;
     if (!elements || elements.length === 0) return null;
 
-    // buffers per textureAssetPath
+    // buffers keyed by texture path and tint color so tints don't share materials inadvertently
+    // key format: `${texPath}|${tintHex.toString(16)}`
     const buffers = new Map();
-    const addBuffer = (texPath) => {
-        if (!buffers.has(texPath)) buffers.set(texPath, { positions: [], normals: [], uvs: [], indices: [] });
-        return buffers.get(texPath);
+    const addBuffer = (texPath, tintHex) => {
+        const key = `${texPath}|${tintHex >>> 0}`;
+        if (!buffers.has(key)) buffers.set(key, { positions: [], normals: [], uvs: [], indices: [], texPath, tintHex });
+        return buffers.get(key);
     };
     const usedTextures = new Set();
 
@@ -546,7 +597,20 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
             if (!texId) continue;
             const texAssetPath = textureIdToAssetPath(texId);
             usedTextures.add(texAssetPath);
-            const buff = addBuffer(texAssetPath);
+
+            // Compute tint color per face following Minecraft rules and provided helpers
+            // We try to use the most specific model id we have: resolved.id is like 'minecraft:block/xxx'
+            let tintHex = 0xffffff;
+            try {
+                const modelResLoc = (resolved && resolved.id) ? resolved.id.split(':').slice(1).join(':') : '';
+                // textureLayer isn't tracked per-face here; pass undefined. Use face.tintindex when present.
+                const ti = (typeof face.tintindex === 'number') ? face.tintindex : undefined;
+                tintHex = getTextureColor(modelResLoc, undefined, ti);
+            } catch (_) {
+                tintHex = 0xffffff;
+            }
+
+            const buff = addBuffer(texAssetPath, tintHex);
             const v = getFaceVertices(dir, from, to);
             if (!v) continue;
 
@@ -653,8 +717,13 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
             }
 
             const uv = faceUV;
-            const u0 = uv[0] / 16, v0 = 1 - uv[1] / 16;
-            const u1 = uv[2] / 16, v1 = 1 - uv[3] / 16;
+            // If the model supplies explicit UVs and declares texture_size, normalize by that.
+            // Otherwise, default to 16 like vanilla block models.
+            const texSize = (resolved.json && Array.isArray(resolved.json.texture_size)) ? resolved.json.texture_size : null;
+            const uvScaleU = (hasExplicitFaceUV && texSize) ? texSize[0] : 16;
+            const uvScaleV = (hasExplicitFaceUV && texSize) ? texSize[1] : 16;
+            const u0 = uv[0] / uvScaleU, v0 = 1 - uv[1] / uvScaleV;
+            const u1 = uv[2] / uvScaleU, v1 = 1 - uv[3] / uvScaleV;
             let corners = [
                 [u0, v0], // TL
                 [u1, v0], // TR
@@ -685,7 +754,7 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
 
     const group = new THREE.Group();
     // build meshes per texture and start async texture loading to swap materials
-    for (const [texAssetPath, buff] of buffers.entries()) {
+    for (const [, buff] of buffers.entries()) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(buff.positions), 3));
         geom.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(buff.normals), 3));
@@ -694,9 +763,16 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
         geom.computeBoundingBox();
         geom.computeBoundingSphere();
 
-        const placeholderTex = new THREE.DataTexture(new Uint8Array([255,255,255,255]), 1, 1);
-        placeholderTex.needsUpdate = true;
-        const { material } = createEntityMaterial(placeholderTex);
+    const placeholderTex = new THREE.DataTexture(new Uint8Array([255,255,255,255]), 1, 1);
+    // Keep pixel-perfect look even before real textures arrive
+    placeholderTex.magFilter = THREE.NearestFilter;
+    placeholderTex.minFilter = THREE.NearestFilter;
+    placeholderTex.generateMipmaps = false;
+    placeholderTex.colorSpace = THREE.SRGBColorSpace;
+    placeholderTex.wrapS = THREE.ClampToEdgeWrapping;
+    placeholderTex.wrapT = THREE.ClampToEdgeWrapping;
+    placeholderTex.needsUpdate = true;
+        const { material } = createEntityMaterial(placeholderTex, buff.tintHex ?? 0xffffff);
         material.toneMapped = false;
 
         const mesh = new THREE.Mesh(geom, material);
@@ -704,30 +780,42 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
         mesh.receiveShadow = true;
         group.add(mesh);
 
-        // async load actual texture and replace material (crop to 16x16 if needed)
+        // async load actual texture and replace material
             (async () => {
                 try {
-                    const texResult = await window.ipcApi.getAssetContent(texAssetPath);
+                    const texResult = await window.ipcApi.getAssetContent(buff.texPath);
                     if (!texResult.success) {
-                        console.warn(`[Texture] Failed to load ${texAssetPath}: ${texResult.error}`);
+                        console.warn(`[Texture] Failed to load ${buff.texPath}: ${texResult.error}`);
                         return;
                     }
                     const blob = new Blob([texResult.content], { type: 'image/png' });
                     const url = URL.createObjectURL(blob);
                     const loader = new THREE.TextureLoader();
                     loader.load(url, (tex) => {
-                        const tex16 = cropTextureToFirst16(tex);
-                        const matData = createEntityMaterial(tex16);
+                        // For entity textures (chest/bed/shulker/conduit), don't crop and force pixel-art sampling.
+                        const isEntityTex = buff.texPath.includes('/textures/entity/');
+                        if (isEntityTex) {
+                            tex.magFilter = THREE.NearestFilter;
+                            tex.minFilter = THREE.NearestFilter;
+                            tex.generateMipmaps = false;
+                            tex.anisotropy = 1;
+                            tex.colorSpace = THREE.SRGBColorSpace;
+                            tex.wrapS = THREE.ClampToEdgeWrapping;
+                            tex.wrapT = THREE.ClampToEdgeWrapping;
+                            tex.needsUpdate = true;
+                        }
+                        const finalTex = isEntityTex ? tex : cropTextureToFirst16(tex);
+                        const matData = createEntityMaterial(finalTex, buff.tintHex ?? 0xffffff);
                         matData.material.toneMapped = false;
                         mesh.material = matData.material;
                         mesh.material.needsUpdate = true;
                         URL.revokeObjectURL(url);
-                        if (tex16 !== tex) {
+                        if (finalTex !== tex) {
                             tex.dispose();
                         }
                     });
                 } catch (e) {
-                    console.warn(`[Texture] Error while loading ${texAssetPath}:`, e);
+                    console.warn(`[Texture] Error while loading ${buff.texPath}:`, e);
                 }
             })();
     }
