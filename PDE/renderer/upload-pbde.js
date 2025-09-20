@@ -420,8 +420,9 @@ function createBlockDisplayFromData(data, gen) {
         }
         pos.needsUpdate = true;
         if (nor) nor.needsUpdate = true;
-        // Bounding sphere stays roughly centered around block space
-        geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0.5, 0.5, 0.5), 0.9);
+        // Recompute accurate bounds for proper frustum culling of non-1x1 blocks (e.g., beds)
+        geom.computeBoundingBox();
+        geom.computeBoundingSphere();
     };
 
     // Collect and bake transforms across ALL models, then group by material
@@ -453,6 +454,9 @@ function createBlockDisplayFromData(data, gen) {
         if (mergedGeom && entry.geoms.length > 1) {
             for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
         }
+        // Ensure merged geometry has proper bounds
+        if (!mergedGeom.boundingBox) mergedGeom.computeBoundingBox();
+        if (!mergedGeom.boundingSphere) mergedGeom.computeBoundingSphere();
         const mesh = new THREE.Mesh(mergedGeom, sharedPlaceholderMaterial);
         mesh.castShadow = false;
         mesh.receiveShadow = false;
