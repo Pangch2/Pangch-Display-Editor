@@ -95,18 +95,244 @@ const loadedObjectGroup = new THREE.Group();
 const textureLoader = new THREE.TextureLoader();
 const textureCache = new Map();
 
+// --- Block texture/material caches (dedupe loads + reuse materials) ---
+const blockTextureCache = new Map(); // texPath -> THREE.Texture
+const blockTexturePromiseCache = new Map(); // texPath -> Promise<THREE.Texture>
+const blockMaterialCache = new Map(); // key: `${texPath}|${tintHex}` -> THREE.Material
+const blockMaterialPromiseCache = new Map(); // same key -> Promise<THREE.Material>
+// Reusable merged geometry cache: `${modelKey}|${texPath}|${tint}` -> BufferGeometry
+const blockMergedGeomCache = new Map();
+
+// Shared placeholder assets
+let sharedPlaceholderMaterial = null;
+
+// Limit concurrent texture decodes to avoid overwhelming the decoder/GC
+const MAX_TEXTURE_DECODE_CONCURRENCY = 8;
+let currentTextureSlots = 0;
+const textureSlotQueue = [];
+function acquireTextureSlot() {
+    if (currentTextureSlots < MAX_TEXTURE_DECODE_CONCURRENCY) {
+        currentTextureSlots++;
+        return Promise.resolve();
+    }
+    return new Promise(res => textureSlotQueue.push(res));
+}
+function releaseTextureSlot() {
+    const next = textureSlotQueue.shift();
+    if (next) {
+        next();
+    } else {
+        currentTextureSlots = Math.max(0, currentTextureSlots - 1);
+    }
+}
+
+// Load generation token to ignore late async results after reload
+let currentLoadGen = 0;
+
+function disposeTexture(tex) {
+    if (!tex) return;
+    try {
+        const img = tex.image || tex.source?.data;
+        if (img && typeof img.close === 'function') {
+            try { img.close(); } catch { /* ignore */ }
+        }
+    } catch { /* ignore */ }
+    try { tex.dispose(); } catch { /* ignore */ }
+}
+
+function ensureSharedPlaceholder() {
+    if (!sharedPlaceholderMaterial) {
+        // Lightweight placeholder material to avoid creating NodeMaterial per mesh before texture loads
+        sharedPlaceholderMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        sharedPlaceholderMaterial.toneMapped = false;
+        sharedPlaceholderMaterial.transparent = true;
+        sharedPlaceholderMaterial.alphaTest = 0.1;
+    }
+}
+
+function decodeIpcContentToUint8Array(content) {
+    try {
+        if (!content) return new Uint8Array();
+        if (typeof content === 'object' && content.type === 'Buffer' && Array.isArray(content.data)) {
+            return new Uint8Array(content.data);
+        }
+        if (content instanceof Uint8Array) return content;
+        if (ArrayBuffer.isView(content)) return new Uint8Array(content.buffer);
+        if (content instanceof ArrayBuffer) return new Uint8Array(content);
+        // Fallback: try toString and encode
+        const str = String(content);
+        const enc = new TextEncoder();
+        return enc.encode(str);
+    } catch {
+        return new Uint8Array();
+    }
+}
+
+async function loadBlockTexture(texPath, gen) {
+    // Deduplicate concurrent loads
+    if (blockTextureCache.has(texPath) && gen === currentLoadGen) return blockTextureCache.get(texPath);
+    const promiseKey = `${gen}|${texPath}`;
+    if (blockTexturePromiseCache.has(promiseKey)) return blockTexturePromiseCache.get(promiseKey);
+
+    const p = (async () => {
+        await acquireTextureSlot();
+        const texResult = await window.ipcApi.getAssetContent(texPath);
+        if (!texResult.success) throw new Error(`[Texture] Failed to load ${texPath}: ${texResult.error}`);
+        const bytes = decodeIpcContentToUint8Array(texResult.content);
+        const blob = new Blob([bytes], { type: 'image/png' });
+        // ImageBitmap decode is faster and off-main-thread where possible
+        try {
+            const imageBitmap = await createImageBitmap(blob);
+            let tex = new THREE.Texture(imageBitmap);
+            const isEntityTex = texPath.includes('/textures/entity/');
+            if (!isEntityTex) {
+                // Crop to 16x16 tile for block atlases with animation frames
+                const cropped = cropTextureToFirst16(tex);
+                if (cropped !== tex) {
+                    disposeTexture(tex);
+                    tex = cropped;
+                }
+            } else {
+                tex.magFilter = THREE.NearestFilter;
+                tex.minFilter = THREE.NearestFilter;
+                tex.generateMipmaps = false;
+                tex.anisotropy = 1;
+                tex.colorSpace = THREE.SRGBColorSpace;
+                tex.wrapS = THREE.ClampToEdgeWrapping;
+                tex.wrapT = THREE.ClampToEdgeWrapping;
+                tex.needsUpdate = true;
+            }
+            // If generation changed while loading, dispose and abort caching
+            if (gen !== currentLoadGen) {
+                disposeTexture(tex);
+                throw new Error('Stale generation');
+            }
+            blockTextureCache.set(texPath, tex);
+            return tex;
+        } finally {
+            releaseTextureSlot();
+        }
+    })();
+
+    blockTexturePromiseCache.set(promiseKey, p);
+    try {
+        const tex = await p;
+        return tex;
+    } finally {
+        blockTexturePromiseCache.delete(promiseKey);
+    }
+}
+
+async function getBlockMaterial(texPath, tintHex, gen) {
+    const key = `${texPath}|${(tintHex >>> 0)}`;
+    if (blockMaterialCache.has(key) && gen === currentLoadGen) return blockMaterialCache.get(key);
+    const promiseKey = `${gen}|${key}`;
+    if (blockMaterialPromiseCache.has(promiseKey)) return blockMaterialPromiseCache.get(promiseKey);
+
+    const p = (async () => {
+        const tex = await loadBlockTexture(texPath, gen);
+        const { material } = createEntityMaterial(tex, tintHex ?? 0xffffff);
+        material.toneMapped = false;
+        if (gen !== currentLoadGen) {
+            // Stale: dispose immediately (do not cache)
+            try { material.dispose(); } catch {}
+            throw new Error('Stale generation');
+        }
+        blockMaterialCache.set(key, material);
+        return material;
+    })();
+
+    blockMaterialPromiseCache.set(promiseKey, p);
+    try {
+        const m = await p;
+        return m;
+    } finally {
+        blockMaterialPromiseCache.delete(promiseKey);
+    }
+}
+
 // --- 최적화: 지오메트리 미리 생성 ---
 let headGeometries = null;
 
 export { loadedObjectGroup };
 
-function createBlockDisplayFromData(data) {
+// Merge multiple indexed BufferGeometries with identical attribute layouts
+function mergeIndexedGeometries(geometries) {
+    if (!geometries || geometries.length === 0) return null;
+    const first = geometries[0];
+    const merged = new THREE.BufferGeometry();
+
+    // Collect attribute names
+    const attrNames = Object.keys(first.attributes);
+
+    // Compute total vertex count
+    let totalVertices = 0;
+    const itemSizes = {};
+    const arrayTypes = {};
+    for (const g of geometries) {
+        const pos = g.getAttribute('position');
+        const count = pos.count; // number of vertices
+        totalVertices += count;
+        for (const name of attrNames) {
+            const attr = g.getAttribute(name);
+            itemSizes[name] = attr.itemSize;
+            arrayTypes[name] = attr.array.constructor;
+        }
+    }
+
+    // Merge attributes
+    for (const name of attrNames) {
+        const itemSize = itemSizes[name];
+        const ArrayType = arrayTypes[name] || Float32Array;
+        const totalLen = totalVertices * itemSize;
+        const mergedArray = new ArrayType(totalLen);
+        let offset = 0;
+        for (const g of geometries) {
+            const attr = g.getAttribute(name);
+            mergedArray.set(attr.array, offset);
+            offset += attr.array.length;
+        }
+        merged.setAttribute(name, new THREE.BufferAttribute(mergedArray, itemSize));
+    }
+
+    // Merge indices with offsets
+    let vertexOffset = 0;
+    const indexArrays = [];
+    let totalIndexCount = 0;
+    for (const g of geometries) {
+        const index = g.getIndex();
+        const idxArray = index.array;
+        totalIndexCount += idxArray.length;
+    }
+    const useUint32 = totalVertices > 65535;
+    const mergedIndex = useUint32 ? new Uint32Array(totalIndexCount) : new Uint16Array(totalIndexCount);
+    let idxOffset = 0;
+    for (const g of geometries) {
+        const index = g.getIndex();
+        const idxArray = index.array;
+        const pos = g.getAttribute('position');
+        const vertCount = pos.count;
+        for (let i = 0; i < idxArray.length; i++) {
+            mergedIndex[idxOffset + i] = idxArray[i] + vertexOffset;
+        }
+        idxOffset += idxArray.length;
+        vertexOffset += vertCount;
+    }
+    merged.setIndex(new THREE.BufferAttribute(mergedIndex, 1));
+
+    // Provide an approximate bounding sphere
+    merged.boundingSphere = new THREE.Sphere(new THREE.Vector3(0.5, 0.5, 0.5), 0.9);
+    return merged;
+}
+
+function createBlockDisplayFromData(data, gen) {
     const finalGroup = new THREE.Group();
     finalGroup.matrixAutoUpdate = false;
     const finalMatrix = new THREE.Matrix4();
     finalMatrix.fromArray(data.transform);
     finalMatrix.transpose();
     finalGroup.matrix.copy(finalMatrix);
+    ensureSharedPlaceholder();
 
     for (const model of data.models) {
         const modelGroup = new THREE.Group();
@@ -115,66 +341,50 @@ function createBlockDisplayFromData(data) {
         modelMatrix.fromArray(model.modelMatrix);
         modelGroup.matrix.copy(modelMatrix);
 
+        // Group geometries by material key to merge and reduce draw calls
+        const groups = new Map(); // key -> { texPath, tintHex, geoms: [] }
         for (const geomData of model.geometries) {
+            const key = `${geomData.texPath}|${(geomData.tintHex ?? 0xffffff) >>> 0}`;
+            let entry = groups.get(key);
+            if (!entry) {
+                entry = { texPath: geomData.texPath, tintHex: geomData.tintHex ?? 0xffffff, geoms: [] };
+                groups.set(key, entry);
+            }
             const geom = new THREE.BufferGeometry();
             geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(geomData.positions), 3));
             geom.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(geomData.normals), 3));
             geom.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(geomData.uvs), 2));
             geom.setIndex(geomData.indices);
-            geom.computeBoundingBox();
-            geom.computeBoundingSphere();
+            geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0.5, 0.5, 0.5), 0.9);
+            entry.geoms.push(geom);
+        }
 
-            const placeholderTex = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-            placeholderTex.magFilter = THREE.NearestFilter;
-            placeholderTex.minFilter = THREE.NearestFilter;
-            placeholderTex.generateMipmaps = false;
-            placeholderTex.colorSpace = THREE.SRGBColorSpace;
-            placeholderTex.wrapS = THREE.ClampToEdgeWrapping;
-            placeholderTex.wrapT = THREE.ClampToEdgeWrapping;
-            placeholderTex.needsUpdate = true;
-
-            const { material } = createEntityMaterial(placeholderTex, geomData.tintHex ?? 0xffffff);
-            material.toneMapped = false;
-
-            const mesh = new THREE.Mesh(geom, material);
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
+        for (const entry of groups.values()) {
+            const cacheKey = `${model.modelKey || 'unknown'}|${entry.texPath}|${entry.tintHex >>> 0}`;
+            let mergedGeom = blockMergedGeomCache.get(cacheKey);
+            if (!mergedGeom) {
+                mergedGeom = entry.geoms.length > 1 ? mergeIndexedGeometries(entry.geoms) : entry.geoms[0];
+                blockMergedGeomCache.set(cacheKey, mergedGeom);
+            }
+            // Dispose unmerged inputs if merged
+            if (mergedGeom && entry.geoms.length > 1) {
+                for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
+            }
+            const mesh = new THREE.Mesh(mergedGeom, sharedPlaceholderMaterial);
+            mesh.castShadow = false;
+            mesh.receiveShadow = false;
             modelGroup.add(mesh);
-
             (async () => {
                 try {
-                    const texResult = await window.ipcApi.getAssetContent(geomData.texPath);
-                    if (!texResult.success) {
-                        console.warn(`[Texture] Failed to load ${geomData.texPath}: ${texResult.error}`);
+                    const mat = await getBlockMaterial(entry.texPath, entry.tintHex, gen);
+                    if (gen !== currentLoadGen) {
+                        // Stale: material was disposed in getBlockMaterial
                         return;
                     }
-                    const blob = new Blob([texResult.content], { type: 'image/png' });
-                    const url = URL.createObjectURL(blob);
-                    const loader = new THREE.TextureLoader();
-                    loader.load(url, (tex) => {
-                        const isEntityTex = geomData.texPath.includes('/textures/entity/');
-                        if (isEntityTex) {
-                            tex.magFilter = THREE.NearestFilter;
-                            tex.minFilter = THREE.NearestFilter;
-                            tex.generateMipmaps = false;
-                            tex.anisotropy = 1;
-                            tex.colorSpace = THREE.SRGBColorSpace;
-                            tex.wrapS = THREE.ClampToEdgeWrapping;
-                            tex.wrapT = THREE.ClampToEdgeWrapping;
-                            tex.needsUpdate = true;
-                        }
-                        const finalTex = isEntityTex ? tex : cropTextureToFirst16(tex);
-                        const matData = createEntityMaterial(finalTex, geomData.tintHex ?? 0xffffff);
-                        matData.material.toneMapped = false;
-                        mesh.material = matData.material;
-                        mesh.material.needsUpdate = true;
-                        URL.revokeObjectURL(url);
-                        if (finalTex !== tex) {
-                            tex.dispose();
-                        }
-                    });
+                    mesh.material = mat;
+                    mesh.material.needsUpdate = true;
                 } catch (e) {
-                    console.warn(`[Texture] Error while loading ${geomData.texPath}:`, e);
+                    console.warn(`[Texture] Error while loading ${entry.texPath}:`, e);
                 }
             })();
         }
@@ -374,6 +584,7 @@ function createOptimizedHeadMerged(texture) {
  */
 function loadpbde(file) {
     // 1. 이전 객체 및 리소스 완벽 해제
+    const myGen = ++currentLoadGen;
     
     // 1-1. 캐시된 텍스처 및 리소스 완벽 해제
     textureCache.forEach(cachedItem => {
@@ -382,6 +593,21 @@ function loadpbde(file) {
         }
     });
     textureCache.clear();
+
+    // 1-1-b. 블럭 텍스처/머티리얼 캐시 해제 및 초기화
+    blockMaterialCache.forEach((mat) => { try { mat.dispose(); } catch {} });
+    blockMaterialCache.clear();
+    blockMaterialPromiseCache.clear();
+    blockTextureCache.forEach((tex) => { try { disposeTexture(tex); } catch {} });
+    blockTextureCache.clear();
+    blockTexturePromiseCache.clear();
+    // Geom cache can be kept across reloads for reuse, but if you suspect growth, you can clear it:
+    // blockMergedGeomCache.forEach(g => { try { g.dispose(); } catch {} });
+    // blockMergedGeomCache.clear();
+
+    // Dispose shared placeholder material so it doesn't accumulate
+    if (sharedPlaceholderMaterial) { try { sharedPlaceholderMaterial.dispose(); } catch {} }
+    sharedPlaceholderMaterial = null;
 
     // 1-2. 씬에 있는 객체의 지오메트리 및 재질 해제
     loadedObjectGroup.traverse(object => {
@@ -456,36 +682,71 @@ function loadpbde(file) {
 
             renderList.forEach((item) => {
                 if (item.type === 'blockDisplay') {
-                    const finalGroup = createBlockDisplayFromData(item);
+                    const finalGroup = createBlockDisplayFromData(item, myGen);
                     loadedObjectGroup.add(finalGroup);
                 } else if (item.type === 'itemDisplay') {
                     if (item.textureUrl) {
                         const headGroup = new THREE.Group();
                         headGroup.userData.isPlayerHead = true;
+                        headGroup.userData.gen = myGen;
 
                         const onTextureLoad = (texture) => {
+                            if (myGen !== currentLoadGen) {
+                                // Stale load: dispose the texture and skip adding
+                                try { texture.dispose(); } catch {}
+                                return;
+                            }
                             headGroup.add(createOptimizedHeadMerged(texture));
                         };
 
-                        if (textureCache.has(item.textureUrl)) {
-                            const cached = textureCache.get(item.textureUrl);
-                            if (cached instanceof THREE.Texture) {
-                                onTextureLoad(cached);
-                            } else {
-                                cached.callbacks.push(onTextureLoad);
+                        // Async ImageBitmap path with concurrency limit, cached by URL
+                        const loadHeadTexture = async (url) => {
+                            // reuse if loaded or in-flight
+                            if (textureCache.has(url)) {
+                                const cached = textureCache.get(url);
+                                if (cached instanceof THREE.Texture) return cached;
+                                return new Promise((resolve, reject) => cached.callbacks.push(resolve));
                             }
-                        } else {
-                            const loadingPlaceholder = { callbacks: [onTextureLoad] };
-                            textureCache.set(item.textureUrl, loadingPlaceholder);
+                            const ph = { callbacks: [] };
+                            textureCache.set(url, ph);
+                            try {
+                                await acquireTextureSlot();
+                                // Fetch as blob via Image loader to avoid CORS surprises if remote
+                                const tex = await new Promise((resolve, reject) => {
+                                    const img = new Image();
+                                    img.crossOrigin = 'anonymous';
+                                    img.onload = async () => {
+                                        try {
+                                            const bmp = await createImageBitmap(img);
+                                            const t = new THREE.Texture(bmp);
+                                            t.magFilter = THREE.NearestFilter;
+                                            t.minFilter = THREE.NearestFilter;
+                                            t.generateMipmaps = false;
+                                            t.colorSpace = THREE.SRGBColorSpace;
+                                            t.needsUpdate = true;
+                                            resolve(t);
+                                        } catch (e) { reject(e); }
+                                    };
+                                    img.onerror = (e) => reject(e);
+                                    img.src = url;
+                                });
+                                if (myGen !== currentLoadGen) {
+                                    try { disposeTexture(tex); } catch {}
+                                    textureCache.delete(url);
+                                    throw new Error('Stale generation');
+                                }
+                                textureCache.set(url, tex);
+                                ph.callbacks.forEach(cb => cb(tex));
+                                return tex;
+                            } finally {
+                                releaseTextureSlot();
+                            }
+                        };
 
-                            textureLoader.load(item.textureUrl, (texture) => {
-                                textureCache.set(item.textureUrl, texture);
-                                loadingPlaceholder.callbacks.forEach(cb => cb(texture));
-                            }, undefined, (err) => {
-                                console.error('텍스처 로드 실패:', err);
-                                textureCache.delete(item.textureUrl);
-                            });
-                        }
+                        loadHeadTexture(item.textureUrl).then(onTextureLoad).catch(err => {
+                            console.error('플레이어 머리 텍스처 로드 실패:', err);
+                            textureCache.delete(item.textureUrl);
+                        });
 
                         const finalMatrix = new THREE.Matrix4();
                         finalMatrix.fromArray(item.transform);
@@ -533,7 +794,9 @@ function loadpbde(file) {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-        worker.postMessage(event.target.result);
+        if (myGen === currentLoadGen) {
+            worker.postMessage(event.target.result);
+        }
     };
     reader.readAsText(file);
 }
