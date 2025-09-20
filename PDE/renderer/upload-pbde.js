@@ -2,24 +2,42 @@ import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
 import * as THREE from 'three/webgpu';
 import PbdeWorker from './pbde-worker.js?worker&inline';
 import { createEntityMaterial } from './entityMaterial.js';
-import { getTextureColor } from './tintColor.js';
+
+// --- Asset Provider for Main Thread ---
+
+function decodeIpcContentToString(content) {
+    try {
+        if (!content) return '';
+        // Node Buffer-like
+        if (typeof content === 'object' && content.type === 'Buffer' && Array.isArray(content.data)) {
+            return new TextDecoder('utf-8').decode(new Uint8Array(content.data));
+        }
+        // Browser Uint8Array
+        if (content instanceof Uint8Array) {
+            return new TextDecoder('utf-8').decode(content);
+        }
+        // Try generic
+        if (typeof content.toString === 'function') {
+            return content.toString('utf-8');
+        }
+        return String(content);
+    } catch {
+        return String(content);
+    }
+}
+
+const mainThreadAssetProvider = {
+    async getAsset(assetPath) {
+        const isHardcoded = assetPath.startsWith('hardcoded/');
+        const result = isHardcoded
+            ? await window.ipcApi.getHardcodedContent(assetPath.replace(/^hardcoded\//, ''))
+            : await window.ipcApi.getAssetContent(assetPath);
+        if (!result.success) throw new Error(`Asset read failed: ${assetPath}: ${result.error}`);
+        return decodeIpcContentToString(result.content);
+    }
+};
 
 
-let worker;
-// 로드된 모든 객체를 담을 그룹
-const loadedObjectGroup = new THREE.Group();
-
-export { loadedObjectGroup };
-
-
-// 텍스처 로더 및 캐시
-const textureLoader = new THREE.TextureLoader();
-const textureCache = new Map();
-
-// --- 최적화: 지오메트리 미리 생성 ---
-let headGeometries = null;
-
-/*블록디스플레이 시작 */
 
 // Crop any block texture to the first 16x16 tile (e.g., when a texture is 16x64 with repeated 16x16 frames)
 function cropTextureToFirst16(tex) {
@@ -69,731 +87,72 @@ function cropTextureToFirst16(tex) {
     }
 }
 
-function decodeIpcContentToString(content) {
-    try {
-        if (!content) return '';
-        // Node Buffer-like
-        if (typeof content === 'object' && content.type === 'Buffer' && Array.isArray(content.data)) {
-            return new TextDecoder('utf-8').decode(new Uint8Array(content.data));
-        }
-        // Browser Uint8Array
-        if (content instanceof Uint8Array) {
-            return new TextDecoder('utf-8').decode(content);
-        }
-        // Try generic
-        if (typeof content.toString === 'function') {
-            return content.toString('utf-8');
-        }
-        return String(content);
-    } catch {
-        return String(content);
-    }
-}
+let worker;
+// 로드된 모든 객체를 담을 그룹
+const loadedObjectGroup = new THREE.Group();
+
+// 텍스처 로더 및 캐시
+const textureLoader = new THREE.TextureLoader();
+const textureCache = new Map();
+
+// --- 최적화: 지오메트리 미리 생성 ---
+let headGeometries = null;
+
+export { loadedObjectGroup };
+
+function createBlockDisplayFromData(data) {
+    const finalGroup = new THREE.Group();
+    finalGroup.matrixAutoUpdate = false;
+    const finalMatrix = new THREE.Matrix4();
+    finalMatrix.fromArray(data.transform);
+    finalMatrix.transpose();
+    finalGroup.matrix.copy(finalMatrix);
+
+    for (const model of data.models) {
+        const modelGroup = new THREE.Group();
+        modelGroup.matrixAutoUpdate = false;
+        const modelMatrix = new THREE.Matrix4();
+        modelMatrix.fromArray(model.modelMatrix);
+        modelGroup.matrix.copy(modelMatrix);
+
+        for (const geomData of model.geometries) {
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(geomData.positions), 3));
+            geom.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(geomData.normals), 3));
+            geom.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(geomData.uvs), 2));
+            geom.setIndex(geomData.indices);
+            geom.computeBoundingBox();
+            geom.computeBoundingSphere();
+
+            const placeholderTex = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+            placeholderTex.magFilter = THREE.NearestFilter;
+            placeholderTex.minFilter = THREE.NearestFilter;
+            placeholderTex.generateMipmaps = false;
+            placeholderTex.colorSpace = THREE.SRGBColorSpace;
+            placeholderTex.wrapS = THREE.ClampToEdgeWrapping;
+            placeholderTex.wrapT = THREE.ClampToEdgeWrapping;
+            placeholderTex.needsUpdate = true;
+
+            const { material } = createEntityMaterial(placeholderTex, geomData.tintHex ?? 0xffffff);
+            material.toneMapped = false;
+
+            const mesh = new THREE.Mesh(geom, material);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            modelGroup.add(mesh);
 
-async function readJsonAsset(assetPath) {
-    // Support reading from local hardcoded folder as well as cached assets
-    const isHardcoded = assetPath.startsWith('hardcoded/');
-    const result = isHardcoded
-        ? await window.ipcApi.getHardcodedContent(assetPath.replace(/^hardcoded\//, ''))
-        : await window.ipcApi.getAssetContent(assetPath);
-    if (!result.success) throw new Error(`Asset read failed: ${assetPath}: ${result.error}`);
-    const text = decodeIpcContentToString(result.content);
-    return JSON.parse(text);
-}
-
-function blockNameToBaseAndProps(fullName) {
-    // e.g., "minecraft:oak_log[axis=y]" -> baseName, props
-    const name = fullName || '';
-    const base = name.split('[')[0];
-    const props = {};
-    const m = name.match(/\[(.*)\]/);
-    if (m && m[1]) {
-        m[1].split(',').forEach(pair => {
-            const [k, v] = pair.split('=');
-            if (k && v) props[k.trim()] = v.trim();
-        });
-    }
-    return { baseName: base, props };
-}
-
-function nsAndPathFromId(id, defaultNs = 'minecraft') {
-    // id like "minecraft:block/stone" or "block/stone"
-    if (!id) return { ns: defaultNs, path: '' };
-    const [nsMaybe, restMaybe] = id.includes(':') ? id.split(':', 2) : [defaultNs, id];
-    return { ns: nsMaybe, path: restMaybe };
-}
-
-function modelIdToAssetPath(modelId) {
-    const { ns, path } = nsAndPathFromId(modelId);
-    return `assets/${ns}/models/${path}.json`;
-}
-
-function textureIdToAssetPath(texId) {
-    const { ns, path } = nsAndPathFromId(texId);
-    return `assets/${ns}/textures/${path}.png`;
-}
-
-// --- Hardcoded block/model helpers ---
-function isHardcodedKeywordPath(p) {
-    if (!p) return false;
-    return /(chest|conduit|shulker|bed)/i.test(p);
-}
-
-function isHardcodedModelId(modelId) {
-    const { path } = nsAndPathFromId(modelId);
-    // e.g., path like "block/chest", "block/black_bed", "block/shulker_box", "block/conduit"
-    return isHardcodedKeywordPath(path);
-}
-
-function modelIdToHardcodedPath(modelId) {
-    const { path } = nsAndPathFromId(modelId);
-    // Map model id to our local hardcoded models folder
-    return `hardcoded/models/${path}.json`;
-}
-
-function resolveTextureRef(value, textures, guard = 0) {
-    // resolves "#key" chains to final "namespace:path" form
-    if (!value) return null;
-    if (guard > 10) return value; // avoid infinite loops
-    if (value.startsWith('#')) {
-        const key = value.slice(1);
-        const next = textures ? textures[key] : undefined;
-        if (!next) return null;
-        return resolveTextureRef(next, textures, guard + 1);
-    }
-    return value;
-}
-
-async function loadModelJson(assetPath) {
-    return await readJsonAsset(assetPath);
-}
-
-async function resolveModelTree(modelId, cache = new Map()) {
-    if (cache.has(modelId)) return cache.get(modelId);
-    // Try hardcoded model first for targeted blocks, then fall back to default assets
-    const hardcodedFirst = isHardcodedModelId(modelId);
-    const assetsPath = modelIdToAssetPath(modelId);
-    const hardcodedPath = modelIdToHardcodedPath(modelId);
-    let json;
-    try {
-        if (hardcodedFirst) {
-            try {
-                json = await loadModelJson(hardcodedPath);
-            } catch (_) {
-                json = await loadModelJson(assetsPath);
-            }
-        } else {
-            json = await loadModelJson(assetsPath);
-        }
-    } catch (e) {
-        // Some blockstates may point to missing models; report and continue
-        console.warn(`[Model] Missing or unreadable model ${modelId} at ${hardcodedFirst ? hardcodedPath : assetsPath}:`, e.message);
-        cache.set(modelId, null);
-        return null;
-    }
-
-    let mergedTextures = { ...(json.textures || {}) };
-    let elements = json.elements || null;
-    let parentChain = [];
-
-    if (json.parent) {
-        const parentRes = await resolveModelTree(json.parent, cache);
-        if (parentRes) {
-            // Parent textures first, then override with child
-            mergedTextures = { ...(parentRes.textures || {}), ...(mergedTextures || {}) };
-            // Child elements replace parent's unless absent
-            elements = elements || parentRes.elements || null;
-            parentChain = [...parentRes.parentChain, json.parent];
-        }
-    }
-
-    const resolved = { id: modelId, json, textures: mergedTextures, elements, parentChain };
-    cache.set(modelId, resolved);
-    return resolved;
-}
-
-function matchVariantKey(variantKey, props) {
-    // variantKey like "axis=y" or "facing=north,half=top" or ""
-    if (variantKey === '') return true;
-    const parts = variantKey.split(',').map(s => s.trim()).filter(Boolean);
-    for (const p of parts) {
-        const [k, v] = p.split('=');
-        if (!k) continue;
-        if (v === undefined) return false;
-        if ((props[k] || '') !== v) return false;
-    }
-    return true;
-}
-
-function whenMatches(when, props) {
-    // Supports vanilla multipart "when" semantics:
-    // - Simple object: {prop: value | [values], ...} -> all must match (AND)
-    // - { OR: [ obj1, obj2, ... ] } -> any matches
-    // - { AND: [ obj1, obj2, ... ] } -> all match
-    // Also supports a top-level array as an OR of objects for convenience.
-    if (!when) return true;
-    // Treat array as OR of subconditions
-    if (Array.isArray(when)) {
-        return when.some(w => whenMatches(w, props));
-    }
-    if (typeof when === 'object') {
-        // Handle explicit OR / AND keys if present
-        if (Array.isArray(when.OR)) {
-            return when.OR.some(w => whenMatches(w, props));
-        }
-        if (Array.isArray(when.AND)) {
-            return when.AND.every(w => whenMatches(w, props));
-        }
-        // Default: all entries must match
-        for (const [key, value] of Object.entries(when)) {
-            // Skip logical keys already handled above
-            if (key === 'OR' || key === 'AND') continue;
-
-            const propValue = props[key] || 'false'; // Treat missing prop as "false"
-            const conditionValues = String(value).split('|');
-
-            if (!conditionValues.includes(propValue)) {
-                return false;
-            }
-        }
-        return true;
-    }
-    return false;
-}
-
-function gatherFacesTextureRefs(elements) {
-    const refs = new Set();
-    if (!elements) return refs;
-    for (const el of elements) {
-        const faces = el.faces || {};
-        for (const face of Object.values(faces)) {
-            if (face && face.texture) refs.add(face.texture);
-        }
-    }
-    return refs;
-}
-
-async function processBlockDisplayAssets(item, mesh) {
-    try {
-        // Decide whether this block should use hardcoded blockstate/model overrides
-        const { baseName, props } = blockNameToBaseAndProps(item.name);
-        const basePathOnly = baseName.includes(':') ? baseName.split(':', 2)[1] : baseName;
-        const isHardcoded = isHardcodedKeywordPath(basePathOnly);
-
-        // Prefer hardcoded blockstate if present; fall back to asset blockstate
-        let blockstate;
-        if (isHardcoded) {
-            const hardcodedStatePath = `hardcoded/blockstates/${basePathOnly}.json`;
-            try {
-                blockstate = await readJsonAsset(hardcodedStatePath);
-            } catch (_) {
-                blockstate = await readJsonAsset(item.blockstatePath);
-            }
-        } else {
-            blockstate = await readJsonAsset(item.blockstatePath);
-        }
-        const modelCache = new Map();
-
-        let modelsToBuild = [];
-
-        // 1. Determine models from 'variants' or 'multipart'
-        if (blockstate.variants) {
-            const entries = Object.entries(blockstate.variants);
-            let bestMatch = null;
-            for (const [key, value] of entries) {
-                if (matchVariantKey(key, props)) {
-                    const specificity = key.split(',').filter(Boolean).length;
-                    if (!bestMatch || specificity > bestMatch.specificity) {
-                        bestMatch = { value, specificity };
-                    }
-                }
-            }
-            
-            const picked = bestMatch ? bestMatch.value : blockstate.variants[''];
-            if (picked) {
-                const applyList = Array.isArray(picked) ? picked : [picked];
-                // Per user request, ignore weight and pick the first model if multiple are present.
-                if (applyList.length > 0) {
-                    modelsToBuild.push(applyList[0]);
-                }
-            }
-
-        } else if (blockstate.multipart) {
-            for (const part of blockstate.multipart) {
-                if (!part) continue;
-                if (!part.when || whenMatches(part.when, props)) {
-                    const applyList = Array.isArray(part.apply) ? part.apply : [part.apply];
-                    // Per user request, ignore weight and pick the first model.
-                    if (applyList.length > 0) {
-                        modelsToBuild.push(applyList[0]);
-                    }
-                }
-            }
-        }
-
-        if (modelsToBuild.length === 0) {
-            console.warn(`[Block] No matching model found for ${item.name} with props`, props);
-            return;
-        }
-
-        // 2. Build the final group from the collected models
-        const finalGroup = new THREE.Group();
-        for (const apply of modelsToBuild) {
-            if (!apply?.model) continue;
-
-            const resolved = await resolveModelTree(apply.model, modelCache);
-            if (!resolved || !resolved.elements) continue;
-
-            const modelGroup = await buildBlockModelGroup(resolved, { 
-                uvlock: !!apply.uvlock, 
-                xRot: apply.x || 0, 
-                yRot: apply.y || 0 
-            });
-
-            if (modelGroup) {
-                applyBlockstateRotation(modelGroup, apply.x || 0, apply.y || 0);
-                finalGroup.add(modelGroup);
-            }
-        }
-
-        // 3. Replace placeholder mesh with the new group
-        if (finalGroup.children.length > 0) {
-            finalGroup.matrixAutoUpdate = false;
-            finalGroup.matrix.copy(mesh.matrix);
-            finalGroup.castShadow = true;
-            finalGroup.receiveShadow = true;
-            
-            const parent = mesh.parent;
-            if (parent) {
-                parent.add(finalGroup);
-                parent.remove(mesh);
-                mesh.geometry.dispose();
-                if(mesh.material.map) mesh.material.map.dispose();
-                mesh.material.dispose();
-            }
-        }
-
-    } catch (e) {
-        console.warn(`[Block] Failed to process block display assets for ${item.name}:`, e);
-    }
-}
-
-function applyBlockstateRotation(group, rotX = 0, rotY = 0) {
-    if (rotX === 0 && rotY === 0) return;
-
-    const pivot = new THREE.Vector3(0.5, 0.5, 0.5);
-    const t1 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
-    const t2 = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
-    // Minecraft's Y-axis rotation is clockwise, while Three.js's is counter-clockwise.
-    // Negating the angle aligns them.
-    const rx = new THREE.Matrix4().makeRotationX(THREE.MathUtils.degToRad(rotX));
-    const ry = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(-rotY));
-    
-    // Apply Y then X, which is standard for Minecraft
-    const r = new THREE.Matrix4().multiply(ry).multiply(rx);
-    const m = new THREE.Matrix4().multiply(t2).multiply(r).multiply(t1);
-    
-    group.updateMatrix();
-    group.applyMatrix4(m);
-}
-
-function uvRotated(uv, rotation) {
-    // uv: [[u0,v0],[u1,v1],[u2,v2],[u3,v3]] in TL,TR,BR,BL order baseline; rotation in degrees 0/90/180/270 CW
-    const r = ((rotation % 360) + 360) % 360;
-    if (r === 0) return uv;
-    if (r === 90) return [uv[3], uv[0], uv[1], uv[2]];
-    if (r === 180) return [uv[2], uv[3], uv[0], uv[1]];
-    if (r === 270) return [uv[1], uv[2], uv[3], uv[0]];
-    return uv;
-}
-
-// Rotate UV corners around a pivot in normalized UV space (U right, V up)
-// degreesCW: rotation in degrees clockwise (matching Minecraft's notion)
-function rotateCornersAroundPivot(corners, degreesCW, pivotU = 0.5, pivotV = 0.5) {
-    const r = ((degreesCW % 360) + 360) % 360;
-    if (r === 0) return corners;
-    const rad = -r * Math.PI / 180; // negative for CW in standard math
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const rot = ([u, v]) => {
-        const du = u - pivotU;
-        const dv = v - pivotV;
-        const ru = pivotU + du * cos - dv * sin;
-        const rv = pivotV + du * sin + dv * cos;
-        return [ru, rv];
-    };
-    return [rot(corners[0]), rot(corners[1]), rot(corners[2]), rot(corners[3])];
-}
-
-// --- Minecraft vs Three.js UV alignment helpers ---
-// Some Minecraft block faces may look rotated/flipped when compared to a default Three.js cube UV expectation.
-// You can control each face below without touching the model building logic.
-// - rot: additional rotation in degrees (0, 90, 180, 270) applied AFTER model/uvlock rotations
-// - flipU: swaps left/right on the face UVs
-// - flipV: swaps top/bottom on the face UVs
-// Tweak these if you find a face looking mirrored or rotated compared to vanilla.
-const FACE_UV_ADJUST = {
-    // Front/back
-    north: { rot: 180,   flipU: false, flipV: true },//west
-    south: { rot: 0,   flipU: true,  flipV: false },//east
-    // Left/right
-    west:  { rot: 0,   flipU: true,  flipV: false },//south
-    east:  { rot: 0,   flipU: true, flipV: false },//north
-    // Top/bottom: swap U/V; adjust V so it increases southwards like MC
-    up:    { rot: 90,  flipU: true, flipV: false  },//up
-    down:  { rot: 90, flipU: false, flipV: true  },//down
-};
-
-function flipUCorners(c) {
-    // TL,TR,BR,BL -> TR,TL,BL,BR
-    return [c[1], c[0], c[3], c[2]];
-}
-
-function flipVCorners(c) {
-    // TL,TR,BR,BL -> BL,BR,TR,TL
-    return [c[3], c[2], c[1], c[0]];
-}
-
-function pushQuad(buff, a, b, c, d, n, uvTL, uvTR, uvBR, uvBL) {
-    const base = buff.positions.length / 3;
-    buff.positions.push(
-        a.x, a.y, a.z,
-        b.x, b.y, b.z,
-        c.x, c.y, c.z,
-        d.x, d.y, d.z
-    );
-    buff.normals.push(
-        n.x, n.y, n.z,
-        n.x, n.y, n.z,
-        n.x, n.y, n.z,
-        n.x, n.y, n.z
-    );
-    buff.uvs.push(
-        uvTL[0], uvTL[1],
-        uvTR[0], uvTR[1],
-        uvBR[0], uvBR[1],
-        uvBL[0], uvBL[1]
-    );
-    buff.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-}
-
-function getFaceVertices(dir, from, to) {
-    const x1 = from[0] / 16, y1 = from[1] / 16, z1 = from[2] / 16;
-    const x2 = to[0] / 16,   y2 = to[1] / 16,   z2 = to[2] / 16;
-    switch (dir) {
-        case 'north': // -Z
-            return {
-                a: new THREE.Vector3(x1, y2, z1),
-                b: new THREE.Vector3(x2, y2, z1),
-                c: new THREE.Vector3(x2, y1, z1),
-                d: new THREE.Vector3(x1, y1, z1),
-                n: new THREE.Vector3(0, 0, -1)
-            };
-        case 'south': // +Z
-            return {
-                a: new THREE.Vector3(x2, y2, z2),
-                b: new THREE.Vector3(x1, y2, z2),
-                c: new THREE.Vector3(x1, y1, z2),
-                d: new THREE.Vector3(x2, y1, z2),
-                n: new THREE.Vector3(0, 0, 1)
-            };
-        case 'west': // -X
-            return {
-                a: new THREE.Vector3(x1, y2, z2),
-                b: new THREE.Vector3(x1, y2, z1),
-                c: new THREE.Vector3(x1, y1, z1),
-                d: new THREE.Vector3(x1, y1, z2),
-                n: new THREE.Vector3(-1, 0, 0)
-            };
-        case 'east': // +X
-            return {
-                a: new THREE.Vector3(x2, y2, z1),
-                b: new THREE.Vector3(x2, y2, z2),
-                c: new THREE.Vector3(x2, y1, z2),
-                d: new THREE.Vector3(x2, y1, z1),
-                n: new THREE.Vector3(1, 0, 0)
-            };
-        case 'up': // +Y
-            return {
-                a: new THREE.Vector3(x1, y2, z1),
-                b: new THREE.Vector3(x1, y2, z2),
-                c: new THREE.Vector3(x2, y2, z2),
-                d: new THREE.Vector3(x2, y2, z1),
-                n: new THREE.Vector3(0, 1, 0)
-            };
-        case 'down': // -Y
-            return {
-                a: new THREE.Vector3(x2, y1, z1),
-                b: new THREE.Vector3(x2, y1, z2),
-                c: new THREE.Vector3(x1, y1, z2),
-                d: new THREE.Vector3(x1, y1, z1),
-                n: new THREE.Vector3(0, -1, 0)
-            };
-    }
-    return null;
-}
-
-async function buildBlockModelGroup(resolved, opts = undefined) {
-    const elements = resolved.elements;
-    if (!elements || elements.length === 0) return null;
-
-    // buffers keyed by texture path and tint color so tints don't share materials inadvertently
-    // key format: `${texPath}|${tintHex.toString(16)}`
-    const buffers = new Map();
-    const addBuffer = (texPath, tintHex) => {
-        const key = `${texPath}|${tintHex >>> 0}`;
-        if (!buffers.has(key)) buffers.set(key, { positions: [], normals: [], uvs: [], indices: [], texPath, tintHex });
-        return buffers.get(key);
-    };
-    const usedTextures = new Set();
-
-    for (const el of elements) {
-        const faces = el.faces || {};
-        const from = el.from || [0,0,0];
-        const to = el.to || [16,16,16];
-        const rot = el.rotation || null;
-        const hasRot = rot && typeof rot.angle === 'number' && rot.angle !== 0 && typeof rot.axis === 'string' && Array.isArray(rot.origin);
-        const rescale = hasRot && rot.rescale === true;
-        const pivot = hasRot ? new THREE.Vector3(rot.origin[0]/16, rot.origin[1]/16, rot.origin[2]/16) : null;
-        const angleRad = hasRot ? (rot.angle * Math.PI) / 180 : 0;
-        const rotMat = new THREE.Matrix4();
-        const rotOnly = new THREE.Matrix4();
-        const tNeg = new THREE.Matrix4();
-        const tPos = new THREE.Matrix4();
-        if (hasRot) {
-            switch (rot.axis) {
-                case 'x': rotOnly.makeRotationX(angleRad); break;
-                case 'y': rotOnly.makeRotationY(angleRad); break;
-                case 'z': rotOnly.makeRotationZ(angleRad); break;
-                default: rotOnly.identity(); break;
-            }
-            tNeg.makeTranslation(-pivot.x, -pivot.y, -pivot.z);
-            tPos.makeTranslation(pivot.x, pivot.y, pivot.z);
-
-            rotMat.copy(tPos).multiply(rotOnly);
-
-            if (rescale) {
-                const scaleFactor = 1.0 / Math.cos(angleRad);
-                const scaleMat = new THREE.Matrix4();
-                if (rot.axis === 'x') {
-                    scaleMat.makeScale(1, scaleFactor, scaleFactor);
-                } else if (rot.axis === 'y') {
-                    scaleMat.makeScale(scaleFactor, 1, scaleFactor);
-                } else if (rot.axis === 'z') {
-                    scaleMat.makeScale(scaleFactor, scaleFactor, 1);
-                }
-                rotMat.multiply(scaleMat);
-            }
-            
-            rotMat.multiply(tNeg);
-        } else {
-            rotOnly.identity();
-            rotMat.identity();
-        }
-        for (const dir of ['north','south','west','east','up','down']) {
-            const face = faces[dir];
-            if (!face || !face.texture) continue;
-            const texId = resolveTextureRef(face.texture, resolved.textures);
-            if (!texId) continue;
-            const texAssetPath = textureIdToAssetPath(texId);
-            usedTextures.add(texAssetPath);
-
-            // Compute tint color per face following Minecraft rules and provided helpers
-            // We try to use the most specific model id we have: resolved.id is like 'minecraft:block/xxx'
-            let tintHex = 0xffffff;
-            try {
-                const modelResLoc = (resolved && resolved.id) ? resolved.id.split(':').slice(1).join(':') : '';
-                // textureLayer isn't tracked per-face here; pass undefined. Use face.tintindex when present.
-                const ti = (typeof face.tintindex === 'number') ? face.tintindex : undefined;
-                tintHex = getTextureColor(modelResLoc, undefined, ti);
-            } catch (_) {
-                tintHex = 0xffffff;
-            }
-
-            const buff = addBuffer(texAssetPath, tintHex);
-            const v = getFaceVertices(dir, from, to);
-            if (!v) continue;
-
-            let effectiveDir = dir;
-
-            // Apply element rotation to vertices and normal
-            if (hasRot) {
-                v.a.applyMatrix4(rotMat);
-                v.b.applyMatrix4(rotMat);
-                v.c.applyMatrix4(rotMat);
-                v.d.applyMatrix4(rotMat);
-                const n3 = new THREE.Matrix3().setFromMatrix4(rotOnly);
-                v.n.applyMatrix3(n3).normalize();
-
-                const { x, y, z } = v.n;
-                if      (Math.abs(x) > 0.99) effectiveDir = x > 0 ? 'east' : 'west';
-                else if (Math.abs(y) > 0.99) effectiveDir = y > 0 ? 'up' : 'down';
-                else if (Math.abs(z) > 0.99) effectiveDir = z > 0 ? 'south' : 'north';
-            }
-
-            const hasExplicitFaceUV = Array.isArray(face.uv) && face.uv.length === 4;
-            let faceUV = face.uv;
-            if (!faceUV) {
-                switch (dir) {
-                    case 'north':
-                    case 'south':
-                        faceUV = [from[0], from[1], to[0], to[1]];
-                        break;
-                    case 'west':
-                    case 'east':
-                        faceUV = [from[2], from[1], to[2], to[1]];
-                        break;
-                    case 'up':
-                    case 'down':
-                        faceUV = [from[0], from[2], to[0], to[2]];
-                        break;
-                    default:
-                        faceUV = [0, 0, 16, 16];
-                        break;
-                }
-            }
-
-            // Compute uvlock-driven extra rotation.
-            // Keep up/down behavior, and add an extra +90° CW for side faces when uvlock is true.
-            let extraUVRot = 0;
-            if (opts && opts.uvlock) {
-                const yRotNorm = ((opts.yRot || 0) % 360 + 360) % 360;
-                const step = Math.round(yRotNorm / 90) * 90;
-                if (dir === 'up') {
-                    extraUVRot = step;
-                } else if (dir === 'down') {
-                    extraUVRot = -step;
-                //} else if (dir === 'south' || dir === 'west' || dir === 'north' || dir === 'east') {
-                //    // Sides: align to world with -step, then rotate an extra +90° CW as requested
-                //    extraUVRot = -step + 90;
-                }
-            }
-
-            // On up/down faces, adjust UV rect to match the geometry's texel extents based on final rotation.
-            // Snap target sizes to even texel counts (2-unit steps) and anchor from the min edge (cut "backwards").
-            if ((dir === 'up' || dir === 'down') && !hasExplicitFaceUV) {
-                const preAdjRot = (((face.rotation || 0) + extraUVRot) % 360 + 360) % 360;
-                const geomW = Math.abs(to[0] - from[0]); // X extent in texels
-                const geomH = Math.abs(to[2] - from[2]); // Z extent in texels
-                let ux0 = faceUV[0], vy0 = faceUV[1], ux1 = faceUV[2], vy1 = faceUV[3];
-                const uw = Math.abs(ux1 - ux0);
-                const vh = Math.abs(vy1 - vy0);
-
-                // When rotated 0/180: U maps to X (geomW), V maps to Z (geomH)
-                // When rotated 90/270: U maps to Z (geomH), V maps to X (geomW)
-                let uTarget = (preAdjRot === 0 || preAdjRot === 180) ? geomW : geomH;
-                let vTarget = (preAdjRot === 0 || preAdjRot === 180) ? geomH : geomW;
-
-                // Snap to even texel counts (2-unit steps)
-                const snapEven = (t) => Math.max(0, Math.min(16, Math.round(t / 2) * 2));
-                uTarget = snapEven(uTarget);
-                vTarget = snapEven(vTarget);
-
-                if (Math.abs(uw - uTarget) > 1e-6 || Math.abs(vh - vTarget) > 1e-6) {
-                    // Anchor each axis to its min edge and extend in the original orientation
-                    const uAsc = ux1 >= ux0; // orientation along U
-                    const vAsc = vy1 >= vy0; // orientation along V
-                    const uMin = Math.min(ux0, ux1);
-                    const vMin = Math.min(vy0, vy1);
-
-                    if (uAsc) { ux0 = uMin; ux1 = uMin + uTarget; }
-                    else      { ux1 = uMin; ux0 = uMin + uTarget; }
-
-                    if (vAsc) { vy0 = vMin; vy1 = vMin + vTarget; }
-                    else      { vy1 = vMin; vy0 = vMin + vTarget; }
-
-                    // Shift U into [0,16] without changing size
-                    let uLo = Math.min(ux0, ux1), uHi = Math.max(ux0, ux1);
-                    if (uLo < 0) { const s = -uLo; ux0 += s; ux1 += s; uLo = 0; uHi += s; }
-                    if (uHi > 16) { const s = uHi - 16; ux0 -= s; ux1 -= s; }
-
-                    // Shift V into [0,16] without changing size
-                    let vLo = Math.min(vy0, vy1), vHi = Math.max(vy0, vy1);
-                    if (vLo < 0) { const s = -vLo; vy0 += s; vy1 += s; vLo = 0; vHi += s; }
-                    if (vHi > 16) { const s = vHi - 16; vy0 -= s; vy1 -= s; }
-
-                    faceUV = [ux0, vy0, ux1, vy1];
-                }
-            }
-
-            const uv = faceUV;
-            // If the model supplies explicit UVs and declares texture_size, normalize by that.
-            // Otherwise, default to 16 like vanilla block models.
-            const texSize = (resolved.json && Array.isArray(resolved.json.texture_size)) ? resolved.json.texture_size : null;
-            const uvScaleU = (hasExplicitFaceUV && texSize) ? texSize[0] : 16;
-            const uvScaleV = (hasExplicitFaceUV && texSize) ? texSize[1] : 16;
-            const u0 = uv[0] / uvScaleU, v0 = 1 - uv[1] / uvScaleV;
-            const u1 = uv[2] / uvScaleU, v1 = 1 - uv[3] / uvScaleV;
-            let corners = [
-                [u0, v0], // TL
-                [u1, v0], // TR
-                [u1, v1], // BR
-                [u0, v1]  // BL
-            ];
-
-            // Apply local face.rotation first (around its own rect center via index rotation)
-            const faceRotLocal = ((face.rotation || 0) % 360 + 360) % 360;
-            corners = uvRotated(corners, faceRotLocal);
-
-            // Apply uvlock-driven rotation around the entire 16x16 tile center so
-            // multiple UV islands on a plane rotate cohesively around the face center
-            if (extraUVRot) {
-                corners = rotateCornersAroundPivot(corners, extraUVRot, 0.5, 0.5);
-            }
-
-            const adj = FACE_UV_ADJUST[effectiveDir];
-            if (adj) {
-                if (adj.rot) corners = uvRotated(corners, adj.rot);
-                if (adj.flipU) corners = flipUCorners(corners);
-                if (adj.flipV) corners = flipVCorners(corners);
-            }
-
-            pushQuad(buff, v.a, v.b, v.c, v.d, v.n, corners[0], corners[1], corners[2], corners[3]);
-        }
-    }
-
-    const group = new THREE.Group();
-    // build meshes per texture and start async texture loading to swap materials
-    for (const [, buff] of buffers.entries()) {
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(buff.positions), 3));
-        geom.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(buff.normals), 3));
-        geom.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(buff.uvs), 2));
-        geom.setIndex(buff.indices);
-        geom.computeBoundingBox();
-        geom.computeBoundingSphere();
-
-    const placeholderTex = new THREE.DataTexture(new Uint8Array([255,255,255,255]), 1, 1);
-    // Keep pixel-perfect look even before real textures arrive
-    placeholderTex.magFilter = THREE.NearestFilter;
-    placeholderTex.minFilter = THREE.NearestFilter;
-    placeholderTex.generateMipmaps = false;
-    placeholderTex.colorSpace = THREE.SRGBColorSpace;
-    placeholderTex.wrapS = THREE.ClampToEdgeWrapping;
-    placeholderTex.wrapT = THREE.ClampToEdgeWrapping;
-    placeholderTex.needsUpdate = true;
-        const { material } = createEntityMaterial(placeholderTex, buff.tintHex ?? 0xffffff);
-        material.toneMapped = false;
-
-        const mesh = new THREE.Mesh(geom, material);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        group.add(mesh);
-
-        // async load actual texture and replace material
             (async () => {
                 try {
-                    const texResult = await window.ipcApi.getAssetContent(buff.texPath);
+                    const texResult = await window.ipcApi.getAssetContent(geomData.texPath);
                     if (!texResult.success) {
-                        console.warn(`[Texture] Failed to load ${buff.texPath}: ${texResult.error}`);
+                        console.warn(`[Texture] Failed to load ${geomData.texPath}: ${texResult.error}`);
                         return;
                     }
                     const blob = new Blob([texResult.content], { type: 'image/png' });
                     const url = URL.createObjectURL(blob);
                     const loader = new THREE.TextureLoader();
                     loader.load(url, (tex) => {
-                        // For entity textures (chest/bed/shulker/conduit), don't crop and force pixel-art sampling.
-                        const isEntityTex = buff.texPath.includes('/textures/entity/');
+                        const isEntityTex = geomData.texPath.includes('/textures/entity/');
                         if (isEntityTex) {
                             tex.magFilter = THREE.NearestFilter;
                             tex.minFilter = THREE.NearestFilter;
@@ -805,7 +164,7 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
                             tex.needsUpdate = true;
                         }
                         const finalTex = isEntityTex ? tex : cropTextureToFirst16(tex);
-                        const matData = createEntityMaterial(finalTex, buff.tintHex ?? 0xffffff);
+                        const matData = createEntityMaterial(finalTex, geomData.tintHex ?? 0xffffff);
                         matData.material.toneMapped = false;
                         mesh.material = matData.material;
                         mesh.material.needsUpdate = true;
@@ -815,16 +174,15 @@ async function buildBlockModelGroup(resolved, opts = undefined) {
                         }
                     });
                 } catch (e) {
-                    console.warn(`[Texture] Error while loading ${buff.texPath}:`, e);
+                    console.warn(`[Texture] Error while loading ${geomData.texPath}:`, e);
                 }
             })();
+        }
+        finalGroup.add(modelGroup);
     }
 
-    return group;
+    return finalGroup;
 }
-
-/*블록디스플레이 끝 */
-
 /**
  * 주의: BoxGeometry는 인덱스가 있는 BufferGeometry를 반환합니다.
  * 병합을 위해 toNonIndexed()로 변환한 뒤 attribute들을 concat 합니다.
@@ -1061,53 +419,51 @@ function loadpbde(file) {
     // --- 최적화: 머리 지오메트리 생성 (필요한 경우) ---
     createHeadGeometries();
 
-    // 3. 워커로부터 메시지(처리된 데이터) 수신
     worker.onmessage = (e) => {
-        console.log("[Debug] Message received from worker:", e.data);
+        const msg = e.data;
 
-        if (e.data.success) {
-            const flatRenderList = e.data.data;
+        if (msg.type === 'requestAsset') {
+            mainThreadAssetProvider.getAsset(msg.path)
+                .then(content => {
+                    worker.postMessage({ 
+                        type: 'assetResponse', 
+                        requestId: msg.requestId, 
+                        path: msg.path, 
+                        content: content, 
+                        success: true 
+                    });
+                })
+                .catch(error => {
+                    worker.postMessage({ 
+                        type: 'assetResponse', 
+                        requestId: msg.requestId, 
+                        path: msg.path, 
+                        error: error.message, 
+                        success: false 
+                    });
+                });
+            return;
+        }
+
+        if (msg.success) {
+            const renderList = msg.data;
             
-            if (!flatRenderList || flatRenderList.length === 0) {
+            if (!renderList || renderList.length === 0) {
                 console.warn("[Debug] Worker returned success, but the render list is empty. Nothing to render.");
             } else {
-                console.log(`[Debug] Processing ${flatRenderList.length} items from worker.`);
+                console.log(`[Debug] Processing ${renderList.length} items from worker.`);
             }
 
-            flatRenderList.forEach((item) => {
-                if (item.isBlockDisplay) {
-                    const geometry = new THREE.BoxGeometry(1, 1, 1);
-                    geometry.translate(0.5, 0.5, 0.5);
-                    // Placeholder 1x1 white texture for initial entity material
-                    const placeholderTex = new THREE.DataTexture(new Uint8Array([255,255,255,255]), 1, 1);
-                    placeholderTex.needsUpdate = true;
-                    const { material: entityMat } = createEntityMaterial(placeholderTex);
-                    entityMat.toneMapped = false;
-                    const cube = new THREE.Mesh(geometry, entityMat);
-                    cube.castShadow = true;
-                    cube.receiveShadow = true;
-
-                    const finalMatrix = new THREE.Matrix4();
-                    finalMatrix.fromArray(item.transform);
-                    finalMatrix.transpose();
-
-                    cube.matrixAutoUpdate = false;
-                    cube.matrix.copy(finalMatrix);
-
-                    // 블록스테이트/모델/텍스처 해석 및 로그 출력 + 엔티티 머티리얼 텍스처 적용
-                    if (item.blockstatePath) {
-                        processBlockDisplayAssets(item, cube);
-                    }
-
-                    loadedObjectGroup.add(cube);
-                } else if (item.isItemDisplay) {
+            renderList.forEach((item) => {
+                if (item.type === 'blockDisplay') {
+                    const finalGroup = createBlockDisplayFromData(item);
+                    loadedObjectGroup.add(finalGroup);
+                } else if (item.type === 'itemDisplay') {
                     if (item.textureUrl) {
                         const headGroup = new THREE.Group();
                         headGroup.userData.isPlayerHead = true;
 
                         const onTextureLoad = (texture) => {
-                            // 변경점: base + layer 를 각각 추가하지 않고,
-                            // 병합된 하나의 메시(merged geometry)만 추가해서 draw call 1회로 줄입니다.
                             headGroup.add(createOptimizedHeadMerged(texture));
                         };
 
@@ -1161,7 +517,7 @@ function loadpbde(file) {
 
             console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
         } else {
-            console.error("[Debug] Worker reported an error:", e.data.error);
+            console.error("[Debug] Worker reported an error:", msg.error);
         }
 
         console.log("[Debug] Terminating worker.");

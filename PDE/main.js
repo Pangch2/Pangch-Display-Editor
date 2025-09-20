@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import axios from 'axios';
-import StreamZip from 'node-stream-zip';
+import { unzip } from 'unzipit';
 import pLimit from 'p-limit';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -105,51 +105,44 @@ function createWindow() {
       try {
         await fs.mkdir(CACHE_DIR, { recursive: true });
 
-        // ✅ client.jar 다운로드 → temp 저장
+        // ✅ client.jar 다운로드 (메모리 상에서 처리)
         const url = 'https://piston-data.mojang.com/v1/objects/f5f3b6aa26ad6790868d8506b071c6d6dad8d302/client.jar';
-        const jarPath = path.join(CACHE_DIR, 'client.jar');
-
         const response = await axios({
           url,
           method: 'GET',
           responseType: 'arraybuffer'
         });
-        await fs.writeFile(jarPath, response.data);
 
-        // ✅ node-stream-zip 으로 압축 열기
-        const zip = new StreamZip.async({ file: jarPath });
-        const entries = await zip.entries();
+  // ✅ unzipit 으로 압축 열기 (Buffer/Uint8Array 직접 사용)
+  const { entries } = await unzip(response.data);
 
-        // ✅ 사전 필터링
-        const assetEntries = Object.keys(entries).filter(entryName =>
-          requiredPrefixes.some(prefix => entryName.startsWith(prefix))
+        // ✅ 사전 필터링 (디렉토리 엔트리 제외)
+        const allNames = Object.keys(entries);
+        const assetEntries = allNames.filter(name =>
+          !name.endsWith('/') && requiredPrefixes.some(prefix => name.startsWith(prefix))
         );
 
         //병렬 제한 32
         const limit = pLimit(32);
         let savedCount = 0;
 
-        await Promise.all(assetEntries.map(entryName =>
+        await Promise.all(assetEntries.map(name =>
           limit(async () => {
-            const relativePath = entryName.replace(/^client\/assets\//, 'assets/');
+            const relativePath = name.replace(/^client\/assets\//, 'assets/');
             const fullPath = path.join(CACHE_DIR, relativePath);
 
             await ensureDir(path.dirname(fullPath));
 
-            // 파일 크기가 작아서 entryData가 더 효율적
-            const data = await zip.entryData(entryName);
+            const entry = entries[name];
+            // binary data as Uint8Array
+            const data = new Uint8Array(await entry.arrayBuffer());
             await fs.writeFile(fullPath, data);
 
             savedCount++;
           })
         ));
 
-        await zip.close();
-
-        // ✅ client.jar 삭제 (캐시 공간 절약)
-        await fs.unlink(jarPath);
-
-        await fs.writeFile(CACHE_COMPLETE_FLAG, new Date().toISOString());
+  await fs.writeFile(CACHE_COMPLETE_FLAG, new Date().toISOString());
         console.log(`Asset caching complete. ${savedCount} assets saved.`);
         event.sender.send('assets-downloaded', []);
 
