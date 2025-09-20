@@ -608,7 +608,6 @@ async function processBlockDisplay(item) {
             if (geometryData && geometryData.length > 0) {
                 allGeometryData.push({
                     modelMatrix: modelMatrix.elements,
-                    modelKey: resolved.id,
                     geometries: geometryData
                 });
             }

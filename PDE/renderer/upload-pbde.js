@@ -100,8 +100,6 @@ const blockTextureCache = new Map(); // texPath -> THREE.Texture
 const blockTexturePromiseCache = new Map(); // texPath -> Promise<THREE.Texture>
 const blockMaterialCache = new Map(); // key: `${texPath}|${tintHex}` -> THREE.Material
 const blockMaterialPromiseCache = new Map(); // same key -> Promise<THREE.Material>
-// Reusable merged geometry cache: `${modelKey}|${texPath}|${tint}` -> BufferGeometry
-const blockMergedGeomCache = new Map();
 
 // Shared placeholder assets
 let sharedPlaceholderMaterial = null;
@@ -360,12 +358,7 @@ function createBlockDisplayFromData(data, gen) {
         }
 
         for (const entry of groups.values()) {
-            const cacheKey = `${model.modelKey || 'unknown'}|${entry.texPath}|${entry.tintHex >>> 0}`;
-            let mergedGeom = blockMergedGeomCache.get(cacheKey);
-            if (!mergedGeom) {
-                mergedGeom = entry.geoms.length > 1 ? mergeIndexedGeometries(entry.geoms) : entry.geoms[0];
-                blockMergedGeomCache.set(cacheKey, mergedGeom);
-            }
+            const mergedGeom = entry.geoms.length > 1 ? mergeIndexedGeometries(entry.geoms) : entry.geoms[0];
             // Dispose unmerged inputs if merged
             if (mergedGeom && entry.geoms.length > 1) {
                 for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
@@ -601,9 +594,6 @@ function loadpbde(file) {
     blockTextureCache.forEach((tex) => { try { disposeTexture(tex); } catch {} });
     blockTextureCache.clear();
     blockTexturePromiseCache.clear();
-    // Geom cache can be kept across reloads for reuse, but if you suspect growth, you can clear it:
-    // blockMergedGeomCache.forEach(g => { try { g.dispose(); } catch {} });
-    // blockMergedGeomCache.clear();
 
     // Dispose shared placeholder material so it doesn't accumulate
     if (sharedPlaceholderMaterial) { try { sharedPlaceholderMaterial.dispose(); } catch {} }
@@ -699,54 +689,30 @@ function loadpbde(file) {
                             headGroup.add(createOptimizedHeadMerged(texture));
                         };
 
-                        // Async ImageBitmap path with concurrency limit, cached by URL
-                        const loadHeadTexture = async (url) => {
-                            // reuse if loaded or in-flight
-                            if (textureCache.has(url)) {
-                                const cached = textureCache.get(url);
-                                if (cached instanceof THREE.Texture) return cached;
-                                return new Promise((resolve, reject) => cached.callbacks.push(resolve));
+                        if (textureCache.has(item.textureUrl)) {
+                            const cached = textureCache.get(item.textureUrl);
+                            if (cached instanceof THREE.Texture) {
+                                onTextureLoad(cached);
+                            } else {
+                                cached.callbacks.push(onTextureLoad);
                             }
-                            const ph = { callbacks: [] };
-                            textureCache.set(url, ph);
-                            try {
-                                await acquireTextureSlot();
-                                // Fetch as blob via Image loader to avoid CORS surprises if remote
-                                const tex = await new Promise((resolve, reject) => {
-                                    const img = new Image();
-                                    img.crossOrigin = 'anonymous';
-                                    img.onload = async () => {
-                                        try {
-                                            const bmp = await createImageBitmap(img);
-                                            const t = new THREE.Texture(bmp);
-                                            t.magFilter = THREE.NearestFilter;
-                                            t.minFilter = THREE.NearestFilter;
-                                            t.generateMipmaps = false;
-                                            t.colorSpace = THREE.SRGBColorSpace;
-                                            t.needsUpdate = true;
-                                            resolve(t);
-                                        } catch (e) { reject(e); }
-                                    };
-                                    img.onerror = (e) => reject(e);
-                                    img.src = url;
-                                });
-                                if (myGen !== currentLoadGen) {
-                                    try { disposeTexture(tex); } catch {}
-                                    textureCache.delete(url);
-                                    throw new Error('Stale generation');
-                                }
-                                textureCache.set(url, tex);
-                                ph.callbacks.forEach(cb => cb(tex));
-                                return tex;
-                            } finally {
-                                releaseTextureSlot();
-                            }
-                        };
+                        } else {
+                            const loadingPlaceholder = { callbacks: [onTextureLoad] };
+                            textureCache.set(item.textureUrl, loadingPlaceholder);
 
-                        loadHeadTexture(item.textureUrl).then(onTextureLoad).catch(err => {
-                            console.error('플레이어 머리 텍스처 로드 실패:', err);
-                            textureCache.delete(item.textureUrl);
-                        });
+                            textureLoader.load(item.textureUrl, (texture) => {
+                                if (myGen !== currentLoadGen) {
+                                    try { texture.dispose(); } catch {}
+                                    textureCache.delete(item.textureUrl);
+                                    return;
+                                }
+                                textureCache.set(item.textureUrl, texture);
+                                loadingPlaceholder.callbacks.forEach(cb => cb(texture));
+                            }, undefined, (err) => {
+                                console.error('텍스처 로드 실패:', err);
+                                textureCache.delete(item.textureUrl);
+                            });
+                        }
 
                         const finalMatrix = new THREE.Matrix4();
                         finalMatrix.fromArray(item.transform);
