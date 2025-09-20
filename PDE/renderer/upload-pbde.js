@@ -124,6 +124,77 @@ function releaseTextureSlot() {
     }
 }
 
+// --- Player head texture caches ---
+const headTextureCache = new Map(); // url -> THREE.Texture
+const headTexturePromiseCache = new Map(); // `${gen}|${url}` -> Promise<THREE.Texture>
+
+function dataUrlToBlob(dataUrl) {
+    try {
+        const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
+        if (!m) return null;
+        const mime = m[1] || 'image/png';
+        const b64 = m[2] || '';
+        const bin = atob(b64);
+        const len = bin.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+    } catch {
+        return null;
+    }
+}
+
+async function loadPlayerHeadTexture(url, gen) {
+    if (headTextureCache.has(url) && gen === currentLoadGen) return headTextureCache.get(url);
+    const promiseKey = `${gen}|${url}`;
+    if (headTexturePromiseCache.has(promiseKey)) return headTexturePromiseCache.get(promiseKey);
+
+    const p = (async () => {
+        await acquireTextureSlot();
+        try {
+            let blob;
+            if (url.startsWith('data:')) {
+                blob = dataUrlToBlob(url);
+                if (!blob) throw new Error('Invalid data URL');
+            } else {
+                const resp = await fetch(url, { mode: 'cors' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const buf = await resp.arrayBuffer();
+                const ctype = resp.headers.get('content-type') || 'image/png';
+                blob = new Blob([buf], { type: ctype });
+            }
+
+            const imageBitmap = await createImageBitmap(blob);
+            const tex = new THREE.Texture(imageBitmap);
+            // Entity texture settings
+            tex.magFilter = THREE.NearestFilter;
+            tex.minFilter = THREE.NearestFilter;
+            tex.generateMipmaps = false;
+            tex.anisotropy = 1;
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.wrapS = THREE.ClampToEdgeWrapping;
+            tex.wrapT = THREE.ClampToEdgeWrapping;
+            tex.needsUpdate = true;
+
+            if (gen !== currentLoadGen) {
+                disposeTexture(tex);
+                throw new Error('Stale generation');
+            }
+            headTextureCache.set(url, tex);
+            return tex;
+        } finally {
+            releaseTextureSlot();
+        }
+    })();
+
+    headTexturePromiseCache.set(promiseKey, p);
+    try {
+        return await p;
+    } finally {
+        headTexturePromiseCache.delete(promiseKey);
+    }
+}
+
 // Load generation token to ignore late async results after reload
 let currentLoadGen = 0;
 
@@ -332,56 +403,73 @@ function createBlockDisplayFromData(data, gen) {
     finalGroup.matrix.copy(finalMatrix);
     ensureSharedPlaceholder();
 
+    // Helper: apply a matrix to position and normal attributes in-place
+    const applyMatrixToGeometry = (geom, mat4) => {
+        const pos = geom.getAttribute('position');
+        const nor = geom.getAttribute('normal');
+        const v = new THREE.Vector3();
+        const n = new THREE.Vector3();
+        const normalMat = new THREE.Matrix3().getNormalMatrix(mat4);
+        for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).applyMatrix4(mat4);
+            pos.setXYZ(i, v.x, v.y, v.z);
+            if (nor) {
+                n.fromBufferAttribute(nor, i).applyMatrix3(normalMat).normalize();
+                nor.setXYZ(i, n.x, n.y, n.z);
+            }
+        }
+        pos.needsUpdate = true;
+        if (nor) nor.needsUpdate = true;
+        // Bounding sphere stays roughly centered around block space
+        geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0.5, 0.5, 0.5), 0.9);
+    };
+
+    // Collect and bake transforms across ALL models, then group by material
+    const groups = new Map(); // key -> { texPath, tintHex, geoms: [] }
     for (const model of data.models) {
-        const modelGroup = new THREE.Group();
-        modelGroup.matrixAutoUpdate = false;
         const modelMatrix = new THREE.Matrix4();
         modelMatrix.fromArray(model.modelMatrix);
-        modelGroup.matrix.copy(modelMatrix);
-
-        // Group geometries by material key to merge and reduce draw calls
-        const groups = new Map(); // key -> { texPath, tintHex, geoms: [] }
         for (const geomData of model.geometries) {
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(geomData.positions), 3));
+            geom.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(geomData.normals), 3));
+            geom.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(geomData.uvs), 2));
+            geom.setIndex(geomData.indices);
+            applyMatrixToGeometry(geom, modelMatrix);
+
             const key = `${geomData.texPath}|${(geomData.tintHex ?? 0xffffff) >>> 0}`;
             let entry = groups.get(key);
             if (!entry) {
                 entry = { texPath: geomData.texPath, tintHex: geomData.tintHex ?? 0xffffff, geoms: [] };
                 groups.set(key, entry);
             }
-            const geom = new THREE.BufferGeometry();
-            geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(geomData.positions), 3));
-            geom.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(geomData.normals), 3));
-            geom.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(geomData.uvs), 2));
-            geom.setIndex(geomData.indices);
-            geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0.5, 0.5, 0.5), 0.9);
             entry.geoms.push(geom);
         }
+    }
 
-        for (const entry of groups.values()) {
-            const mergedGeom = entry.geoms.length > 1 ? mergeIndexedGeometries(entry.geoms) : entry.geoms[0];
-            // Dispose unmerged inputs if merged
-            if (mergedGeom && entry.geoms.length > 1) {
-                for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
-            }
-            const mesh = new THREE.Mesh(mergedGeom, sharedPlaceholderMaterial);
-            mesh.castShadow = false;
-            mesh.receiveShadow = false;
-            modelGroup.add(mesh);
-            (async () => {
-                try {
-                    const mat = await getBlockMaterial(entry.texPath, entry.tintHex, gen);
-                    if (gen !== currentLoadGen) {
-                        // Stale: material was disposed in getBlockMaterial
-                        return;
-                    }
-                    mesh.material = mat;
-                    mesh.material.needsUpdate = true;
-                } catch (e) {
-                    console.warn(`[Texture] Error while loading ${entry.texPath}:`, e);
-                }
-            })();
+    // Create one mesh per material (merged), minimizing draw calls
+    for (const entry of groups.values()) {
+        const mergedGeom = entry.geoms.length > 1 ? mergeIndexedGeometries(entry.geoms) : entry.geoms[0];
+        if (mergedGeom && entry.geoms.length > 1) {
+            for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
         }
-        finalGroup.add(modelGroup);
+        const mesh = new THREE.Mesh(mergedGeom, sharedPlaceholderMaterial);
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
+        finalGroup.add(mesh);
+
+        (async () => {
+            try {
+                const mat = await getBlockMaterial(entry.texPath, entry.tintHex, gen);
+                if (gen !== currentLoadGen) {
+                    return; // stale
+                }
+                mesh.material = mat;
+                mesh.material.needsUpdate = true;
+            } catch (e) {
+                console.warn(`[Texture] Error while loading ${entry.texPath}:`, e);
+            }
+        })();
     }
 
     return finalGroup;
@@ -595,6 +683,11 @@ function loadpbde(file) {
     blockTextureCache.clear();
     blockTexturePromiseCache.clear();
 
+    // 1-1-c. 플레이어 헤드 텍스처 캐시 해제 및 초기화
+    headTextureCache.forEach((tex) => { try { disposeTexture(tex); } catch {} });
+    headTextureCache.clear();
+    headTexturePromiseCache.clear();
+
     // Dispose shared placeholder material so it doesn't accumulate
     if (sharedPlaceholderMaterial) { try { sharedPlaceholderMaterial.dispose(); } catch {} }
     sharedPlaceholderMaterial = null;
@@ -680,39 +773,19 @@ function loadpbde(file) {
                         headGroup.userData.isPlayerHead = true;
                         headGroup.userData.gen = myGen;
 
-                        const onTextureLoad = (texture) => {
-                            if (myGen !== currentLoadGen) {
-                                // Stale load: dispose the texture and skip adding
-                                try { texture.dispose(); } catch {}
-                                return;
-                            }
-                            headGroup.add(createOptimizedHeadMerged(texture));
-                        };
-
-                        if (textureCache.has(item.textureUrl)) {
-                            const cached = textureCache.get(item.textureUrl);
-                            if (cached instanceof THREE.Texture) {
-                                onTextureLoad(cached);
-                            } else {
-                                cached.callbacks.push(onTextureLoad);
-                            }
-                        } else {
-                            const loadingPlaceholder = { callbacks: [onTextureLoad] };
-                            textureCache.set(item.textureUrl, loadingPlaceholder);
-
-                            textureLoader.load(item.textureUrl, (texture) => {
+                        (async () => {
+                            try {
+                                const tex = await loadPlayerHeadTexture(item.textureUrl, myGen);
                                 if (myGen !== currentLoadGen) {
-                                    try { texture.dispose(); } catch {}
-                                    textureCache.delete(item.textureUrl);
+                                    // stale
+                                    try { disposeTexture(tex); } catch {}
                                     return;
                                 }
-                                textureCache.set(item.textureUrl, texture);
-                                loadingPlaceholder.callbacks.forEach(cb => cb(texture));
-                            }, undefined, (err) => {
-                                console.error('텍스처 로드 실패:', err);
-                                textureCache.delete(item.textureUrl);
-                            });
-                        }
+                                headGroup.add(createOptimizedHeadMerged(tex));
+                            } catch (err) {
+                                console.error('플레이어 헤드 텍스처 로드 실패:', err);
+                            }
+                        })();
 
                         const finalMatrix = new THREE.Matrix4();
                         finalMatrix.fromArray(item.transform);
