@@ -454,9 +454,9 @@ function createBlockDisplayFromData(data, gen) {
         if (mergedGeom && entry.geoms.length > 1) {
             for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
         }
-        // Ensure merged geometry has proper bounds
-        if (!mergedGeom.boundingBox) mergedGeom.computeBoundingBox();
-        if (!mergedGeom.boundingSphere) mergedGeom.computeBoundingSphere();
+    // Ensure merged geometry has proper bounds (important for models larger than 1x1 like beds, banners)
+    mergedGeom.computeBoundingBox();
+    mergedGeom.computeBoundingSphere();
         const mesh = new THREE.Mesh(mergedGeom, sharedPlaceholderMaterial);
         mesh.castShadow = false;
         mesh.receiveShadow = false;

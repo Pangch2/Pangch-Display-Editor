@@ -1,5 +1,3 @@
-
-
 import * as pako from 'pako';
 import * as THREE from 'three/webgpu';
 // tintColor is not a module, so it can't be imported directly in the worker.
@@ -194,7 +192,7 @@ function hasHardcodedBlockstate(p) {
 
 function isHardcodedModelPath(p) {
     if (!p) return false;
-    return /(chest|conduit|shulker|bed)/i.test(p);
+    return /(chest|conduit|shulker|bed|banner)/i.test(p);
 }
 
 function isHardcodedModelId(modelId) {
@@ -437,6 +435,14 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
                 tintHex = getTextureColor(modelResLoc, undefined, ti);
             } catch (_) { tintHex = 0xffffff; }
 
+            // If this is a banner model and the element is the flag, override tint with bannerColorHex
+            if (opts && opts.bannerColorHex != null) {
+                const elName = (el.name || '').toLowerCase();
+                if (elName === 'flag') {
+                    tintHex = opts.bannerColorHex >>> 0;
+                }
+            }
+
             const buff = addBuffer(texAssetPath, tintHex);
             const v = getFaceVertices(dir, from, to);
             if (!v) continue;
@@ -507,7 +513,8 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
                 : (resolved.json && Array.isArray(resolved.json.texture_size))
                     ? resolved.json.texture_size
                     : null;
-            const useTexSize = hasExplicitFaceUV && texSize && !resolved.fromHardcoded;
+            // Use declared texture_size whenever explicit UVs are provided (including hardcoded models like banner)
+            const useTexSize = hasExplicitFaceUV && !!texSize;
             const uvScaleU = useTexSize ? texSize[0] : 16;
             const uvScaleV = useTexSize ? texSize[1] : 16;
             const u0 = uv[0] / uvScaleU, v0 = 1 - uv[1] / uvScaleV;
@@ -540,6 +547,7 @@ async function processBlockDisplay(item) {
         const hardcodedStatePath = `hardcoded/blockstates/${path}.json`;
 
         let blockstate;
+        const isBannerBlock = /(?:^|_|:)banner$/.test(path) || /(?:^|_)wall_banner$/.test(path) || /_banner$/.test(path);
         try {
             if (hasHardcodedState) {
                 try {
@@ -551,8 +559,12 @@ async function processBlockDisplay(item) {
                 blockstate = await readJsonAsset(blockstatePath);
             }
         } catch (e) {
-            // console.warn(`[Block] Failed to load blockstate for ${item.name}:`, e.message);
-            return null;
+            // If banner blockstate is missing from assets, synthesize a minimal one that points to the banner model
+            if (isBannerBlock) {
+                blockstate = { variants: { "": { model: 'minecraft:block/banner' } } };
+            } else {
+                return null;
+            }
         }
         
         const modelCache = new Map();
@@ -594,6 +606,34 @@ async function processBlockDisplay(item) {
         }
 
         const allGeometryData = [];
+        // Detect banner color from item.name like "red_banner" or "red_wall_banner" and map to tint
+        let bannerColorHex = null;
+        try {
+            const nameLower = String(item.name || '').toLowerCase();
+            const m = nameLower.match(/(?:^|\W)(white|orange|magenta|light_blue|yellow|lime|pink|gray|light_gray|cyan|purple|blue|brown|green|red|black)_(?:wall_)?banner(?:$|\W)/);
+            if (m) {
+                const colorName = m[1];
+                const dyeMap = {
+                    white: 0xf9fffe,
+                    orange: 0xf9801d,
+                    magenta: 0xc74ebd,
+                    light_blue: 0x3ab3da,
+                    yellow: 0xfed83d,
+                    lime: 0x80c71f,
+                    pink: 0xf38baa,
+                    gray: 0x474f52,
+                    light_gray: 0x9d9d97,
+                    cyan: 0x169c9c,
+                    purple: 0x8932b8,
+                    blue: 0x3c44aa,
+                    brown: 0x835432,
+                    green: 0x5e7c16,
+                    red: 0xb02e26,
+                    black: 0x1d1d21,
+                };
+                bannerColorHex = dyeMap[colorName] ?? null;
+            }
+        } catch { /* ignore */ }
         for (const apply of modelsToBuild) {
             if (!apply?.model) continue;
             const resolved = await resolveModelTree(apply.model, modelCache);
@@ -605,7 +645,8 @@ async function processBlockDisplay(item) {
             const geometryData = await buildBlockModelGeometryData(resolved, { 
                 uvlock: !!apply.uvlock, 
                 xRot: apply.x || 0, 
-                yRot: apply.y || 0 
+                yRot: apply.y || 0,
+                bannerColorHex: bannerColorHex,
             });
 
             if (geometryData && geometryData.length > 0) {
