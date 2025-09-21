@@ -274,7 +274,7 @@ function matchVariantKey(variantKey, props) {
     for (const p of parts) {
         const [k, v] = p.split('=');
         if (!k) continue;
-        const addBuffer = (texPath, tintHex, signTexture) => {
+        if (v === undefined) return false;
         if ((props[k] || '') !== v) return false;
     }
     return true;
