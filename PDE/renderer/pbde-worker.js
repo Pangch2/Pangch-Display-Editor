@@ -312,7 +312,10 @@ function applyBlockstateRotation(matrix, rotX = 0, rotY = 0) {
     const pivot = new THREE.Vector3(0.5, 0.5, 0.5);
     const t1 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
     const t2 = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
-    const rx = new THREE.Matrix4().makeRotationX(THREE.MathUtils.degToRad(rotX));
+    // Note: In Minecraft blockstate, positive X rotation tilts the model toward the south (downward in +Z),
+    // which corresponds to a negative rotation in our right-handed coordinate setup.
+    // Using negative rotX here fixes facing up/down inversion seen in some block displays.
+    const rx = new THREE.Matrix4().makeRotationX(THREE.MathUtils.degToRad(-rotX));
     const ry = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(-rotY));
     const r = new THREE.Matrix4().multiply(rx).multiply(ry);
     const m = new THREE.Matrix4().multiply(t2).multiply(r).multiply(t1);

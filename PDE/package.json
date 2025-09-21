@@ -46,7 +46,8 @@
     "files": [
       "dist/**/*",
       "main.js",
-      "preload.js"
+      "preload.js",
+      "hardcoded/**/*"
     ],
     "icon": "resources/Pangch-Face.ico",
     "win": {

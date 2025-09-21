@@ -11,6 +11,8 @@ const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
 const CACHE_COMPLETE_FLAG = path.join(CACHE_DIR, '.cache-complete');
+// When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
+// For reading hardcoded JSON at runtime, prefer resolved path within the asar; when unpacked dev, use __dirname.
 const APP_ROOT = __dirname;
 const HARDCODED_DIR = path.join(APP_ROOT, 'hardcoded');
 
@@ -36,6 +38,7 @@ function createWindow() {
     win.webContents.openDevTools();
   } else {
     win.loadFile(path.join(__dirname, 'dist', 'index.html'));
+    win.webContents.openDevTools();
   }
 
   Menu.setApplicationMenu(null);
