@@ -1,0 +1,37 @@
+{
+    "texture_size": [64, 32],
+    "textures": {
+        "particle": "#sign",
+        "sign": "entity/signs/oak"
+    },
+	"elements": [
+		{
+			"name": "sign",
+			"from": [-0.003, 9.33683, 7.35039],
+			"to": [16.003, 17.33982, 8.68422],
+			"rotation": {"angle": 0, "axis": "y", "origin": [8, 9.20743, 7.91737]},
+			"faces": {
+				"north": {"uv": [28, 2, 52, 14], "texture": "#sign"},
+				"east": {"uv": [26, 2, 28, 14], "texture": "#sign"},
+				"south": {"uv": [2, 2, 26, 14], "texture": "#sign"},
+				"west": {"uv": [0, 2, 2, 14], "texture": "#sign"},
+				"up": {"uv": [2, 0, 26, 2], "texture": "#sign"},
+				"down": {"uv": [26, 0, 50, 2], "texture": "#sign"}
+			}
+		},
+		{
+			"name": "stick",
+			"from": [7.33308, 0, 7.35039],
+			"to": [8.66692, 9.33683, 8.68422],
+			"rotation": {"angle": 0, "axis": "y", "origin": [8, 9.20743, 7.91737]},
+			"faces": {
+				"north": {"uv": [6, 16, 8, 30], "texture": "#sign"},
+				"east": {"uv": [4, 16, 6, 30], "texture": "#sign"},
+				"south": {"uv": [2, 16, 4, 30], "texture": "#sign"},
+				"west": {"uv": [0, 16, 2, 30], "texture": "#sign"},
+				"up": {"uv": [2, 14, 4, 16], "texture": "#sign"},
+				"down": {"uv": [6, 16, 4, 14], "texture": "#sign"}
+			}
+		}
+	]
+}

@@ -1,0 +1,73 @@
+{
+  "parent": "builtin/entity",
+  "textures": {
+    "layer0": "entity/trident"
+  },
+  "elements": [
+    {
+      "name": "pole",
+      "from": [7.5, 5.0, 7.5],
+      "to": [8.5, 30.0, 8.5],
+      "faces": {
+        "north": { "uv": [0, 6], "texture": "#layer0" },
+        "east":  { "uv": [0, 6], "texture": "#layer0" },
+        "south": { "uv": [0, 6], "texture": "#layer0" },
+        "west":  { "uv": [0, 6], "texture": "#layer0" },
+        "up":    { "uv": [0, 6], "texture": "#layer0" },
+        "down":  { "uv": [0, 6], "texture": "#layer0" }
+      }
+    },
+    {
+      "name": "base",
+      "from": [6.0, 3.0, 7.5],
+      "to": [9.0, 5.0, 8.5],
+      "faces": {
+        "north": { "uv": [4, 0], "texture": "#layer0" },
+        "east":  { "uv": [4, 0], "texture": "#layer0" },
+        "south": { "uv": [4, 0], "texture": "#layer0" },
+        "west":  { "uv": [4, 0], "texture": "#layer0" },
+        "up":    { "uv": [4, 0], "texture": "#layer0" },
+        "down":  { "uv": [4, 0], "texture": "#layer0" }
+      }
+    },
+    {
+      "name": "left_spike",
+      "from": [5.0, 0.0, 7.5],
+      "to": [6.0, 4.0, 8.5],
+      "faces": {
+        "north": { "uv": [4, 3], "texture": "#layer0" },
+        "east":  { "uv": [4, 3], "texture": "#layer0" },
+        "south": { "uv": [4, 3], "texture": "#layer0" },
+        "west":  { "uv": [4, 3], "texture": "#layer0" },
+        "up":    { "uv": [4, 3], "texture": "#layer0" },
+        "down":  { "uv": [4, 3], "texture": "#layer0" }
+      }
+    },
+    {
+      "name": "middle_spike",
+      "from": [7.5, -1.0, 7.5],
+      "to": [8.5, 3.0, 8.5],
+      "faces": {
+        "north": { "uv": [0, 0], "texture": "#layer0" },
+        "east":  { "uv": [0, 0], "texture": "#layer0" },
+        "south": { "uv": [0, 0], "texture": "#layer0" },
+        "west":  { "uv": [0, 0], "texture": "#layer0" },
+        "up":    { "uv": [0, 0], "texture": "#layer0" },
+        "down":  { "uv": [0, 0], "texture": "#layer0" }
+      }
+    },
+    {
+      "name": "right_spike",
+      "from": [10.0, 0.0, 7.5],
+      "to": [11.0, 4.0, 8.5],
+      "faces": {
+        "north": { "uv": [4, 3], "texture": "#layer0" },
+        "east":  { "uv": [4, 3], "texture": "#layer0" },
+        "south": { "uv": [4, 3], "texture": "#layer0" },
+        "west":  { "uv": [4, 3], "texture": "#layer0" },
+        "up":    { "uv": [4, 3], "texture": "#layer0" },
+        "down":  { "uv": [4, 3], "texture": "#layer0" }
+      }
+    }
+  ]
+}

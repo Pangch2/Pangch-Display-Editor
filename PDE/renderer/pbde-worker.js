@@ -192,7 +192,7 @@ function hasHardcodedBlockstate(p) {
 
 function isHardcodedModelPath(p) {
     if (!p) return false;
-    return /(chest|conduit|shulker|bed|banner)/i.test(p);
+    return /(chest|conduit|shulker|bed|banner|sign|decorated_pot|creeper_head|dragon_head|piglin_head|zombie_head|shield|trident)/i.test(p);
 }
 
 function isHardcodedModelId(modelId) {
@@ -274,7 +274,7 @@ function matchVariantKey(variantKey, props) {
     for (const p of parts) {
         const [k, v] = p.split('=');
         if (!k) continue;
-        if (v === undefined) return false;
+        const addBuffer = (texPath, tintHex, signTexture) => {
         if ((props[k] || '') !== v) return false;
     }
     return true;
@@ -513,7 +513,7 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
                 : (resolved.json && Array.isArray(resolved.json.texture_size))
                     ? resolved.json.texture_size
                     : null;
-            // Use declared texture_size whenever explicit UVs are provided (including hardcoded models like banner)
+            // Use declared texture_size whenever explicit UVs are provided
             const useTexSize = hasExplicitFaceUV && !!texSize;
             const uvScaleU = useTexSize ? texSize[0] : 16;
             const uvScaleV = useTexSize ? texSize[1] : 16;
