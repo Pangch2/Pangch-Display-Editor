@@ -514,7 +514,8 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
                     ? resolved.json.texture_size
                     : null;
             // Use declared texture_size whenever explicit UVs are provided
-            const useTexSize = hasExplicitFaceUV && !!texSize;
+            //이 아래 바뀌면 하드코딩된 블럭 버그발생
+            const useTexSize = hasExplicitFaceUV && texSize && !resolved.fromHardcoded;
             const uvScaleU = useTexSize ? texSize[0] : 16;
             const uvScaleV = useTexSize ? texSize[1] : 16;
             const u0 = uv[0] / uvScaleU, v0 = 1 - uv[1] / uvScaleV;
