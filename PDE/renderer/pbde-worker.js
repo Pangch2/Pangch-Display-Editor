@@ -329,6 +329,19 @@ function uvRotated(uv, rotation) {
     return uv;
 }
 
+// 일부 하드코딩 모델(sign 등)은 texture_size(예: 32x32)를 정확히 적용해야 정상적인 UV 스케일이 됨.
+// 기존에는 fromHardcoded 일 경우 texture_size 를 무시하여 표지판이 찌그러지는 문제가 있었음.
+// 다른 하드코딩 블럭(침대/상자 등)에서는 texture_size 적용 시 UV 오류가 생겨서 기본 정책은 유지하고
+// 예외 허용 목록(allow list)을 통해 필요한 모델만 texture_size 를 사용하도록 한다.
+function shouldAllowHardcodedTextureSize(resolved) {
+    if (!resolved || !resolved.id) return false;
+    const id = resolved.id; // ex) minecraft:block/sign
+    // sign / wall_sign / hanging_sign / standing variants 모두 포괄
+    if (/([^:]*:)?block\/(?:.*_)?sign/.test(id)) return true;
+    // 필요한 경우 추가 (예: 배너 등) -> if (/banner/.test(id)) return true;
+    return false;
+}
+
 function rotateCornersAroundPivot(corners, degreesCW, pivotU = 0.5, pivotV = 0.5) {
     const r = ((degreesCW % 360) + 360) % 360;
     if (r === 0) return corners;
@@ -514,8 +527,10 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
                     ? resolved.json.texture_size
                     : null;
             // Use declared texture_size whenever explicit UVs are provided
-            //이 아래 바뀌면 하드코딩된 블럭 버그발생
-            const useTexSize = hasExplicitFaceUV && texSize && !resolved.fromHardcoded;
+            // 기본적으로 하드코딩된 모델(fromHardcoded)은 texture_size를 무시(기존 동작)하되,
+            // 표지판과 같이 예외 허용 목록에 포함된 모델은 texture_size를 사용한다.
+            const allowHardcodedTexSize = resolved.fromHardcoded && shouldAllowHardcodedTextureSize(resolved);
+            const useTexSize = hasExplicitFaceUV && texSize && (!resolved.fromHardcoded || allowHardcodedTexSize);
             const uvScaleU = useTexSize ? texSize[0] : 16;
             const uvScaleV = useTexSize ? texSize[1] : 16;
             const u0 = uv[0] / uvScaleU, v0 = 1 - uv[1] / uvScaleV;
