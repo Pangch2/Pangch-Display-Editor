@@ -240,9 +240,22 @@ async function resolveModelTree(modelId, cache = new Map()) {
             json = await loadModelJson(assetsPath);
         }
     } catch (e) {
-        // console.warn(`[Model] Missing or unreadable model ${modelId} at ${hardcodedFirst ? hardcodedPath : assetsPath}:`, e.message);
-        cache.set(modelId, null);
-        return null;
+        // Attempt alternate non-standard directory 'models/items/' (some custom packs)
+        try {
+            const { path } = nsAndPathFromId(modelId);
+            if (/^item\//.test(path)) {
+                const alt = assetsPath.replace('/models/item/', '/models/items/');
+                if (alt !== assetsPath) {
+                    json = await loadModelJson(alt);
+                }
+            }
+        } catch (e2) {
+            // ignore fallback failure
+        }
+        if (!json) {
+            cache.set(modelId, null);
+            return null;
+        }
     }
 
     let mergedTextures = { ...(json.textures || {}) };
@@ -666,6 +679,7 @@ async function processBlockDisplay(item) {
             });
 
             if (geometryData && geometryData.length > 0) {
+                // NOTE: Do NOT center block_display geometries. User requested only item_display (block-like) gets -0.5 shift.
                 allGeometryData.push({
                     modelMatrix: modelMatrix.elements,
                     geometries: geometryData
@@ -683,6 +697,428 @@ async function processBlockDisplay(item) {
         return null;
     } catch (e) {
         // console.warn(`[Block] Failed to process block display for ${item.name}:`, e);
+        return null;
+    }
+}
+
+// ===================== Item Model Processing (Phase 1) =====================
+
+// Caches for item definitions and generated geometry
+const itemDefinitionCache = new Map(); // itemName -> definition json (assets/minecraft/items/{name}.json)
+const itemModelGeometryCache = new Map(); // modelId|tint -> geometryData array
+const itemModelHasElementsCache = new Map(); // modelId -> boolean (true if model had elements)
+
+function parseItemName(raw) {
+    if (!raw) return { baseName: '', displayType: null };
+    const base = raw.split('[')[0];
+    let displayType = null;
+    const m = raw.match(/\[(.*)\]/);
+    if (m && m[1]) {
+        for (const part of m[1].split(',')) {
+            const [k, v] = part.split('=').map(s => s && s.trim());
+            if (k === 'display') displayType = v || null;
+        }
+    }
+    return { baseName: base, displayType };
+}
+
+async function loadItemDefinition(itemName) {
+    if (itemDefinitionCache.has(itemName)) return itemDefinitionCache.get(itemName);
+    const path = `assets/minecraft/items/${itemName}.json`;
+    try {
+        const json = await readJsonAsset(path);
+        itemDefinitionCache.set(itemName, json);
+        return json;
+    } catch (_) {
+        itemDefinitionCache.set(itemName, null);
+        return null;
+    }
+}
+
+function isBuiltinModel(resolved) {
+    if (!resolved) return false;
+    if (resolved.id.startsWith('builtin/')) return true;
+    return resolved.parentChain.some(p => p.startsWith('builtin/'));
+}
+
+function extractLayer0Texture(resolved) {
+    if (!resolved) return null;
+    const textures = resolved.textures || {};
+    const layer0 = textures.layer0 || textures.texture || null;
+    if (!layer0) return null;
+    return resolveTextureRef(layer0, textures);
+}
+
+// Build a simple generated-plane (front/back) geometry when model has no elements.
+function buildGeneratedPlaneGeometry(texId) {
+    if (!texId) return [];
+    const texPath = textureIdToAssetPath(texId);
+    // Quad thickness epsilon (rendered as two quads for front/back to avoid culling issues)
+    const from = [0, 0, 0];
+    const to = [16, 16, 0];
+    const positionsFront = [ // CCW winding facing +Z
+        0, 1, 0,  1, 1, 0,  1, 0, 0,  0, 0, 0
+    ];
+    const positionsBack = [ // CCW winding facing -Z
+        0, 1, 0,  0, 0, 0,  1, 0, 0,  1, 1, 0
+    ];
+    const normalsFront = [0,0,1, 0,0,1, 0,0,1, 0,0,1];
+    const normalsBack = [0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1];
+    const uvsFront = [0,1, 1,1, 1,0, 0,0];
+    // Re-map back face UVs so the texture appears upright (not vertically flipped) when viewed from behind.
+    // Vertex order for back face: TL, BL, BR, TR (positionsBack). Provide matching oriented UVs.
+    const uvsBack  = [0,1, 0,0, 1,0, 1,1];
+    const indices = [0,1,2, 0,2,3];
+
+    // Scale positions from unit to 16x16 block space (already normalized pipeline expects /16 later? -> Our block builder divides by 16.
+    // For simplicity keep them in 0..1 here, consistent with block builder output that already expects divided coordinates.)
+    // Compose combined geometry arrays
+    function push(buffers, pos, nor, uvArr) {
+        const base = buffers.positions.length / 3;
+        buffers.positions.push(...pos);
+        buffers.normals.push(...nor);
+        buffers.uvs.push(...uvArr);
+        for (let i = 0; i < indices.length; i++) buffers.indices.push(base + indices[i]);
+    }
+
+    const tintHex = 0xffffff;
+    const buffer = { positions: [], normals: [], uvs: [], indices: [], texPath, tintHex };
+    push(buffer, positionsFront, normalsFront, uvsFront);
+    push(buffer, positionsBack, normalsBack, uvsBack);
+    return [buffer];
+}
+
+// Builtin item special geometry: two full planes (front/back) plus side faces only along outer opaque pixel border.
+// Increase thickness a bit for clearer visibility (was 1/16)
+const BUILTIN_ITEM_DEPTH = 1/16; // total thickness between planes (adjust if too thick)
+const builtinBorderGeometryCache = new Map(); // texPath -> geometry array
+async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
+    if (!texId) return [];
+    const texPath = textureIdToAssetPath(texId);
+    if (builtinBorderGeometryCache.has(texPath)) return builtinBorderGeometryCache.get(texPath);
+    try {
+        const asset = await workerAssetProvider.getAsset(texPath);
+        let bytes;
+        if (asset instanceof Uint8Array) bytes = asset; else if (asset && typeof asset === 'object' && asset.type === 'Buffer' && Array.isArray(asset.data)) bytes = new Uint8Array(asset.data); else if (typeof asset === 'string') {
+            bytes = new Uint8Array(asset.length); for (let i=0;i<asset.length;i++) bytes[i] = asset.charCodeAt(i) & 0xff;
+        } else return [];
+        const blob = new Blob([bytes], { type: 'image/png' });
+        const bmp = await createImageBitmap(blob);
+        const w = bmp.width, h = bmp.height;
+        if (!w || !h) return [];
+        const canvas = new OffscreenCanvas(w, h);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bmp, 0, 0);
+        const data = ctx.getImageData(0,0,w,h).data;
+        const alphaAt = (x,y) => data[(y*w + x)*4 + 3];
+        const isOpaque = (x,y) => x>=0 && y>=0 && x<w && y<h && alphaAt(x,y) > 0;
+        const isBoundary = (x,y) => {
+            if (!isOpaque(x,y)) return false;
+            return !isOpaque(x-1,y) || !isOpaque(x+1,y) || !isOpaque(x,y-1) || !isOpaque(x,y+1);
+        };
+
+        const positions = []; const normals = []; const uvs = []; const indices = [];
+        const pushQuad = (verts, normal, uvArr) => {
+            const base = positions.length / 3;
+            positions.push(...verts);
+            for (let i=0;i<4;i++) normals.push(...normal);
+            uvs.push(...uvArr);
+            // Flipped winding order to compensate for negative scale matrix
+            indices.push(base, base+2, base+1, base, base+3, base+2);
+        };
+        const dz = BUILTIN_ITEM_DEPTH / 2;
+        // Full front & back planes (single quads)
+        // Front (+Z) - Swapped to be a back-face to fix inversion
+        pushQuad([
+            0,1,dz, 0,0,dz, 1,0,dz, 1,1,dz
+        ], [0,0,-1], [0,1, 0,0, 1,0, 1,1]);
+        // Back (-Z) - Swapped to be a front-face to fix inversion
+        pushQuad([
+            0,1,-dz, 1,1,-dz, 1,0,-dz, 0,0,-dz
+        ], [0,0,1], [0,1, 1,1, 1,0, 0,0]);
+
+        // Side faces for boundary pixels
+        for (let y=0; y<h; y++) {
+            for (let x=0; x<w; x++) {
+                if (!isBoundary(x,y)) continue;
+                const x0 = x / w; const x1 = (x+1)/w;
+                const yTop = 1 - y / h; const yBot = 1 - (y+1)/h;
+                const u0 = x0; const u1 = x1; const v0 = yBot; const v1 = yTop; // pixel uv region
+                // West
+                if (!isOpaque(x-1,y)) {
+                    pushQuad([
+                        // Flipped winding to face outward
+                        x0,yTop,dz, x0,yTop,-dz, x0,yBot,-dz, x0,yBot,dz
+                    ], [-1,0,0], [u1,v1, u0,v1, u0,v0, u1,v0]);
+                }
+                // East
+                if (!isOpaque(x+1,y)) {
+                    pushQuad([
+                        // Flipped winding to face outward
+                        x1,yTop,-dz, x1,yTop,dz, x1,yBot,dz, x1,yBot,-dz
+                    ], [1,0,0], [u0,v1, u1,v1, u1,v0, u0,v0]);
+                }
+                // Top edge (neighbor y-1)
+                if (!isOpaque(x,y-1)) {
+                    pushQuad([
+                        // Outward normal (+Y) CCW from +Y viewpoint
+                        x0,yTop,dz, x1,yTop,dz, x1,yTop,-dz, x0,yTop,-dz
+                    ], [0,1,0], [u0,v1, u1,v1, u1,v0, u0,v0]);
+                }
+                // Bottom edge (neighbor y+1)
+                if (!isOpaque(x,y+1)) {
+                    pushQuad([
+                        // Outward normal (-Y) CCW from -Y viewpoint
+                        x0,yBot,-dz, x1,yBot,-dz, x1,yBot,dz, x0,yBot,dz
+                    ], [0,-1,0], [u0,v1, u1,v1, u1,v0, u0,v0]);
+                }
+            }
+        }
+        const geom = [{ positions, normals, uvs, indices, texPath, tintHex: 0xffffff }];
+        builtinBorderGeometryCache.set(texPath, geom);
+        return geom;
+    } catch (e) {
+        try { console.warn('[ItemModel] builtin border geometry failed for', texPath, e); } catch {}
+        return buildGeneratedPlaneGeometry(texId);
+    }
+}
+
+// Extrude only boundary (outer) opaque pixels of a 2D item texture into thin 3D voxels for a rim effect.
+const EXTRUDE_ITEM_DEPTH = 1/16; // Thickness along Z
+const extrudedItemGeometryCache = new Map(); // texPath -> geometry array
+async function buildExtrudedBoundaryGeometry(texId) {
+    if (!texId) return [];
+    const texPath = textureIdToAssetPath(texId);
+    if (extrudedItemGeometryCache.has(texPath)) return extrudedItemGeometryCache.get(texPath);
+    try {
+        const asset = await workerAssetProvider.getAsset(texPath);
+        let bytes;
+        if (asset instanceof Uint8Array) bytes = asset; else if (asset && typeof asset === 'object' && asset.type === 'Buffer' && Array.isArray(asset.data)) bytes = new Uint8Array(asset.data); else if (typeof asset === 'string') {
+            // Fallback string decode (may not be raw binary but attempt)
+            bytes = new Uint8Array(asset.length); for (let i=0;i<asset.length;i++) bytes[i] = asset.charCodeAt(i) & 0xff;
+        } else return [];
+        const blob = new Blob([bytes], { type: 'image/png' });
+        const bmp = await createImageBitmap(blob);
+        const w = bmp.width, h = bmp.height;
+        if (!w || !h) return [];
+        const canvas = new OffscreenCanvas(w, h);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bmp, 0, 0);
+        const data = ctx.getImageData(0,0,w,h).data;
+        const isOpaque = (x,y) => {
+            if (x < 0 || y < 0 || x >= w || y >= h) return false;
+            return data[(y*w + x)*4 + 3] > 0;
+        };
+        const positions = [];
+        const normals = [];
+        const uvs = [];
+        const indices = [];
+        const pushQuad = (vx, vy, vz, nx, ny, nz, uvArr) => {
+            const base = positions.length / 3;
+            positions.push(...vx);
+            for (let i=0;i<4;i++) normals.push(nx, ny, nz);
+            uvs.push(...uvArr);
+            indices.push(base, base+1, base+2, base, base+2, base+3);
+        };
+        const depth = EXTRUDE_ITEM_DEPTH / 2;
+        // Pass 1: merged horizontal strips for front/back
+        for (let y=0; y<h; y++) {
+            let runStart = -1;
+            for (let x=0; x<=w; x++) { // include sentinel at w
+                const opaque = x < w && isOpaque(x,y);
+                if (opaque && runStart === -1) {
+                    runStart = x;
+                } else if ((!opaque || x === w) && runStart !== -1) {
+                    const runEnd = x; // exclusive
+                    const x0 = runStart / w; const x1 = runEnd / w;
+                    const yTop = 1 - y / h; const yBot = 1 - (y+1)/h;
+                    const zF = depth; const zB = -depth;
+                    const u0 = x0; const u1 = x1; const vTop = yTop; const vBot = yBot;
+                    const stripUV = [u0,vTop, u1,vTop, u1,vBot, u0,vBot];
+                    // Front strip
+                    pushQuad([
+                        x0,yTop,zF,  x1,yTop,zF,  x1,yBot,zF,  x0,yBot,zF
+                    ], null, null, 0,0,1, stripUV);
+                    // Back strip
+                    pushQuad([
+                        x1,yTop,zB,  x0,yTop,zB,  x0,yBot,zB,  x1,yBot,zB
+                    ], null, null, 0,0,-1, stripUV);
+                    runStart = -1;
+                }
+            }
+        }
+
+        // Pass 2: boundary side faces (unchanged logic, but without per-pixel front/back duplication)
+        for (let y=0; y<h; y++) {
+            for (let x=0; x<w; x++) {
+                if (!isOpaque(x,y)) continue;
+                const boundary = (!isOpaque(x-1,y) || !isOpaque(x+1,y) || !isOpaque(x,y-1) || !isOpaque(x,y+1));
+                if (!boundary) continue;
+                const x0 = x / w; const x1 = (x+1)/w;
+                const yTop = 1 - y / h; const yBot = 1 - (y+1)/h;
+                const zF = depth; const zB = -depth;
+                const u0 = x0; const u1 = x1; const vTop = yTop; const vBot = yBot;
+                if (!isOpaque(x-1,y)) {
+                    pushQuad([
+                        x0,yTop,zB, x0,yTop,zF, x0,yBot,zF, x0,yBot,zB
+                    ], null, null, -1,0,0, [u0,vTop, u0,vTop, u0,vBot, u0,vBot]);
+                }
+                if (!isOpaque(x+1,y)) {
+                    pushQuad([
+                        x1,yTop,zF, x1,yTop,zB, x1,yBot,zB, x1,yBot,zF
+                    ], null, null, 1,0,0, [u1,vTop, u1,vTop, u1,vBot, u1,vBot]);
+                }
+                if (!isOpaque(x,y-1)) {
+                    pushQuad([
+                        x0,yTop,zB, x1,yTop,zB, x1,yTop,zF, x0,yTop,zF
+                    ], null, null, 0,1,0, [u0,vTop, u1,vTop, u1,vTop, u0,vTop]);
+                }
+                if (!isOpaque(x,y+1)) {
+                    pushQuad([
+                        x0,yBot,zF, x1,yBot,zF, x1,yBot,zB, x0,yBot,zB
+                    ], null, null, 0,-1,0, [u0,vBot, u1,vBot, u1,vBot, u0,vBot]);
+                }
+            }
+        }
+        const geom = [{ positions, normals, uvs, indices, texPath, tintHex: 0xffffff }];
+        extrudedItemGeometryCache.set(texPath, geom);
+        return geom;
+    } catch (e) {
+        try { console.warn('[ItemModel] extrude failed, fallback plane', texPath, e); } catch {}
+        return buildGeneratedPlaneGeometry(texId);
+    }
+}
+
+// Builtin / generated pixel-bounds cube: analyze alpha bounding box to size the cube.
+async function buildBuiltinPixelBoundsCubeGeometry(texId) {
+    if (!texId) return [];
+    const texPath = textureIdToAssetPath(texId);
+    try {
+        const asset = await workerAssetProvider.getAsset(texPath);
+        let bytes;
+        if (asset instanceof Uint8Array) bytes = asset; else if (asset && typeof asset === 'object' && asset.type === 'Buffer' && Array.isArray(asset.data)) bytes = new Uint8Array(asset.data); else return buildFallbackFullCube(texPath);
+        const blob = new Blob([bytes], { type: 'image/png' });
+        const bitmap = await createImageBitmap(blob);
+        const w = bitmap.width, h = bitmap.height;
+        if (!w || !h) return buildFallbackFullCube(texPath);
+        const canvas = new OffscreenCanvas(w, h);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bitmap, 0, 0);
+        const data = ctx.getImageData(0,0,w,h).data;
+        let minX=w, minY=h, maxX=-1, maxY=-1;
+        for (let y=0;y<h;y++) for (let x=0;x<w;x++) { const a = data[(y*w+x)*4+3]; if (a>0){ if(x<minX)minX=x; if(y<minY)minY=y; if(x>maxX)maxX=x; if(y>maxY)maxY=y; } }
+        if (maxX<minX || maxY<minY) return buildFallbackFullCube(texPath);
+        const rectW=(maxX-minX+1)/w, rectH=(maxY-minY+1)/h; const size=Math.max(rectW, rectH);
+        const centerX=(minX+maxX+1)/2/w, centerY=(minY+maxY+1)/2/h;
+        const x0=centerX-size/2, x1=centerX+size/2, y0=centerY-size/2, y1=centerY+size/2; const z0=0, z1=size;
+        const u0=minX/w, v0=1-(maxY+1)/h, u1=(maxX+1)/w, v1=1-minY/h;
+        const faceUV=[u0,v1,u1,v1,u1,v0,u0,v0];
+        const positions=[], normals=[], uvs=[], indices=[];
+        const addFace=(verts, normal, uv)=>{ const base=positions.length/3; positions.push(...verts); for(let i=0;i<4;i++) normals.push(...normal); uvs.push(...uv); indices.push(base,base+1,base+2,base,base+2,base+3); };
+        addFace([x0,y1,z1, x1,y1,z1, x1,y0,z1, x0,y0,z1],[0,0,1],faceUV); // front
+        addFace([x1,y1,z0, x0,y1,z0, x0,y0,z0, x1,y0,z0],[0,0,-1],faceUV); // back
+        addFace([x0,y1,z0, x0,y1,z1, x0,y0,z1, x0,y0,z0],[-1,0,0],faceUV); // left
+        addFace([x1,y1,z1, x1,y1,z0, x1,y0,z0, x1,y0,z1],[1,0,0],faceUV); // right
+        addFace([x0,y1,z0, x1,y1,z0, x1,y1,z1, x0,y1,z1],[0,1,0],faceUV); // top
+        addFace([x0,y0,z1, x1,y0,z1, x1,y0,z0, x0,y0,z0],[0,-1,0],faceUV); // bottom
+        return [{ positions, normals, uvs, indices, texPath, tintHex: 0xffffff }];
+    } catch (e) { try { console.warn('[ItemModel] builtin pixel-bounds fallback', texPath, e); } catch {} return buildFallbackFullCube(texPath); }
+}
+
+function buildFallbackFullCube(texPath) {
+    const positions=[], normals=[], uvs=[], indices=[]; const fullUV=[0,1,1,1,1,0,0,0];
+    const addFace=(verts, normal)=>{ const base=positions.length/3; positions.push(...verts); for(let i=0;i<4;i++) normals.push(...normal); uvs.push(...fullUV); indices.push(base,base+1,base+2,base,base+2,base+3); };
+    addFace([0,1,1,1,1,1,1,0,1,0,0,1],[0,0,1]);
+    addFace([1,1,0,0,1,0,0,0,0,1,0,0],[0,0,-1]);
+    addFace([0,1,0,0,1,1,0,0,1,0,0,0],[-1,0,0]);
+    addFace([1,1,1,1,1,0,1,0,0,1,0,1],[1,0,0]);
+    addFace([0,1,0,1,1,0,1,1,1,0,1,1],[0,1,0]);
+    addFace([0,0,1,1,0,1,1,0,0,0,0,0],[0,-1,0]);
+    return [{ positions, normals, uvs, indices, texPath, tintHex: 0xffffff }];
+}
+
+async function buildItemModelGeometryData(resolved) {
+    if (!resolved) return null;
+    if (resolved.elements && resolved.elements.length > 0) {
+        return await buildBlockModelGeometryData(resolved);
+    }
+    // generated / builtin cases: revert to simple flat front/back quad (no extrusion, no pixel-bounds cube)
+    const layer0 = extractLayer0Texture(resolved);
+    if (!layer0) return null;
+    // Heuristic: treat true builtin OR classic generated/handheld parents as needing border geometry
+    const useBorder = isBuiltinModel(resolved) || resolved.parentChain.some(p => /item\/(generated|handheld)/.test(p));
+    if (useBorder) {
+        try { console.log('[ItemModel] using builtin border geometry for', resolved.id); } catch {}
+        return await buildBuiltinBorderBetweenPlanesGeometry(layer0);
+    }
+    return buildGeneratedPlaneGeometry(layer0);
+}
+
+async function processItemModelDisplay(node) {
+    try {
+        const { baseName, displayType } = parseItemName(node.name);
+        if (!baseName) return null;
+        try { console.log('[ItemModel] start', node.name, 'base', baseName); } catch {}
+        const definition = await loadItemDefinition(baseName);
+        let modelId;
+        let tintList = null;
+        if (definition && definition.model) {
+            if (typeof definition.model === 'string') {
+                modelId = definition.model;
+            } else if (definition.model && typeof definition.model === 'object') {
+                // Expected shape: { type: 'minecraft:model', model: 'minecraft:block/grass_block', tints: [...] }
+                modelId = definition.model.model || `minecraft:item/${baseName}`;
+                if (Array.isArray(definition.model.tints)) tintList = definition.model.tints.slice();
+            }
+        }
+        if (!modelId) modelId = `minecraft:item/${baseName}`;
+        try { console.log('[ItemModel] definition', definition ? 'yes' : 'no', 'modelId', modelId, 'tints', tintList ? tintList.length : 0); } catch {}
+        const cacheKey = modelId;
+        let geomData = itemModelGeometryCache.get(cacheKey);
+        let hasElements = itemModelHasElementsCache.get(cacheKey) || false;
+        if (!geomData) {
+            const resolved = await resolveModelTree(modelId, new Map());
+            if (!resolved) {
+                try { console.warn('[ItemModel] resolve failed', modelId); } catch {}
+                return null;
+            }
+            hasElements = !!(resolved.elements && resolved.elements.length > 0);
+            try { console.log('[ItemModel] resolved', modelId, 'elements', hasElements ? resolved.elements.length : 0, 'parent', resolved.parent || 'none'); } catch {}
+            geomData = await buildItemModelGeometryData(resolved);
+            if (geomData && geomData.length) {
+                itemModelGeometryCache.set(cacheKey, geomData);
+                itemModelHasElementsCache.set(cacheKey, hasElements);
+            }
+        }
+        if (!geomData || geomData.length === 0) {
+            try { console.warn('[ItemModel] empty geometry', modelId); } catch {}
+            return null;
+        }
+        try { console.log('[ItemModel] geometry buffers', geomData.length, 'for', modelId, 'hasElements', hasElements); } catch {}
+        const modelMatrix = new THREE.Matrix4();
+        if (hasElements) {
+            // Block-like item model: shift to center only (no rotation)
+            modelMatrix.multiply(new THREE.Matrix4().makeTranslation(-0.5, -0.5, -0.5));
+            try { console.log('[ItemModel] applied block-like centering', modelId); } catch {}
+        } else {
+            // Flat item: center only (no Y180) so front (+Z) plane remains facing camera; previous Y180 caused front/back inversion.
+            const translateCenter = new THREE.Matrix4().makeTranslation(-0.5, -0.5, 0);
+            modelMatrix.multiply(translateCenter);
+            // Apply horizontal flip
+            modelMatrix.premultiply(new THREE.Matrix4().makeScale(-1, 1, 1));
+            try { console.log('[ItemModel] applied flat full centering and horizontal flip', modelId); } catch {}
+        }
+        return {
+            type: 'itemDisplayModel',
+            name: baseName,
+            originalName: node.name,
+            displayType: displayType || null,
+            tints: tintList || null,
+            models: [{ modelMatrix: modelMatrix.elements.slice(), geometries: geomData }],
+            transform: node.transform || node.transforms || null
+        };
+    } catch (e) {
+        try { console.warn('[ItemModel] error', node.name, e); } catch {}
         return null;
     }
 }
@@ -754,15 +1190,16 @@ async function processNode(node, parentTransform) {
             renderItems.push(modelData);
         }
     } else if (node.isItemDisplay) {
-        const itemData = {
-            type: 'itemDisplay',
-            name: node.name,
-            transform: worldTransform, // Use calculated world transform
-            nbt: node.nbt,
-            options: node.options,
-            brightness: node.brightness
-        };
+        // Player head special-case (existing behavior)
         if (node.name.toLowerCase().startsWith('player_head')) {
+            const itemData = {
+                type: 'itemDisplay',
+                name: node.name,
+                transform: worldTransform,
+                nbt: node.nbt,
+                options: node.options,
+                brightness: node.brightness
+            };
             let textureUrl = null;
             const defaultTextureValue = 'http://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
             if (node.tagHead && node.tagHead.Value) {
@@ -773,8 +1210,27 @@ async function processNode(node, parentTransform) {
                 textureUrl = node.paintTexture.startsWith('data:image') ? node.paintTexture : `data:image/png;base64,${node.paintTexture}`;
             }
             itemData.textureUrl = textureUrl || defaultTextureValue;
+            renderItems.push(itemData);
+        } else {
+            const modelDisplay = await processItemModelDisplay({
+                name: node.name,
+                transform: worldTransform
+            });
+            if (modelDisplay) {
+                modelDisplay.transform = worldTransform;
+                renderItems.push(modelDisplay);
+            } else {
+                // Fallback placeholder (maintain previous cube fallback path via simple itemDisplay object)
+                renderItems.push({
+                    type: 'itemDisplay',
+                    name: node.name,
+                    transform: worldTransform,
+                    nbt: node.nbt,
+                    options: node.options,
+                    brightness: node.brightness
+                });
+            }
         }
-        renderItems.push(itemData);
     } else if (node.isTextDisplay) {
         // Future: handle text display
     }

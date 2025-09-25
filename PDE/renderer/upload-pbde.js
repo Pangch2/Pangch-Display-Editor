@@ -33,6 +33,24 @@ const mainThreadAssetProvider = {
             ? await window.ipcApi.getHardcodedContent(assetPath.replace(/^hardcoded\//, ''))
             : await window.ipcApi.getAssetContent(assetPath);
         if (!result.success) throw new Error(`Asset read failed: ${assetPath}: ${result.error}`);
+        // If this is a PNG texture, return raw binary so the worker can create ImageBitmap
+        if (/\.png$/i.test(assetPath)) {
+            const content = result.content;
+            if (content && typeof content === 'object' && content.type === 'Buffer' && Array.isArray(content.data)) {
+                return new Uint8Array(content.data);
+            }
+            if (content instanceof Uint8Array) return content;
+            if (ArrayBuffer.isView(content)) return new Uint8Array(content.buffer);
+            if (content instanceof ArrayBuffer) return new Uint8Array(content);
+            if (typeof content === 'string') {
+                // Fallback: treat as binary string
+                const bytes = new Uint8Array(content.length);
+                for (let i = 0; i < content.length; i++) bytes[i] = content.charCodeAt(i) & 0xff;
+                return bytes;
+            }
+            return content; // Unknown but pass through
+        }
+        // JSON / text assets
         return decodeIpcContentToString(result.content);
     }
 };
@@ -468,7 +486,15 @@ function createBlockDisplayFromData(data, gen) {
                 if (gen !== currentLoadGen) {
                     return; // stale
                 }
-                mesh.material = mat;
+                if (mesh.userData && mesh.userData.unlitItem) {
+                    // createEntityMaterial already supports unlit option; but getBlockMaterial caches lit versions.
+                    // Simple approach: clone and mark as unlit-like by disabling toneMapped & leaving lighting as-is (MeshBasicNodeMaterial already largely unlit).
+                    const cloned = mat.clone();
+                    cloned.toneMapped = false;
+                    mesh.material = cloned;
+                } else {
+                    mesh.material = mat;
+                }
                 mesh.material.needsUpdate = true;
             } catch (e) {
                 console.warn(`[Texture] Error while loading ${entry.texPath}:`, e);
@@ -770,6 +796,14 @@ function loadpbde(file) {
             renderList.forEach((item) => {
                 if (item.type === 'blockDisplay') {
                     const finalGroup = createBlockDisplayFromData(item, myGen);
+                    loadedObjectGroup.add(finalGroup);
+                } else if (item.type === 'itemDisplayModel' || item.type === 'itemBlockDisplay') {
+                    // Reuse block display creation path (same geometry format)
+                    const finalGroup = createBlockDisplayFromData(item, myGen);
+                    // Mark meshes so later material fetch can set unlit for pure item planes (heuristic)
+                    if (item.type === 'itemDisplayModel') {
+                        finalGroup.traverse(obj => { if (obj.isMesh) obj.userData.unlitItem = true; });
+                    }
                     loadedObjectGroup.add(finalGroup);
                 } else if (item.type === 'itemDisplay') {
                     if (item.textureUrl) {
