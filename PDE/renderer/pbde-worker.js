@@ -115,22 +115,30 @@ const workerAssetProvider = {
 
         const promise = new Promise((resolve, reject) => {
             const requestId = requestIdCounter++;
-            self.postMessage({ type: 'requestAsset', path: assetPath, requestId });
+            let timeoutId = null;
 
             const listener = (e) => {
                 if (e.data.type === 'assetResponse' && e.data.requestId === requestId) {
+                    clearTimeout(timeoutId);
                     self.removeEventListener('message', listener);
+                    requestPromises.delete(assetPath);
                     if (e.data.success) {
                         assetCache.set(assetPath, e.data.content);
-                        requestPromises.delete(assetPath);
                         resolve(e.data.content);
                     } else {
-                        requestPromises.delete(assetPath);
                         reject(new Error(e.data.error));
                     }
                 }
             };
+
+            timeoutId = setTimeout(() => {
+                self.removeEventListener('message', listener);
+                requestPromises.delete(assetPath);
+                reject(new Error(`Asset request timed out for: ${assetPath}`));
+            }, 15000); // 15-second timeout
+
             self.addEventListener('message', listener);
+            self.postMessage({ type: 'requestAsset', path: assetPath, requestId });
         });
 
         requestPromises.set(assetPath, promise);
@@ -1314,6 +1322,14 @@ self.onmessage = async (e) => {
     extrudedItemGeometryCache.clear();
     texturePixelCache.clear();
     textureBoundaryCache.clear();
+
+    // Release OffscreenCanvas memory
+    if (loadTexturePixels._canvas) {
+        loadTexturePixels._canvas.width = 1;
+        loadTexturePixels._canvas.height = 1;
+        loadTexturePixels._canvas = null;
+    }
+
     FAST_ITEM_MODEL_MODE = false; // reset each task
 
     const fileContent = e.data;
