@@ -223,6 +223,21 @@ async function loadModelJson(assetPath) {
 
 async function resolveModelTree(modelId, cache = new Map()) {
     if (cache.has(modelId)) return cache.get(modelId);
+    // HACK: builtin/generated is not a real model file, but a marker for generated item models.
+    // Intercept it and return a mock resolved model that can be processed by buildItemModelGeometryData.
+    if (modelId && (modelId.endsWith('builtin/generated'))) {
+        const resolved = {
+            id: modelId,
+            json: { parent: 'item/generated' },
+            textures: {},
+            elements: null,
+            parentChain: ['item/generated'],
+            texture_size: null,
+            fromHardcoded: false,
+        };
+        cache.set(modelId, resolved);
+        return resolved;
+    }
     const hardcodedFirst = isHardcodedModelId(modelId);
     const assetsPath = modelIdToAssetPath(modelId);
     const hardcodedPath = modelIdToHardcodedPath(modelId);
@@ -704,6 +719,7 @@ async function processBlockDisplay(item) {
 // ===================== Item Model Processing (Phase 1) =====================
 
 // Caches for item definitions and generated geometry
+const modelTreeCache = new Map(); // modelId -> resolved model tree
 const itemDefinitionCache = new Map(); // itemName -> definition json (assets/minecraft/items/{name}.json)
 const itemModelGeometryCache = new Map(); // modelId|tint -> geometryData array
 const itemModelHasElementsCache = new Map(); // modelId -> boolean (true if model had elements)
@@ -768,7 +784,7 @@ function buildGeneratedPlaneGeometry(texId) {
     // Re-map back face UVs so the texture appears upright (not vertically flipped) when viewed from behind.
     // Vertex order for back face: TL, BL, BR, TR (positionsBack). Provide matching oriented UVs.
     const uvsBack  = [0,1, 0,0, 1,0, 1,1];
-    const indices = [0,1,2, 0,2,3];
+    const indices = [0,2,1, 0,3,2]; // Flipped winding order to compensate for negative scale matrix
 
     // Scale positions from unit to 16x16 block space (already normalized pipeline expects /16 later? -> Our block builder divides by 16.
     // For simplicity keep them in 0..1 here, consistent with block builder output that already expects divided coordinates.)
@@ -828,14 +844,14 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
         };
         const dz = BUILTIN_ITEM_DEPTH / 2;
         // Full front & back planes (single quads)
-        // Front (+Z) - Swapped to be a back-face to fix inversion
+        // Front (+Z)
         pushQuad([
             0,1,dz, 0,0,dz, 1,0,dz, 1,1,dz
-        ], [0,0,-1], [0,1, 0,0, 1,0, 1,1]);
-        // Back (-Z) - Swapped to be a front-face to fix inversion
+        ], [0,0,1], [0,1, 0,0, 1,0, 1,1]);
+        // Back (-Z)
         pushQuad([
             0,1,-dz, 1,1,-dz, 1,0,-dz, 0,0,-dz
-        ], [0,0,1], [0,1, 1,1, 1,0, 0,0]);
+        ], [0,0,-1], [0,1, 1,1, 1,0, 0,0]);
 
         // Side faces for boundary pixels
         for (let y=0; y<h; y++) {
@@ -849,14 +865,14 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
                     pushQuad([
                         // Flipped winding to face outward
                         x0,yTop,dz, x0,yTop,-dz, x0,yBot,-dz, x0,yBot,dz
-                    ], [-1,0,0], [u1,v1, u0,v1, u0,v0, u1,v0]);
+                    ], [1,0,0], [u1,v1, u0,v1, u0,v0, u1,v0]);
                 }
                 // East
                 if (!isOpaque(x+1,y)) {
                     pushQuad([
                         // Flipped winding to face outward
                         x1,yTop,-dz, x1,yTop,dz, x1,yBot,dz, x1,yBot,-dz
-                    ], [1,0,0], [u0,v1, u1,v1, u1,v0, u0,v0]);
+                    ], [-1,0,0], [u0,v1, u1,v1, u1,v0, u0,v0]);
                 }
                 // Top edge (neighbor y-1)
                 if (!isOpaque(x,y-1)) {
@@ -1077,7 +1093,7 @@ async function processItemModelDisplay(node) {
         let geomData = itemModelGeometryCache.get(cacheKey);
         let hasElements = itemModelHasElementsCache.get(cacheKey) || false;
         if (!geomData) {
-            const resolved = await resolveModelTree(modelId, new Map());
+            const resolved = await resolveModelTree(modelId, modelTreeCache);
             if (!resolved) {
                 try { console.warn('[ItemModel] resolve failed', modelId); } catch {}
                 return null;
@@ -1245,6 +1261,16 @@ async function processNode(node, parentTransform) {
 }
 
 self.onmessage = async (e) => {
+    // Clear all caches to prevent memory leaks between processing different files
+    assetCache.clear();
+    requestPromises.clear();
+    modelTreeCache.clear();
+    itemDefinitionCache.clear();
+    itemModelGeometryCache.clear();
+    itemModelHasElementsCache.clear();
+    builtinBorderGeometryCache.clear();
+    extrudedItemGeometryCache.clear();
+
     const fileContent = e.data;
     if (typeof fileContent !== 'string') return; // Ignore asset responses
 
