@@ -805,88 +805,126 @@ function buildGeneratedPlaneGeometry(texId) {
 }
 
 // Builtin item special geometry: two full planes (front/back) plus side faces only along outer opaque pixel border.
-// Increase thickness a bit for clearer visibility (was 1/16)
+// 성능 최적화:
+// 1) 이미지 디코딩 & 픽셀 읽기(loadTexturePixels) 1회로 공유
+// 2) 경계 픽셀 계산 결과 캐시
+// 3) 일정 개수(임계치) 이상 아이템이 있을 경우 Fast Mode 로 전환하여 경계 돌출을 생략하고 단순 평면만 생성
 const BUILTIN_ITEM_DEPTH = 1/16; // total thickness between planes (adjust if too thick)
 const builtinBorderGeometryCache = new Map(); // texPath -> geometry array
+const texturePixelCache = new Map(); // texPath -> { w,h,data (Uint8ClampedArray) }
+const texturePixelPromises = new Map(); // texPath -> promise
+const textureBoundaryCache = new Map(); // texPath -> Set(index) of boundary pixels
+
+let FAST_ITEM_MODEL_MODE = false; // large batch shortcut
+const FAST_ITEM_MODEL_THRESHOLD = 300; // configurable threshold
+
+async function loadTexturePixels(texPath) {
+    if (texturePixelCache.has(texPath)) return texturePixelCache.get(texPath);
+    if (texturePixelPromises.has(texPath)) return texturePixelPromises.get(texPath);
+    const p = (async () => {
+        try {
+            const asset = await workerAssetProvider.getAsset(texPath);
+            let bytes;
+            if (asset instanceof Uint8Array) bytes = asset; else if (asset && typeof asset === 'object' && asset.type === 'Buffer' && Array.isArray(asset.data)) bytes = new Uint8Array(asset.data); else if (typeof asset === 'string') {
+                bytes = new Uint8Array(asset.length); for (let i=0;i<asset.length;i++) bytes[i] = asset.charCodeAt(i) & 0xff;
+            } else return null;
+            const blob = new Blob([bytes], { type: 'image/png' });
+            const bmp = await createImageBitmap(blob);
+            const w = bmp.width, h = bmp.height;
+            if (!w || !h) return null;
+            // Reuse single OffscreenCanvas (resize as needed)
+            if (!loadTexturePixels._canvas) loadTexturePixels._canvas = new OffscreenCanvas(w, h);
+            const canvas = loadTexturePixels._canvas;
+            if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0,0,w,h);
+            ctx.drawImage(bmp, 0, 0);
+            const data = ctx.getImageData(0,0,w,h).data; // Uint8ClampedArray
+            const record = { w, h, data };
+            texturePixelCache.set(texPath, record);
+            return record;
+        } catch (e) {
+            try { console.warn('[ItemModel] loadTexturePixels failed', texPath, e); } catch {}
+            return null;
+        } finally {
+            texturePixelPromises.delete(texPath);
+        }
+    })();
+    texturePixelPromises.set(texPath, p);
+    return p;
+}
+
+function computeBoundaryMask(texPath, px) {
+    if (!px) return null;
+    if (textureBoundaryCache.has(texPath)) return textureBoundaryCache.get(texPath);
+    const { w, h, data } = px;
+    const boundary = new Set();
+    const alphaAt = (x,y) => data[(y*w + x)*4 + 3];
+    const opaque = (x,y) => x>=0 && y>=0 && x<w && y<h && alphaAt(x,y) > 0;
+    for (let y=0;y<h;y++) {
+        for (let x=0;x<w;x++) {
+            if (!opaque(x,y)) continue;
+            if (!opaque(x-1,y) || !opaque(x+1,y) || !opaque(x,y-1) || !opaque(x,y+1)) {
+                boundary.add(y*w + x);
+            }
+        }
+    }
+    textureBoundaryCache.set(texPath, boundary);
+    return boundary;
+}
+
 async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
     if (!texId) return [];
     const texPath = textureIdToAssetPath(texId);
+    if (FAST_ITEM_MODEL_MODE) {
+        // Fast mode: skip expensive boundary extrusion
+        return buildGeneratedPlaneGeometry(texId);
+    }
     if (builtinBorderGeometryCache.has(texPath)) return builtinBorderGeometryCache.get(texPath);
     try {
-        const asset = await workerAssetProvider.getAsset(texPath);
-        let bytes;
-        if (asset instanceof Uint8Array) bytes = asset; else if (asset && typeof asset === 'object' && asset.type === 'Buffer' && Array.isArray(asset.data)) bytes = new Uint8Array(asset.data); else if (typeof asset === 'string') {
-            bytes = new Uint8Array(asset.length); for (let i=0;i<asset.length;i++) bytes[i] = asset.charCodeAt(i) & 0xff;
-        } else return [];
-        const blob = new Blob([bytes], { type: 'image/png' });
-        const bmp = await createImageBitmap(blob);
-        const w = bmp.width, h = bmp.height;
-        if (!w || !h) return [];
-        const canvas = new OffscreenCanvas(w, h);
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(bmp, 0, 0);
-        const data = ctx.getImageData(0,0,w,h).data;
+        const px = await loadTexturePixels(texPath);
+        if (!px) return buildGeneratedPlaneGeometry(texId);
+        const { w, h } = px;
+        if (!w || !h) return buildGeneratedPlaneGeometry(texId);
+        const boundary = computeBoundaryMask(texPath, px);
+        const data = px.data;
         const alphaAt = (x,y) => data[(y*w + x)*4 + 3];
-        const isOpaque = (x,y) => x>=0 && y>=0 && x<w && y<h && alphaAt(x,y) > 0;
-        const isBoundary = (x,y) => {
-            if (!isOpaque(x,y)) return false;
-            return !isOpaque(x-1,y) || !isOpaque(x+1,y) || !isOpaque(x,y-1) || !isOpaque(x,y+1);
-        };
-
+        const opaque = (x,y) => x>=0 && y>=0 && x<w && y<h && alphaAt(x,y) > 0;
         const positions = []; const normals = []; const uvs = []; const indices = [];
         const pushQuad = (verts, normal, uvArr) => {
             const base = positions.length / 3;
             positions.push(...verts);
             for (let i=0;i<4;i++) normals.push(...normal);
             uvs.push(...uvArr);
-            // Flipped winding order to compensate for negative scale matrix
-            indices.push(base, base+2, base+1, base, base+3, base+2);
+            indices.push(base, base+2, base+1, base, base+3, base+2); // flipped winding
         };
         const dz = BUILTIN_ITEM_DEPTH / 2;
-        // Full front & back planes (single quads)
-        // Front (+Z)
-        pushQuad([
-            0,1,dz, 0,0,dz, 1,0,dz, 1,1,dz
-        ], [0,0,1], [0,1, 0,0, 1,0, 1,1]);
-        // Back (-Z)
-        pushQuad([
-            0,1,-dz, 1,1,-dz, 1,0,-dz, 0,0,-dz
-        ], [0,0,-1], [0,1, 1,1, 1,0, 0,0]);
-
-        // Side faces for boundary pixels
-        for (let y=0; y<h; y++) {
-            for (let x=0; x<w; x++) {
-                if (!isBoundary(x,y)) continue;
+        // Front plane
+        pushQuad([0,1,dz, 0,0,dz, 1,0,dz, 1,1,dz],[0,0,1],[0,1, 0,0, 1,0, 1,1]);
+        // Back plane
+        pushQuad([0,1,-dz, 1,1,-dz, 1,0,-dz, 0,0,-dz],[0,0,-1],[0,1, 1,1, 1,0, 0,0]);
+        if (boundary && boundary.size) {
+            for (const idx of boundary) {
+                const y = Math.floor(idx / w);
+                const x = idx - y*w;
                 const x0 = x / w; const x1 = (x+1)/w;
                 const yTop = 1 - y / h; const yBot = 1 - (y+1)/h;
-                const u0 = x0; const u1 = x1; const v0 = yBot; const v1 = yTop; // pixel uv region
+                const u0 = x0; const u1 = x1; const v0 = yBot; const v1 = yTop;
                 // West
-                if (!isOpaque(x-1,y)) {
-                    pushQuad([
-                        // Flipped winding to face outward
-                        x0,yTop,dz, x0,yTop,-dz, x0,yBot,-dz, x0,yBot,dz
-                    ], [1,0,0], [u1,v1, u0,v1, u0,v0, u1,v0]);
+                if (!opaque(x-1,y)) {
+                    pushQuad([x0,yTop,dz, x0,yTop,-dz, x0,yBot,-dz, x0,yBot,dz],[1,0,0],[u1,v1, u0,v1, u0,v0, u1,v0]);
                 }
                 // East
-                if (!isOpaque(x+1,y)) {
-                    pushQuad([
-                        // Flipped winding to face outward
-                        x1,yTop,-dz, x1,yTop,dz, x1,yBot,dz, x1,yBot,-dz
-                    ], [-1,0,0], [u0,v1, u1,v1, u1,v0, u0,v0]);
+                if (!opaque(x+1,y)) {
+                    pushQuad([x1,yTop,-dz, x1,yTop,dz, x1,yBot,dz, x1,yBot,-dz],[-1,0,0],[u0,v1, u1,v1, u1,v0, u0,v0]);
                 }
-                // Top edge (neighbor y-1)
-                if (!isOpaque(x,y-1)) {
-                    pushQuad([
-                        // Outward normal (+Y) CCW from +Y viewpoint
-                        x0,yTop,dz, x1,yTop,dz, x1,yTop,-dz, x0,yTop,-dz
-                    ], [0,1,0], [u0,v1, u1,v1, u1,v0, u0,v0]);
+                // Top
+                if (!opaque(x,y-1)) {
+                    pushQuad([x0,yTop,dz, x1,yTop,dz, x1,yTop,-dz, x0,yTop,-dz],[0,1,0],[u0,v1, u1,v1, u1,v0, u0,v0]);
                 }
-                // Bottom edge (neighbor y+1)
-                if (!isOpaque(x,y+1)) {
-                    pushQuad([
-                        // Outward normal (-Y) CCW from -Y viewpoint
-                        x0,yBot,-dz, x1,yBot,-dz, x1,yBot,dz, x0,yBot,dz
-                    ], [0,-1,0], [u0,v1, u1,v1, u1,v0, u0,v0]);
+                // Bottom
+                if (!opaque(x,y+1)) {
+                    pushQuad([x0,yBot,-dz, x1,yBot,-dz, x1,yBot,dz, x0,yBot,dz],[0,-1,0],[u0,v1, u1,v1, u1,v0, u0,v0]);
                 }
             }
         }
@@ -1010,19 +1048,19 @@ async function buildBuiltinPixelBoundsCubeGeometry(texId) {
     if (!texId) return [];
     const texPath = textureIdToAssetPath(texId);
     try {
-        const asset = await workerAssetProvider.getAsset(texPath);
-        let bytes;
-        if (asset instanceof Uint8Array) bytes = asset; else if (asset && typeof asset === 'object' && asset.type === 'Buffer' && Array.isArray(asset.data)) bytes = new Uint8Array(asset.data); else return buildFallbackFullCube(texPath);
-        const blob = new Blob([bytes], { type: 'image/png' });
-        const bitmap = await createImageBitmap(blob);
-        const w = bitmap.width, h = bitmap.height;
+        const px = await loadTexturePixels(texPath);
+        if (!px) return buildFallbackFullCube(texPath);
+        const { w, h, data } = px;
         if (!w || !h) return buildFallbackFullCube(texPath);
-        const canvas = new OffscreenCanvas(w, h);
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(bitmap, 0, 0);
-        const data = ctx.getImageData(0,0,w,h).data;
         let minX=w, minY=h, maxX=-1, maxY=-1;
-        for (let y=0;y<h;y++) for (let x=0;x<w;x++) { const a = data[(y*w+x)*4+3]; if (a>0){ if(x<minX)minX=x; if(y<minY)minY=y; if(x>maxX)maxX=x; if(y>maxY)maxY=y; } }
+        for (let y=0;y<h;y++) {
+            for (let x=0;x<w;x++) {
+                const a = data[(y*w+x)*4+3];
+                if (a>0) {
+                    if (x<minX) minX=x; if (y<minY) minY=y; if (x>maxX) maxX=x; if (y>maxY) maxY=y;
+                }
+            }
+        }
         if (maxX<minX || maxY<minY) return buildFallbackFullCube(texPath);
         const rectW=(maxX-minX+1)/w, rectH=(maxY-minY+1)/h; const size=Math.max(rectW, rectH);
         const centerX=(minX+maxX+1)/2/w, centerY=(minY+maxY+1)/2/h;
@@ -1064,6 +1102,10 @@ async function buildItemModelGeometryData(resolved) {
     // Heuristic: treat true builtin OR classic generated/handheld parents as needing border geometry
     const useBorder = isBuiltinModel(resolved) || resolved.parentChain.some(p => /item\/(generated|handheld)/.test(p));
     if (useBorder) {
+        if (FAST_ITEM_MODEL_MODE) {
+            // Fast mode: skip expensive border building
+            return buildGeneratedPlaneGeometry(layer0);
+        }
         try { console.log('[ItemModel] using builtin border geometry for', resolved.id); } catch {}
         return await buildBuiltinBorderBetweenPlanesGeometry(layer0);
     }
@@ -1270,6 +1312,9 @@ self.onmessage = async (e) => {
     itemModelHasElementsCache.clear();
     builtinBorderGeometryCache.clear();
     extrudedItemGeometryCache.clear();
+    texturePixelCache.clear();
+    textureBoundaryCache.clear();
+    FAST_ITEM_MODEL_MODE = false; // reset each task
 
     const fileContent = e.data;
     if (typeof fileContent !== 'string') return; // Ignore asset responses
@@ -1286,12 +1331,21 @@ self.onmessage = async (e) => {
         const jsonData = JSON.parse(inflatedData);
 
         const processedChildren = split_children(jsonData[0].children);
+
+        // 미리 itemDisplay 개수 세어 Fast Mode 여부 결정
+        function countItemDisplays(list){
+            if (!list) return 0; let c=0; for (const n of list){ if (n.isItemDisplay) c++; if (n.children) c+=countItemDisplays(n.children); } return c; }
+        const itemCount = countItemDisplays(processedChildren);
+        if (itemCount > FAST_ITEM_MODEL_THRESHOLD) {
+            FAST_ITEM_MODEL_MODE = true;
+            try { console.log('[ItemModel] FAST MODE ENABLED - item count', itemCount, 'threshold', FAST_ITEM_MODEL_THRESHOLD); } catch {}
+        }
         
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         const promises = processedChildren.map(node => processNode(node, identityMatrix));
         const renderList = (await Promise.all(promises)).flat();
 
-        self.postMessage({ success: true, data: renderList });
+    self.postMessage({ success: true, data: renderList, fastMode: FAST_ITEM_MODEL_MODE, itemCount });
 
     } catch (error) {
         self.postMessage({
