@@ -230,10 +230,9 @@ function disposeTexture(tex) {
 function ensureSharedPlaceholder() {
     if (!sharedPlaceholderMaterial) {
         // Lightweight placeholder material to avoid creating NodeMaterial per mesh before texture loads
-        sharedPlaceholderMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        sharedPlaceholderMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 });
         sharedPlaceholderMaterial.toneMapped = false;
-        sharedPlaceholderMaterial.transparent = true;
-        sharedPlaceholderMaterial.alphaTest = 0.1;
+        sharedPlaceholderMaterial.alphaTest = 0.01; // Use a small alphaTest for transparent placeholders
     }
 }
 
@@ -835,11 +834,11 @@ function loadpbde(file) {
                         loadedObjectGroup.add(headGroup);
                     } else {
                         const geometry = new THREE.BoxGeometry(1, 1, 1);
-                        const material = new THREE.MeshStandardMaterial({ color: 0x0000ff ,transparent: true});
+                        const material = new THREE.MeshStandardMaterial({ color: 0x0000ff });
                         material.toneMapped = false;
                         const cube = new THREE.Mesh(geometry, material);
-                        cube.castShadow = true;
-                        cube.receiveShadow = true;
+                        cube.castShadow = false;
+                        cube.receiveShadow = false;
 
                         const finalMatrix = new THREE.Matrix4();
                         finalMatrix.fromArray(item.transform);
