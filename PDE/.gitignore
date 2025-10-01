@@ -1,0 +1,36 @@
+# Node.js 의존성
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+.pnpm-debug.log*
+
+# Electron 빌드 산출물
+dist/
+out/
+build/
+release/
+*.asar
+*.app
+*.dmg
+*.exe
+*.deb
+*.rpm
+*.msi
+*.zip
+
+# 환경 변수 (민감정보 포함 가능)
+.env
+.env.*
+
+# OS/에디터 파일
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 로그 파일
+*.log
+
+# 잠금 파일은 반드시 포함! (주의)
+# package-lock.json 포함 필요
+# yarn.lock 포함 필요 (Yarn 사용자일 경우)

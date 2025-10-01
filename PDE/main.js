@@ -109,7 +109,7 @@ function createWindow() {
         await fs.mkdir(CACHE_DIR, { recursive: true });
 
         // ✅ client.jar 다운로드 (메모리 상에서 처리)
-        const url = 'https://piston-data.mojang.com/v1/objects/f5f3b6aa26ad6790868d8506b071c6d6dad8d302/client.jar';
+        const url = 'https://piston-data.mojang.com/v1/objects/ce92fd8d1b2460c41ceda07ae7b3fe863a80d045/client.jar';
         const response = await axios({
           url,
           method: 'GET',
