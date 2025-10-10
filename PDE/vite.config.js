@@ -4,7 +4,7 @@ export default defineConfig({
   root: './renderer',
   base: './',
   build: {
-    outDir: '../dist',
+    outDir: '../renderer-dist',
     emptyOutDir: true,
   },
   optimizeDeps: {

@@ -43,7 +43,7 @@
       "output": "dist"
     },
     "files": [
-      "dist/**/*",
+  "renderer-dist/**/*",
       "main.js",
       "preload.js",
       "hardcoded/**/*"

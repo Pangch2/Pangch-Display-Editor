@@ -1,10 +1,8 @@
 {
 	"format_version": "1.21.6",
 	"credit": "Made with Blockbench",
-	"parent": "builtin/entity",
 	"textures": {
-		"2": "entity/trident",
-		"particle": "entity/trident"
+		"2": "entity/trident"
 	},
 	"elements": [
 		{

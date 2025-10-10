@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PDE</title>
+  <style>
+    /* ----- 기본 설정 ----- */
+    body {
+      margin: 0;
+      overflow: hidden; /* 스크롤바 숨기기 */
+      background: #1e1e1e;
+      font-family: sans-serif;
+      color: #f0f0f0;
+      /* UI 요소의 텍스트가 실수로 드래그(선택)되는 것을 방지 */
+      user-select: none;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #main-content {
+        position: absolute;
+        top: 40px; /* 상단 툴바 높이 */
+        left: 200px; /* 좌측 사이드바 너비 */
+        right: 240px; /* 우측 사이드바 너비 */
+        bottom: 0;
+        overflow: hidden;
+    }
+    
+    #renderCanvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+    }
+
+    /* ----- 개별 UI 패널 공통 스타일 ----- */
+    .ui-panel {
+      position: absolute; /* body를 기준으로 절대 위치에 배치 */
+      background-color: #2a2a2e;
+      border: 1px solid #3a3a3e;
+      box-sizing: border-box;
+      padding: 15px; /* 패딩은 공통으로 적용 */
+    }
+
+    /* ----- 상단 툴바 ----- */
+    .ui-top-bar {
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 40px;
+      padding: 5px; /* 상단바는 패딩 따로 설정 */
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      z-index: 20;
+    }
+
+    /* ----- 좌측 사이드바 ----- */
+    .ui-left-sidebar {
+      top: 40px; /* 상단 툴바 높이만큼 내리기 */
+      left: 0;
+      width: 200px; /* 초기 너비 */
+      bottom: 0;
+      z-index: 10;
+    }
+
+    /* ----- 우측 사이드바 ----- */
+    .ui-right-sidebar {
+      top: 40px; /* 상단 툴바 높이만큼 내리기 */
+      right: 0;
+      width: 240px; /* 초기 너비 */
+      bottom: 0;
+      z-index: 10;
+    }
+    
+    /* ----- 사이드바 크기 조절 핸들 ----- */
+    .resizer {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 5px; /* 눈에 보이지 않지만 잡을 수 있는 영역 */
+      cursor: w-resize; /* 마우스 커서를 변경하여 조절 가능함을 알림 */
+      z-index: 10; /* 다른 요소 위에 있도록 설정 */
+    }
+
+    #left-resizer {
+      right: -2.5px; /* 사이드바 오른쪽에 붙임 */
+    }
+
+    #right-resizer {
+      left: -2.5px; /* 사이드바 왼쪽에 붙임 */
+    }
+
+    /* ----- UI 내부 요소 스타일 ----- */
+    .ui-panel h3 {
+      margin-top: 0;
+      padding-bottom: 5px;
+      border-bottom: 1px solid #444;
+      font-size: 16px;
+    }
+
+    .ui-button {
+      background-color: #3c3c3c;
+      border: 1px solid #555;
+      color: #f0f0f0;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .ui-button:hover {
+      background-color: #4f4f4f;
+    }
+
+    /* ----- 로딩 오버레이 스타일 ----- */
+    #loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: #1e1e1e; /* 다크 테마 배경색 */
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      z-index: 9999;
+      opacity: 0; /* 기본적으로 숨김 */
+      pointer-events: none; /* 숨겨졌을 때 클릭 방지 */
+      transition: opacity 0.3s ease-in-out;
+    }
+    #loading-overlay.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #loading-icon {
+      width: 64px;
+      height: 64px;
+      image-rendering: pixelated; /* 아이콘이 흐릿해지지 않도록 */
+      animation: spin 2s linear infinite; 
+    }
+    @keyframes spin {
+      from {
+        transform: rotate(0deg);
+      }
+      to {
+        transform: rotate(360deg);
+      }
+    }
+    #loading-text {
+      color: #cccccc;
+      margin-top: 20px;
+      font-family: sans-serif;
+      font-size: 16px;
+    }
+    /* 프레임 카운터 <div id="fps-counter">FPS: --</div> 이것도 지워야함 */
+    #fps-counter {
+      position: fixed;
+      bottom: 10px;
+      left: 10px;
+      color: #f0f0f0;
+      font-family: sans-serif;
+      z-index: 100;
+      background-color: rgba(0, 0, 0, 0.5);
+      padding: 5px;
+      border-radius: 3px;
+    }
+  </style>
+  <script type="module" crossorigin src="./assets/index-BdXRwK5U.js"></script>
+</head>
+<body>
+  <div id="loading-overlay">
+    <img id="loading-icon" src="" alt="Loading Icon" />
+    <div id="loading-text">텍스쳐 로딩중...</div>
+  </div>
+  <div id="main-content">
+    <canvas id="renderCanvas"></canvas>
+  </div>
+
+  <div class="ui-panel ui-top-bar">
+    <button class="ui-button">📄 새로 만들기</button>
+    <button class="ui-button">📂 열기</button>
+    <button class="ui-button">💾 저장</button>
+  </div>
+
+  <div class="ui-panel ui-left-sidebar" id="left-sidebar">
+    <div class="resizer" id="left-resizer"></div>
+    <h3>도구</h3>
+    <button class="ui-button">선택</button>
+  </div>
+
+  <div class="ui-panel ui-right-sidebar" id="right-sidebar">
+    <div class="resizer" id="right-resizer"></div>
+    <h3>속성</h3>
+    <p>선택된 오브젝트 없음</p>
+  </div>
+  
+  <div id="fps-counter">FPS: --</div>
+
+  <script>
+    const leftSidebar = document.getElementById('left-sidebar');
+    const rightSidebar = document.getElementById('right-sidebar');
+    const mainContent = document.getElementById('main-content');
+
+    function updateMainContentLayout() {
+        mainContent.style.left = leftSidebar.offsetWidth + 'px';
+        mainContent.style.right = rightSidebar.offsetWidth + 'px';
+        // renderer.js에서 onWindowResize를 호출하기 위한 커스텀 이벤트
+        window.dispatchEvent(new Event('resize'));
+    }
+
+    function makeResizable(sidebar, resizer) {
+      // 마우스를 누른 시점의 상태를 저장할 변수
+      let initialX = 0;
+      let initialWidth = 0;
+
+      resizer.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // 기본 드래그 동작 방지
+
+        initialX = e.clientX;
+        initialWidth = sidebar.offsetWidth;
+
+        // 마우스를 움직일 때와 뗄 때의 이벤트를 window에 등록
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+      });
+
+      function handleMouseMove(e) {
+        // 마우스 이동 거리 계산
+        const deltaX = e.clientX - initialX;
+        let newWidth;
+
+        // 오른쪽 사이드바인 경우, 너비 계산 방향이 반대
+        if (sidebar.id === 'right-sidebar') {
+          newWidth = initialWidth - deltaX;
+        } else {
+          newWidth = initialWidth + deltaX;
+        }
+
+        // 최소/최대 너비 제한
+        if (newWidth > 100 && newWidth < 700) {
+          sidebar.style.width = newWidth + 'px';
+          updateMainContentLayout();
+        }
+      }
+
+      function handleMouseUp() {
+        // 마우스를 떼면 이벤트 리스너 제거
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+        
+        // 변경된 너비를 localStorage에 저장
+        localStorage.setItem(sidebar.id + '-width', sidebar.style.width);
+      }
+    }
+
+    function loadSettings() {
+        const leftWidth = localStorage.getItem('left-sidebar-width');
+        if (leftWidth) {
+            leftSidebar.style.width = leftWidth;
+        }
+
+        const rightWidth = localStorage.getItem('right-sidebar-width');
+        if (rightWidth) {
+            rightSidebar.style.width = rightWidth;
+        }
+
+        updateMainContentLayout(); // 저장된 값 또는 기본값으로 레이아웃 업데이트
+    }
+
+    // 각 사이드바에 크기 조절 기능 적용
+    makeResizable(
+      leftSidebar, 
+      document.getElementById('left-resizer')
+    );
+    makeResizable(
+      rightSidebar, 
+      document.getElementById('right-resizer')
+    );
+
+    // 초기 로드 시 저장된 설정 불러오기
+    loadSettings();
+  </script>
+</body>
+</html>
