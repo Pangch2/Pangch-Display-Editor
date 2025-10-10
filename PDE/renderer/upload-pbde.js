@@ -123,7 +123,7 @@ const blockMaterialPromiseCache = new Map(); // same key -> Promise<THREE.Materi
 let sharedPlaceholderMaterial = null;
 
 // Limit concurrent texture decodes to avoid overwhelming the decoder/GC
-const MAX_TEXTURE_DECODE_CONCURRENCY = 8;
+const MAX_TEXTURE_DECODE_CONCURRENCY = 3000;
 let currentTextureSlots = 0;
 const textureSlotQueue = [];
 function acquireTextureSlot() {
@@ -411,98 +411,7 @@ function mergeIndexedGeometries(geometries) {
     return merged;
 }
 
-function createBlockDisplayFromData(data, gen) {
-    const finalGroup = new THREE.Group();
-    finalGroup.matrixAutoUpdate = false;
-    const finalMatrix = new THREE.Matrix4();
-    finalMatrix.fromArray(data.transform);
-    finalMatrix.transpose();
-    finalGroup.matrix.copy(finalMatrix);
-    ensureSharedPlaceholder();
 
-    // Helper: apply a matrix to position and normal attributes in-place
-    const applyMatrixToGeometry = (geom, mat4) => {
-        const pos = geom.getAttribute('position');
-        const nor = geom.getAttribute('normal');
-        const v = new THREE.Vector3();
-        const n = new THREE.Vector3();
-        const normalMat = new THREE.Matrix3().getNormalMatrix(mat4);
-        for (let i = 0; i < pos.count; i++) {
-            v.fromBufferAttribute(pos, i).applyMatrix4(mat4);
-            pos.setXYZ(i, v.x, v.y, v.z);
-            if (nor) {
-                n.fromBufferAttribute(nor, i).applyMatrix3(normalMat).normalize();
-                nor.setXYZ(i, n.x, n.y, n.z);
-            }
-        }
-        pos.needsUpdate = true;
-        if (nor) nor.needsUpdate = true;
-        // Recompute accurate bounds for proper frustum culling of non-1x1 blocks (e.g., beds)
-        geom.computeBoundingBox();
-        geom.computeBoundingSphere();
-    };
-
-    // Collect and bake transforms across ALL models, then group by material
-    const groups = new Map(); // key -> { texPath, tintHex, geoms: [] }
-    for (const model of data.models) {
-        const modelMatrix = new THREE.Matrix4();
-        modelMatrix.fromArray(model.modelMatrix);
-        for (const geomData of model.geometries) {
-            const geom = new THREE.BufferGeometry();
-            geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(geomData.positions), 3));
-            geom.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(geomData.normals), 3));
-            geom.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(geomData.uvs), 2));
-            geom.setIndex(geomData.indices);
-            applyMatrixToGeometry(geom, modelMatrix);
-
-            const key = `${geomData.texPath}|${(geomData.tintHex ?? 0xffffff) >>> 0}`;
-            let entry = groups.get(key);
-            if (!entry) {
-                entry = { texPath: geomData.texPath, tintHex: geomData.tintHex ?? 0xffffff, geoms: [] };
-                groups.set(key, entry);
-            }
-            entry.geoms.push(geom);
-        }
-    }
-
-    // Create one mesh per material (merged), minimizing draw calls
-    for (const entry of groups.values()) {
-        const mergedGeom = entry.geoms.length > 1 ? mergeIndexedGeometries(entry.geoms) : entry.geoms[0];
-        if (mergedGeom && entry.geoms.length > 1) {
-            for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
-        }
-        // Ensure merged geometry has proper bounds
-        if (!mergedGeom.boundingBox) mergedGeom.computeBoundingBox();
-        if (!mergedGeom.boundingSphere) mergedGeom.computeBoundingSphere();
-        const mesh = new THREE.Mesh(mergedGeom, sharedPlaceholderMaterial);
-        mesh.castShadow = false;
-        mesh.receiveShadow = false;
-        finalGroup.add(mesh);
-
-        (async () => {
-            try {
-                const mat = await getBlockMaterial(entry.texPath, entry.tintHex, gen);
-                if (gen !== currentLoadGen) {
-                    return; // stale
-                }
-                if (mesh.userData && mesh.userData.unlitItem) {
-                    // createEntityMaterial already supports unlit option; but getBlockMaterial caches lit versions.
-                    // Simple approach: clone and mark as unlit-like by disabling toneMapped & leaving lighting as-is (MeshBasicNodeMaterial already largely unlit).
-                    const cloned = mat.clone();
-                    cloned.toneMapped = false;
-                    mesh.material = cloned;
-                } else {
-                    mesh.material = mat;
-                }
-                mesh.material.needsUpdate = true;
-            } catch (e) {
-                console.warn(`[Texture] Error while loading ${entry.texPath}:`, e);
-            }
-        })();
-    }
-
-    return finalGroup;
-}
 /**
  * 주의: BoxGeometry는 인덱스가 있는 BufferGeometry를 반환합니다.
  * 병합을 위해 toNonIndexed()로 변환한 뒤 attribute들을 concat 합니다.
@@ -784,71 +693,133 @@ function loadpbde(file) {
         }
 
         if (msg.success) {
-            const renderList = msg.data;
-            
-            if (!renderList || renderList.length === 0) {
-                console.warn("[Debug] Worker returned success, but the render list is empty. Nothing to render.");
-            } else {
-                console.log(`[Debug] Processing ${renderList.length} items from worker.`);
+            const { metadata: metadataString, geometryBuffer } = msg;
+            const { geometries: geometryMetas, otherItems, useUint32Indices } = JSON.parse(metadataString);
+
+            console.log(`[Debug] Processing ${geometryMetas.length + otherItems.length} items from worker (binary).`);
+
+            const applyMatrixToGeometry = (geom, mat4) => {
+                const pos = geom.getAttribute('position');
+                const nor = geom.getAttribute('normal');
+                const v = new THREE.Vector3();
+                const n = new THREE.Vector3();
+                const normalMat = new THREE.Matrix3().getNormalMatrix(mat4);
+                for (let i = 0; i < pos.count; i++) {
+                    v.fromBufferAttribute(pos, i).applyMatrix4(mat4);
+                    pos.setXYZ(i, v.x, v.y, v.z);
+                    if (nor) {
+                        n.fromBufferAttribute(nor, i).applyMatrix3(normalMat).normalize();
+                        nor.setXYZ(i, n.x, n.y, n.z);
+                    }
+                }
+                pos.needsUpdate = true;
+                if (nor) nor.needsUpdate = true;
+                geom.computeBoundingBox();
+                geom.computeBoundingSphere();
+            };
+
+            const itemsById = new Map();
+            for (const meta of geometryMetas) {
+                if (!itemsById.has(meta.itemId)) {
+                    itemsById.set(meta.itemId, []);
+                }
+                itemsById.get(meta.itemId).push(meta);
             }
 
-            renderList.forEach((item) => {
-                if (item.type === 'blockDisplay') {
-                    const finalGroup = createBlockDisplayFromData(item, myGen);
-                    loadedObjectGroup.add(finalGroup);
-                } else if (item.type === 'itemDisplayModel' || item.type === 'itemBlockDisplay') {
-                    // Reuse block display creation path (same geometry format)
-                    const finalGroup = createBlockDisplayFromData(item, myGen);
-                    // Mark meshes so later material fetch can set unlit for pure item planes (heuristic)
-                    if (item.type === 'itemDisplayModel') {
-                        finalGroup.traverse(obj => { if (obj.isMesh) obj.userData.unlitItem = true; });
+            for (const [itemId, metasForThisItem] of itemsById.entries()) {
+                const finalGroup = new THREE.Group();
+                finalGroup.matrixAutoUpdate = false;
+                const finalMatrix = new THREE.Matrix4();
+                finalMatrix.fromArray(metasForThisItem[0].transform);
+                finalMatrix.transpose();
+                finalGroup.matrix.copy(finalMatrix);
+                ensureSharedPlaceholder();
+
+                const materialGroups = new Map();
+
+                for (const meta of metasForThisItem) {
+                    const geom = new THREE.BufferGeometry();
+
+                    const positions = new Float32Array(geometryBuffer, meta.posByteOffset, meta.posLen);
+                    const normals = new Float32Array(geometryBuffer, meta.normByteOffset, meta.normLen);
+                    const uvs = new Float32Array(geometryBuffer, meta.uvByteOffset, meta.uvLen);
+                    const indices = useUint32Indices
+                        ? new Uint32Array(geometryBuffer, meta.indicesByteOffset, meta.indicesLen)
+                        : new Uint16Array(geometryBuffer, meta.indicesByteOffset, meta.indicesLen);
+
+                    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                    geom.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+                    geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+                    geom.setIndex(new THREE.BufferAttribute(indices, 1));
+
+                    const modelMatrix = new THREE.Matrix4().fromArray(meta.modelMatrix);
+                    applyMatrixToGeometry(geom, modelMatrix);
+
+                    const key = `${meta.texPath}|${(meta.tintHex ?? 0xffffff) >>> 0}`;
+                    let entry = materialGroups.get(key);
+                    if (!entry) {
+                        entry = { texPath: meta.texPath, tintHex: meta.tintHex ?? 0xffffff, geoms: [] };
+                        materialGroups.set(key, entry);
                     }
-                    loadedObjectGroup.add(finalGroup);
-                } else if (item.type === 'itemDisplay') {
-                    if (item.textureUrl) {
-                        const headGroup = new THREE.Group();
-                        headGroup.userData.isPlayerHead = true;
-                        headGroup.userData.gen = myGen;
+                    entry.geoms.push(geom);
+                }
+
+                for (const entry of materialGroups.values()) {
+                    const mergedGeom = entry.geoms.length > 1 ? mergeIndexedGeometries(entry.geoms) : entry.geoms[0];
+                    if (mergedGeom && entry.geoms.length > 1) {
+                        for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
+                    }
+                    if (mergedGeom) {
+                        if (!mergedGeom.boundingBox) mergedGeom.computeBoundingBox();
+                        if (!mergedGeom.boundingSphere) mergedGeom.computeBoundingSphere();
+
+                        const mesh = new THREE.Mesh(mergedGeom, sharedPlaceholderMaterial);
+                        mesh.castShadow = false;
+                        mesh.receiveShadow = false;
+                        finalGroup.add(mesh);
 
                         (async () => {
                             try {
-                                const tex = await loadPlayerHeadTexture(item.textureUrl, myGen);
-                                if (myGen !== currentLoadGen) {
-                                    // stale
-                                    try { disposeTexture(tex); } catch {}
-                                    return;
-                                }
-                                headGroup.add(createOptimizedHeadMerged(tex));
-                            } catch (err) {
-                                console.error('플레이어 헤드 텍스처 로드 실패:', err);
+                                const mat = await getBlockMaterial(entry.texPath, entry.tintHex, myGen);
+                                if (myGen !== currentLoadGen) return; // stale
+                                mesh.material = mat;
+                                mesh.material.needsUpdate = true;
+                            } catch (e) {
+                                console.warn(`[Texture] Error while loading ${entry.texPath}:`, e);
                             }
                         })();
-
-                        const finalMatrix = new THREE.Matrix4();
-                        finalMatrix.fromArray(item.transform);
-                        finalMatrix.transpose();
-                        const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
-                        finalMatrix.multiply(scaleMatrix);
-                        headGroup.matrixAutoUpdate = false;
-                        headGroup.matrix.copy(finalMatrix);
-                        loadedObjectGroup.add(headGroup);
-                    } else {
-                        const geometry = new THREE.BoxGeometry(1, 1, 1);
-                        const material = new THREE.MeshStandardMaterial({ color: 0x0000ff });
-                        material.toneMapped = false;
-                        const cube = new THREE.Mesh(geometry, material);
-                        cube.castShadow = false;
-                        cube.receiveShadow = false;
-
-                        const finalMatrix = new THREE.Matrix4();
-                        finalMatrix.fromArray(item.transform);
-                        finalMatrix.transpose();
-
-                        cube.matrixAutoUpdate = false;
-                        cube.matrix.copy(finalMatrix);
-
-                        loadedObjectGroup.add(cube);
                     }
+                }
+                loadedObjectGroup.add(finalGroup);
+            }
+
+            otherItems.forEach((item) => {
+                if (item.type === 'itemDisplay' && item.textureUrl) {
+                    const headGroup = new THREE.Group();
+                    headGroup.userData.isPlayerHead = true;
+                    headGroup.userData.gen = myGen;
+
+                    (async () => {
+                        try {
+                            const tex = await loadPlayerHeadTexture(item.textureUrl, myGen);
+                            if (myGen !== currentLoadGen) {
+                                try { disposeTexture(tex); } catch {}
+                                return;
+                            }
+                            headGroup.add(createOptimizedHeadMerged(tex));
+                        } catch (err) {
+                            console.error('플레이어 헤드 텍스처 로드 실패:', err);
+                        }
+                    })();
+
+                    const finalMatrix = new THREE.Matrix4();
+                    finalMatrix.fromArray(item.transform);
+                    finalMatrix.transpose();
+                    const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
+                    finalMatrix.multiply(scaleMatrix);
+                    headGroup.matrixAutoUpdate = false;
+                    headGroup.matrix.copy(finalMatrix);
+                    loadedObjectGroup.add(headGroup);
                 }
             });
 

@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import axios from 'axios';
-import { unzip } from 'unzipit';
+import { unzip } from 'fflate';
 import pLimit from 'p-limit';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -109,18 +109,23 @@ function createWindow() {
         await fs.mkdir(CACHE_DIR, { recursive: true });
 
         // ✅ client.jar 다운로드 (메모리 상에서 처리)
-        const url = 'https://piston-data.mojang.com/v1/objects/ce92fd8d1b2460c41ceda07ae7b3fe863a80d045/client.jar';
+        const url = 'https://piston-data.mojang.com/v1/objects/d3bdf582a7fa723ce199f3665588dcfe6bf9aca8/client.jar';
         const response = await axios({
           url,
           method: 'GET',
           responseType: 'arraybuffer'
         });
 
-  // ✅ unzipit 으로 압축 열기 (Buffer/Uint8Array 직접 사용)
-  const { entries } = await unzip(response.data);
+  // ✅ fflate 으로 압축 열기 (Buffer/Uint8Array 직접 사용)
+  const unzipped = await new Promise((resolve, reject) => {
+    unzip(new Uint8Array(response.data), (err, data) => {
+      if (err) reject(err);
+      else resolve(data);
+    });
+  });
 
         // ✅ 사전 필터링 (디렉토리 엔트리 제외)
-        const allNames = Object.keys(entries);
+        const allNames = Object.keys(unzipped);
         const assetEntries = allNames.filter(name =>
           !name.endsWith('/') && requiredPrefixes.some(prefix => name.startsWith(prefix))
         );
@@ -136,9 +141,7 @@ function createWindow() {
 
             await ensureDir(path.dirname(fullPath));
 
-            const entry = entries[name];
-            // binary data as Uint8Array
-            const data = new Uint8Array(await entry.arrayBuffer());
+            const data = unzipped[name];
             await fs.writeFile(fullPath, data);
 
             savedCount++;

@@ -1,4 +1,4 @@
-import * as pako from 'pako';
+import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
 // tintColor is not a module, so it can't be imported directly in the worker.
 // The getTextureColor function will be manually included.
@@ -200,7 +200,7 @@ function hasHardcodedBlockstate(p) {
 
 function isHardcodedModelPath(p) {
     if (!p) return false;
-    return /(chest|conduit|shulker|bed|banner|sign|decorated_pot|creeper_head|dragon_head|piglin_head|zombie_head|shield|trident)/i.test(p);
+    return /(chest|conduit|shulker|bed|banner|sign|decorated_pot|creeper_head|dragon_head|piglin_head|zombie_head|player_head|wither_skeleton_skull|skeleton_skull|shield|trident|spyglass|copper_golem_statue)$/i.test(p);
 }
 
 function isHardcodedModelId(modelId) {
@@ -208,9 +208,47 @@ function isHardcodedModelId(modelId) {
     return isHardcodedModelPath(path);
 }
 
-function modelIdToHardcodedPath(modelId) {
+function getHardcodedModelCandidates(modelId) {
     const { path } = nsAndPathFromId(modelId);
-    return `hardcoded/models/${path}.json`;
+    if (!path) return [];
+    const normalized = path.replace(/^\/+/, '');
+    const candidates = new Set();
+
+    const push = (suffix) => {
+        if (suffix) candidates.add(`hardcoded/models/${suffix}.json`);
+    };
+
+    push(normalized);
+
+    if (normalized.startsWith('item/')) {
+        const withoutItem = normalized.slice('item/'.length);
+        push(`block/${withoutItem}`);
+        push(withoutItem);
+    } else if (normalized.startsWith('block/')) {
+        const withoutBlock = normalized.slice('block/'.length);
+        push(`block/${withoutBlock}`);
+    } else {
+        push(`block/${normalized}`);
+        push(`item/${normalized}`);
+    }
+
+    return Array.from(candidates);
+}
+
+const DISPLAY_IGNORE_GROUPS = [
+    ['builtin/generated', 'minecraft:item/generated', 'item/generated'],
+    ['minecraft:item/block', 'item/block', 'minecraft:block/block', 'block/block'],
+];
+
+function collectIgnoreDisplayIdsForModelId(modelId) {
+    if (!modelId) return [];
+    const matches = [];
+    for (const group of DISPLAY_IGNORE_GROUPS) {
+        if (group.includes(modelId)) {
+            matches.push(...group);
+        }
+    }
+    return matches;
 }
 
 function resolveTextureRef(value, textures, guard = 0) {
@@ -230,10 +268,14 @@ async function loadModelJson(assetPath) {
 }
 
 async function resolveModelTree(modelId, cache = new Map()) {
+    if (typeof modelId !== 'string' || !modelId) {
+        return null;
+    }
     if (cache.has(modelId)) return cache.get(modelId);
     // HACK: builtin/generated is not a real model file, but a marker for generated item models.
     // Intercept it and return a mock resolved model that can be processed by buildItemModelGeometryData.
     if (modelId && (modelId.endsWith('builtin/generated'))) {
+        const ignoreDisplayIds = collectIgnoreDisplayIdsForModelId('builtin/generated');
         const resolved = {
             id: modelId,
             json: { parent: 'item/generated' },
@@ -243,23 +285,37 @@ async function resolveModelTree(modelId, cache = new Map()) {
             texture_size: null,
             fromHardcoded: false,
         };
+        if (ignoreDisplayIds.length) {
+            resolved.ignoreDisplayIds = ignoreDisplayIds;
+        }
         cache.set(modelId, resolved);
         return resolved;
     }
     const hardcodedFirst = isHardcodedModelId(modelId);
     const assetsPath = modelIdToAssetPath(modelId);
-    const hardcodedPath = modelIdToHardcodedPath(modelId);
+    const hardcodedCandidates = getHardcodedModelCandidates(modelId);
+    const loadHardcoded = async () => {
+        for (const candidatePath of hardcodedCandidates) {
+            try {
+                const candidateJson = await loadModelJson(candidatePath);
+                return { json: candidateJson, path: candidatePath };
+            } catch (_) {
+                // try next candidate
+            }
+        }
+        return null;
+    };
     let json;
     let fromHardcoded = false;
     try {
         if (hardcodedFirst) {
-            try {
-                json = await loadModelJson(hardcodedPath);
+            const hardcodedRes = await loadHardcoded();
+            if (hardcodedRes) {
+                json = hardcodedRes.json;
                 fromHardcoded = true;
-            } catch (_) {
-                json = await loadModelJson(assetsPath);
             }
-        } else {
+        }
+        if (!json) {
             json = await loadModelJson(assetsPath);
         }
     } catch (e) {
@@ -275,9 +331,24 @@ async function resolveModelTree(modelId, cache = new Map()) {
         } catch (e2) {
             // ignore fallback failure
         }
+        if (!json && !hardcodedFirst) {
+            const hardcodedRes = await loadHardcoded();
+            if (hardcodedRes) {
+                json = hardcodedRes.json;
+                fromHardcoded = true;
+            }
+        }
         if (!json) {
             cache.set(modelId, null);
             return null;
+        }
+    }
+
+    if (!fromHardcoded && isHardcodedModelId(modelId)) {
+        const hardcodedRes = await loadHardcoded();
+        if (hardcodedRes && hardcodedRes.json) {
+            json = hardcodedRes.json;
+            fromHardcoded = true;
         }
     }
 
@@ -285,6 +356,7 @@ async function resolveModelTree(modelId, cache = new Map()) {
     let textureSize = Array.isArray(json.texture_size) ? json.texture_size : null;
     let elements = json.elements || null;
     let parentChain = [];
+    let ignoreDisplayIds = [];
 
     if (json.parent) {
         const parentRes = await resolveModelTree(json.parent, cache);
@@ -296,10 +368,28 @@ async function resolveModelTree(modelId, cache = new Map()) {
             }
             parentChain = [...parentRes.parentChain, json.parent];
             fromHardcoded = fromHardcoded || !!parentRes.fromHardcoded;
+            if (parentRes.ignoreDisplayIds) {
+                if (Array.isArray(parentRes.ignoreDisplayIds)) {
+                    ignoreDisplayIds.push(...parentRes.ignoreDisplayIds);
+                } else if (parentRes.ignoreDisplayIds instanceof Set) {
+                    ignoreDisplayIds.push(...parentRes.ignoreDisplayIds);
+                }
+            }
         }
     }
 
+    if (Array.isArray(json.pbde_ignore_display_ids)) {
+        ignoreDisplayIds.push(...json.pbde_ignore_display_ids);
+    }
+
+    ignoreDisplayIds.push(...collectIgnoreDisplayIdsForModelId(modelId));
+
+    const ignoreDisplayIdsUnique = Array.from(new Set(ignoreDisplayIds.filter(Boolean)));
+
     const resolved = { id: modelId, json, textures: mergedTextures, elements, parentChain, texture_size: textureSize, fromHardcoded };
+    if (ignoreDisplayIdsUnique.length) {
+        resolved.ignoreDisplayIds = ignoreDisplayIdsUnique;
+    }
     cache.set(modelId, resolved);
     return resolved;
 }
@@ -732,6 +822,241 @@ const itemDefinitionCache = new Map(); // itemName -> definition json (assets/mi
 const itemModelGeometryCache = new Map(); // modelId|tint -> geometryData array
 const itemModelHasElementsCache = new Map(); // modelId -> boolean (true if model had elements)
 
+// 플레이어 머리 장식(player_head) 전용 display 변환. 필요 시 아래 값을 수정하면 즉시 적용된다.
+const PLAYER_HEAD_DISPLAY_TRANSFORMS = {
+    thirdperson_righthand: {
+        rotation: [-45, 45, 0],
+        translation: [0, 3, 0],
+        scale: [0.5, 0.5, 0.5],
+    },
+    ground: {
+        translation: [0, 3, 0],
+        scale: [0.5, 0.5, 0.5],
+    },
+    gui: {
+        rotation: [30, 45, 0],
+        translation: [0, 3, 0],
+    },
+    fixed: {
+        rotation: [0, 180, 0],
+        translation: [0, 4, 0],
+    },
+};
+
+const DEFAULT_ITEM_DISPLAY_TRANSFORMS = {
+    item: {
+        ground: {
+            "rotation": [ 0, 0, 0 ],
+            "translation": [ 0, 2, 0],
+            "scale":[ 0.5, 0.5, 0.5 ]
+        },
+        head: {
+            "rotation": [ 0, 180, 0 ],
+            "translation": [ 0, 13, -7],
+            "scale":[ 1, 1, 1]
+        },
+        thirdperson_righthand: {
+            "rotation": [ 0, 0, 0 ],
+            "translation": [ 0, 3, -1 ],
+            "scale": [ 0.55, 0.55, 0.55 ]
+        },
+        firstperson_righthand: {
+            "rotation": [ 0, -90, -25 ],
+            "translation": [ -1.13, 3.2, -1.13],
+            "scale": [ 0.68, 0.68, 0.68 ]
+        },
+        fixed: {
+            "rotation": [ 0, 180, 0 ],
+            "scale": [ 1, 1, 1 ]
+        },
+    },
+    block: {
+        gui: {
+            rotation: [30, 225, 0],
+            translation: [0, 0, 0],
+            scale: [0.625, 0.625, 0.625],
+        },
+        ground: {
+            rotation: [0, 0, 0],
+            translation: [0, 3, 0],
+            scale: [0.25, 0.25, 0.25],
+        },
+        fixed: {
+            rotation: [0, 0, 0],
+            translation: [0, 0, 0],
+            scale: [0.5, 0.5, 0.5],
+        },
+        on_shelf: {
+            rotation: [0, 180, 0],
+            translation: [0, 0, 0],
+            scale: [1, 1, 1],
+        },
+        thirdperson_righthand: {
+            rotation: [75, 45, 0],
+            translation: [0, 2.5, 0],
+            scale: [0.375, 0.375, 0.375],
+        },
+        firstperson_righthand: {
+            rotation: [0, -45, 0],
+            translation: [0, 0, 0],
+            scale: [0.4, 0.4, 0.4],
+        },
+        firstperson_lefthand: {
+            rotation: [0, 225, 0],
+            translation: [0, 0, 0],
+            scale: [0.4, 0.4, 0.4],
+        },
+    },
+};
+
+const ITEM_DISPLAY_LEFT_HAND_FALLBACK = {
+    thirdperson_lefthand: 'thirdperson_righthand',
+    firstperson_lefthand: 'firstperson_righthand',
+};
+
+function cloneDisplayTransform(def) {
+    if (!def || typeof def !== 'object') return null;
+    const rotSrc = Array.isArray(def.rotation) ? def.rotation : [];
+    const transSrc = Array.isArray(def.translation) ? def.translation : [];
+    const scaleSrc = Array.isArray(def.scale) ? def.scale : [];
+
+    const coerce = (val, fallback) => {
+        const n = Number(val);
+        return Number.isFinite(n) ? n : fallback;
+    };
+
+    const rotation = [
+        coerce(rotSrc[0], 0),
+        coerce(rotSrc[1], 0),
+        coerce(rotSrc[2], 0),
+    ];
+    const translation = [
+        coerce(transSrc[0], 0),
+        coerce(transSrc[1], 0),
+        coerce(transSrc[2], 0),
+    ];
+    const scale = [
+        coerce(scaleSrc[0], 1),
+        coerce(scaleSrc[1], 1),
+        coerce(scaleSrc[2], 1),
+    ];
+
+    return { rotation, translation, scale };
+}
+
+function mirrorRightHandDisplayTransform(def) {
+    const cloned = cloneDisplayTransform(def);
+    if (!cloned) return null;
+    cloned.translation[0] = -(cloned.translation[0] || 0);
+    cloned.rotation[1] = -(cloned.rotation[1] || 0);
+    cloned.rotation[2] = -(cloned.rotation[2] || 0);
+    return cloned;
+}
+
+function isBlockLikeItemModel(resolved) {
+    if (!resolved) return false;
+    const checkId = (id) => typeof id === 'string' && id.includes('block/');
+    if (checkId(resolved.id)) return true;
+    if (Array.isArray(resolved.parentChain)) {
+        return resolved.parentChain.some(checkId);
+    }
+    return false;
+}
+
+async function findDisplayTransformInHierarchy(resolved, displayType, cache) {
+    if (!resolved || !displayType) return null;
+    const ignoreDisplayIds = (() => {
+        const ignore = resolved.ignoreDisplayIds;
+        if (!ignore) return null;
+        if (ignore instanceof Set) return ignore;
+        if (Array.isArray(ignore)) return new Set(ignore);
+        return new Set([ignore]);
+    })();
+    const idsToCheck = [];
+    if (resolved.id) idsToCheck.push(resolved.id);
+    if (Array.isArray(resolved.parentChain) && resolved.parentChain.length > 0) {
+        for (let i = resolved.parentChain.length - 1; i >= 0; i--) {
+            const parentId = resolved.parentChain[i];
+            if (parentId) idsToCheck.push(parentId);
+        }
+    }
+
+    for (const id of idsToCheck) {
+        if (ignoreDisplayIds && ignoreDisplayIds.has(id)) {
+            continue;
+        }
+        let candidate;
+        if (id === resolved.id) {
+            candidate = resolved;
+        } else if (cache.has(id)) {
+            candidate = cache.get(id);
+        } else {
+            candidate = await resolveModelTree(id, cache);
+        }
+
+        if (!candidate || !candidate.json) continue;
+        const display = candidate.json.display;
+        if (display && display[displayType]) {
+            return cloneDisplayTransform(display[displayType]);
+        }
+    }
+    return null;
+}
+
+async function getDisplayTransformForItem(resolved, displayType, cache) {
+    if (!displayType) return null;
+    const defaultsRoot = isBlockLikeItemModel(resolved)
+        ? (DEFAULT_ITEM_DISPLAY_TRANSFORMS.block || {})
+        : (DEFAULT_ITEM_DISPLAY_TRANSFORMS.item || {});
+
+    let transform = await findDisplayTransformInHierarchy(resolved, displayType, cache);
+
+    if (!transform && defaultsRoot[displayType]) {
+        transform = cloneDisplayTransform(defaultsRoot[displayType]);
+    }
+
+    if (!transform && ITEM_DISPLAY_LEFT_HAND_FALLBACK[displayType]) {
+        const fallbackKey = ITEM_DISPLAY_LEFT_HAND_FALLBACK[displayType];
+        let fallback = await findDisplayTransformInHierarchy(resolved, fallbackKey, cache);
+        if (!fallback && defaultsRoot[fallbackKey]) {
+            fallback = cloneDisplayTransform(defaultsRoot[fallbackKey]);
+        }
+        if (fallback) {
+            transform = mirrorRightHandDisplayTransform(fallback);
+        }
+    }
+
+    return transform;
+}
+
+function buildDisplayTransformMatrix(transform) {
+    if (!transform) return null;
+    const rotation = Array.isArray(transform.rotation) ? transform.rotation : [0, 0, 0];
+    const translation = Array.isArray(transform.translation) ? transform.translation : [0, 0, 0];
+    const scale = Array.isArray(transform.scale) ? transform.scale : [1, 1, 1];
+
+    const tx = (translation[0] || 0) / 16;
+    const ty = (translation[1] || 0) / 16;
+    const tz = (translation[2] || 0) / 16;
+
+    const rx = THREE.MathUtils.degToRad(rotation[0] || 0);
+    const ry = THREE.MathUtils.degToRad(rotation[1] || 0);
+    const rz = THREE.MathUtils.degToRad(rotation[2] || 0);
+
+    const sx = scale[0] == null ? 1 : scale[0];
+    const sy = scale[1] == null ? 1 : scale[1];
+    const sz = scale[2] == null ? 1 : scale[2];
+
+    const translationVec = new THREE.Vector3(tx, ty, tz);
+    const rotationEuler = new THREE.Euler(rx, ry, rz, 'XYZ');
+    const rotationQuat = new THREE.Quaternion().setFromEuler(rotationEuler);
+    const scaleVec = new THREE.Vector3(sx, sy, sz);
+
+    const matrix = new THREE.Matrix4();
+    matrix.compose(translationVec, rotationQuat, scaleVec);
+    return matrix;
+}
+
 function parseItemName(raw) {
     if (!raw) return { baseName: '', displayType: null };
     const base = raw.split('[')[0];
@@ -946,158 +1271,7 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
 }
 
 // Extrude only boundary (outer) opaque pixels of a 2D item texture into thin 3D voxels for a rim effect.
-const EXTRUDE_ITEM_DEPTH = 1/16; // Thickness along Z
 const extrudedItemGeometryCache = new Map(); // texPath -> geometry array
-async function buildExtrudedBoundaryGeometry(texId) {
-    if (!texId) return [];
-    const texPath = textureIdToAssetPath(texId);
-    if (extrudedItemGeometryCache.has(texPath)) return extrudedItemGeometryCache.get(texPath);
-    try {
-        const asset = await workerAssetProvider.getAsset(texPath);
-        let bytes;
-        if (asset instanceof Uint8Array) bytes = asset; else if (asset && typeof asset === 'object' && asset.type === 'Buffer' && Array.isArray(asset.data)) bytes = new Uint8Array(asset.data); else if (typeof asset === 'string') {
-            // Fallback string decode (may not be raw binary but attempt)
-            bytes = new Uint8Array(asset.length); for (let i=0;i<asset.length;i++) bytes[i] = asset.charCodeAt(i) & 0xff;
-        } else return [];
-        const blob = new Blob([bytes], { type: 'image/png' });
-        const bmp = await createImageBitmap(blob);
-        const w = bmp.width, h = bmp.height;
-        if (!w || !h) return [];
-        const canvas = new OffscreenCanvas(w, h);
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(bmp, 0, 0);
-        const data = ctx.getImageData(0,0,w,h).data;
-        const isOpaque = (x,y) => {
-            if (x < 0 || y < 0 || x >= w || y >= h) return false;
-            return data[(y*w + x)*4 + 3] > 0;
-        };
-        const positions = [];
-        const normals = [];
-        const uvs = [];
-        const indices = [];
-        const pushQuad = (vx, vy, vz, nx, ny, nz, uvArr) => {
-            const base = positions.length / 3;
-            positions.push(...vx);
-            for (let i=0;i<4;i++) normals.push(nx, ny, nz);
-            uvs.push(...uvArr);
-            indices.push(base, base+1, base+2, base, base+2, base+3);
-        };
-        const depth = EXTRUDE_ITEM_DEPTH / 2;
-        // Pass 1: merged horizontal strips for front/back
-        for (let y=0; y<h; y++) {
-            let runStart = -1;
-            for (let x=0; x<=w; x++) { // include sentinel at w
-                const opaque = x < w && isOpaque(x,y);
-                if (opaque && runStart === -1) {
-                    runStart = x;
-                } else if ((!opaque || x === w) && runStart !== -1) {
-                    const runEnd = x; // exclusive
-                    const x0 = runStart / w; const x1 = runEnd / w;
-                    const yTop = 1 - y / h; const yBot = 1 - (y+1)/h;
-                    const zF = depth; const zB = -depth;
-                    const u0 = x0; const u1 = x1; const vTop = yTop; const vBot = yBot;
-                    const stripUV = [u0,vTop, u1,vTop, u1,vBot, u0,vBot];
-                    // Front strip
-                    pushQuad([
-                        x0,yTop,zF,  x1,yTop,zF,  x1,yBot,zF,  x0,yBot,zF
-                    ], null, null, 0,0,1, stripUV);
-                    // Back strip
-                    pushQuad([
-                        x1,yTop,zB,  x0,yTop,zB,  x0,yBot,zB,  x1,yBot,zB
-                    ], null, null, 0,0,-1, stripUV);
-                    runStart = -1;
-                }
-            }
-        }
-
-        // Pass 2: boundary side faces (unchanged logic, but without per-pixel front/back duplication)
-        for (let y=0; y<h; y++) {
-            for (let x=0; x<w; x++) {
-                if (!isOpaque(x,y)) continue;
-                const boundary = (!isOpaque(x-1,y) || !isOpaque(x+1,y) || !isOpaque(x,y-1) || !isOpaque(x,y+1));
-                if (!boundary) continue;
-                const x0 = x / w; const x1 = (x+1)/w;
-                const yTop = 1 - y / h; const yBot = 1 - (y+1)/h;
-                const zF = depth; const zB = -depth;
-                const u0 = x0; const u1 = x1; const vTop = yTop; const vBot = yBot;
-                if (!isOpaque(x-1,y)) {
-                    pushQuad([
-                        x0,yTop,zB, x0,yTop,zF, x0,yBot,zF, x0,yBot,zB
-                    ], null, null, -1,0,0, [u0,vTop, u0,vTop, u0,vBot, u0,vBot]);
-                }
-                if (!isOpaque(x+1,y)) {
-                    pushQuad([
-                        x1,yTop,zF, x1,yTop,zB, x1,yBot,zB, x1,yBot,zF
-                    ], null, null, 1,0,0, [u1,vTop, u1,vTop, u1,vBot, u1,vBot]);
-                }
-                if (!isOpaque(x,y-1)) {
-                    pushQuad([
-                        x0,yTop,zB, x1,yTop,zB, x1,yTop,zF, x0,yTop,zF
-                    ], null, null, 0,1,0, [u0,vTop, u1,vTop, u1,vTop, u0,vTop]);
-                }
-                if (!isOpaque(x,y+1)) {
-                    pushQuad([
-                        x0,yBot,zF, x1,yBot,zF, x1,yBot,zB, x0,yBot,zB
-                    ], null, null, 0,-1,0, [u0,vBot, u1,vBot, u1,vBot, u0,vBot]);
-                }
-            }
-        }
-        const geom = [{ positions, normals, uvs, indices, texPath, tintHex: 0xffffff }];
-        extrudedItemGeometryCache.set(texPath, geom);
-        return geom;
-    } catch (e) {
-        try { console.warn('[ItemModel] extrude failed, fallback plane', texPath, e); } catch {}
-        return buildGeneratedPlaneGeometry(texId);
-    }
-}
-
-// Builtin / generated pixel-bounds cube: analyze alpha bounding box to size the cube.
-async function buildBuiltinPixelBoundsCubeGeometry(texId) {
-    if (!texId) return [];
-    const texPath = textureIdToAssetPath(texId);
-    try {
-        const px = await loadTexturePixels(texPath);
-        if (!px) return buildFallbackFullCube(texPath);
-        const { w, h, data } = px;
-        if (!w || !h) return buildFallbackFullCube(texPath);
-        let minX=w, minY=h, maxX=-1, maxY=-1;
-        for (let y=0;y<h;y++) {
-            for (let x=0;x<w;x++) {
-                const a = data[(y*w+x)*4+3];
-                if (a>0) {
-                    if (x<minX) minX=x; if (y<minY) minY=y; if (x>maxX) maxX=x; if (y>maxY) maxY=y;
-                }
-            }
-        }
-        if (maxX<minX || maxY<minY) return buildFallbackFullCube(texPath);
-        const rectW=(maxX-minX+1)/w, rectH=(maxY-minY+1)/h; const size=Math.max(rectW, rectH);
-        const centerX=(minX+maxX+1)/2/w, centerY=(minY+maxY+1)/2/h;
-        const x0=centerX-size/2, x1=centerX+size/2, y0=centerY-size/2, y1=centerY+size/2; const z0=0, z1=size;
-        const u0=minX/w, v0=1-(maxY+1)/h, u1=(maxX+1)/w, v1=1-minY/h;
-        const faceUV=[u0,v1,u1,v1,u1,v0,u0,v0];
-        const positions=[], normals=[], uvs=[], indices=[];
-        const addFace=(verts, normal, uv)=>{ const base=positions.length/3; positions.push(...verts); for(let i=0;i<4;i++) normals.push(...normal); uvs.push(...uv); indices.push(base,base+1,base+2,base,base+2,base+3); };
-        addFace([x0,y1,z1, x1,y1,z1, x1,y0,z1, x0,y0,z1],[0,0,1],faceUV); // front
-        addFace([x1,y1,z0, x0,y1,z0, x0,y0,z0, x1,y0,z0],[0,0,-1],faceUV); // back
-        addFace([x0,y1,z0, x0,y1,z1, x0,y0,z1, x0,y0,z0],[-1,0,0],faceUV); // left
-        addFace([x1,y1,z1, x1,y1,z0, x1,y0,z0, x1,y0,z1],[1,0,0],faceUV); // right
-        addFace([x0,y1,z0, x1,y1,z0, x1,y1,z1, x0,y1,z1],[0,1,0],faceUV); // top
-        addFace([x0,y0,z1, x1,y0,z1, x1,y0,z0, x0,y0,z0],[0,-1,0],faceUV); // bottom
-        return [{ positions, normals, uvs, indices, texPath, tintHex: 0xffffff }];
-    } catch (e) { try { console.warn('[ItemModel] builtin pixel-bounds fallback', texPath, e); } catch {} return buildFallbackFullCube(texPath); }
-}
-
-function buildFallbackFullCube(texPath) {
-    const positions=[], normals=[], uvs=[], indices=[]; const fullUV=[0,1,1,1,1,0,0,0];
-    const addFace=(verts, normal)=>{ const base=positions.length/3; positions.push(...verts); for(let i=0;i<4;i++) normals.push(...normal); uvs.push(...fullUV); indices.push(base,base+1,base+2,base,base+2,base+3); };
-    addFace([0,1,1,1,1,1,1,0,1,0,0,1],[0,0,1]);
-    addFace([1,1,0,0,1,0,0,0,0,1,0,0],[0,0,-1]);
-    addFace([0,1,0,0,1,1,0,0,1,0,0,0],[-1,0,0]);
-    addFace([1,1,1,1,1,0,1,0,0,1,0,1],[1,0,0]);
-    addFace([0,1,0,1,1,0,1,1,1,0,1,1],[0,1,0]);
-    addFace([0,0,1,1,0,1,1,0,0,0,0,0],[0,-1,0]);
-    return [{ positions, normals, uvs, indices, texPath, tintHex: 0xffffff }];
-}
 
 async function buildItemModelGeometryData(resolved) {
     if (!resolved) return null;
@@ -1133,7 +1307,9 @@ async function processItemModelDisplay(node) {
                 modelId = definition.model;
             } else if (definition.model && typeof definition.model === 'object') {
                 // Expected shape: { type: 'minecraft:model', model: 'minecraft:block/grass_block', tints: [...] }
-                modelId = definition.model.model || `minecraft:item/${baseName}`;
+                if (typeof definition.model.model === 'string') {
+                    modelId = definition.model.model;
+                }
                 if (Array.isArray(definition.model.tints)) tintList = definition.model.tints.slice();
             }
         }
@@ -1142,8 +1318,9 @@ async function processItemModelDisplay(node) {
         const cacheKey = modelId;
         let geomData = itemModelGeometryCache.get(cacheKey);
         let hasElements = itemModelHasElementsCache.get(cacheKey) || false;
+        let resolved = null;
         if (!geomData) {
-            const resolved = await resolveModelTree(modelId, modelTreeCache);
+            resolved = await resolveModelTree(modelId, modelTreeCache);
             if (!resolved) {
                 try { console.warn('[ItemModel] resolve failed', modelId); } catch {}
                 return null;
@@ -1155,6 +1332,13 @@ async function processItemModelDisplay(node) {
                 itemModelGeometryCache.set(cacheKey, geomData);
                 itemModelHasElementsCache.set(cacheKey, hasElements);
             }
+        }
+        if (!resolved) {
+            resolved = await resolveModelTree(modelId, modelTreeCache);
+        }
+        if (!resolved) {
+            try { console.warn('[ItemModel] resolve failed (post-cache)', modelId); } catch {}
+            return null;
         }
         if (!geomData || geomData.length === 0) {
             try { console.warn('[ItemModel] empty geometry', modelId); } catch {}
@@ -1174,6 +1358,26 @@ async function processItemModelDisplay(node) {
             modelMatrix.premultiply(new THREE.Matrix4().makeScale(-1, 1, 1));
             try { console.log('[ItemModel] applied flat full centering and horizontal flip', modelId); } catch {}
         }
+
+        if (displayType) {
+            if (baseName === 'player_head') {
+                const override = PLAYER_HEAD_DISPLAY_TRANSFORMS[displayType];
+                const overrideMatrix = buildDisplayTransformMatrix(override);
+                if (overrideMatrix) {
+                    modelMatrix.premultiply(overrideMatrix);
+                }
+            } else {
+                try {
+                    const displayTransform = await getDisplayTransformForItem(resolved, displayType, modelTreeCache);
+                    const displayMatrix = buildDisplayTransformMatrix(displayTransform);
+                    if (displayMatrix) {
+                        modelMatrix.premultiply(displayMatrix);
+                    }
+                } catch (err) {
+                    try { console.warn('[ItemModel] display transform error', modelId, displayType, err); } catch {}
+                }
+            }
+        }
         return {
             type: 'itemDisplayModel',
             name: baseName,
@@ -1192,18 +1396,19 @@ async function processItemModelDisplay(node) {
 // --- Original Worker Logic ---
 
 function apply_transforms(parent, child) {
-    const result = new Array(16);
+    const result = new Float32Array(16);
     for (let i = 0; i < 4; i++) {
         for (let j = 0; j < 4; j++) {
             result[i * 4 + j] =
-                parent[i * 4 + 0] * child[0 + j] +
-                parent[i * 4 + 1] * child[4 + j] +
-                parent[i * 4 + 2] * child[8 + j] +
-                parent[i * 4 + 3] * child[12 + j];
+                parent[i * 4 + 0] * child[0 * 4 + j] +
+                parent[i * 4 + 1] * child[1 * 4 + j] +
+                parent[i * 4 + 2] * child[2 * 4 + j] +
+                parent[i * 4 + 3] * child[3 * 4 + j];
         }
     }
     return result;
 }
+
 
 function split_children(children) {
     if (!children) return [];
@@ -1258,19 +1463,57 @@ async function processNode(node, parentTransform) {
     } else if (node.isItemDisplay) {
         // Player head special-case (existing behavior)
         if (node.name.toLowerCase().startsWith('player_head')) {
+            let adjustedTransform = worldTransform;
+            let displayType = null;
+            try {
+                const parsed = parseItemName(node.name);
+                if (parsed && parsed.displayType) {
+                    displayType = String(parsed.displayType).toLowerCase();
+                }
+            } catch {/* ignore parse errors */}
+
+            if (displayType) {
+                const override = PLAYER_HEAD_DISPLAY_TRANSFORMS[displayType];
+                const overrideMatrix = buildDisplayTransformMatrix(override);
+                if (overrideMatrix && worldTransform) {
+                    const worldMatrix = new THREE.Matrix4().fromArray(worldTransform).transpose();
+                    worldMatrix.multiply(overrideMatrix);
+                    const rowMajor = worldMatrix.clone().transpose().elements;
+                    adjustedTransform = new Float32Array(rowMajor);
+                }
+            }
+
             const itemData = {
                 type: 'itemDisplay',
                 name: node.name,
-                transform: worldTransform,
+                transform: adjustedTransform,
                 nbt: node.nbt,
                 options: node.options,
                 brightness: node.brightness
             };
+            if (displayType) itemData.displayType = displayType;
             let textureUrl = null;
             const defaultTextureValue = 'http://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
             if (node.tagHead && node.tagHead.Value) {
                 try {
-                    textureUrl = JSON.parse(atob(node.tagHead.Value)).textures.SKIN.url;
+                    //json parse에서 문자열로 변경함
+                    const decoded = atob(node.tagHead.Value);
+                    const skinMarker = '"SKIN":{"url":"';
+                    const urlIndex = decoded.indexOf(skinMarker);
+                    let parsedUrl = null;
+                    if (urlIndex !== -1) {
+                        const startIndex = urlIndex + skinMarker.length;
+                        const endIndex = decoded.indexOf('"', startIndex);
+                        if (endIndex !== -1) {
+                            parsedUrl = decoded.substring(startIndex, endIndex);
+                        }
+                    }
+                    
+                    if (parsedUrl) {
+                        textureUrl = parsedUrl;
+                    } else {
+                        textureUrl = JSON.parse(decoded).textures.SKIN.url;
+                    }
                 } catch (err) { /* ignore */ }
             } else if (node.paintTexture) {
                 textureUrl = node.paintTexture.startsWith('data:image') ? node.paintTexture : `data:image/png;base64,${node.paintTexture}`;
@@ -1343,8 +1586,7 @@ self.onmessage = async (e) => {
         for (let i = 0; i < decodedData.length; i++) {
             uint8Array[i] = decodedData.charCodeAt(i);
         }
-        const inflatedData = pako.inflate(uint8Array, { to: 'string' });
-        const jsonData = JSON.parse(inflatedData);
+    const jsonData = JSON.parse(strFromU8(decompressSync(uint8Array)));
 
         const processedChildren = split_children(jsonData[0].children);
 
@@ -1361,7 +1603,113 @@ self.onmessage = async (e) => {
         const promises = processedChildren.map(node => processNode(node, identityMatrix));
         const renderList = (await Promise.all(promises)).flat();
 
-    self.postMessage({ success: true, data: renderList, fastMode: FAST_ITEM_MODEL_MODE, itemCount });
+        const geometryItems = [];
+        const otherItems = [];
+        for (const item of renderList) {
+            if (item.type === 'blockDisplay' || item.type === 'itemDisplayModel') {
+                geometryItems.push(item);
+            } else {
+                otherItems.push(item);
+            }
+        }
+
+        let totalPositions = 0;
+        let totalNormals = 0;
+        let totalUvs = 0;
+        let totalIndices = 0;
+        let totalVertices = 0;
+        let itemId = 0;
+
+        for (const item of geometryItems) {
+            for (const model of item.models) {
+                for (const geomData of model.geometries) {
+                    totalPositions += geomData.positions.length;
+                    totalNormals += geomData.normals.length;
+                    totalUvs += geomData.uvs.length;
+                    totalIndices += geomData.indices.length;
+                    totalVertices += geomData.positions.length / 3;
+                }
+            }
+        }
+
+        const useUint32Indices = totalVertices > 65535;
+        const indexElementSize = useUint32Indices ? 4 : 2;
+
+        const posByteLength = totalPositions * 4;
+        const normByteLength = totalNormals * 4;
+        const uvByteLength = totalUvs * 4;
+        const indicesByteLength = totalIndices * indexElementSize;
+
+        const normByteOffset = posByteLength;
+        const uvByteOffset = normByteOffset + normByteLength;
+        const indicesByteOffset = uvByteOffset + uvByteLength;
+        const totalByteLength = indicesByteOffset + indicesByteLength;
+
+        const geometryBuffer = new ArrayBuffer(totalByteLength);
+        const metadata = [];
+
+        const posView = new Float32Array(geometryBuffer, 0, totalPositions);
+        const normView = new Float32Array(geometryBuffer, normByteOffset, totalNormals);
+        const uvView = new Float32Array(geometryBuffer, uvByteOffset, totalUvs);
+        const indicesView = useUint32Indices
+            ? new Uint32Array(geometryBuffer, indicesByteOffset, totalIndices)
+            : new Uint16Array(geometryBuffer, indicesByteOffset, totalIndices);
+
+        let posCursor = 0;
+        let normCursor = 0;
+        let uvCursor = 0;
+        let indicesCursor = 0;
+
+        for (const item of geometryItems) {
+            itemId++;
+            for (const model of item.models) {
+                for (const geomData of model.geometries) {
+                    const { positions, normals, uvs, indices } = geomData;
+
+                    posView.set(positions, posCursor);
+                    normView.set(normals, normCursor);
+                    uvView.set(uvs, uvCursor);
+                    indicesView.set(indices, indicesCursor);
+
+                    metadata.push({
+                        itemId: itemId,
+                        transform: item.transform,
+                        modelMatrix: model.modelMatrix,
+                        texPath: geomData.texPath,
+                        tintHex: geomData.tintHex,
+                        isItemDisplayModel: item.type === 'itemDisplayModel',
+                        posByteOffset: posCursor * 4,
+                        posLen: positions.length,
+                        normByteOffset: normByteOffset + normCursor * 4,
+                        normLen: normals.length,
+                        uvByteOffset: uvByteOffset + uvCursor * 4,
+                        uvLen: uvs.length,
+                        indicesByteOffset: indicesByteOffset + indicesCursor * indexElementSize,
+                        indicesLen: indices.length,
+                    });
+
+                    posCursor += positions.length;
+                    normCursor += normals.length;
+                    uvCursor += uvs.length;
+                    indicesCursor += indices.length;
+                }
+            }
+        }
+
+        const finalMetadata = {
+            geometries: metadata,
+            otherItems: otherItems,
+            useUint32Indices: useUint32Indices,
+        };
+        const metadataString = JSON.stringify(finalMetadata);
+
+        self.postMessage({
+            success: true,
+            metadata: metadataString,
+            geometryBuffer: geometryBuffer,
+            fastMode: FAST_ITEM_MODEL_MODE,
+            itemCount
+        }, [geometryBuffer]);
 
     } catch (error) {
         self.postMessage({

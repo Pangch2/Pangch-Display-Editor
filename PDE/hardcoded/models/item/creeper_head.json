@@ -1,21 +1,23 @@
 {
+	"format_version": "1.21.6",
 	"credit": "Made with Blockbench",
 	"textures": {
-		"entity": "creeper"
+		"1": "entity/creeper/creeper",
+		"particle": "entity/creeper/creeper"
 	},
 	"elements": [
 		{
 			"from": [4, 0, 4],
 			"to": [12, 8, 12],
+			"rotation": {"angle": 0, "axis": "y", "origin": [8, 0, 8]},
 			"faces": {
-				"north": {"uv": [2, 4, 4, 8], "texture": "#entity"},
-				"east": {"uv": [4, 4, 6, 8], "texture": "#entity"},
-				"south": {"uv": [4, 0, 6, 4], "texture": "#entity"},
-				"west": {"uv": [0, 4, 2, 8], "texture": "#entity"},
-				"up": {"uv": [2, 0, 4, 4], "texture": "#entity"},
-				"down": {"uv": [4, 0, 6, 4], "texture": "#entity"}
+				"north": {"uv": [6, 4, 8, 8], "texture": "#1"},
+				"east": {"uv": [4, 4, 6, 8], "texture": "#1"},
+				"south": {"uv": [2, 4, 4, 8], "texture": "#1"},
+				"west": {"uv": [0, 4, 2, 8], "texture": "#1"},
+				"up": {"uv": [4, 4, 2, 0], "rotation": 180, "texture": "#1"},
+				"down": {"uv": [6, 0, 4, 4], "rotation": 180, "texture": "#1"}
 			}
 		}
-	],
-	"display": {}
+	]
 }

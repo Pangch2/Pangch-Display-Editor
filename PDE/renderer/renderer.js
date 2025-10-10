@@ -37,33 +37,6 @@ async function startApp() {
   await closeWithAnimation(loadingOverlay);
   loadingOverlay.classList.remove('visible');
 
-  // --- 임시 코드: requiredPrefixes 접근 및 파일 접근 테스트 ---
-  //try {
-  //  const prefixes = await window.ipcApi.getRequiredPrefixes();
-  //  console.log('✅ Received required prefixes:', prefixes);
-//
-  //  if (Array.isArray(prefixes) && prefixes.length > 0) {
-  //    // 테스트용으로 첫 번째 프리픽스와 임의의 파일 이름을 조합
-  //    const testAssetPath = `${prefixes[0]}acacia_boat.json`;
-  //    console.log(`'${testAssetPath}'에 대한 접근을 시도합니다...`);
-//
-  //    // testAssetPath가 문자열인지 확인
-  //    if (typeof testAssetPath === 'string') {
-  //      const result = await window.ipcApi.getAssetContent(testAssetPath);
-  //      if (result.success) {
-  //        console.log(`✅ Success: Asset content received for ${testAssetPath}.`);
-  //      } else {
-  //        console.warn(`⚠️  Could not access asset '${testAssetPath}': ${result.error}`);
-  //      }
-  //    } else {
-  //      console.error('❌ testAssetPath is not a string:', testAssetPath);
-  //    }
-  //  }
-  //} catch (error) {
-  //  console.error('❌ Failed to test asset access:', error);
-  //}
-  // --- 임시 코드 끝 ---
-
   // --- 4. Three.js 씬 초기화 (기존 코드) ---
   await initScene();
   animate();

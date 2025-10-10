@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import { MeshBasicNodeMaterial } from 'three/webgpu';
 import * as TSL from 'three/tsl';
 export function createEntityMaterial(diffuseTex, tintHex = 0xffffff) {
   const blockLightLevel = TSL.uniform(1.0);
@@ -43,7 +43,7 @@ export function createEntityMaterial(diffuseTex, tintHex = 0xffffff) {
     diffuseNode.w
   );
 
-  const material = new THREE.MeshBasicNodeMaterial();
+  const material = new MeshBasicNodeMaterial();
   material.colorNode = litColor;
   material.transparent = true;
   material.alphaTest = 0.1;

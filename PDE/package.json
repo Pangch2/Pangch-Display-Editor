@@ -16,17 +16,16 @@
     "concurrently": "^9.2.1",
     "core-util-is": "^1.0.3",
     "cross-env": "^10.0.0",
-    "electron": "^38.2.0",
+    "electron": "^38.2.2",
     "electron-builder": "^26.0.12",
     "nodemon": "^3.1.10",
-    "vite": "^7.1.7"
+    "vite": "^7.1.9"
   },
   "dependencies": {
     "axios": "^1.12.2",
-    "pako": "^2.1.0",
+    "fflate": "^0.8.2",
     "three": "^0.180.0",
-    "p-limit": "^7.1.1",
-    "unzipit": "^1.4.3"
+    "p-limit": "^7.1.1"
   },
   "author": {
     "name": "Pangch"
