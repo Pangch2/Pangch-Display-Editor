@@ -1,5 +1,11 @@
 import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
+
+type TexturePixelData = {
+    w: number;
+    h: number;
+    data: Uint8ClampedArray;
+};
 // tintColor is not a module, so it can't be imported directly in the worker.
 // The getTextureColor function will be manually included.
 
@@ -276,7 +282,7 @@ async function resolveModelTree(modelId, cache = new Map()) {
     // Intercept it and return a mock resolved model that can be processed by buildItemModelGeometryData.
     if (modelId && (modelId.endsWith('builtin/generated'))) {
         const ignoreDisplayIds = collectIgnoreDisplayIdsForModelId('builtin/generated');
-        const resolved = {
+        const resolved: any = {
             id: modelId,
             json: { parent: 'item/generated' },
             textures: {},
@@ -386,7 +392,7 @@ async function resolveModelTree(modelId, cache = new Map()) {
 
     const ignoreDisplayIdsUnique = Array.from(new Set(ignoreDisplayIds.filter(Boolean)));
 
-    const resolved = { id: modelId, json, textures: mergedTextures, elements, parentChain, texture_size: textureSize, fromHardcoded };
+    const resolved: any = { id: modelId, json, textures: mergedTextures, elements, parentChain, texture_size: textureSize, fromHardcoded };
     if (ignoreDisplayIdsUnique.length) {
         resolved.ignoreDisplayIds = ignoreDisplayIdsUnique;
     }
@@ -1149,43 +1155,62 @@ const texturePixelPromises = new Map(); // texPath -> promise
 const textureBoundaryCache = new Map(); // texPath -> Set(index) of boundary pixels
 
 let FAST_ITEM_MODEL_MODE = false; // large batch shortcut
-const FAST_ITEM_MODEL_THRESHOLD = 300; // configurable threshold
+const FAST_ITEM_MODEL_THRESHOLD = Infinity; // configurable threshold
 
-async function loadTexturePixels(texPath) {
-    if (texturePixelCache.has(texPath)) return texturePixelCache.get(texPath);
-    if (texturePixelPromises.has(texPath)) return texturePixelPromises.get(texPath);
-    const p = (async () => {
-        try {
-            const asset = await workerAssetProvider.getAsset(texPath);
-            let bytes;
-            if (asset instanceof Uint8Array) bytes = asset; else if (asset && typeof asset === 'object' && asset.type === 'Buffer' && Array.isArray(asset.data)) bytes = new Uint8Array(asset.data); else if (typeof asset === 'string') {
-                bytes = new Uint8Array(asset.length); for (let i=0;i<asset.length;i++) bytes[i] = asset.charCodeAt(i) & 0xff;
-            } else return null;
-            const blob = new Blob([bytes], { type: 'image/png' });
-            const bmp = await createImageBitmap(blob);
-            const w = bmp.width, h = bmp.height;
-            if (!w || !h) return null;
-            // Reuse single OffscreenCanvas (resize as needed)
-            if (!loadTexturePixels._canvas) loadTexturePixels._canvas = new OffscreenCanvas(w, h);
-            const canvas = loadTexturePixels._canvas;
-            if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-            const ctx = canvas.getContext('2d');
-            ctx.clearRect(0,0,w,h);
-            ctx.drawImage(bmp, 0, 0);
-            const data = ctx.getImageData(0,0,w,h).data; // Uint8ClampedArray
-            const record = { w, h, data };
-            texturePixelCache.set(texPath, record);
-            return record;
-        } catch (e) {
-            try { console.warn('[ItemModel] loadTexturePixels failed', texPath, e); } catch {}
-            return null;
-        } finally {
-            texturePixelPromises.delete(texPath);
-        }
-    })();
-    texturePixelPromises.set(texPath, p);
-    return p;
-}
+type LoadTexturePixelsFn = {
+    (texPath: string): Promise<TexturePixelData | null>;
+    _canvas?: OffscreenCanvas | null;
+};
+
+const loadTexturePixels: LoadTexturePixelsFn = Object.assign(
+    async function loadTexturePixelsInner(texPath: string): Promise<TexturePixelData | null> {
+        if (texturePixelCache.has(texPath)) return texturePixelCache.get(texPath) ?? null;
+        if (texturePixelPromises.has(texPath)) return texturePixelPromises.get(texPath) ?? null;
+        const p = (async () => {
+            try {
+                const asset = await workerAssetProvider.getAsset(texPath);
+                let bytes: Uint8Array | null = null;
+                if (asset instanceof Uint8Array) bytes = asset;
+                else if (asset && typeof asset === 'object' && 'type' in asset && (asset as any).type === 'Buffer' && Array.isArray((asset as any).data)) bytes = new Uint8Array((asset as any).data);
+                else if (typeof asset === 'string') {
+                    bytes = new Uint8Array(asset.length);
+                    for (let i = 0; i < asset.length; i++) bytes[i] = asset.charCodeAt(i) & 0xff;
+                } else {
+                    return null;
+                }
+                if (!bytes) return null;
+                const blob = new Blob([bytes as any], { type: 'image/png' });
+                const bmp = await createImageBitmap(blob);
+                const w = bmp.width;
+                const h = bmp.height;
+                if (!w || !h) return null;
+                if (!loadTexturePixels._canvas) loadTexturePixels._canvas = new OffscreenCanvas(w, h);
+                const canvas = loadTexturePixels._canvas;
+                if (!canvas) return null;
+                if (canvas.width !== w || canvas.height !== h) {
+                    canvas.width = w;
+                    canvas.height = h;
+                }
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                if (!ctx) return null;
+                ctx.clearRect(0, 0, w, h);
+                ctx.drawImage(bmp, 0, 0);
+                const data = ctx.getImageData(0, 0, w, h).data;
+                const record: TexturePixelData = { w, h, data };
+                texturePixelCache.set(texPath, record);
+                return record;
+            } catch (e) {
+                try { console.warn('[ItemModel] loadTexturePixels failed', texPath, e); } catch {}
+                return null;
+            } finally {
+                texturePixelPromises.delete(texPath);
+            }
+        })();
+        texturePixelPromises.set(texPath, p);
+        return p;
+    },
+    { _canvas: null as OffscreenCanvas | null }
+);
 
 function computeBoundaryMask(texPath, px) {
     if (!px) return null;
@@ -1410,10 +1435,10 @@ function apply_transforms(parent, child) {
 }
 
 
-function split_children(children) {
+function split_children(children: any) {
     if (!children) return [];
-    return children.map(item => {
-        const newItem = {};
+    return children.map((item: any) => {
+        const newItem: any = {};
 
         // 조건 1: 특정 display 키 포함
         if (item.isCollection) newItem.isCollection = true;
@@ -1457,7 +1482,7 @@ async function processNode(node, parentTransform) {
     if (node.isBlockDisplay) {
         const modelData = await processBlockDisplay(node);
         if (modelData) {
-            modelData.transform = worldTransform; // Assign the calculated world transform
+            (modelData as any).transform = worldTransform; // Assign the calculated world transform
             renderItems.push(modelData);
         }
     } else if (node.isItemDisplay) {
@@ -1483,7 +1508,7 @@ async function processNode(node, parentTransform) {
                 }
             }
 
-            const itemData = {
+            const itemData: any = {
                 type: 'itemDisplay',
                 name: node.name,
                 transform: adjustedTransform,
@@ -1526,7 +1551,7 @@ async function processNode(node, parentTransform) {
                 transform: worldTransform
             });
             if (modelDisplay) {
-                modelDisplay.transform = worldTransform;
+                (modelDisplay as any).transform = worldTransform;
                 renderItems.push(modelDisplay);
             } else {
                 // Fallback placeholder (maintain previous cube fallback path via simple itemDisplay object)

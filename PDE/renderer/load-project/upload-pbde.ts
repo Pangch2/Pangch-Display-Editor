@@ -1,15 +1,29 @@
-import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
+import { openWithAnimation, closeWithAnimation } from '../ui-open-close.js';
 import * as THREE from 'three/webgpu';
-import PbdeWorker from './pbde-worker.js?worker&inline';
-import { createEntityMaterial } from './entityMaterial.js';
+import PbdeWorker from './pbde-worker?worker&inline';
+import { createEntityMaterial } from '../entityMaterial.js';
+
+type AssetPayload = string | Uint8Array | ArrayBuffer | unknown;
+type OptimizedTexture = THREE.Texture & { __optimizedSetupDone?: boolean };
+type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
+
+interface HeadGeometrySet {
+    base: THREE.BufferGeometry;
+    layer: THREE.BufferGeometry;
+    merged: THREE.BufferGeometry | null;
+}
 
 // --- Asset Provider for Main Thread ---
 
-function decodeIpcContentToString(content) {
+function isNodeBufferLike(content: unknown): content is { type: 'Buffer'; data: number[] } {
+    return !!content && typeof content === 'object' && (content as any).type === 'Buffer' && Array.isArray((content as any).data);
+}
+
+function decodeIpcContentToString(content: unknown): string {
     try {
         if (!content) return '';
         // Node Buffer-like
-        if (typeof content === 'object' && content.type === 'Buffer' && Array.isArray(content.data)) {
+        if (isNodeBufferLike(content)) {
             return new TextDecoder('utf-8').decode(new Uint8Array(content.data));
         }
         // Browser Uint8Array
@@ -17,8 +31,13 @@ function decodeIpcContentToString(content) {
             return new TextDecoder('utf-8').decode(content);
         }
         // Try generic
-        if (typeof content.toString === 'function') {
-            return content.toString('utf-8');
+        if (typeof (content as { toString?: (encoding?: string) => string }).toString === 'function') {
+            const toStringFn = (content as { toString: (encoding?: string) => string }).toString;
+            try {
+                return toStringFn.call(content, 'utf-8');
+            } catch {
+                return toStringFn.call(content);
+            }
         }
         return String(content);
     } catch {
@@ -26,8 +45,18 @@ function decodeIpcContentToString(content) {
     }
 }
 
-const mainThreadAssetProvider = {
-    async getAsset(assetPath) {
+function toUint8Array(input: ArrayBuffer | ArrayBufferView): Uint8Array {
+    if (input instanceof ArrayBuffer) {
+        return new Uint8Array(input);
+    }
+    const view = input as ArrayBufferView;
+    const copy = new Uint8Array(view.byteLength);
+    copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+    return copy;
+}
+
+const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPayload> } = {
+    async getAsset(assetPath: string): Promise<AssetPayload> {
         const isHardcoded = assetPath.startsWith('hardcoded/');
         const result = isHardcoded
             ? await window.ipcApi.getHardcodedContent(assetPath.replace(/^hardcoded\//, ''))
@@ -36,12 +65,12 @@ const mainThreadAssetProvider = {
         // If this is a PNG texture, return raw binary so the worker can create ImageBitmap
         if (/\.png$/i.test(assetPath)) {
             const content = result.content;
-            if (content && typeof content === 'object' && content.type === 'Buffer' && Array.isArray(content.data)) {
+            if (isNodeBufferLike(content)) {
                 return new Uint8Array(content.data);
             }
             if (content instanceof Uint8Array) return content;
-            if (ArrayBuffer.isView(content)) return new Uint8Array(content.buffer);
-            if (content instanceof ArrayBuffer) return new Uint8Array(content);
+            if (ArrayBuffer.isView(content)) return toUint8Array(content);
+            if (content instanceof ArrayBuffer) return toUint8Array(content);
             if (typeof content === 'string') {
                 // Fallback: treat as binary string
                 const bytes = new Uint8Array(content.length);
@@ -105,27 +134,26 @@ function cropTextureToFirst16(tex) {
     }
 }
 
-let worker;
+let worker: Worker | null = null;
 // 로드된 모든 객체를 담을 그룹
 const loadedObjectGroup = new THREE.Group();
 
 // 텍스처 로더 및 캐시
-const textureLoader = new THREE.TextureLoader();
-const textureCache = new Map();
+const textureCache = new Map<string, THREE.Texture>();
 
 // --- Block texture/material caches (dedupe loads + reuse materials) ---
-const blockTextureCache = new Map(); // texPath -> THREE.Texture
-const blockTexturePromiseCache = new Map(); // texPath -> Promise<THREE.Texture>
-const blockMaterialCache = new Map(); // key: `${texPath}|${tintHex}` -> THREE.Material
-const blockMaterialPromiseCache = new Map(); // same key -> Promise<THREE.Material>
+const blockTextureCache = new Map<string, THREE.Texture>(); // texPath -> THREE.Texture
+const blockTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // texPath -> Promise<THREE.Texture>
+const blockMaterialCache = new Map<string, THREE.Material>(); // key: `${texPath}|${tintHex}` -> THREE.Material
+const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); // same key -> Promise<THREE.Material>
 
 // Shared placeholder assets
-let sharedPlaceholderMaterial = null;
+let sharedPlaceholderMaterial: THREE.Material | null = null;
 
 // Limit concurrent texture decodes to avoid overwhelming the decoder/GC
-const MAX_TEXTURE_DECODE_CONCURRENCY = 3000;
+const MAX_TEXTURE_DECODE_CONCURRENCY = 5000;
 let currentTextureSlots = 0;
-const textureSlotQueue = [];
+const textureSlotQueue: Array<(value?: void) => void> = [];
 function acquireTextureSlot() {
     if (currentTextureSlots < MAX_TEXTURE_DECODE_CONCURRENCY) {
         currentTextureSlots++;
@@ -143,44 +171,87 @@ function releaseTextureSlot() {
 }
 
 // --- Player head texture caches ---
-const headTextureCache = new Map(); // url -> THREE.Texture
-const headTexturePromiseCache = new Map(); // `${gen}|${url}` -> Promise<THREE.Texture>
+const headTextureCache = new Map<string, THREE.Texture>(); // url -> THREE.Texture
+const headTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // `${gen}|${url}` -> Promise<THREE.Texture>
 
-function dataUrlToBlob(dataUrl) {
-    try {
-        const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
-        if (!m) return null;
-        const mime = m[1] || 'image/png';
-        const b64 = m[2] || '';
-        const bin = atob(b64);
-        const len = bin.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
-        return new Blob([bytes], { type: mime });
-    } catch {
-        return null;
-    }
+const dataUrlBlobCache = new Map<string, Blob | null>();
+const dataUrlBlobPromiseCache = new Map<string, Promise<Blob | null>>();
+const MAX_DATA_URL_BLOBS = 32;
+
+async function dataUrlToBlob(dataUrl: string): Promise<Blob | null> {
+    if (!dataUrl) return null;
+    if (dataUrlBlobCache.has(dataUrl)) return dataUrlBlobCache.get(dataUrl);
+    if (dataUrlBlobPromiseCache.has(dataUrl)) return dataUrlBlobPromiseCache.get(dataUrl);
+    const p = (async () => {
+        try {
+            const response = await fetch(dataUrl);
+            if (!response.ok) return null;
+            const blob = await response.blob();
+            dataUrlBlobCache.set(dataUrl, blob);
+            if (dataUrlBlobCache.size > MAX_DATA_URL_BLOBS) {
+                const oldestKey = dataUrlBlobCache.keys().next().value as string | undefined;
+                if (oldestKey) {
+                    dataUrlBlobCache.delete(oldestKey);
+                }
+            }
+            return blob;
+        } catch {
+            return null;
+        } finally {
+            dataUrlBlobPromiseCache.delete(dataUrl);
+        }
+    })();
+    dataUrlBlobPromiseCache.set(dataUrl, p);
+    return p;
 }
 
-async function loadPlayerHeadTexture(url, gen) {
-    if (headTextureCache.has(url) && gen === currentLoadGen) return headTextureCache.get(url);
+const PLAYER_HEAD_WARMUP_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAGgwJ/lWdftQAAAABJRU5ErkJggg=='
+let playerHeadWarmupPromise: Promise<boolean> | null = null;
+
+function ensurePlayerHeadImageBitmapWarmup(): Promise<boolean> {
+    if (playerHeadWarmupPromise) return playerHeadWarmupPromise;
+    if (typeof createImageBitmap !== 'function') {
+        playerHeadWarmupPromise = Promise.resolve(false);
+        return playerHeadWarmupPromise;
+    }
+    playerHeadWarmupPromise = (async () => {
+        try {
+            const blob = await dataUrlToBlob(PLAYER_HEAD_WARMUP_DATA_URL);
+            if (!blob) return false;
+            const bitmap = await createImageBitmap(blob);
+            if (bitmap && typeof bitmap.close === 'function') {
+                try { bitmap.close(); } catch { /* ignore */ }
+            }
+            return true;
+        } catch {
+            return false;
+        }
+    })();
+    return playerHeadWarmupPromise;
+}
+
+// Kick off the warmup as soon as the module loads so the first real decode is faster.
+ensurePlayerHeadImageBitmapWarmup();
+
+async function loadPlayerHeadTexture(url: string, gen: number): Promise<THREE.Texture> {
+    if (headTextureCache.has(url) && gen === currentLoadGen) return headTextureCache.get(url)!;
     const promiseKey = `${gen}|${url}`;
-    if (headTexturePromiseCache.has(promiseKey)) return headTexturePromiseCache.get(promiseKey);
+    if (headTexturePromiseCache.has(promiseKey)) return headTexturePromiseCache.get(promiseKey)!;
 
     const p = (async () => {
+        await ensurePlayerHeadImageBitmapWarmup();
         await acquireTextureSlot();
         try {
-            let blob;
+            let blob: Blob | null;
             if (url.startsWith('data:')) {
-                blob = dataUrlToBlob(url);
+                blob = await dataUrlToBlob(url);
                 if (!blob) throw new Error('Invalid data URL');
             } else {
-                const resp = await fetch(url, { mode: 'cors' });
+                const resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const buf = await resp.arrayBuffer();
-                const ctype = resp.headers.get('content-type') || 'image/png';
-                blob = new Blob([buf], { type: ctype });
+                blob = await resp.blob();
             }
+            if (!blob) throw new Error('Texture decode failed: empty blob');
 
             const imageBitmap = await createImageBitmap(blob);
             const tex = new THREE.Texture(imageBitmap);
@@ -216,7 +287,7 @@ async function loadPlayerHeadTexture(url, gen) {
 // Load generation token to ignore late async results after reload
 let currentLoadGen = 0;
 
-function disposeTexture(tex) {
+function disposeTexture(tex: THREE.Texture | null | undefined): void {
     if (!tex) return;
     try {
         const img = tex.image || tex.source?.data;
@@ -227,24 +298,24 @@ function disposeTexture(tex) {
     try { tex.dispose(); } catch { /* ignore */ }
 }
 
-function ensureSharedPlaceholder() {
+function ensureSharedPlaceholder(): void {
     if (!sharedPlaceholderMaterial) {
         // Lightweight placeholder material to avoid creating NodeMaterial per mesh before texture loads
-        sharedPlaceholderMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 });
+        sharedPlaceholderMaterial = new THREE.MeshLambertMaterial({ transparent: true, opacity: 0 });
         sharedPlaceholderMaterial.toneMapped = false;
         sharedPlaceholderMaterial.alphaTest = 0.01; // Use a small alphaTest for transparent placeholders
     }
 }
 
-function decodeIpcContentToUint8Array(content) {
+function decodeIpcContentToUint8Array(content: unknown): Uint8Array {
     try {
         if (!content) return new Uint8Array();
-        if (typeof content === 'object' && content.type === 'Buffer' && Array.isArray(content.data)) {
+        if (isNodeBufferLike(content)) {
             return new Uint8Array(content.data);
         }
         if (content instanceof Uint8Array) return content;
-        if (ArrayBuffer.isView(content)) return new Uint8Array(content.buffer);
-        if (content instanceof ArrayBuffer) return new Uint8Array(content);
+        if (ArrayBuffer.isView(content)) return toUint8Array(content);
+        if (content instanceof ArrayBuffer) return toUint8Array(content);
         // Fallback: try toString and encode
         const str = String(content);
         const enc = new TextEncoder();
@@ -254,18 +325,18 @@ function decodeIpcContentToUint8Array(content) {
     }
 }
 
-async function loadBlockTexture(texPath, gen) {
+async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Texture> {
     // Deduplicate concurrent loads
-    if (blockTextureCache.has(texPath) && gen === currentLoadGen) return blockTextureCache.get(texPath);
+    if (blockTextureCache.has(texPath) && gen === currentLoadGen) return blockTextureCache.get(texPath)!;
     const promiseKey = `${gen}|${texPath}`;
-    if (blockTexturePromiseCache.has(promiseKey)) return blockTexturePromiseCache.get(promiseKey);
+    if (blockTexturePromiseCache.has(promiseKey)) return blockTexturePromiseCache.get(promiseKey)!;
 
     const p = (async () => {
         await acquireTextureSlot();
         const texResult = await window.ipcApi.getAssetContent(texPath);
         if (!texResult.success) throw new Error(`[Texture] Failed to load ${texPath}: ${texResult.error}`);
         const bytes = decodeIpcContentToUint8Array(texResult.content);
-        const blob = new Blob([bytes], { type: 'image/png' });
+        const blob = new Blob([bytes as any], { type: 'image/png' });
         // ImageBitmap decode is faster and off-main-thread where possible
         try {
             const imageBitmap = await createImageBitmap(blob);
@@ -309,11 +380,11 @@ async function loadBlockTexture(texPath, gen) {
     }
 }
 
-async function getBlockMaterial(texPath, tintHex, gen) {
+async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number): Promise<THREE.Material> {
     const key = `${texPath}|${(tintHex >>> 0)}`;
-    if (blockMaterialCache.has(key) && gen === currentLoadGen) return blockMaterialCache.get(key);
+    if (blockMaterialCache.has(key) && gen === currentLoadGen) return blockMaterialCache.get(key)!;
     const promiseKey = `${gen}|${key}`;
-    if (blockMaterialPromiseCache.has(promiseKey)) return blockMaterialPromiseCache.get(promiseKey);
+    if (blockMaterialPromiseCache.has(promiseKey)) return blockMaterialPromiseCache.get(promiseKey)!;
 
     const p = (async () => {
         const tex = await loadBlockTexture(texPath, gen);
@@ -338,35 +409,32 @@ async function getBlockMaterial(texPath, tintHex, gen) {
 }
 
 // --- 최적화: 지오메트리 미리 생성 ---
-let headGeometries = null;
+let headGeometries: HeadGeometrySet | null = null;
 
 export { loadedObjectGroup };
 
 // Merge multiple indexed BufferGeometries with identical attribute layouts
-function mergeIndexedGeometries(geometries) {
+function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
     if (!geometries || geometries.length === 0) return null;
     const first = geometries[0];
     const merged = new THREE.BufferGeometry();
 
-    // Collect attribute names
     const attrNames = Object.keys(first.attributes);
 
-    // Compute total vertex count
     let totalVertices = 0;
-    const itemSizes = {};
-    const arrayTypes = {};
+    const itemSizes: Record<string, number> = {};
+    const arrayTypes: Record<string, any> = {};
     for (const g of geometries) {
-        const pos = g.getAttribute('position');
-        const count = pos.count; // number of vertices
+        const pos = g.getAttribute('position') as THREE.BufferAttribute;
+        const count = pos.count;
         totalVertices += count;
         for (const name of attrNames) {
-            const attr = g.getAttribute(name);
+            const attr = g.getAttribute(name) as THREE.BufferAttribute;
             itemSizes[name] = attr.itemSize;
             arrayTypes[name] = attr.array.constructor;
         }
     }
 
-    // Merge attributes
     for (const name of attrNames) {
         const itemSize = itemSizes[name];
         const ArrayType = arrayTypes[name] || Float32Array;
@@ -374,29 +442,28 @@ function mergeIndexedGeometries(geometries) {
         const mergedArray = new ArrayType(totalLen);
         let offset = 0;
         for (const g of geometries) {
-            const attr = g.getAttribute(name);
+            const attr = g.getAttribute(name) as THREE.BufferAttribute;
             mergedArray.set(attr.array, offset);
             offset += attr.array.length;
         }
         merged.setAttribute(name, new THREE.BufferAttribute(mergedArray, itemSize));
     }
 
-    // Merge indices with offsets
     let vertexOffset = 0;
-    const indexArrays = [];
     let totalIndexCount = 0;
     for (const g of geometries) {
         const index = g.getIndex();
-        const idxArray = index.array;
-        totalIndexCount += idxArray.length;
+        if (!index) continue;
+        totalIndexCount += index.array.length;
     }
     const useUint32 = totalVertices > 65535;
     const mergedIndex = useUint32 ? new Uint32Array(totalIndexCount) : new Uint16Array(totalIndexCount);
     let idxOffset = 0;
     for (const g of geometries) {
         const index = g.getIndex();
+        if (!index) continue;
         const idxArray = index.array;
-        const pos = g.getAttribute('position');
+        const pos = g.getAttribute('position') as THREE.BufferAttribute;
         const vertCount = pos.count;
         for (let i = 0; i < idxArray.length; i++) {
             mergedIndex[idxOffset + i] = idxArray[i] + vertexOffset;
@@ -406,7 +473,6 @@ function mergeIndexedGeometries(geometries) {
     }
     merged.setIndex(new THREE.BufferAttribute(mergedIndex, 1));
 
-    // Provide an approximate bounding sphere
     merged.boundingSphere = new THREE.Sphere(new THREE.Vector3(0.5, 0.5, 0.5), 0.9);
     return merged;
 }
@@ -416,7 +482,7 @@ function mergeIndexedGeometries(geometries) {
  * 주의: BoxGeometry는 인덱스가 있는 BufferGeometry를 반환합니다.
  * 병합을 위해 toNonIndexed()로 변환한 뒤 attribute들을 concat 합니다.
  */
-function mergeNonIndexedGeometries(geometries) {
+function mergeNonIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
     // 모든 geometry는 non-indexed 상태여야 한다 (toNonIndexed()로 보장)
     if (!geometries || geometries.length === 0) return null;
 
@@ -431,8 +497,8 @@ function mergeNonIndexedGeometries(geometries) {
         let itemSize = null;
         let ArrayType = Float32Array;
 
-        for (let g of geometries) {
-            const attr = g.getAttribute(name);
+        for (const g of geometries) {
+            const attr = g.getAttribute(name) as THREE.BufferAttribute | null;
             if (!attr) {
                 console.warn(`mergeNonIndexedGeometries: geometry missing attribute ${name}`);
                 continue;
@@ -443,14 +509,16 @@ function mergeNonIndexedGeometries(geometries) {
         }
 
         // 총 길이 계산
-        let totalLen = arrays.reduce((s, a) => s + a.length, 0);
+        const totalLen = arrays.reduce((s, a) => s + a.length, 0);
         const mergedArray = new ArrayType(totalLen);
         let offset = 0;
-        for (let a of arrays) {
+        for (const a of arrays) {
             mergedArray.set(a, offset);
             offset += a.length;
         }
-        merged.setAttribute(name, new THREE.BufferAttribute(mergedArray, itemSize));
+        if (itemSize != null) {
+            merged.setAttribute(name, new THREE.BufferAttribute(mergedArray, itemSize));
+        }
     });
 
     // 인덱스는 이미 non-indexed 이므로 설정할 필요 없음
@@ -465,7 +533,7 @@ function mergeNonIndexedGeometries(geometries) {
 function createHeadGeometries() {
     if (headGeometries) return; // 이미 생성되었다면 실행하지 않음
 
-    const createGeometry = (isLayer) => {
+    const createGeometry = (isLayer: boolean): THREE.BoxGeometry => {
         const scale = isLayer ? 1.0625 : 1.0;
         const geometry = new THREE.BoxGeometry(scale, scale, scale);
         geometry.translate(0, -0.5, 0);
@@ -492,9 +560,9 @@ function createHeadGeometries() {
             back:   [40, 8, 8, 8]
         };
 
-        const uvs = isLayer ? layerUVs : faceUVs;
-        const order = ['left', 'right', 'top', 'bottom', 'front', 'back'];
-        const uvAttr = geometry.getAttribute('uv');
+    const uvs = (isLayer ? layerUVs : faceUVs) as typeof faceUVs;
+        const order: Array<keyof typeof faceUVs> = ['left', 'right', 'top', 'bottom', 'front', 'back'];
+        const uvAttr = geometry.getAttribute('uv') as THREE.BufferAttribute;
 
         for (let i = 0; i < order.length; i++) {
             const faceName = order[i];
@@ -561,32 +629,32 @@ function createHeadGeometries() {
  * @param {boolean} isLayer - (호환용) true면 layer 지오메트리, false면 base 지오메트리 반환
  * @returns {THREE.Mesh} 최적화된 머리 메시 객체
  */
-const materialCache = new WeakMap();
+const materialCache = new WeakMap<THREE.Texture, THREE.Material>();
 
 
 /**
  * 병합된(merged) 지오메트리를 사용하는 단일 메시 생성 (base+layer -> 1 draw call)
  */
-function createOptimizedHeadMerged(texture) {
-    const geometry = headGeometries.merged || headGeometries.base;
+function createOptimizedHeadMerged(texture: THREE.Texture): THREE.Mesh {
+    if (!headGeometries) {
+        createHeadGeometries();
+    }
+    const geometry = (headGeometries?.merged || headGeometries?.base) ?? new THREE.BoxGeometry(1, 1, 1);
 
-    // 텍스처 필터 및 컬러스페이스는 최초 1회만 설정
-    if (!texture.__optimizedSetupDone) {
-        texture.magFilter = THREE.NearestFilter;
-        texture.minFilter = THREE.NearestFilter;
-        texture.generateMipmaps = false;
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.__optimizedSetupDone = true;
+    const tex = texture as OptimizedTexture;
+    if (!tex.__optimizedSetupDone) {
+        tex.magFilter = THREE.NearestFilter;
+        tex.minFilter = THREE.NearestFilter;
+        tex.generateMipmaps = false;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.__optimizedSetupDone = true;
     }
 
     let material = materialCache.get(texture);
     if (!material) {
         const matData = createEntityMaterial(texture);
         material = matData.material;
-
         material.toneMapped = false;
-        // material.alphaTest = 0.5;
-
         materialCache.set(texture, material);
     }
 
@@ -601,7 +669,7 @@ function createOptimizedHeadMerged(texture) {
  * PBDE 파일을 로드하고 3D 씬에 객체를 배치합니다.
  * @param {File} file - 불러올 .pbde 또는 .bde 파일
  */
-function loadpbde(file) {
+function loadpbde(file: File): void {
     // 1. 이전 객체 및 리소스 완벽 해제
     const myGen = ++currentLoadGen;
     
@@ -665,6 +733,7 @@ function loadpbde(file) {
 
     // --- 최적화: 머리 지오메트리 생성 (필요한 경우) ---
     createHeadGeometries();
+    ensurePlayerHeadImageBitmapWarmup();
 
     worker.onmessage = (e) => {
         const msg = e.data;
@@ -773,7 +842,8 @@ function loadpbde(file) {
                         if (!mergedGeom.boundingBox) mergedGeom.computeBoundingBox();
                         if (!mergedGeom.boundingSphere) mergedGeom.computeBoundingSphere();
 
-                        const mesh = new THREE.Mesh(mergedGeom, sharedPlaceholderMaterial);
+                        const placeholderMaterial = (sharedPlaceholderMaterial as THREE.Material);
+                        const mesh = new THREE.Mesh(mergedGeom, placeholderMaterial);
                         mesh.castShadow = false;
                         mesh.receiveShadow = false;
                         finalGroup.add(mesh);
@@ -840,9 +910,13 @@ function loadpbde(file) {
     };
 
     const reader = new FileReader();
-    reader.onload = (event) => {
-        if (myGen === currentLoadGen) {
-            worker.postMessage(event.target.result);
+    reader.onload = (event: ProgressEvent<FileReader>) => {
+        if (myGen !== currentLoadGen) {
+            return;
+        }
+        const result = event.target?.result;
+        if (typeof result === 'string' && worker) {
+            worker.postMessage(result);
         }
     };
     reader.readAsText(file);
@@ -851,12 +925,12 @@ function loadpbde(file) {
 
 // 파일 드래그 앤 드롭 처리 로직
 
-function createDropModal(file) {
+function createDropModal(file?: File) {
     const existingModal = document.getElementById('drop-modal-overlay');
     if (existingModal) {
         existingModal.remove();
     }
-    const modalOverlay = document.createElement('div');
+    const modalOverlay = document.createElement('div') as ModalOverlayElement;
     modalOverlay.id = 'drop-modal-overlay';
     Object.assign(modalOverlay.style, {
         position: 'fixed',
@@ -900,7 +974,7 @@ function createDropModal(file) {
             closeDropModal();
         }
     });
-    const handleEscKey = (e) => {
+    const handleEscKey = (e: KeyboardEvent) => {
         if (e.key === 'Escape') {
             closeDropModal();
         }
@@ -908,28 +982,42 @@ function createDropModal(file) {
     modalOverlay.escHandler = handleEscKey;
     document.addEventListener('keydown', handleEscKey);
 
-    document.getElementById('new-project-btn').addEventListener('click', () => {
-        loadpbde(file);
-        closeDropModal();
-    });
+    const newProjectBtn = document.getElementById('new-project-btn') as HTMLButtonElement | null;
+    if (newProjectBtn) {
+        newProjectBtn.addEventListener('click', () => {
+            if (file) {
+                loadpbde(file);
+            }
+            closeDropModal();
+        });
+    }
 
-    document.getElementById('merge-project-btn').addEventListener('click', () => {
-        loadpbde(file);
-        closeDropModal();
-    });
+    const mergeProjectBtn = document.getElementById('merge-project-btn') as HTMLButtonElement | null;
+    if (mergeProjectBtn) {
+        mergeProjectBtn.addEventListener('click', () => {
+            if (file) {
+                loadpbde(file);
+            }
+            closeDropModal();
+        });
+    }
 }
 
 function closeDropModal() {
-    const modal = document.getElementById('drop-modal-overlay');
+    const modal = document.getElementById('drop-modal-overlay') as ModalOverlayElement | null;
     if (modal) {
         if (modal.escHandler) {
             document.removeEventListener('keydown', modal.escHandler);
         }
 
         const modalContent = modal.querySelector('div');
-        closeWithAnimation(modalContent).then(() => {
+        if (modalContent) {
+            closeWithAnimation(modalContent).then(() => {
+                modal.remove();
+            });
+        } else {
             modal.remove();
-        });
+        }
     }
 }
 
@@ -956,7 +1044,7 @@ window.addEventListener('drop', (e) => {
         for (const file of e.dataTransfer.files) {
             const extension = file.name.split('.').pop().toLowerCase();
             if (extension === 'bdengine' || extension === 'pdengine') {
-                createDropModal();
+                droppedFile = file;
                 break;
             }
         }

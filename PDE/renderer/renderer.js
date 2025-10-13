@@ -1,7 +1,7 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as THREE from 'three/webgpu';
 import { initAssets } from './asset-manager.js';
-import { loadedObjectGroup } from './upload-pbde.js';
+import { loadedObjectGroup } from './load-project/upload-pbde.ts';
 import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
 
 // 전역 변수로 선언

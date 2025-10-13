@@ -91,6 +91,7 @@ function createWindow() {
     'assets/minecraft/textures/particle/',
     'assets/minecraft/textures/block/',
     'assets/minecraft/textures/font/',
+    'assets/minecraft/font/',
     'assets/minecraft/textures/entity/'
   ];
 

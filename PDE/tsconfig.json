@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": false,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "types": ["vite/client", "node"],
+    "lib": ["ES2020", "DOM", "DOM.Iterable", "WebWorker"],
+    "allowJs": false,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": [
+    "renderer/**/*.ts",
+    "renderer/**/*.d.ts",
+    "renderer/**/*.tsx",
+    "renderer/**/*.mts",
+    "renderer/**/*.cts"
+  ]
+}
