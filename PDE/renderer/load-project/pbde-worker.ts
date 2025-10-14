@@ -1147,15 +1147,11 @@ function buildGeneratedPlaneGeometry(texId) {
 // 성능 최적화:
 // 1) 이미지 디코딩 & 픽셀 읽기(loadTexturePixels) 1회로 공유
 // 2) 경계 픽셀 계산 결과 캐시
-// 3) 일정 개수(임계치) 이상 아이템이 있을 경우 Fast Mode 로 전환하여 경계 돌출을 생략하고 단순 평면만 생성
 const BUILTIN_ITEM_DEPTH = 1/16; // total thickness between planes (adjust if too thick)
 const builtinBorderGeometryCache = new Map(); // texPath -> geometry array
 const texturePixelCache = new Map(); // texPath -> { w,h,data (Uint8ClampedArray) }
 const texturePixelPromises = new Map(); // texPath -> promise
 const textureBoundaryCache = new Map(); // texPath -> Set(index) of boundary pixels
-
-let FAST_ITEM_MODEL_MODE = false; // large batch shortcut
-const FAST_ITEM_MODEL_THRESHOLD = Infinity; // configurable threshold
 
 type LoadTexturePixelsFn = {
     (texPath: string): Promise<TexturePixelData | null>;
@@ -1180,25 +1176,32 @@ const loadTexturePixels: LoadTexturePixelsFn = Object.assign(
                 }
                 if (!bytes) return null;
                 const blob = new Blob([bytes as any], { type: 'image/png' });
-                const bmp = await createImageBitmap(blob);
-                const w = bmp.width;
-                const h = bmp.height;
-                if (!w || !h) return null;
-                if (!loadTexturePixels._canvas) loadTexturePixels._canvas = new OffscreenCanvas(w, h);
-                const canvas = loadTexturePixels._canvas;
-                if (!canvas) return null;
-                if (canvas.width !== w || canvas.height !== h) {
-                    canvas.width = w;
-                    canvas.height = h;
+                let bmp: ImageBitmap | null = null;
+                try {
+                    bmp = await createImageBitmap(blob);
+                    const w = bmp.width;
+                    const h = bmp.height;
+                    if (!w || !h) return null;
+                    if (!loadTexturePixels._canvas) loadTexturePixels._canvas = new OffscreenCanvas(w, h);
+                    const canvas = loadTexturePixels._canvas;
+                    if (!canvas) return null;
+                    if (canvas.width !== w || canvas.height !== h) {
+                        canvas.width = w;
+                        canvas.height = h;
+                    }
+                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                    if (!ctx) return null;
+                    ctx.clearRect(0, 0, w, h);
+                    ctx.drawImage(bmp, 0, 0);
+                    const data = ctx.getImageData(0, 0, w, h).data;
+                    const record: TexturePixelData = { w, h, data };
+                    texturePixelCache.set(texPath, record);
+                    return record;
+                } finally {
+                    if (bmp && typeof bmp.close === 'function') {
+                        bmp.close();
+                    }
                 }
-                const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                if (!ctx) return null;
-                ctx.clearRect(0, 0, w, h);
-                ctx.drawImage(bmp, 0, 0);
-                const data = ctx.getImageData(0, 0, w, h).data;
-                const record: TexturePixelData = { w, h, data };
-                texturePixelCache.set(texPath, record);
-                return record;
             } catch (e) {
                 try { console.warn('[ItemModel] loadTexturePixels failed', texPath, e); } catch {}
                 return null;
@@ -1234,10 +1237,6 @@ function computeBoundaryMask(texPath, px) {
 async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
     if (!texId) return [];
     const texPath = textureIdToAssetPath(texId);
-    if (FAST_ITEM_MODEL_MODE) {
-        // Fast mode: skip expensive boundary extrusion
-        return buildGeneratedPlaneGeometry(texId);
-    }
     if (builtinBorderGeometryCache.has(texPath)) return builtinBorderGeometryCache.get(texPath);
     try {
         const px = await loadTexturePixels(texPath);
@@ -1309,10 +1308,6 @@ async function buildItemModelGeometryData(resolved) {
     // Heuristic: treat true builtin OR classic generated/handheld parents as needing border geometry
     const useBorder = isBuiltinModel(resolved) || resolved.parentChain.some(p => /item\/(generated|handheld)/.test(p));
     if (useBorder) {
-        if (FAST_ITEM_MODEL_MODE) {
-            // Fast mode: skip expensive border building
-            return buildGeneratedPlaneGeometry(layer0);
-        }
         try { console.log('[ItemModel] using builtin border geometry for', resolved.id); } catch {}
         return await buildBuiltinBorderBetweenPlanesGeometry(layer0);
     }
@@ -1415,6 +1410,28 @@ async function processItemModelDisplay(node) {
     } catch (e) {
         try { console.warn('[ItemModel] error', node.name, e); } catch {}
         return null;
+    }
+}
+
+function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
+    const { clearCanvas = true } = options;
+    assetCache.clear();
+    requestPromises.clear();
+    requestIdCounter = 0;
+    modelTreeCache.clear();
+    itemDefinitionCache.clear();
+    itemModelGeometryCache.clear();
+    itemModelHasElementsCache.clear();
+    builtinBorderGeometryCache.clear();
+    extrudedItemGeometryCache.clear();
+    texturePixelCache.clear();
+    textureBoundaryCache.clear();
+    texturePixelPromises.clear();
+    assetProvider = undefined;
+    if (clearCanvas && loadTexturePixels._canvas) {
+        loadTexturePixels._canvas.width = 1;
+        loadTexturePixels._canvas.height = 1;
+        loadTexturePixels._canvas = null;
     }
 }
 
@@ -1579,30 +1596,10 @@ async function processNode(node, parentTransform) {
 }
 
 self.onmessage = async (e) => {
-    // Clear all caches to prevent memory leaks between processing different files
-    assetCache.clear();
-    requestPromises.clear();
-    modelTreeCache.clear();
-    itemDefinitionCache.clear();
-    itemModelGeometryCache.clear();
-    itemModelHasElementsCache.clear();
-    builtinBorderGeometryCache.clear();
-    extrudedItemGeometryCache.clear();
-    texturePixelCache.clear();
-    textureBoundaryCache.clear();
-
-    // Release OffscreenCanvas memory
-    if (loadTexturePixels._canvas) {
-        loadTexturePixels._canvas.width = 1;
-        loadTexturePixels._canvas.height = 1;
-        loadTexturePixels._canvas = null;
-    }
-
-    FAST_ITEM_MODEL_MODE = false; // reset each task
-
     const fileContent = e.data;
     if (typeof fileContent !== 'string') return; // Ignore asset responses
 
+    resetWorkerCaches({ clearCanvas: true });
     initializeAssetProvider(workerAssetProvider);
 
     try {
@@ -1615,15 +1612,6 @@ self.onmessage = async (e) => {
 
         const processedChildren = split_children(jsonData[0].children);
 
-        // 미리 itemDisplay 개수 세어 Fast Mode 여부 결정
-        function countItemDisplays(list){
-            if (!list) return 0; let c=0; for (const n of list){ if (n.isItemDisplay) c++; if (n.children) c+=countItemDisplays(n.children); } return c; }
-        const itemCount = countItemDisplays(processedChildren);
-        if (itemCount > FAST_ITEM_MODEL_THRESHOLD) {
-            FAST_ITEM_MODEL_MODE = true;
-            try { console.log('[ItemModel] FAST MODE ENABLED - item count', itemCount, 'threshold', FAST_ITEM_MODEL_THRESHOLD); } catch {}
-        }
-        
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         const promises = processedChildren.map(node => processNode(node, identityMatrix));
         const renderList = (await Promise.all(promises)).flat();
@@ -1731,9 +1719,7 @@ self.onmessage = async (e) => {
         self.postMessage({
             success: true,
             metadata: metadataString,
-            geometryBuffer: geometryBuffer,
-            fastMode: FAST_ITEM_MODEL_MODE,
-            itemCount
+            geometryBuffer: geometryBuffer
         }, [geometryBuffer]);
 
     } catch (error) {
@@ -1741,5 +1727,7 @@ self.onmessage = async (e) => {
             success: false,
             error: 'Worker Error: ' + String(error) + '\nStack: ' + (error ? error.stack : 'No stack available')
         });
+    } finally {
+        resetWorkerCaches({ clearCanvas: true });
     }
 };

@@ -151,7 +151,7 @@ const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); //
 let sharedPlaceholderMaterial: THREE.Material | null = null;
 
 // Limit concurrent texture decodes to avoid overwhelming the decoder/GC
-const MAX_TEXTURE_DECODE_CONCURRENCY = 5000;
+const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 function acquireTextureSlot() {
@@ -863,35 +863,53 @@ function loadpbde(file: File): void {
                 loadedObjectGroup.add(finalGroup);
             }
 
+            const playerHeadItems: Array<any> = [];
             otherItems.forEach((item) => {
                 if (item.type === 'itemDisplay' && item.textureUrl) {
-                    const headGroup = new THREE.Group();
-                    headGroup.userData.isPlayerHead = true;
-                    headGroup.userData.gen = myGen;
-
-                    (async () => {
-                        try {
-                            const tex = await loadPlayerHeadTexture(item.textureUrl, myGen);
-                            if (myGen !== currentLoadGen) {
-                                try { disposeTexture(tex); } catch {}
-                                return;
-                            }
-                            headGroup.add(createOptimizedHeadMerged(tex));
-                        } catch (err) {
-                            console.error('플레이어 헤드 텍스처 로드 실패:', err);
-                        }
-                    })();
-
-                    const finalMatrix = new THREE.Matrix4();
-                    finalMatrix.fromArray(item.transform);
-                    finalMatrix.transpose();
-                    const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
-                    finalMatrix.multiply(scaleMatrix);
-                    headGroup.matrixAutoUpdate = false;
-                    headGroup.matrix.copy(finalMatrix);
-                    loadedObjectGroup.add(headGroup);
+                    playerHeadItems.push(item);
                 }
             });
+
+            if (playerHeadItems.length > 0) {
+                (async () => {
+                    try {
+                        const headGroups = await Promise.all(playerHeadItems.map(async (item) => {
+                            const headGroup = new THREE.Group();
+                            headGroup.userData.isPlayerHead = true;
+                            headGroup.userData.gen = myGen;
+
+                            const finalMatrix = new THREE.Matrix4();
+                            finalMatrix.fromArray(item.transform);
+                            finalMatrix.transpose();
+                            const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
+                            finalMatrix.multiply(scaleMatrix);
+                            headGroup.matrixAutoUpdate = false;
+                            headGroup.matrix.copy(finalMatrix);
+
+                            try {
+                                const tex = await loadPlayerHeadTexture(item.textureUrl, myGen);
+                                headGroup.add(createOptimizedHeadMerged(tex));
+                            } catch (err) {
+                                console.error('플레이어 헤드 텍스처 로드 실패:', err);
+                            }
+
+                            return headGroup;
+                        }));
+
+                        if (myGen !== currentLoadGen) {
+                            return;
+                        }
+
+                        headGroups.forEach((group) => {
+                            if (group) {
+                                loadedObjectGroup.add(group);
+                            }
+                        });
+                    } catch (err) {
+                        console.error('플레이어 헤드 생성 처리 실패:', err);
+                    }
+                })();
+            }
 
             console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
         } else {
