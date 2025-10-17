@@ -1587,7 +1587,7 @@ async function processNode(node, parentTransform) {
             };
             if (displayType) itemData.displayType = displayType;
             let textureUrl = null;
-            const defaultTextureValue = 'http://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
+            const defaultTextureValue = 'https://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
             if (node.tagHead && node.tagHead.Value) {
                 try {
                     // JSON 파싱 중 문자열 변환을 거치도록 수정된 구간이다.
@@ -1607,7 +1607,7 @@ async function processNode(node, parentTransform) {
                         textureUrl = parsedUrl;
                     } else {
                         let url = JSON.parse(decoded).textures.SKIN.url;
-                        textureUrl = url.replace('http://textures.minecraft.net/', 'https://textures.minecraft.net/');
+                        textureUrl = url.replace('http://', 'https://');
                     }
                 } catch (err) { /* ignore */ }
             } else if (node.paintTexture) {
