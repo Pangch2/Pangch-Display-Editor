@@ -6,10 +6,10 @@ type TexturePixelData = {
     h: number;
     data: Uint8ClampedArray;
 };
-// tintColor is not a module, so it can't be imported directly in the worker.
-// The getTextureColor function will be manually included.
+// tintColor 모듈을 워커에서 직접 불러올 수 없으므로 여기에서 구현을 포함한다.
+// 아래 getTextureColor 함수는 메인 스레드와 동일하게 동작하도록 수동으로 삽입한다.
 
-// --- Copied from tintColor.js ---
+// --- tintColor.js에서 가져온 색상 계산 로직 ---
 const blocksUsingDefaultGrassColors = [
   'grass_block',
   'short_grass',
@@ -38,39 +38,38 @@ function getTextureColor(modelResourceLocation, textureLayer, tintindex) {
       return 0xffffff;
     }
 
-    // Grass tint: for item models tint applies even without tintindex
+    // 잔디 계열 텍스처는 tintindex 없이도 기본 잔디색이 적용된다.
     if (
       blocksUsingDefaultGrassColors.includes(modelName) &&
       (!isBlockModel || tintindex === 0)
     ) {
       return 0x7cbd6b;
     }
+        // 잎사귀 계열 텍스처는 기본 수풀 색상을 사용한다.
+        if (
+            blocksUsingDefaultFoliageColors.includes(modelName) &&
+            (!isBlockModel || tintindex === 0)
+        ) {
+            // 자바 에디션 기본 잎사귀 색상 상수
+            return 0x48b518;
+        }
 
-    // Foliage tint
-    if (
-      blocksUsingDefaultFoliageColors.includes(modelName) &&
-      (!isBlockModel || tintindex === 0)
-    ) {
-      // net.minecraft.world.biome.FoliageColors.getDefaultColor()
-      return 0x48b518;
-    }
+        if (modelName === 'birch_leaves' && (!isBlockModel || tintindex === 0)) {
+            // 자작나무 잎사귀 기본 색상 값
+            return 0x80a755;
+        }
+        if (modelName === 'spruce_leaves' && (!isBlockModel || tintindex === 0)) {
+            // 가문비나무 잎사귀 기본 색상 값
+            return 0x619961;
+        }
 
-    if (modelName === 'birch_leaves' && (!isBlockModel || tintindex === 0)) {
-      // net.minecraft.world.biome.FoliageColors.getBirchColor()
-      return 0x80a755;
-    }
-    if (modelName === 'spruce_leaves' && (!isBlockModel || tintindex === 0)) {
-      // net.minecraft.world.biome.FoliageColors.getSpruceColor()
-      return 0x619961;
-    }
+        // 연꽃잎은 고정된 수면 색상을 사용한다.
+        if (modelName === 'lily_pad') {
+            // 블록 디스플레이 기준 위키와 다른 색을 사용하므로 별도 상수를 유지한다.
+            return 0x71c35c;
+        }
 
-    // lily_pad
-    if (modelName === 'lily_pad') {
-      // For block display it uses a different color than wiki item code mentions
-      return 0x71c35c;
-    }
-
-    // Melon/Pumpkin stems by age
+    // 수박/호박 줄기는 성장 단계별로 색을 구분한다.
     if (/^block\/(melon|pumpkin)_stem_stage[0-7]$/.test(modelResourceLocation)) {
       const age = modelResourceLocation.slice(-1);
       switch (age) {
@@ -85,14 +84,14 @@ function getTextureColor(modelResourceLocation, textureLayer, tintindex) {
       }
     }
 
-    // Attached stem
+    // 연결된 줄기는 최대 성장 단계 색을 그대로 재사용한다.
     if (
       ['block/attached_melon_stem', 'block/attached_pumpkin_stem'].includes(modelResourceLocation)
     ) {
       return 0xe0c71c;
     }
 
-    // Redstone wire (dust) item/block default tint when face tintindex 0
+    // 레드스톤 가루는 면 tintindex 0일 때 기본 붉은색을 적용한다.
     if (modelResourceLocation.startsWith('block/redstone_dust_') && tintindex === 0) {
       return 0x4b0000;
     }
@@ -103,7 +102,7 @@ function getTextureColor(modelResourceLocation, textureLayer, tintindex) {
   }
 }
 
-// --- Worker Asset Provider ---
+// --- 워커 내부 에셋 공급자 ---
 
 const assetCache = new Map();
 const requestPromises = new Map();
@@ -111,10 +110,12 @@ let requestIdCounter = 0;
 
 const workerAssetProvider = {
     getAsset(assetPath) {
+        // 캐시가 존재하면 메인 스레드 왕복 없이 즉시 반환한다.
         if (assetCache.has(assetPath)) {
             return Promise.resolve(assetCache.get(assetPath));
         }
 
+        // 동일한 에셋에 대한 중복 요청은 기존 프라미스에 합류시킨다.
         if (requestPromises.has(assetPath)) {
             return requestPromises.get(assetPath);
         }
@@ -137,13 +138,15 @@ const workerAssetProvider = {
                 }
             };
 
+            // 워커에서 오래 대기하지 않도록 하드 타임아웃을 건다.
             timeoutId = setTimeout(() => {
                 self.removeEventListener('message', listener);
                 requestPromises.delete(assetPath);
                 reject(new Error(`Asset request timed out for: ${assetPath}`));
-            }, 15000); // 15-second timeout
+            }, 15000); // 15초 안에 응답이 없으면 타임아웃으로 간주한다.
 
             self.addEventListener('message', listener);
+            // 메인 스레드에 에셋 요청을 전달한다.
             self.postMessage({ type: 'requestAsset', path: assetPath, requestId });
         });
 
@@ -152,7 +155,7 @@ const workerAssetProvider = {
     }
 };
 
-// --- Block Processor Logic (from block-processor.js) ---
+// --- block-processor.js를 바탕으로 한 블록 처리 로직 ---
 
 let assetProvider;
 
@@ -168,6 +171,7 @@ async function readJsonAsset(assetPath) {
     return JSON.parse(text);
 }
 
+// 블록 이름에서 기본 ID와 속성 키-값을 분리해 구조화한다.
 function blockNameToBaseAndProps(fullName) {
     const name = fullName || '';
     const base = name.split('[')[0];
@@ -182,38 +186,45 @@ function blockNameToBaseAndProps(fullName) {
     return { baseName: base, props };
 }
 
+// 네임스페이스가 포함된 ID를 받아 네임스페이스와 경로로 나눈다.
 function nsAndPathFromId(id, defaultNs = 'minecraft') {
     if (!id) return { ns: defaultNs, path: '' };
     const [nsMaybe, restMaybe] = id.includes(':') ? id.split(':', 2) : [defaultNs, id];
     return { ns: nsMaybe, path: restMaybe };
 }
 
+// 모델 ID를 실제 모델 JSON 에셋 경로로 변환한다.
 function modelIdToAssetPath(modelId) {
     const { ns, path } = nsAndPathFromId(modelId);
     return `assets/${ns}/models/${path}.json`;
 }
 
+// 텍스처 ID를 PNG 에셋 경로로 바꿔 로더가 찾을 수 있게 한다.
 function textureIdToAssetPath(texId) {
     const { ns, path } = nsAndPathFromId(texId);
     return `assets/${ns}/textures/${path}.png`;
 }
 
+// 하드코딩된 블록스테이트 파일이 존재하는지 여부를 판정한다.
 function hasHardcodedBlockstate(p) {
     if (!p) return false;
-    // Only beds and trapped chests have hardcoded blockstates
+    // 침대와 트랩 상자만 고정 블록스테이트를 갖는다.
     return /(bed|trapped_chest)/i.test(p);
 }
 
+// 하드코딩된 모델 JSON을 사용해야 하는 경로인지 확인한다.
 function isHardcodedModelPath(p) {
     if (!p) return false;
-    return /(chest|conduit|shulker|bed|banner|sign|decorated_pot|creeper_head|dragon_head|piglin_head|zombie_head|player_head|wither_skeleton_skull|skeleton_skull|shield|trident|spyglass|copper_golem_statue)$/i.test(p);
+    return /(chest|conduit|shulker_box|bed|banner|sign|decorated_pot|creeper_head|dragon_head|piglin_head|zombie_head|wither_skeleton_skull|skeleton_skull|shield|trident|spyglass|copper_golem_statue)$/i.test(p);
 }
 
+// 모델 ID가 하드코딩 모델 목록에 해당하는지 검사한다.
 function isHardcodedModelId(modelId) {
     const { path } = nsAndPathFromId(modelId);
     return isHardcodedModelPath(path);
 }
 
+// 주어진 모델 ID에서 가능한 하드코딩 파일 경로 후보를 생성한다.
 function getHardcodedModelCandidates(modelId) {
     const { path } = nsAndPathFromId(modelId);
     if (!path) return [];
@@ -241,11 +252,13 @@ function getHardcodedModelCandidates(modelId) {
     return Array.from(candidates);
 }
 
+// 동일 그룹의 모델 ID를 모두 무시 목록에 포함시키기 위한 그룹 정의다.
 const DISPLAY_IGNORE_GROUPS = [
     ['builtin/generated', 'minecraft:item/generated', 'item/generated'],
     ['minecraft:item/block', 'item/block', 'minecraft:block/block', 'block/block'],
 ];
 
+// 모델 ID가 속한 무시 그룹을 모아 display 탐색에서 제외한다.
 function collectIgnoreDisplayIdsForModelId(modelId) {
     if (!modelId) return [];
     const matches = [];
@@ -257,6 +270,7 @@ function collectIgnoreDisplayIdsForModelId(modelId) {
     return matches;
 }
 
+// 텍스처 참조 체인을 따라가 실제 경로를 찾는다.
 function resolveTextureRef(value, textures, guard = 0) {
     if (!value) return null;
     if (guard > 10) return value;
@@ -269,17 +283,19 @@ function resolveTextureRef(value, textures, guard = 0) {
     return value;
 }
 
+// 주어진 경로의 모델 JSON을 읽어 파싱한다.
 async function loadModelJson(assetPath) {
     return await readJsonAsset(assetPath);
 }
 
+// 모델 ID를 기준으로 부모 체인과 텍스처 정보를 재귀적으로 해석한다.
 async function resolveModelTree(modelId, cache = new Map()) {
     if (typeof modelId !== 'string' || !modelId) {
         return null;
     }
     if (cache.has(modelId)) return cache.get(modelId);
-    // HACK: builtin/generated is not a real model file, but a marker for generated item models.
-    // Intercept it and return a mock resolved model that can be processed by buildItemModelGeometryData.
+    // 특수 값인 builtin/generated 모델은 실제 파일이 아니므로 가짜 해석 결과를 반환한다.
+    // 이렇게 하면 buildItemModelGeometryData 단계에서 일반 모델처럼 처리할 수 있다.
     if (modelId && (modelId.endsWith('builtin/generated'))) {
         const ignoreDisplayIds = collectIgnoreDisplayIdsForModelId('builtin/generated');
         const resolved: any = {
@@ -306,7 +322,7 @@ async function resolveModelTree(modelId, cache = new Map()) {
                 const candidateJson = await loadModelJson(candidatePath);
                 return { json: candidateJson, path: candidatePath };
             } catch (_) {
-                // try next candidate
+                // 실패하면 다음 후보 경로를 시도한다.
             }
         }
         return null;
@@ -325,7 +341,7 @@ async function resolveModelTree(modelId, cache = new Map()) {
             json = await loadModelJson(assetsPath);
         }
     } catch (e) {
-        // Attempt alternate non-standard directory 'models/items/' (some custom packs)
+    // 일부 커스텀 리소스팩에서 사용하는 models/items 경로로 재시도한다.
         try {
             const { path } = nsAndPathFromId(modelId);
             if (/^item\//.test(path)) {
@@ -335,7 +351,7 @@ async function resolveModelTree(modelId, cache = new Map()) {
                 }
             }
         } catch (e2) {
-            // ignore fallback failure
+            // 재시도 실패는 무시한다.
         }
         if (!json && !hardcodedFirst) {
             const hardcodedRes = await loadHardcoded();
@@ -400,6 +416,7 @@ async function resolveModelTree(modelId, cache = new Map()) {
     return resolved;
 }
 
+// variant 키 문자열이 현재 속성(props)과 일치하는지 검사한다.
 function matchVariantKey(variantKey, props) {
     if (variantKey === '') return true;
     const parts = variantKey.split(',').map(s => s.trim()).filter(Boolean);
@@ -412,6 +429,7 @@ function matchVariantKey(variantKey, props) {
     return true;
 }
 
+// multipart 블록스테이트의 when 조건이 현재 속성에 부합하는지 판정한다.
 function whenMatches(when, props) {
     if (!when) return true;
     if (Array.isArray(when)) {
@@ -437,14 +455,15 @@ function whenMatches(when, props) {
     return false;
 }
 
+// 블록스테이트 회전을 THREE 행렬에 적용한다.
 function applyBlockstateRotation(matrix, rotX = 0, rotY = 0) {
     if (rotX === 0 && rotY === 0) return;
     const pivot = new THREE.Vector3(0.5, 0.5, 0.5);
     const t1 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
     const t2 = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
-    // Note: In Minecraft blockstate, positive X rotation tilts the model toward the south (downward in +Z),
-    // which corresponds to a negative rotation in our right-handed coordinate setup.
-    // Using negative rotX here fixes facing up/down inversion seen in some block displays.
+    // 마인크래프트 블록스테이트의 +X 회전은 남쪽(+Z) 방향으로 기울기에 해당한다.
+    // 우핸드 좌표계에서는 음수 회전으로 보정해야 하므로 rotX에 음수를 적용한다.
+    // 이렇게 하면 일부 블록 디스플레이에서 발생하던 위·아래 반전을 방지할 수 있다.
     const rx = new THREE.Matrix4().makeRotationX(THREE.MathUtils.degToRad(-rotX));
     const ry = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(-rotY));
     const r = new THREE.Matrix4().multiply(rx).multiply(ry);
@@ -452,6 +471,7 @@ function applyBlockstateRotation(matrix, rotX = 0, rotY = 0) {
     matrix.premultiply(m);
 }
 
+// UV 좌표 배열을 90도 단위 회전 규칙에 맞춰 재배열한다.
 function uvRotated(uv, rotation) {
     const r = ((rotation % 360) + 360) % 360;
     if (r === 0) return uv;
@@ -461,19 +481,19 @@ function uvRotated(uv, rotation) {
     return uv;
 }
 
-// 일부 하드코딩 모델(sign 등)은 texture_size(예: 32x32)를 정확히 적용해야 정상적인 UV 스케일이 됨.
-// 기존에는 fromHardcoded 일 경우 texture_size 를 무시하여 표지판이 찌그러지는 문제가 있었음.
-// 다른 하드코딩 블럭(침대/상자 등)에서는 texture_size 적용 시 UV 오류가 생겨서 기본 정책은 유지하고
-// 예외 허용 목록(allow list)을 통해 필요한 모델만 texture_size 를 사용하도록 한다.
+// 특정 하드코딩 모델(표지판 등)은 texture_size 정보를 반영해야 올바른 UV 비율을 유지한다.
+// 반면 침대·상자 계열에서는 texture_size 적용 시 UV가 망가지므로 기본적으로 무시한다.
+// 허용 목록에 포함된 모델만 예외적으로 texture_size를 사용하도록 제한한다.
 function shouldAllowHardcodedTextureSize(resolved) {
     if (!resolved || !resolved.id) return false;
-    const id = resolved.id; // ex) minecraft:block/sign
-    // sign / wall_sign / hanging_sign / standing variants 모두 포괄
+    const id = resolved.id; // 예: minecraft:block/sign
+    // sign, wall_sign, hanging_sign 등 모든 표지판 변형을 포함한다.
     if (/([^:]*:)?block\/(?:.*_)?sign/.test(id)) return true;
-    // 필요한 경우 추가 (예: 배너 등) -> if (/banner/.test(id)) return true;
+    // 배너 등 추가 대상이 생기면 아래와 같이 조건을 확장할 수 있다: if (/banner/.test(id)) return true;
     return false;
 }
 
+// UV 사각형 네 꼭짓점을 지정한 피벗을 기준으로 회전시킨다.
 function rotateCornersAroundPivot(corners, degreesCW, pivotU = 0.5, pivotV = 0.5) {
     const r = ((degreesCW % 360) + 360) % 360;
     if (r === 0) return corners;
@@ -499,9 +519,11 @@ const FACE_UV_ADJUST = {
     down:  { rot: 90, flipU: false, flipV: true  },
 };
 
+// U 또는 V 축 대칭이 필요한 경우 코너 배열을 재배치한다.
 function flipUCorners(c) { return [c[1], c[0], c[3], c[2]]; }
 function flipVCorners(c) { return [c[3], c[2], c[1], c[0]]; }
 
+// 큐브 면 하나를 버퍼에 추가한다.
 function pushQuad(buff, a, b, c, d, n, uvTL, uvTR, uvBR, uvBL) {
     const base = buff.positions.length / 3;
     buff.positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
@@ -510,6 +532,7 @@ function pushQuad(buff, a, b, c, d, n, uvTL, uvTR, uvBR, uvBL) {
     buff.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
 
+// 지정한 방향의 면을 구성하는 정점과 노멀을 계산한다.
 function getFaceVertices(dir, from, to) {
     const x1 = from[0] / 16, y1 = from[1] / 16, z1 = from[2] / 16;
     const x2 = to[0] / 16,   y2 = to[1] / 16,   z2 = to[2] / 16;
@@ -524,17 +547,20 @@ function getFaceVertices(dir, from, to) {
     return null;
 }
 
+// 블록 모델 요소를 순회하며 텍스처별 지오메트리 버퍼를 생성한다.
 async function buildBlockModelGeometryData(resolved, opts = undefined) {
     const elements = resolved.elements;
     if (!elements || elements.length === 0) return null;
 
     const buffers = new Map();
+    // 텍스처 경로와 틴트 조합마다 독립된 버퍼를 생성한다.
     const addBuffer = (texPath, tintHex) => {
         const key = `${texPath}|${tintHex >>> 0}`;
         if (!buffers.has(key)) buffers.set(key, { positions: [], normals: [], uvs: [], indices: [], texPath, tintHex });
         return buffers.get(key);
     };
 
+    // 각 요소의 여섯 면을 순회하면서 지오메트리를 조합한다.
     for (const el of elements) {
         const faces = el.faces || {};
         const from = el.from || [0,0,0];
@@ -547,6 +573,7 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
         const rotMat = new THREE.Matrix4();
         const rotOnly = new THREE.Matrix4();
         if (hasRot) {
+            // 마인크래프트 회전 정의를 THREE 행렬로 변환한다.
             const tNeg = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
             const tPos = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
             switch (rot.axis) {
@@ -580,7 +607,7 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
                 tintHex = getTextureColor(modelResLoc, undefined, ti);
             } catch (_) { tintHex = 0xffffff; }
 
-            // If this is a banner model and the element is the flag, override tint with bannerColorHex
+            // 배너 모델의 깃발 요소는 추출한 틴트 색상으로 덮어쓴다.
             if (opts && opts.bannerColorHex != null) {
                 const elName = (el.name || '').toLowerCase();
                 if (elName === 'flag') {
@@ -658,13 +685,13 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
                 : (resolved.json && Array.isArray(resolved.json.texture_size))
                     ? resolved.json.texture_size
                     : null;
-            // Use declared texture_size whenever explicit UVs are provided
-            // 기본적으로 하드코딩된 모델(fromHardcoded)은 texture_size를 무시(기존 동작)하되,
-            // 표지판과 같이 예외 허용 목록에 포함된 모델은 texture_size를 사용한다.
+            // 명시된 UV가 있을 때 texture_size 정보를 사용할지 결정한다.
+            // 하드코딩 모델은 원칙적으로 제외하지만 허용 목록 대상은 texture_size를 사용한다.
             const allowHardcodedTexSize = resolved.fromHardcoded && shouldAllowHardcodedTextureSize(resolved);
             const useTexSize = hasExplicitFaceUV && texSize && (!resolved.fromHardcoded || allowHardcodedTexSize);
             const uvScaleU = useTexSize ? texSize[0] : 16;
             const uvScaleV = useTexSize ? texSize[1] : 16;
+            // UV 사각형을 0~1 범위로 정규화한다.
             const u0 = uv[0] / uvScaleU, v0 = 1 - uv[1] / uvScaleV;
             const u1 = uv[2] / uvScaleU, v1 = 1 - uv[3] / uvScaleV;
             let corners = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
@@ -675,6 +702,7 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
             }
             const adj = FACE_UV_ADJUST[effectiveDir];
             if (adj) {
+                // 방향별 특수 처리로 UV 정렬과 플립을 맞춘다.
                 if (adj.rot) corners = uvRotated(corners, adj.rot);
                 if (adj.flipU) corners = flipUCorners(corners);
                 if (adj.flipV) corners = flipVCorners(corners);
@@ -686,6 +714,7 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
     return Array.from(buffers.values());
 }
 
+// block_display 엔티티 노드를 Minecraft 블록 모델 지오메트리로 변환한다.
 async function processBlockDisplay(item) {
     try {
         const { baseName, props } = blockNameToBaseAndProps(item.name);
@@ -707,7 +736,7 @@ async function processBlockDisplay(item) {
                 blockstate = await readJsonAsset(blockstatePath);
             }
         } catch (e) {
-            // If banner blockstate is missing from assets, synthesize a minimal one that points to the banner model
+            // 배너 블록스테이트가 없으면 최소 구성을 만들어 배너 모델을 가리키게 한다.
             if (isBannerBlock) {
                 blockstate = { variants: { "": { model: 'minecraft:block/banner' } } };
             } else {
@@ -749,12 +778,12 @@ async function processBlockDisplay(item) {
         }
 
         if (modelsToBuild.length === 0) {
-            // console.warn(`[Block] No matching model found for ${item.name} with props`, props);
+            // 디버그 시 아래 경고를 출력하여 매칭 실패 원인을 추적할 수 있다.
             return null;
         }
 
         const allGeometryData = [];
-        // Detect banner color from item.name like "red_banner" or "red_wall_banner" and map to tint
+        // 항목명에서 "red_banner" 형태의 문자열을 분석해 틴트 색상을 추출한다.
         let bannerColorHex = null;
         try {
             const nameLower = String(item.name || '').toLowerCase();
@@ -798,7 +827,7 @@ async function processBlockDisplay(item) {
             });
 
             if (geometryData && geometryData.length > 0) {
-                // NOTE: Do NOT center block_display geometries. User requested only item_display (block-like) gets -0.5 shift.
+                // block_display 지오메트리는 별도 중심 이동을 하지 않는다. 아이템 디스플레이만 -0.5 보정을 적용한다.
                 allGeometryData.push({
                     modelMatrix: modelMatrix.elements,
                     geometries: geometryData
@@ -815,20 +844,20 @@ async function processBlockDisplay(item) {
 
         return null;
     } catch (e) {
-        // console.warn(`[Block] Failed to process block display for ${item.name}:`, e);
+        // 필요하면 위 경고를 활성화해 블록 디스플레이 오류를 확인한다.
         return null;
     }
 }
 
-// ===================== Item Model Processing (Phase 1) =====================
+// ===================== 아이템 모델 처리 1단계 =====================
 
-// Caches for item definitions and generated geometry
-const modelTreeCache = new Map(); // modelId -> resolved model tree
-const itemDefinitionCache = new Map(); // itemName -> definition json (assets/minecraft/items/{name}.json)
-const itemModelGeometryCache = new Map(); // modelId|tint -> geometryData array
-const itemModelHasElementsCache = new Map(); // modelId -> boolean (true if model had elements)
+// 아이템 정의와 지오메트리 결과를 캐싱하여 중복 계산을 줄인다.
+const modelTreeCache = new Map(); // 모델 ID별로 해석한 트리를 보관한다.
+const itemDefinitionCache = new Map(); // 아이템 이름별 정의 JSON을 캐싱한다.
+const itemModelGeometryCache = new Map(); // 모델 ID와 틴트 조합으로 생성된 지오메트리를 저장한다.
+const itemModelHasElementsCache = new Map(); // 모델 ID별 요소 존재 여부를 기록한다.
 
-// 플레이어 머리 장식(player_head) 전용 display 변환. 필요 시 아래 값을 수정하면 즉시 적용된다.
+// 플레이어 머리 아이템 전용 디스플레이 변환. 값을 바꾸면 즉시 반영된다.
 const PLAYER_HEAD_DISPLAY_TRANSFORMS = {
     thirdperson_righthand: {
         rotation: [-45, 45, 0],
@@ -920,6 +949,7 @@ const ITEM_DISPLAY_LEFT_HAND_FALLBACK = {
     firstperson_lefthand: 'firstperson_righthand',
 };
 
+// display 항목 구조를 안전하게 복제하면서 숫자만 남긴다.
 function cloneDisplayTransform(def) {
     if (!def || typeof def !== 'object') return null;
     const rotSrc = Array.isArray(def.rotation) ? def.rotation : [];
@@ -950,6 +980,7 @@ function cloneDisplayTransform(def) {
     return { rotation, translation, scale };
 }
 
+// 오른손 기준 변환을 좌측 손 형태로 반전한다.
 function mirrorRightHandDisplayTransform(def) {
     const cloned = cloneDisplayTransform(def);
     if (!cloned) return null;
@@ -959,6 +990,7 @@ function mirrorRightHandDisplayTransform(def) {
     return cloned;
 }
 
+// 모델이 block 계열인지 판별해 중심 이동 여부를 결정한다.
 function isBlockLikeItemModel(resolved) {
     if (!resolved) return false;
     const checkId = (id) => typeof id === 'string' && id.includes('block/');
@@ -969,6 +1001,7 @@ function isBlockLikeItemModel(resolved) {
     return false;
 }
 
+// 모델 상속 체인에서 원하는 display 변환을 탐색한다.
 async function findDisplayTransformInHierarchy(resolved, displayType, cache) {
     if (!resolved || !displayType) return null;
     const ignoreDisplayIds = (() => {
@@ -1009,6 +1042,7 @@ async function findDisplayTransformInHierarchy(resolved, displayType, cache) {
     return null;
 }
 
+// display 타입에 맞는 변환 매트릭스를 찾고 기본값 또는 좌우 대체를 적용한다.
 async function getDisplayTransformForItem(resolved, displayType, cache) {
     if (!displayType) return null;
     const defaultsRoot = isBlockLikeItemModel(resolved)
@@ -1035,6 +1069,7 @@ async function getDisplayTransformForItem(resolved, displayType, cache) {
     return transform;
 }
 
+// display 구성을 THREE Matrix4로 변환한다.
 function buildDisplayTransformMatrix(transform) {
     if (!transform) return null;
     const rotation = Array.isArray(transform.rotation) ? transform.rotation : [0, 0, 0];
@@ -1063,20 +1098,33 @@ function buildDisplayTransformMatrix(transform) {
     return matrix;
 }
 
+// 아이템 문자열에서 기본 이름과 display 타입을 추출한다.
 function parseItemName(raw) {
     if (!raw) return { baseName: '', displayType: null };
-    const base = raw.split('[')[0];
+
+    const start = raw.indexOf('[');
+    if (start === -1) return { baseName: raw, displayType: null };
+
+    const baseName = raw.slice(0, start);
+    const end = raw.indexOf(']', start);
+    if (end === -1) return { baseName, displayType: null };
+
+    const inside = raw.slice(start + 1, end); // "display=gui"
+    const parts = inside.split(','); // 단일 display만 있다고 확신 가능
+
     let displayType = null;
-    const m = raw.match(/\[(.*)\]/);
-    if (m && m[1]) {
-        for (const part of m[1].split(',')) {
-            const [k, v] = part.split('=').map(s => s && s.trim());
-            if (k === 'display') displayType = v || null;
+    for (let i = 0; i < parts.length; i++) {
+        if (parts[i].startsWith('display=')) {
+            displayType = parts[i].slice(8); // "display=".length === 8
+            break;
         }
     }
-    return { baseName: base, displayType };
+
+    return { baseName, displayType };
 }
 
+
+// items 디렉터리에서 아이템 정의 JSON을 읽어 캐싱한다.
 async function loadItemDefinition(itemName) {
     if (itemDefinitionCache.has(itemName)) return itemDefinitionCache.get(itemName);
     const path = `assets/minecraft/items/${itemName}.json`;
@@ -1090,12 +1138,14 @@ async function loadItemDefinition(itemName) {
     }
 }
 
+// builtin/ 계열 모델인지 여부를 확인해 전용 지오메트리를 선택한다.
 function isBuiltinModel(resolved) {
     if (!resolved) return false;
     if (resolved.id.startsWith('builtin/')) return true;
     return resolved.parentChain.some(p => p.startsWith('builtin/'));
 }
 
+// 아이템 모델에서 첫 번째 레이어 텍스처 ID를 꺼낸다.
 function extractLayer0Texture(resolved) {
     if (!resolved) return null;
     const textures = resolved.textures || {};
@@ -1104,30 +1154,28 @@ function extractLayer0Texture(resolved) {
     return resolveTextureRef(layer0, textures);
 }
 
-// Build a simple generated-plane (front/back) geometry when model has no elements.
+// 요소가 없는 모델은 앞·뒤 두 장의 평면으로 단순 지오메트리를 구성한다.
 function buildGeneratedPlaneGeometry(texId) {
     if (!texId) return [];
     const texPath = textureIdToAssetPath(texId);
-    // Quad thickness epsilon (rendered as two quads for front/back to avoid culling issues)
+    // 두께는 극히 얇은 두 장의 사각형으로 구성하여 컬링 문제를 방지한다.
     const from = [0, 0, 0];
     const to = [16, 16, 0];
-    const positionsFront = [ // CCW winding facing +Z
+    const positionsFront = [ // +Z 방향을 바라보는 반시계 정점 배열
         0, 1, 0,  1, 1, 0,  1, 0, 0,  0, 0, 0
     ];
-    const positionsBack = [ // CCW winding facing -Z
+    const positionsBack = [ // -Z 방향을 바라보는 반시계 정점 배열
         0, 1, 0,  0, 0, 0,  1, 0, 0,  1, 1, 0
     ];
     const normalsFront = [0,0,1, 0,0,1, 0,0,1, 0,0,1];
     const normalsBack = [0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1];
     const uvsFront = [0,1, 1,1, 1,0, 0,0];
-    // Re-map back face UVs so the texture appears upright (not vertically flipped) when viewed from behind.
-    // Vertex order for back face: TL, BL, BR, TR (positionsBack). Provide matching oriented UVs.
+    // 뒤쪽 면 UV를 재배치해 후면에서도 텍스처가 뒤집히지 않도록 맞춘다.
+    // 후면 정점 순서는 TL, BL, BR, TR 이므로 동일한 방향의 UV를 제공한다.
     const uvsBack  = [0,1, 0,0, 1,0, 1,1];
-    const indices = [0,2,1, 0,3,2]; // Flipped winding order to compensate for negative scale matrix
+    const indices = [0,2,1, 0,3,2]; // 음수 스케일 보정 때문에 시계 방향 인덱스를 사용한다.
 
-    // Scale positions from unit to 16x16 block space (already normalized pipeline expects /16 later? -> Our block builder divides by 16.
-    // For simplicity keep them in 0..1 here, consistent with block builder output that already expects divided coordinates.)
-    // Compose combined geometry arrays
+    // 최종 버퍼에 포지션·법선·UV를 밀어 넣는다.
     function push(buffers, pos, nor, uvArr) {
         const base = buffers.positions.length / 3;
         buffers.positions.push(...pos);
@@ -1143,15 +1191,13 @@ function buildGeneratedPlaneGeometry(texId) {
     return [buffer];
 }
 
-// Builtin item special geometry: two full planes (front/back) plus side faces only along outer opaque pixel border.
-// 성능 최적화:
-// 1) 이미지 디코딩 & 픽셀 읽기(loadTexturePixels) 1회로 공유
-// 2) 경계 픽셀 계산 결과 캐시
-const BUILTIN_ITEM_DEPTH = 1/16; // total thickness between planes (adjust if too thick)
-const builtinBorderGeometryCache = new Map(); // texPath -> geometry array
-const texturePixelCache = new Map(); // texPath -> { w,h,data (Uint8ClampedArray) }
-const texturePixelPromises = new Map(); // texPath -> promise
-const textureBoundaryCache = new Map(); // texPath -> Set(index) of boundary pixels
+// 내장 아이템은 앞뒤 평면과 외곽 경계만 돌출한 특수 지오메트리를 사용한다.
+// 성능 최적화: 이미지 디코딩 결과와 경계 계산을 캐싱하여 반복 작업을 줄인다.
+const BUILTIN_ITEM_DEPTH = 1/16; // 두 평면 사이 두께는 1/16 블록 단위로 유지한다.
+const builtinBorderGeometryCache = new Map(); // 텍스처 경로별로 계산된 지오메트리를 캐싱한다.
+const texturePixelCache = new Map(); // 텍스처 경로에 대한 픽셀 데이터(w,h,data)를 저장한다.
+const texturePixelPromises = new Map(); // 중복 요청을 막기 위해 진행 중인 비동기 작업을 기록한다.
+const textureBoundaryCache = new Map(); // 경계 픽셀 집합을 텍스처 경로별로 저장한다.
 
 type LoadTexturePixelsFn = {
     (texPath: string): Promise<TexturePixelData | null>;
@@ -1215,6 +1261,7 @@ const loadTexturePixels: LoadTexturePixelsFn = Object.assign(
     { _canvas: null as OffscreenCanvas | null }
 );
 
+// 텍스처의 불투명 경계 픽셀을 찾아 외곽 라인을 만든다.
 function computeBoundaryMask(texPath, px) {
     if (!px) return null;
     if (textureBoundaryCache.has(texPath)) return textureBoundaryCache.get(texPath);
@@ -1253,12 +1300,12 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
             positions.push(...verts);
             for (let i=0;i<4;i++) normals.push(...normal);
             uvs.push(...uvArr);
-            indices.push(base, base+2, base+1, base, base+3, base+2); // flipped winding
+            indices.push(base, base+2, base+1, base, base+3, base+2); // 역방향 도형 보정을 위해 인덱스 순서를 뒤집는다.
         };
         const dz = BUILTIN_ITEM_DEPTH / 2;
-        // Front plane
+    // 앞면 평면을 추가한다.
         pushQuad([0,1,dz, 0,0,dz, 1,0,dz, 1,1,dz],[0,0,1],[0,1, 0,0, 1,0, 1,1]);
-        // Back plane
+    // 뒷면 평면을 추가한다.
         pushQuad([0,1,-dz, 1,1,-dz, 1,0,-dz, 0,0,-dz],[0,0,-1],[0,1, 1,1, 1,0, 0,0]);
         if (boundary && boundary.size) {
             for (const idx of boundary) {
@@ -1267,19 +1314,19 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
                 const x0 = x / w; const x1 = (x+1)/w;
                 const yTop = 1 - y / h; const yBot = 1 - (y+1)/h;
                 const u0 = x0; const u1 = x1; const v0 = yBot; const v1 = yTop;
-                // West
+                // 서쪽 면
                 if (!opaque(x-1,y)) {
                     pushQuad([x0,yTop,dz, x0,yTop,-dz, x0,yBot,-dz, x0,yBot,dz],[1,0,0],[u1,v1, u0,v1, u0,v0, u1,v0]);
                 }
-                // East
+                // 동쪽 면
                 if (!opaque(x+1,y)) {
                     pushQuad([x1,yTop,-dz, x1,yTop,dz, x1,yBot,dz, x1,yBot,-dz],[-1,0,0],[u0,v1, u1,v1, u1,v0, u0,v0]);
                 }
-                // Top
+                // 윗면
                 if (!opaque(x,y-1)) {
                     pushQuad([x0,yTop,dz, x1,yTop,dz, x1,yTop,-dz, x0,yTop,-dz],[0,1,0],[u0,v1, u1,v1, u1,v0, u0,v0]);
                 }
-                // Bottom
+                // 아랫면
                 if (!opaque(x,y+1)) {
                     pushQuad([x0,yBot,-dz, x1,yBot,-dz, x1,yBot,dz, x0,yBot,dz],[0,-1,0],[u0,v1, u1,v1, u1,v0, u0,v0]);
                 }
@@ -1294,18 +1341,19 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
     }
 }
 
-// Extrude only boundary (outer) opaque pixels of a 2D item texture into thin 3D voxels for a rim effect.
-const extrudedItemGeometryCache = new Map(); // texPath -> geometry array
+// 불투명 경계 픽셀만 얇게 돌출해 림 효과를 주는 용도다.
+const extrudedItemGeometryCache = new Map(); // 텍스처 경로별로 돌출 지오메트리를 캐싱한다.
 
 async function buildItemModelGeometryData(resolved) {
     if (!resolved) return null;
     if (resolved.elements && resolved.elements.length > 0) {
+        // 큐브 요소가 존재하면 블록 모델 경로를 재사용한다.
         return await buildBlockModelGeometryData(resolved);
     }
-    // generated / builtin cases: revert to simple flat front/back quad (no extrusion, no pixel-bounds cube)
+    // generated 또는 builtin 계열은 단순 평면 지오메트리로 처리한다.
     const layer0 = extractLayer0Texture(resolved);
     if (!layer0) return null;
-    // Heuristic: treat true builtin OR classic generated/handheld parents as needing border geometry
+    // builtin 모델이거나 generated/handheld 부모를 가진 경우 외곽 테두리 지오메트리를 사용한다.
     const useBorder = isBuiltinModel(resolved) || resolved.parentChain.some(p => /item\/(generated|handheld)/.test(p));
     if (useBorder) {
         try { console.log('[ItemModel] using builtin border geometry for', resolved.id); } catch {}
@@ -1314,6 +1362,7 @@ async function buildItemModelGeometryData(resolved) {
     return buildGeneratedPlaneGeometry(layer0);
 }
 
+// item_display 노드를 분석해 모델 지오메트리와 display 변환을 계산한다.
 async function processItemModelDisplay(node) {
     try {
         const { baseName, displayType } = parseItemName(node.name);
@@ -1326,7 +1375,7 @@ async function processItemModelDisplay(node) {
             if (typeof definition.model === 'string') {
                 modelId = definition.model;
             } else if (definition.model && typeof definition.model === 'object') {
-                // Expected shape: { type: 'minecraft:model', model: 'minecraft:block/grass_block', tints: [...] }
+                // 예상 구조: { type: 'minecraft:model', model: 'minecraft:block/grass_block', tints: [...] }
                 if (typeof definition.model.model === 'string') {
                     modelId = definition.model.model;
                 }
@@ -1335,6 +1384,7 @@ async function processItemModelDisplay(node) {
         }
         if (!modelId) modelId = `minecraft:item/${baseName}`;
         try { console.log('[ItemModel] definition', definition ? 'yes' : 'no', 'modelId', modelId, 'tints', tintList ? tintList.length : 0); } catch {}
+        // 모델 ID 단위로 지오메트리를 캐싱해 반복 연산을 줄인다.
         const cacheKey = modelId;
         let geomData = itemModelGeometryCache.get(cacheKey);
         let hasElements = itemModelHasElementsCache.get(cacheKey) || false;
@@ -1367,14 +1417,14 @@ async function processItemModelDisplay(node) {
         try { console.log('[ItemModel] geometry buffers', geomData.length, 'for', modelId, 'hasElements', hasElements); } catch {}
         const modelMatrix = new THREE.Matrix4();
         if (hasElements) {
-            // Block-like item model: shift to center only (no rotation)
+            // 블록형 아이템은 중심을 -0.5로 이동해 월드 좌표계와 정렬한다.
             modelMatrix.multiply(new THREE.Matrix4().makeTranslation(-0.5, -0.5, -0.5));
             try { console.log('[ItemModel] applied block-like centering', modelId); } catch {}
         } else {
-            // Flat item: center only (no Y180) so front (+Z) plane remains facing camera; previous Y180 caused front/back inversion.
+            // 평면 아이템은 Y축 180도 회전 없이 중심만 이동해 앞면이 +Z를 바라보게 유지한다.
             const translateCenter = new THREE.Matrix4().makeTranslation(-0.5, -0.5, 0);
             modelMatrix.multiply(translateCenter);
-            // Apply horizontal flip
+            // 좌우 반전으로 UV와 노멀 방향을 일치시킨다.
             modelMatrix.premultiply(new THREE.Matrix4().makeScale(-1, 1, 1));
             try { console.log('[ItemModel] applied flat full centering and horizontal flip', modelId); } catch {}
         }
@@ -1413,6 +1463,7 @@ async function processItemModelDisplay(node) {
     }
 }
 
+// 반복 실행 시 캐시와 임시 리소스를 초기화한다.
 function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
     const { clearCanvas = true } = options;
     assetCache.clear();
@@ -1435,8 +1486,9 @@ function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
     }
 }
 
-// --- Original Worker Logic ---
+// --- 원본 워커 흐름 제어 로직 ---
 
+// 두 개의 4x4 행렬을 곱해 누적 변환을 계산한다.
 function apply_transforms(parent, child) {
     const result = new Float32Array(16);
     for (let i = 0; i < 4; i++) {
@@ -1452,46 +1504,46 @@ function apply_transforms(parent, child) {
 }
 
 
+// 렌더링에 필요한 필드만 남기며 자식 노드를 얕게 복제한다.
 function split_children(children: any) {
     if (!children) return [];
     return children.map((item: any) => {
         const newItem: any = {};
 
-        // 조건 1: 특정 display 키 포함
+        // display 유형 플래그는 그대로 복사해 후속 로직이 구분할 수 있게 한다.
         if (item.isCollection) newItem.isCollection = true;
         if (item.isItemDisplay) newItem.isItemDisplay = true;
         if (item.isBlockDisplay) newItem.isBlockDisplay = true;
         if (item.isTextDisplay) newItem.isTextDisplay = true;
 
-        // 조건 2: name, nbt 항상 포함
+        // name과 nbt는 기본 정보이므로 항상 포함한다.
         newItem.name = item.name || "";
         newItem.nbt = item.nbt || "";
 
-        // 조건 3: brightness 조건부 포함
+        // 밝기 정보는 기본값과 다를 때만 보존한다.
         if (item.brightness && (item.brightness.sky !== 15 || item.brightness.block !== 0)) {
             newItem.brightness = item.brightness;
         }
 
-        // 조건 4: tagHead, options, paintTexture, textureValueList 조건부 포함
+        // 선택 속성들은 존재할 때만 전달한다.
         if (item.tagHead) newItem.tagHead = item.tagHead;
         if (item.options) newItem.options = item.options;
         if (item.paintTexture) newItem.paintTexture = item.paintTexture;
         if (item.textureValueList) newItem.textureValueList = item.textureValueList;
 
-
-
-        // 조건 5: transforms 항상 포함
+        // 변환 행렬은 빈 문자열이라도 항상 유지한다.
         newItem.transforms = item.transforms || "";
 
-        // 조건 6: children 재귀적 포함
+        // 자식 노드는 재귀적으로 동일한 규칙을 적용해 복제한다.
         if (item.children) {
             newItem.children = split_children(item.children);
         }
-        //console.log("split_children 결과:", JSON.stringify(newItem, null, 2));
+        // 필요하면 아래 로그를 복구해 변환 결과를 확인할 수 있다.
         return newItem;
     });
 }
 
+// 씬 그래프 노드를 재귀적으로 순회하며 렌더 항목을 만든다.
 async function processNode(node, parentTransform) {
     const worldTransform = apply_transforms(parentTransform, node.transforms);
     let renderItems = [];
@@ -1499,12 +1551,12 @@ async function processNode(node, parentTransform) {
     if (node.isBlockDisplay) {
         const modelData = await processBlockDisplay(node);
         if (modelData) {
-            (modelData as any).transform = worldTransform; // Assign the calculated world transform
+            (modelData as any).transform = worldTransform; // 계산된 월드 변환 행렬을 결과에 포함한다.
             renderItems.push(modelData);
         }
     } else if (node.isItemDisplay) {
-        // Player head special-case (existing behavior)
-        if (node.name.toLowerCase().startsWith('player_head')) {
+        // 플레이어 머리 아이템은 별도의 처리 경로를 따른다.
+        if (node.name.startsWith('player_head')) {
             let adjustedTransform = worldTransform;
             let displayType = null;
             try {
@@ -1538,7 +1590,7 @@ async function processNode(node, parentTransform) {
             const defaultTextureValue = 'http://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
             if (node.tagHead && node.tagHead.Value) {
                 try {
-                    //json parse에서 문자열로 변경함
+                    // JSON 파싱 중 문자열 변환을 거치도록 수정된 구간이다.
                     const decoded = atob(node.tagHead.Value);
                     const skinMarker = '"SKIN":{"url":"';
                     const urlIndex = decoded.indexOf(skinMarker);
@@ -1554,7 +1606,8 @@ async function processNode(node, parentTransform) {
                     if (parsedUrl) {
                         textureUrl = parsedUrl;
                     } else {
-                        textureUrl = JSON.parse(decoded).textures.SKIN.url;
+                        let url = JSON.parse(decoded).textures.SKIN.url;
+                        textureUrl = url.replace('http://textures.minecraft.net/', 'https://textures.minecraft.net/');
                     }
                 } catch (err) { /* ignore */ }
             } else if (node.paintTexture) {
@@ -1571,7 +1624,7 @@ async function processNode(node, parentTransform) {
                 (modelDisplay as any).transform = worldTransform;
                 renderItems.push(modelDisplay);
             } else {
-                // Fallback placeholder (maintain previous cube fallback path via simple itemDisplay object)
+                // 기존 큐브 대체 경로를 유지하기 위해 단순 itemDisplay 객체를 추가한다.
                 renderItems.push({
                     type: 'itemDisplay',
                     name: node.name,
@@ -1583,7 +1636,7 @@ async function processNode(node, parentTransform) {
             }
         }
     } else if (node.isTextDisplay) {
-        // Future: handle text display
+        // 텍스트 디스플레이는 향후 별도 로직으로 처리한다.
     }
 
     if (node.children) {
@@ -1595,14 +1648,16 @@ async function processNode(node, parentTransform) {
     return renderItems;
 }
 
+// 메인 스레드에서 전송된 PBDE 프로젝트 데이터를 수신해 처리한다.
 self.onmessage = async (e) => {
     const fileContent = e.data;
-    if (typeof fileContent !== 'string') return; // Ignore asset responses
+    if (typeof fileContent !== 'string') return; // 에셋 응답 메시지는 렌더링 로직에서 무시한다.
 
     resetWorkerCaches({ clearCanvas: true });
     initializeAssetProvider(workerAssetProvider);
 
     try {
+        // 전달받은 PBDE 파일을 디코딩하고 JSON으로 변환한다.
         const decodedData = atob(fileContent);
         const uint8Array = new Uint8Array(decodedData.length);
         for (let i = 0; i < decodedData.length; i++) {
@@ -1610,9 +1665,11 @@ self.onmessage = async (e) => {
         }
     const jsonData = JSON.parse(strFromU8(decompressSync(uint8Array)));
 
+        // 렌더링에 필요한 필드만 남기도록 씬 트리를 단순화한다.
         const processedChildren = split_children(jsonData[0].children);
 
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        // 루트 자식 노드를 병렬로 처리해 렌더 항목을 구성한다.
         const promises = processedChildren.map(node => processNode(node, identityMatrix));
         const renderList = (await Promise.all(promises)).flat();
 
@@ -1633,6 +1690,7 @@ self.onmessage = async (e) => {
         let totalVertices = 0;
         let itemId = 0;
 
+        // 전체 버퍼 크기를 미리 계산해 단일 ArrayBuffer에 데이터를 적재한다.
         for (const item of geometryItems) {
             for (const model of item.models) {
                 for (const geomData of model.geometries) {
@@ -1658,7 +1716,7 @@ self.onmessage = async (e) => {
         const indicesByteOffset = uvByteOffset + uvByteLength;
         const totalByteLength = indicesByteOffset + indicesByteLength;
 
-        const geometryBuffer = new ArrayBuffer(totalByteLength);
+        const geometryBuffer = new SharedArrayBuffer(totalByteLength);
         const metadata = [];
 
         const posView = new Float32Array(geometryBuffer, 0, totalPositions);
@@ -1673,54 +1731,95 @@ self.onmessage = async (e) => {
         let uvCursor = 0;
         let indicesCursor = 0;
 
+        const tempMatrix4 = new THREE.Matrix4();
+        const tempNormalMatrix = new THREE.Matrix3();
+
+        // 개별 지오메트리 버퍼를 연속 메모리 공간에 복사한다.
         for (const item of geometryItems) {
             itemId++;
             for (const model of item.models) {
+                const matrixArray = (Array.isArray(model.modelMatrix) || ArrayBuffer.isView(model.modelMatrix))
+                    ? model.modelMatrix
+                    : identityMatrix;
+                if (matrixArray && matrixArray.length === 16) {
+                    tempMatrix4.fromArray(matrixArray as any);
+                } else {
+                    tempMatrix4.identity();
+                }
+                tempNormalMatrix.getNormalMatrix(tempMatrix4);
+                const m = tempMatrix4.elements;
+                const n = tempNormalMatrix.elements;
+
                 for (const geomData of model.geometries) {
                     const { positions, normals, uvs, indices } = geomData;
 
-                    posView.set(positions, posCursor);
-                    normView.set(normals, normCursor);
+                    const posStart = posCursor;
+                    const normStart = normCursor;
+                    const uvStart = uvCursor;
+                    const idxStart = indicesCursor;
+
+                    for (let i = 0; i < positions.length; i += 3) {
+                        const x = positions[i];
+                        const y = positions[i + 1];
+                        const z = positions[i + 2];
+                        const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+                        const invW = w !== 0 ? 1 / w : 1;
+                        posView[posCursor++] = (m[0] * x + m[4] * y + m[8] * z + m[12]) * invW;
+                        posView[posCursor++] = (m[1] * x + m[5] * y + m[9] * z + m[13]) * invW;
+                        posView[posCursor++] = (m[2] * x + m[6] * y + m[10] * z + m[14]) * invW;
+                    }
+
+                    for (let i = 0; i < normals.length; i += 3) {
+                        const nx = normals[i];
+                        const ny = normals[i + 1];
+                        const nz = normals[i + 2];
+                        const tx = n[0] * nx + n[3] * ny + n[6] * nz;
+                        const ty = n[1] * nx + n[4] * ny + n[7] * nz;
+                        const tz = n[2] * nx + n[5] * ny + n[8] * nz;
+                        const lenSq = tx * tx + ty * ty + tz * tz;
+                        const invLen = lenSq > 0 ? 1 / Math.sqrt(lenSq) : 1;
+                        normView[normCursor++] = tx * invLen;
+                        normView[normCursor++] = ty * invLen;
+                        normView[normCursor++] = tz * invLen;
+                    }
+
                     uvView.set(uvs, uvCursor);
+                    uvCursor += uvs.length;
+
                     indicesView.set(indices, indicesCursor);
+                    indicesCursor += indices.length;
 
                     metadata.push({
                         itemId: itemId,
                         transform: item.transform,
-                        modelMatrix: model.modelMatrix,
                         texPath: geomData.texPath,
                         tintHex: geomData.tintHex,
                         isItemDisplayModel: item.type === 'itemDisplayModel',
-                        posByteOffset: posCursor * 4,
+                        posByteOffset: posStart * 4,
                         posLen: positions.length,
-                        normByteOffset: normByteOffset + normCursor * 4,
+                        normByteOffset: normByteOffset + normStart * 4,
                         normLen: normals.length,
-                        uvByteOffset: uvByteOffset + uvCursor * 4,
+                        uvByteOffset: uvByteOffset + uvStart * 4,
                         uvLen: uvs.length,
-                        indicesByteOffset: indicesByteOffset + indicesCursor * indexElementSize,
+                        indicesByteOffset: indicesByteOffset + idxStart * indexElementSize,
                         indicesLen: indices.length,
                     });
-
-                    posCursor += positions.length;
-                    normCursor += normals.length;
-                    uvCursor += uvs.length;
-                    indicesCursor += indices.length;
                 }
             }
         }
 
-        const finalMetadata = {
+        const metadataPayload = {
             geometries: metadata,
             otherItems: otherItems,
             useUint32Indices: useUint32Indices,
         };
-        const metadataString = JSON.stringify(finalMetadata);
 
+        // 메타데이터와 지오메트리 버퍼를 메인 스레드로 전송한다.
         self.postMessage({
             success: true,
-            metadata: metadataString,
+            metadata: metadataPayload,
             geometryBuffer: geometryBuffer
-        }, [geometryBuffer]);
+        });
 
     } catch (error) {
         self.postMessage({

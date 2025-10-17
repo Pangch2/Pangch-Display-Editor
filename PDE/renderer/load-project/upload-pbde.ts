@@ -13,7 +13,7 @@ interface HeadGeometrySet {
     merged: THREE.BufferGeometry | null;
 }
 
-// --- Asset Provider for Main Thread ---
+// --- 메인 스레드용 에셋 공급자 ---
 
 function isNodeBufferLike(content: unknown): content is { type: 'Buffer'; data: number[] } {
     return !!content && typeof content === 'object' && (content as any).type === 'Buffer' && Array.isArray((content as any).data);
@@ -22,15 +22,15 @@ function isNodeBufferLike(content: unknown): content is { type: 'Buffer'; data: 
 function decodeIpcContentToString(content: unknown): string {
     try {
         if (!content) return '';
-        // Node Buffer-like
+        // Node Buffer 형태
         if (isNodeBufferLike(content)) {
             return new TextDecoder('utf-8').decode(new Uint8Array(content.data));
         }
-        // Browser Uint8Array
+        // 브라우저 Uint8Array
         if (content instanceof Uint8Array) {
             return new TextDecoder('utf-8').decode(content);
         }
-        // Try generic
+        // 그 외 객체는 toString을 시도한다.
         if (typeof (content as { toString?: (encoding?: string) => string }).toString === 'function') {
             const toStringFn = (content as { toString: (encoding?: string) => string }).toString;
             try {
@@ -62,7 +62,7 @@ const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPaylo
             ? await window.ipcApi.getHardcodedContent(assetPath.replace(/^hardcoded\//, ''))
             : await window.ipcApi.getAssetContent(assetPath);
         if (!result.success) throw new Error(`Asset read failed: ${assetPath}: ${result.error}`);
-        // If this is a PNG texture, return raw binary so the worker can create ImageBitmap
+        // PNG 텍스처라면 워커에서 ImageBitmap을 만들 수 있도록 원본 바이트를 반환한다.
         if (/\.png$/i.test(assetPath)) {
             const content = result.content;
             if (isNodeBufferLike(content)) {
@@ -72,27 +72,27 @@ const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPaylo
             if (ArrayBuffer.isView(content)) return toUint8Array(content);
             if (content instanceof ArrayBuffer) return toUint8Array(content);
             if (typeof content === 'string') {
-                // Fallback: treat as binary string
+                // 문자열로 내려온 경우 바이너리처럼 취급해 바이트 배열을 만든다.
                 const bytes = new Uint8Array(content.length);
                 for (let i = 0; i < content.length; i++) bytes[i] = content.charCodeAt(i) & 0xff;
                 return bytes;
             }
-            return content; // Unknown but pass through
+            return content; // 형식이 불명확하면 그대로 전달한다.
         }
-        // JSON / text assets
+        // JSON 또는 텍스트 에셋은 문자열로 변환한다.
         return decodeIpcContentToString(result.content);
     }
 };
 
 
 
-// Crop any block texture to the first 16x16 tile (e.g., when a texture is 16x64 with repeated 16x16 frames)
+// 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 function cropTextureToFirst16(tex) {
     try {
         const img = tex && tex.image;
         const w = img && img.width;
         const h = img && img.height;
-        // If already 16x16, just enforce pixel-art settings and return
+        // 이미 16x16이면 픽셀 아트 설정만 적용한다.
         if (w === 16 && h === 16) {
             tex.magFilter = THREE.NearestFilter;
             tex.minFilter = THREE.NearestFilter;
@@ -101,7 +101,7 @@ function cropTextureToFirst16(tex) {
             tex.needsUpdate = true;
             return tex;
         }
-        // Create a 16x16 canvas and draw the top-left tile without smoothing
+        // 16x16 캔버스에 좌상단 타일을 보간 없이 복사한다.
         const canvas = document.createElement('canvas');
         canvas.width = 16;
         canvas.height = 16;
@@ -109,7 +109,7 @@ function cropTextureToFirst16(tex) {
         if (ctx) {
             ctx.imageSmoothingEnabled = false;
             if (img && w && h) {
-                // Copy the source image (up to 16x16) without stretching
+                // 원본 이미지의 상단 좌측 타일만 크기 변환 없이 복사한다.
                 const sWidth = Math.min(w || 0, 16);
                 const sHeight = Math.min(h || 0, 16);
                 ctx.drawImage(img, 0, 0, sWidth, sHeight, 0, 0, sWidth, sHeight);
@@ -141,17 +141,17 @@ const loadedObjectGroup = new THREE.Group();
 // 텍스처 로더 및 캐시
 const textureCache = new Map<string, THREE.Texture>();
 
-// --- Block texture/material caches (dedupe loads + reuse materials) ---
-const blockTextureCache = new Map<string, THREE.Texture>(); // texPath -> THREE.Texture
-const blockTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // texPath -> Promise<THREE.Texture>
-const blockMaterialCache = new Map<string, THREE.Material>(); // key: `${texPath}|${tintHex}` -> THREE.Material
-const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); // same key -> Promise<THREE.Material>
+// --- 블록 텍스처 및 머티리얼 캐시(중복 로드 제거 + 재사용) ---
+const blockTextureCache = new Map<string, THREE.Texture>(); // 텍스처 경로별 THREE.Texture 매핑
+const blockTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // 텍스처 경로별 로드 프라미스 매핑
+const blockMaterialCache = new Map<string, THREE.Material>(); // `${texPath}|${tintHex}` 조합별 머티리얼 캐시
+const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); // 동일 키에 대한 생성 프라미스 캐시
 
-// Shared placeholder assets
+// 공유 플레이스홀더 자원
 let sharedPlaceholderMaterial: THREE.Material | null = null;
 
-// Limit concurrent texture decodes to avoid overwhelming the decoder/GC
-const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
+// 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
+const MAX_TEXTURE_DECODE_CONCURRENCY = 200;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 function acquireTextureSlot() {
@@ -170,13 +170,13 @@ function releaseTextureSlot() {
     }
 }
 
-// --- Player head texture caches ---
-const headTextureCache = new Map<string, THREE.Texture>(); // url -> THREE.Texture
-const headTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // `${gen}|${url}` -> Promise<THREE.Texture>
+// --- 플레이어 머리 텍스처 캐시 ---
+const headTextureCache = new Map<string, THREE.Texture>(); // 텍스처 URL별 THREE.Texture 캐시
+const headTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // `${gen}|${url}` 키별 로드 프라미스 캐시
 
 const dataUrlBlobCache = new Map<string, Blob | null>();
 const dataUrlBlobPromiseCache = new Map<string, Promise<Blob | null>>();
-const MAX_DATA_URL_BLOBS = 32;
+const MAX_DATA_URL_BLOBS = 16;
 
 async function dataUrlToBlob(dataUrl: string): Promise<Blob | null> {
     if (!dataUrl) return null;
@@ -230,7 +230,7 @@ function ensurePlayerHeadImageBitmapWarmup(): Promise<boolean> {
     return playerHeadWarmupPromise;
 }
 
-// Kick off the warmup as soon as the module loads so the first real decode is faster.
+// 모듈이 로드되면 바로 워밍업을 실행해 첫 디코딩 지연을 줄인다.
 ensurePlayerHeadImageBitmapWarmup();
 
 async function loadPlayerHeadTexture(url: string, gen: number): Promise<THREE.Texture> {
@@ -255,7 +255,7 @@ async function loadPlayerHeadTexture(url: string, gen: number): Promise<THREE.Te
 
             const imageBitmap = await createImageBitmap(blob);
             const tex = new THREE.Texture(imageBitmap);
-            // Entity texture settings
+            // 엔티티 텍스처에 맞는 필터 설정을 적용한다.
             tex.magFilter = THREE.NearestFilter;
             tex.minFilter = THREE.NearestFilter;
             tex.generateMipmaps = false;
@@ -284,7 +284,7 @@ async function loadPlayerHeadTexture(url: string, gen: number): Promise<THREE.Te
     }
 }
 
-// Load generation token to ignore late async results after reload
+// 리로드 이후 늦게 도착한 비동기 결과를 무시하기 위한 세대 토큰
 let currentLoadGen = 0;
 
 function disposeTexture(tex: THREE.Texture | null | undefined): void {
@@ -300,10 +300,10 @@ function disposeTexture(tex: THREE.Texture | null | undefined): void {
 
 function ensureSharedPlaceholder(): void {
     if (!sharedPlaceholderMaterial) {
-        // Lightweight placeholder material to avoid creating NodeMaterial per mesh before texture loads
+        // 텍스처가 준비되기 전까지 메시마다 NodeMaterial을 만들지 않도록 가벼운 플레이스홀더를 사용한다.
         sharedPlaceholderMaterial = new THREE.MeshLambertMaterial({ transparent: true, opacity: 0 });
         sharedPlaceholderMaterial.toneMapped = false;
-        sharedPlaceholderMaterial.alphaTest = 0.01; // Use a small alphaTest for transparent placeholders
+        sharedPlaceholderMaterial.alphaTest = 0.01; // 투명 플레이스홀더가 보이지 않도록 작은 alphaTest 값을 사용한다.
     }
 }
 
@@ -316,7 +316,7 @@ function decodeIpcContentToUint8Array(content: unknown): Uint8Array {
         if (content instanceof Uint8Array) return content;
         if (ArrayBuffer.isView(content)) return toUint8Array(content);
         if (content instanceof ArrayBuffer) return toUint8Array(content);
-        // Fallback: try toString and encode
+    // 최후 수단으로 문자열로 변환한 뒤 다시 인코딩한다.
         const str = String(content);
         const enc = new TextEncoder();
         return enc.encode(str);
@@ -326,7 +326,7 @@ function decodeIpcContentToUint8Array(content: unknown): Uint8Array {
 }
 
 async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Texture> {
-    // Deduplicate concurrent loads
+    // 동일 텍스처의 중복 로드를 방지한다.
     if (blockTextureCache.has(texPath) && gen === currentLoadGen) return blockTextureCache.get(texPath)!;
     const promiseKey = `${gen}|${texPath}`;
     if (blockTexturePromiseCache.has(promiseKey)) return blockTexturePromiseCache.get(promiseKey)!;
@@ -337,13 +337,13 @@ async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Tex
         if (!texResult.success) throw new Error(`[Texture] Failed to load ${texPath}: ${texResult.error}`);
         const bytes = decodeIpcContentToUint8Array(texResult.content);
         const blob = new Blob([bytes as any], { type: 'image/png' });
-        // ImageBitmap decode is faster and off-main-thread where possible
+    // ImageBitmap 디코딩은 가능하면 메인 스레드 밖에서 더 빠르게 처리된다.
         try {
             const imageBitmap = await createImageBitmap(blob);
             let tex = new THREE.Texture(imageBitmap);
             const isEntityTex = texPath.includes('/textures/entity/');
             if (!isEntityTex) {
-                // Crop to 16x16 tile for block atlases with animation frames
+                // 애니메이션 프레임이 있다면 첫 16x16 타일만 사용한다.
                 const cropped = cropTextureToFirst16(tex);
                 if (cropped !== tex) {
                     disposeTexture(tex);
@@ -359,7 +359,7 @@ async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Tex
                 tex.wrapT = THREE.ClampToEdgeWrapping;
                 tex.needsUpdate = true;
             }
-            // If generation changed while loading, dispose and abort caching
+            // 로딩 중 세대 토큰이 바뀌면 폐기하고 캐시에 저장하지 않는다.
             if (gen !== currentLoadGen) {
                 disposeTexture(tex);
                 throw new Error('Stale generation');
@@ -391,7 +391,7 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
         const { material } = createEntityMaterial(tex, tintHex ?? 0xffffff);
         material.toneMapped = false;
         if (gen !== currentLoadGen) {
-            // Stale: dispose immediately (do not cache)
+            // 오래된 세대 결과면 즉시 폐기하고 캐시에 넣지 않는다.
             try { material.dispose(); } catch {}
             throw new Error('Stale generation');
         }
@@ -413,7 +413,7 @@ let headGeometries: HeadGeometrySet | null = null;
 
 export { loadedObjectGroup };
 
-// Merge multiple indexed BufferGeometries with identical attribute layouts
+// 동일한 속성 구성을 가진 인덱스 지오메트리를 하나로 병합한다.
 function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
     if (!geometries || geometries.length === 0) return null;
     const first = geometries[0];
@@ -694,7 +694,7 @@ function loadpbde(file: File): void {
     headTextureCache.clear();
     headTexturePromiseCache.clear();
 
-    // Dispose shared placeholder material so it doesn't accumulate
+    // 공유 플레이스홀더 머티리얼이 누적되지 않도록 폐기한다.
     if (sharedPlaceholderMaterial) { try { sharedPlaceholderMaterial.dispose(); } catch {} }
     sharedPlaceholderMaterial = null;
 
@@ -762,30 +762,24 @@ function loadpbde(file: File): void {
         }
 
         if (msg.success) {
-            const { metadata: metadataString, geometryBuffer } = msg;
-            const { geometries: geometryMetas, otherItems, useUint32Indices } = JSON.parse(metadataString);
+            const { metadata, geometryBuffer } = msg;
+            if (!(geometryBuffer instanceof SharedArrayBuffer)) {
+                console.error('[Debug] geometryBuffer is not a SharedArrayBuffer. Aborting render pipeline.');
+                return;
+            }
+            const sharedBuffer = geometryBuffer as SharedArrayBuffer;
+            if (!metadata || typeof metadata !== 'object') {
+                console.error('[Debug] Invalid metadata payload from worker.');
+                return;
+            }
+            const metadataPayload = metadata as { geometries: any[]; otherItems: any[]; useUint32Indices?: boolean };
+            if (!Array.isArray(metadataPayload.geometries) || !Array.isArray(metadataPayload.otherItems)) {
+                console.error('[Debug] Invalid metadata payload from worker.');
+                return;
+            }
+            const { geometries: geometryMetas, otherItems, useUint32Indices } = metadataPayload;
 
             console.log(`[Debug] Processing ${geometryMetas.length + otherItems.length} items from worker (binary).`);
-
-            const applyMatrixToGeometry = (geom, mat4) => {
-                const pos = geom.getAttribute('position');
-                const nor = geom.getAttribute('normal');
-                const v = new THREE.Vector3();
-                const n = new THREE.Vector3();
-                const normalMat = new THREE.Matrix3().getNormalMatrix(mat4);
-                for (let i = 0; i < pos.count; i++) {
-                    v.fromBufferAttribute(pos, i).applyMatrix4(mat4);
-                    pos.setXYZ(i, v.x, v.y, v.z);
-                    if (nor) {
-                        n.fromBufferAttribute(nor, i).applyMatrix3(normalMat).normalize();
-                        nor.setXYZ(i, n.x, n.y, n.z);
-                    }
-                }
-                pos.needsUpdate = true;
-                if (nor) nor.needsUpdate = true;
-                geom.computeBoundingBox();
-                geom.computeBoundingSphere();
-            };
 
             const itemsById = new Map();
             for (const meta of geometryMetas) {
@@ -804,25 +798,23 @@ function loadpbde(file: File): void {
                 finalGroup.matrix.copy(finalMatrix);
                 ensureSharedPlaceholder();
 
+                // 같은 텍스처·틴트 조합끼리 모아 한 번에 머티리얼을 할당한다.
                 const materialGroups = new Map();
 
                 for (const meta of metasForThisItem) {
                     const geom = new THREE.BufferGeometry();
 
-                    const positions = new Float32Array(geometryBuffer, meta.posByteOffset, meta.posLen);
-                    const normals = new Float32Array(geometryBuffer, meta.normByteOffset, meta.normLen);
-                    const uvs = new Float32Array(geometryBuffer, meta.uvByteOffset, meta.uvLen);
+                    const positions = new Float32Array(sharedBuffer, meta.posByteOffset, meta.posLen);
+                    const normals = new Float32Array(sharedBuffer, meta.normByteOffset, meta.normLen);
+                    const uvs = new Float32Array(sharedBuffer, meta.uvByteOffset, meta.uvLen);
                     const indices = useUint32Indices
-                        ? new Uint32Array(geometryBuffer, meta.indicesByteOffset, meta.indicesLen)
-                        : new Uint16Array(geometryBuffer, meta.indicesByteOffset, meta.indicesLen);
+                        ? new Uint32Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen)
+                        : new Uint16Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen);
 
                     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
                     geom.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
                     geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
                     geom.setIndex(new THREE.BufferAttribute(indices, 1));
-
-                    const modelMatrix = new THREE.Matrix4().fromArray(meta.modelMatrix);
-                    applyMatrixToGeometry(geom, modelMatrix);
 
                     const key = `${meta.texPath}|${(meta.tintHex ?? 0xffffff) >>> 0}`;
                     let entry = materialGroups.get(key);
@@ -851,7 +843,7 @@ function loadpbde(file: File): void {
                         (async () => {
                             try {
                                 const mat = await getBlockMaterial(entry.texPath, entry.tintHex, myGen);
-                                if (myGen !== currentLoadGen) return; // stale
+                                if (myGen !== currentLoadGen) return; // 오래된 결과 무시
                                 mesh.material = mat;
                                 mesh.material.needsUpdate = true;
                             } catch (e) {
