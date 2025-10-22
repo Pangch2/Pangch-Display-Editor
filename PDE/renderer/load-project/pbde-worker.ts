@@ -552,6 +552,12 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
     const elements = resolved.elements;
     if (!elements || elements.length === 0) return null;
 
+    // 🚀 최적화 3: 동일한 모델 ID는 캐시에서 재사용
+    const cacheKey = resolved.id + (opts ? JSON.stringify(opts) : '');
+    if (blockModelGeometryCache.has(cacheKey)) {
+        return blockModelGeometryCache.get(cacheKey);
+    }
+
     const buffers = new Map();
     // 텍스처 경로와 틴트 조합마다 독립된 버퍼를 생성한다.
     const addBuffer = (texPath, tintHex) => {
@@ -711,7 +717,12 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
         }
     }
 
-    return Array.from(buffers.values());
+    const result = Array.from(buffers.values());
+    
+    // 🚀 최적화 3: 결과를 캐시에 저장
+    blockModelGeometryCache.set(cacheKey, result);
+    
+    return result;
 }
 
 // block_display 엔티티 노드를 Minecraft 블록 모델 지오메트리로 변환한다.
@@ -856,6 +867,9 @@ const modelTreeCache = new Map(); // 모델 ID별로 해석한 트리를 보관�
 const itemDefinitionCache = new Map(); // 아이템 이름별 정의 JSON을 캐싱한다.
 const itemModelGeometryCache = new Map(); // 모델 ID와 틴트 조합으로 생성된 지오메트리를 저장한다.
 const itemModelHasElementsCache = new Map(); // 모델 ID별 요소 존재 여부를 기록한다.
+
+// 🚀 최적화 3: 블록 모델 지오메트리 캐싱 (같은 블록 타입은 재사용)
+const blockModelGeometryCache = new Map(); // 모델 ID별 지오메트리 캐시
 
 // 플레이어 머리 아이템 전용 디스플레이 변환. 값을 바꾸면 즉시 반영된다.
 const PLAYER_HEAD_DISPLAY_TRANSFORMS = {
@@ -1473,6 +1487,7 @@ function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
     itemDefinitionCache.clear();
     itemModelGeometryCache.clear();
     itemModelHasElementsCache.clear();
+    blockModelGeometryCache.clear(); // 🚀 최적화 3: 블록 지오메트리 캐시 초기화
     builtinBorderGeometryCache.clear();
     extrudedItemGeometryCache.clear();
     texturePixelCache.clear();

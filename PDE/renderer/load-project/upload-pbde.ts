@@ -151,7 +151,7 @@ const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); //
 let sharedPlaceholderMaterial: THREE.Material | null = null;
 
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
-const MAX_TEXTURE_DECODE_CONCURRENCY = 200;
+const MAX_TEXTURE_DECODE_CONCURRENCY = 64;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 function acquireTextureSlot() {
@@ -205,41 +205,12 @@ async function dataUrlToBlob(dataUrl: string): Promise<Blob | null> {
     return p;
 }
 
-const PLAYER_HEAD_WARMUP_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAGgwJ/lWdftQAAAABJRU5ErkJggg=='
-let playerHeadWarmupPromise: Promise<boolean> | null = null;
-
-function ensurePlayerHeadImageBitmapWarmup(): Promise<boolean> {
-    if (playerHeadWarmupPromise) return playerHeadWarmupPromise;
-    if (typeof createImageBitmap !== 'function') {
-        playerHeadWarmupPromise = Promise.resolve(false);
-        return playerHeadWarmupPromise;
-    }
-    playerHeadWarmupPromise = (async () => {
-        try {
-            const blob = await dataUrlToBlob(PLAYER_HEAD_WARMUP_DATA_URL);
-            if (!blob) return false;
-            const bitmap = await createImageBitmap(blob);
-            if (bitmap && typeof bitmap.close === 'function') {
-                try { bitmap.close(); } catch { /* ignore */ }
-            }
-            return true;
-        } catch {
-            return false;
-        }
-    })();
-    return playerHeadWarmupPromise;
-}
-
-// 모듈이 로드되면 바로 워밍업을 실행해 첫 디코딩 지연을 줄인다.
-ensurePlayerHeadImageBitmapWarmup();
-
 async function loadPlayerHeadTexture(url: string, gen: number): Promise<THREE.Texture> {
     if (headTextureCache.has(url) && gen === currentLoadGen) return headTextureCache.get(url)!;
     const promiseKey = `${gen}|${url}`;
     if (headTexturePromiseCache.has(promiseKey)) return headTexturePromiseCache.get(promiseKey)!;
 
     const p = (async () => {
-        await ensurePlayerHeadImageBitmapWarmup();
         await acquireTextureSlot();
         try {
             let blob: Blob | null;
@@ -303,6 +274,8 @@ function ensureSharedPlaceholder(): void {
         // 텍스처가 준비되기 전까지 메시마다 NodeMaterial을 만들지 않도록 가벼운 플레이스홀더를 사용한다.
         sharedPlaceholderMaterial = new THREE.MeshLambertMaterial({ transparent: true, opacity: 0 });
         sharedPlaceholderMaterial.toneMapped = false;
+        sharedPlaceholderMaterial.fog = false;
+        sharedPlaceholderMaterial.flatShading = true;
         sharedPlaceholderMaterial.alphaTest = 0.01; // 투명 플레이스홀더가 보이지 않도록 작은 alphaTest 값을 사용한다.
     }
 }
@@ -390,6 +363,8 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
         const tex = await loadBlockTexture(texPath, gen);
         const { material } = createEntityMaterial(tex, tintHex ?? 0xffffff);
         material.toneMapped = false;
+        material.fog = false;
+        material.flatShading = true;
         if (gen !== currentLoadGen) {
             // 오래된 세대 결과면 즉시 폐기하고 캐시에 넣지 않는다.
             try { material.dispose(); } catch {}
@@ -410,6 +385,10 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
 
 // --- 최적화: 지오메트리 미리 생성 ---
 let headGeometries: HeadGeometrySet | null = null;
+
+// 🚀 최적화 3: 지오메트리 공유 - 동일한 블록 모델 재사용
+const geometryCache = new Map<string, THREE.BufferGeometry>();
+const geometryCachePromises = new Map<string, Promise<THREE.BufferGeometry>>();
 
 export { loadedObjectGroup };
 
@@ -655,6 +634,8 @@ function createOptimizedHeadMerged(texture: THREE.Texture): THREE.Mesh {
         const matData = createEntityMaterial(texture);
         material = matData.material;
         material.toneMapped = false;
+        material.fog = false;
+        material.flatShading = true;
         materialCache.set(texture, material);
     }
 
@@ -693,6 +674,11 @@ function loadpbde(file: File): void {
     headTextureCache.forEach((tex) => { try { disposeTexture(tex); } catch {} });
     headTextureCache.clear();
     headTexturePromiseCache.clear();
+
+    // 1-1-d. 지오메트리 캐시 해제
+    geometryCache.forEach((geo) => { try { geo.dispose(); } catch {} });
+    geometryCache.clear();
+    geometryCachePromises.clear();
 
     // 공유 플레이스홀더 머티리얼이 누적되지 않도록 폐기한다.
     if (sharedPlaceholderMaterial) { try { sharedPlaceholderMaterial.dispose(); } catch {} }
@@ -733,7 +719,6 @@ function loadpbde(file: File): void {
 
     // --- 최적화: 머리 지오메트리 생성 (필요한 경우) ---
     createHeadGeometries();
-    ensurePlayerHeadImageBitmapWarmup();
 
     worker.onmessage = (e) => {
         const msg = e.data;
@@ -831,6 +816,7 @@ function loadpbde(file: File): void {
                         for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
                     }
                     if (mergedGeom) {
+                        // 🚀 최적화 2: Frustum Culling - 정확한 바운딩 계산
                         if (!mergedGeom.boundingBox) mergedGeom.computeBoundingBox();
                         if (!mergedGeom.boundingSphere) mergedGeom.computeBoundingSphere();
 
@@ -838,6 +824,10 @@ function loadpbde(file: File): void {
                         const mesh = new THREE.Mesh(mergedGeom, placeholderMaterial);
                         mesh.castShadow = false;
                         mesh.receiveShadow = false;
+                        
+                        // 🚀 최적화 2: Frustum Culling 활성화
+                        mesh.frustumCulled = true;
+                        
                         finalGroup.add(mesh);
 
                         (async () => {
