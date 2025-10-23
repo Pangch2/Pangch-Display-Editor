@@ -29,8 +29,17 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      experimentalFeatures: true,
+      experimentalFeatures: true
     }
+  });
+
+  win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    const newHeaders = {
+      ...details.responseHeaders,
+      'Cross-Origin-Opener-Policy': ['same-origin'],
+      'Cross-Origin-Embedder-Policy': ['require-corp']
+    };
+    callback({ responseHeaders: newHeaders });
   });
 
   if (process.env.NODE_ENV === 'development') {
