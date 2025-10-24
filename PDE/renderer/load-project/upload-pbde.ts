@@ -151,7 +151,7 @@ const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); //
 let sharedPlaceholderMaterial: THREE.Material | null = null;
 
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
-const MAX_TEXTURE_DECODE_CONCURRENCY = 64;
+const MAX_TEXTURE_DECODE_CONCURRENCY = 256;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 function acquireTextureSlot() {

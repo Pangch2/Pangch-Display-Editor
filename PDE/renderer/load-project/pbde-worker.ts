@@ -1263,7 +1263,7 @@ const loadTexturePixels: LoadTexturePixelsFn = Object.assign(
                     }
                 }
             } catch (e) {
-                try { console.warn('[ItemModel] loadTexturePixels failed', texPath, e); } catch {}
+                ////try { console.warn('[ItemModel] loadTexturePixels failed', texPath, e); } catch {}
                 return null;
             } finally {
                 texturePixelPromises.delete(texPath);
@@ -1350,7 +1350,7 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
         builtinBorderGeometryCache.set(texPath, geom);
         return geom;
     } catch (e) {
-        try { console.warn('[ItemModel] builtin border geometry failed for', texPath, e); } catch {}
+        //try { console.warn('[ItemModel] builtin border geometry failed for', texPath, e); } catch {}
         return buildGeneratedPlaneGeometry(texId);
     }
 }
@@ -1370,7 +1370,7 @@ async function buildItemModelGeometryData(resolved) {
     // builtin 모델이거나 generated/handheld 부모를 가진 경우 외곽 테두리 지오메트리를 사용한다.
     const useBorder = isBuiltinModel(resolved) || resolved.parentChain.some(p => /item\/(generated|handheld)/.test(p));
     if (useBorder) {
-        try { console.log('[ItemModel] using builtin border geometry for', resolved.id); } catch {}
+        //try { console.log('[ItemModel] using builtin border geometry for', resolved.id); } catch {}
         return await buildBuiltinBorderBetweenPlanesGeometry(layer0);
     }
     return buildGeneratedPlaneGeometry(layer0);
@@ -1381,7 +1381,7 @@ async function processItemModelDisplay(node) {
     try {
         const { baseName, displayType } = parseItemName(node.name);
         if (!baseName) return null;
-        try { console.log('[ItemModel] start', node.name, 'base', baseName); } catch {}
+        //try { console.log('[ItemModel] start', node.name, 'base', baseName); } catch {}
         const definition = await loadItemDefinition(baseName);
         let modelId;
         let tintList = null;
@@ -1397,7 +1397,7 @@ async function processItemModelDisplay(node) {
             }
         }
         if (!modelId) modelId = `minecraft:item/${baseName}`;
-        try { console.log('[ItemModel] definition', definition ? 'yes' : 'no', 'modelId', modelId, 'tints', tintList ? tintList.length : 0); } catch {}
+        //try { console.log('[ItemModel] definition', definition ? 'yes' : 'no', 'modelId', modelId, 'tints', tintList ? tintList.length : 0); } catch {}
         // 모델 ID 단위로 지오메트리를 캐싱해 반복 연산을 줄인다.
         const cacheKey = modelId;
         let geomData = itemModelGeometryCache.get(cacheKey);
@@ -1406,11 +1406,11 @@ async function processItemModelDisplay(node) {
         if (!geomData) {
             resolved = await resolveModelTree(modelId, modelTreeCache);
             if (!resolved) {
-                try { console.warn('[ItemModel] resolve failed', modelId); } catch {}
+                //try { console.warn('[ItemModel] resolve failed', modelId); } catch {}
                 return null;
             }
             hasElements = !!(resolved.elements && resolved.elements.length > 0);
-            try { console.log('[ItemModel] resolved', modelId, 'elements', hasElements ? resolved.elements.length : 0, 'parent', resolved.parent || 'none'); } catch {}
+            //try { console.log('[ItemModel] resolved', modelId, 'elements', hasElements ? resolved.elements.length : 0, 'parent', resolved.parent || 'none'); } catch {}
             geomData = await buildItemModelGeometryData(resolved);
             if (geomData && geomData.length) {
                 itemModelGeometryCache.set(cacheKey, geomData);
@@ -1421,26 +1421,26 @@ async function processItemModelDisplay(node) {
             resolved = await resolveModelTree(modelId, modelTreeCache);
         }
         if (!resolved) {
-            try { console.warn('[ItemModel] resolve failed (post-cache)', modelId); } catch {}
+            //try { console.warn('[ItemModel] resolve failed (post-cache)', modelId); } catch {}
             return null;
         }
         if (!geomData || geomData.length === 0) {
-            try { console.warn('[ItemModel] empty geometry', modelId); } catch {}
+            //try { console.warn('[ItemModel] empty geometry', modelId); } catch {}
             return null;
         }
-        try { console.log('[ItemModel] geometry buffers', geomData.length, 'for', modelId, 'hasElements', hasElements); } catch {}
+        //try { console.log('[ItemModel] geometry buffers', geomData.length, 'for', modelId, 'hasElements', hasElements); } catch {}
         const modelMatrix = new THREE.Matrix4();
         if (hasElements) {
             // 블록형 아이템은 중심을 -0.5로 이동해 월드 좌표계와 정렬한다.
             modelMatrix.multiply(new THREE.Matrix4().makeTranslation(-0.5, -0.5, -0.5));
-            try { console.log('[ItemModel] applied block-like centering', modelId); } catch {}
+            //try { console.log('[ItemModel] applied block-like centering', modelId); } catch {}
         } else {
             // 평면 아이템은 Y축 180도 회전 없이 중심만 이동해 앞면이 +Z를 바라보게 유지한다.
             const translateCenter = new THREE.Matrix4().makeTranslation(-0.5, -0.5, 0);
             modelMatrix.multiply(translateCenter);
             // 좌우 반전으로 UV와 노멀 방향을 일치시킨다.
             modelMatrix.premultiply(new THREE.Matrix4().makeScale(-1, 1, 1));
-            try { console.log('[ItemModel] applied flat full centering and horizontal flip', modelId); } catch {}
+            //try { console.log('[ItemModel] applied flat full centering and horizontal flip', modelId); } catch {}
         }
 
         if (displayType) {
@@ -1458,7 +1458,7 @@ async function processItemModelDisplay(node) {
                         modelMatrix.premultiply(displayMatrix);
                     }
                 } catch (err) {
-                    try { console.warn('[ItemModel] display transform error', modelId, displayType, err); } catch {}
+                    //try { console.warn('[ItemModel] display transform error', modelId, displayType, err); } catch {}
                 }
             }
         }
@@ -1472,7 +1472,7 @@ async function processItemModelDisplay(node) {
             transform: node.transform || node.transforms || null
         };
     } catch (e) {
-        try { console.warn('[ItemModel] error', node.name, e); } catch {}
+        //try { console.warn('[ItemModel] error', node.name, e); } catch {}
         return null;
     }
 }

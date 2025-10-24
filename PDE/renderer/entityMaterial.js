@@ -46,6 +46,8 @@ export function createEntityMaterial(diffuseTex, tintHex = 0xffffff) {
   const material = new MeshBasicNodeMaterial();
   material.colorNode = litColor;
   material.transparent = true;
+  material.fog = false;
+  material.flatShading = true;
   material.alphaTest = 0.1;
 
   return { material, blockLightLevel, skyLightLevel };
