@@ -218,6 +218,10 @@ async function loadPlayerHeadTexture(url: string, gen: number): Promise<THREE.Te
                 blob = await dataUrlToBlob(url);
                 if (!blob) throw new Error('Invalid data URL');
             } else {
+                // http를 https로 요청하도록 변경
+                if (url.startsWith('http://')) {
+                    url = url.replace('http://', 'https://');
+                }
                 const resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 blob = await resp.blob();
@@ -1041,7 +1045,7 @@ window.addEventListener('drop', (e) => {
             }
         }
     } else {
-        for (const file of e.dataTransfer.files) {
+        for (const file of e.dataTransfer.files) {  
             const extension = file.name.split('.').pop().toLowerCase();
             if (extension === 'bdengine' || extension === 'pdengine') {
                 droppedFile = file;

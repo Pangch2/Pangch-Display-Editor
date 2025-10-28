@@ -7,8 +7,6 @@
     "dev:renderer": "vite",
     "dev:main": "cross-env NODE_ENV=development nodemon --watch main.js --exec electron .",
     "dev": "concurrently --kill-others-on-fail -n \"main,renderer\" \"npm:dev:main\" \"npm:dev:renderer\"",
-    "build": "vite build",
-    "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "npm run build && electron-builder"
   },
