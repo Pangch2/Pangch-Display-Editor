@@ -1172,9 +1172,7 @@ function extractLayer0Texture(resolved) {
 function buildGeneratedPlaneGeometry(texId) {
     if (!texId) return [];
     const texPath = textureIdToAssetPath(texId);
-    // 두께는 극히 얇은 두 장의 사각형으로 구성하여 컬링 문제를 방지한다.
-    const from = [0, 0, 0];
-    const to = [16, 16, 0];
+
     const positionsFront = [ // +Z 방향을 바라보는 반시계 정점 배열
         0, 1, 0,  1, 1, 0,  1, 0, 0,  0, 0, 0
     ];

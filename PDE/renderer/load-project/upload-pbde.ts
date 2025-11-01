@@ -779,12 +779,37 @@ function loadpbde(file: File): void {
             }
 
             for (const [itemId, metasForThisItem] of itemsById.entries()) {
-                const finalGroup = new THREE.Group();
-                finalGroup.matrixAutoUpdate = false;
+                // 2중 그룹 구조: TransformControls용 래퍼 + 원본 데이터 보존용 내부 그룹
+                const wrapperGroup = new THREE.Group();
+                wrapperGroup.name = `wrapper_${itemId}`;
+                wrapperGroup.matrixAutoUpdate = true; // TransformControls가 자동으로 업데이트
+                
+                // 변환 행렬 처리
                 const finalMatrix = new THREE.Matrix4();
                 finalMatrix.fromArray(metasForThisItem[0].transform);
                 finalMatrix.transpose();
-                finalGroup.matrix.copy(finalMatrix);
+                
+                // 위치만 추출
+                const position = new THREE.Vector3();
+                position.setFromMatrixPosition(finalMatrix);
+                
+                // 래퍼 그룹에 위치만 적용 (TransformControls가 이 위치에서 작동)
+                wrapperGroup.position.copy(position);
+                
+                // 변환 행렬 그룹 (회전과 스케일만 적용, 비균등 스케일 보존)
+                const transformGroup = new THREE.Group();
+                transformGroup.name = `content_${itemId}`;
+                transformGroup.matrixAutoUpdate = false;
+                
+                // 위치를 제거한 로컬 변환 행렬 생성 (회전과 스케일만 포함)
+                const localMatrix = finalMatrix.clone();
+                localMatrix.setPosition(0, 0, 0);
+                transformGroup.matrix.copy(localMatrix);
+                transformGroup.matrixWorldNeedsUpdate = true;
+                
+                // 래퍼 그룹에 내부 그룹 추가
+                wrapperGroup.add(transformGroup);
+                
                 ensureSharedPlaceholder();
 
                 // 같은 텍스처·틴트 조합끼리 모아 한 번에 머티리얼을 할당한다.
@@ -832,7 +857,7 @@ function loadpbde(file: File): void {
                         // 🚀 최적화 2: Frustum Culling 활성화
                         mesh.frustumCulled = true;
                         
-                        finalGroup.add(mesh);
+                        transformGroup.add(mesh);
 
                         (async () => {
                             try {
@@ -846,7 +871,7 @@ function loadpbde(file: File): void {
                         })();
                     }
                 }
-                loadedObjectGroup.add(finalGroup);
+                loadedObjectGroup.add(wrapperGroup); // 래퍼 그룹을 씬에 추가
             }
 
             const playerHeadItems: Array<any> = [];
@@ -860,26 +885,49 @@ function loadpbde(file: File): void {
                 (async () => {
                     try {
                         const headGroups = await Promise.all(playerHeadItems.map(async (item) => {
-                            const headGroup = new THREE.Group();
-                            headGroup.userData.isPlayerHead = true;
-                            headGroup.userData.gen = myGen;
-
+                            // 2중 그룹 구조: TransformControls용 래퍼 + 원본 데이터 보존용 내부 그룹
+                            const wrapperGroup = new THREE.Group();
+                            wrapperGroup.name = `wrapper_head_${item.textureUrl}`;
+                            wrapperGroup.matrixAutoUpdate = true; // TransformControls가 자동으로 업데이트
+                            
+                            // 변환 행렬 처리
                             const finalMatrix = new THREE.Matrix4();
                             finalMatrix.fromArray(item.transform);
                             finalMatrix.transpose();
                             const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
                             finalMatrix.multiply(scaleMatrix);
-                            headGroup.matrixAutoUpdate = false;
-                            headGroup.matrix.copy(finalMatrix);
+                            
+                            // 위치만 추출
+                            const position = new THREE.Vector3();
+                            position.setFromMatrixPosition(finalMatrix);
+                            
+                            // 래퍼 그룹에 위치만 적용 (TransformControls가 이 위치에서 작동)
+                            wrapperGroup.position.copy(position);
+                            
+                            // 변환 행렬 그룹 (회전과 스케일만 적용, 비균등 스케일 보존)
+                            const transformGroup = new THREE.Group();
+                            transformGroup.name = `content_head_${item.textureUrl}`;
+                            transformGroup.userData.isPlayerHead = true;
+                            transformGroup.userData.gen = myGen;
+                            transformGroup.matrixAutoUpdate = false;
+                            
+                            // 위치를 제거한 로컬 변환 행렬 생성 (회전과 스케일만 포함)
+                            const localMatrix = finalMatrix.clone();
+                            localMatrix.setPosition(0, 0, 0);
+                            transformGroup.matrix.copy(localMatrix);
+                            transformGroup.matrixWorldNeedsUpdate = true;
 
                             try {
                                 const tex = await loadPlayerHeadTexture(item.textureUrl, myGen);
-                                headGroup.add(createOptimizedHeadMerged(tex));
+                                transformGroup.add(createOptimizedHeadMerged(tex));
                             } catch (err) {
                                 console.error('플레이어 헤드 텍스처 로드 실패:', err);
                             }
 
-                            return headGroup;
+                            // 래퍼 그룹에 내부 그룹 추가
+                            wrapperGroup.add(transformGroup);
+                            
+                            return wrapperGroup;
                         }));
 
                         if (myGen !== currentLoadGen) {

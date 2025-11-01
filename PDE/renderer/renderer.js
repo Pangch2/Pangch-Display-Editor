@@ -1,11 +1,13 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
 import { initAssets } from './asset-manager.js';
 import { loadedObjectGroup } from './load-project/upload-pbde.ts';
 import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
 
 // 전역 변수로 선언
-let scene, camera, renderer, controls;
+let scene, camera, renderer, controls, transformControls;
+let selectedObject = null;
 
 // 앱 시작 로직을 비동기 함수로 감싸기
 async function startApp() {
@@ -150,8 +152,105 @@ async function initScene() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
 
+    // 5. TransformControls
+    transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setMode('translate');
+    transformControls.setSpace('world'); // 각도 gizmo를 월드 좌표계로 고정
+    scene.add(transformControls.getHelper());
 
-    // 6. 헬퍼(Helper)
+    // Gizmo 제어 중 OrbitControls 비활성화
+    transformControls.addEventListener('dragging-changed', (event) => {
+        controls.enabled = !event.value;
+    });
+
+    // TransformControls 변경사항을 자동으로 반영 (래퍼 그룹이 matrixAutoUpdate=true이므로 자동 처리됨)
+    // 내부 그룹(matrixAutoUpdate=false)은 원본 변환을 보존하므로 비균등 스케일이 유지됨
+
+    // 6. 키보드 이벤트 (t: translate, r: rotate, s: scale)
+    window.addEventListener('keydown', (event) => {
+        if (!transformControls.object) return;
+
+        switch (event.key.toLowerCase()) {
+            case 't':
+                transformControls.setMode('translate');
+                break;
+            case 'r':
+                transformControls.setMode('rotate');
+                break;
+            case 's':
+                transformControls.setMode('scale');
+                break;
+        }
+    });
+
+    // 7. Raycaster로 객체 선택
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    renderer.domElement.addEventListener('pointerdown', (event) => {
+        // 마우스 버튼이 아니면 무시
+        if (event.button !== 0) return;
+        
+        // TransformControls가 드래그 중이면 선택 무시
+        if (transformControls.dragging) return;
+
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+
+        // loadedObjectGroup의 모든 메시 대상으로 raycast (TransformControls 제외)
+        const intersects = raycaster.intersectObjects(loadedObjectGroup.children, true);
+
+        if (intersects.length > 0) {
+            // Gizmo와 헬퍼를 제외한 실제 객체만 선택
+            let targetObject = null;
+            for (const intersect of intersects) {
+                let obj = intersect.object;
+                
+                // TransformControls의 Gizmo인지 확인
+                let isGizmo = false;
+                let checkParent = obj;
+                while (checkParent) {
+                    if (checkParent === transformControls || checkParent.isTransformControlsGizmo) {
+                        isGizmo = true;
+                        break;
+                    }
+                    checkParent = checkParent.parent;
+                }
+                
+                if (!isGizmo) {
+                    targetObject = obj;
+                    break;
+                }
+            }
+            
+            if (targetObject) {
+                // 최상위 그룹 찾기 (래퍼 그룹까지)
+                while (targetObject.parent && targetObject.parent !== loadedObjectGroup) {
+                    targetObject = targetObject.parent;
+                }
+
+                // 선택된 객체가 변경되었을 때만 업데이트
+                if (selectedObject !== targetObject) {
+                    selectedObject = targetObject;
+                    transformControls.attach(selectedObject);
+                    console.log('선택된 객체:', selectedObject);
+                }
+            }
+        } else {
+            // 빈 공간 클릭 시 선택 해제
+            if (selectedObject) {
+                transformControls.detach();
+                selectedObject = null;
+                console.log('선택 해제');
+            }
+        }
+    });
+
+
+    // 8. 헬퍼(Helper)
     const axes = createFullAxesHelper(150);
     axes.renderOrder = 1;
     scene.add(axes);
@@ -164,7 +263,7 @@ async function initScene() {
     Grid.renderOrder = -1; // 큐브보다 먼저 그리기
     scene.add(Grid);
     
-    // 그림자 비활성화(문제생기면 끄기)
+    // 그림자 비활성화
     renderer.shadowMap.enabled = false;
     
 
@@ -174,7 +273,7 @@ async function initScene() {
         materials.forEach(m => { m.depthWrite = false; });
     });
 
-    // 7. 사용자 정의 기호(Z>): 격자 위 (0.5, 0, -0.25) 위치에 'Z>' 모양 라인 추가
+    // 9. 사용자 정의 기호(Z>): 격자 위 (0.5, 0, -0.25) 위치에 'Z>' 모양 라인 추가
     const zSymbol = createZGreaterSymbol(new THREE.Vector3(0.5, 0, -0.25), 0.125, 0x515151);
     zSymbol.renderOrder = 10; // 그리드/객체 위로 UI 표시성 높임
     scene.add(zSymbol);

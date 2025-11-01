@@ -39,7 +39,8 @@ vite.config.js
 
 # 중요 규칙
 - 명확하지 않은 것은 한국어로 질문해야 한다. 설명 추상화는 가급적 지양한다
-- three js r180이상을 사용중
-- three js의 webgpu를 사용해야해 즉 impoert * as THREE from 'three/webgpu'를 사용해야해
+- three js r181이상을 사용중
+- three js의 webgpu를 사용해야해 즉 import * as THREE from 'three/webgpu'를 사용해야해
+- scene.add(transformControls)은 scene.add(transformControls.getHelper())로 변경해야하
 - npm run dev는 AI가 실행시켜선 안돼
 - player_head는 hardcoded폴더에 포함되지 않아
