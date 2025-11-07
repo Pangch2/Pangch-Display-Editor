@@ -44,3 +44,5 @@ vite.config.js
 - scene.add(transformControls)은 scene.add(transformControls.getHelper())로 변경해야하
 - npm run dev는 AI가 실행시켜선 안돼
 - player_head는 hardcoded폴더에 포함되지 않아
+- three js문법이 예전버전에 사용된 것이라면 three js 마이그래이션 가이드를 참고하기
+- 가이드 링크 : https://github.com/mrdoob/three.js/wiki/Migration-Guide

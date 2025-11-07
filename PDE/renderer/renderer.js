@@ -156,11 +156,50 @@ async function initScene() {
     transformControls = new TransformControls(camera, renderer.domElement);
     transformControls.setMode('translate');
     transformControls.setSpace('world'); // 각도 gizmo를 월드 좌표계로 고정
+    transformControls.setColors(0xEF3751, 0x6FA21C, 0x437FD0);
     scene.add(transformControls.getHelper());
 
-    // Gizmo 제어 중 OrbitControls 비활성화
+    // 드래그 조작 상태를 저장하기 위한 변수
+    const dragInitialMatrix = new THREE.Matrix4();
+    let draggingMode = null;
+
+    // 드래그 시작과 끝 시점에만 변환을 계산하여 적용 (과다 적용 문제 해결)
     transformControls.addEventListener('dragging-changed', (event) => {
         controls.enabled = !event.value;
+
+        const object = transformControls.object;
+        if (!object) return;
+
+        const transformGroup = object.children[0];
+        if (!transformGroup) return;
+
+        if (event.value) { // 드래그 시작
+            dragInitialMatrix.copy(transformGroup.matrix);
+            draggingMode = transformControls.mode;
+        } else { // 드래그 끝
+            if (draggingMode === 'scale') {
+                const scaleApplied = object.scale.clone();
+                const scaleMatrix = new THREE.Matrix4().makeScale(scaleApplied.x, scaleApplied.y, scaleApplied.z);
+                
+                // 월드 스케일을 기존 행렬에 적용
+                transformGroup.matrix.copy(dragInitialMatrix).premultiply(scaleMatrix);
+
+            } else if (draggingMode === 'rotate') {
+                const rotationApplied = object.quaternion.clone();
+                const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(rotationApplied);
+
+                // 월드 회전을 기존 행렬에 적용
+                transformGroup.matrix.copy(dragInitialMatrix).premultiply(rotationMatrix);
+            }
+            
+            transformGroup.matrixWorldNeedsUpdate = true;
+
+            // 다음 조작을 위해 wrapper group의 변환을 리셋
+            object.quaternion.set(0, 0, 0, 1);
+            object.scale.set(1, 1, 1);
+            
+            draggingMode = null;
+        }
     });
 
     // TransformControls 변경사항을 자동으로 반영 (래퍼 그룹이 matrixAutoUpdate=true이므로 자동 처리됨)
