@@ -655,6 +655,12 @@ function createOptimizedHeadMerged(texture: THREE.Texture): THREE.Mesh {
  * @param {File} file - 불러올 .pbde 또는 .bde 파일
  */
 function loadpbde(file: File): void {
+    // 0. 새 프로젝트를 로드하기 전에 현재 선택 상태를 리셋합니다.
+    // 이는 TransformControls가 제거될 객체를 참조하는 것을 방지합니다.
+    if (loadedObjectGroup.userData.resetSelection) {
+        loadedObjectGroup.userData.resetSelection();
+    }
+
     // 1. 이전 객체 및 리소스 완벽 해제
     const myGen = ++currentLoadGen;
     
@@ -784,6 +790,10 @@ function loadpbde(file: File): void {
                 wrapperGroup.name = `wrapper_${itemId}`;
                 wrapperGroup.matrixAutoUpdate = true; // TransformControls가 자동으로 업데이트
                 
+                // 타입 정보를 wrapper에 저장 (block_display / item_display 구분)
+                const isItemDisplay = metasForThisItem[0].isItemDisplayModel;
+                wrapperGroup.userData.displayType = isItemDisplay ? 'item_display' : 'block_display';
+                
                 // 변환 행렬 처리
                 const finalMatrix = new THREE.Matrix4();
                 finalMatrix.fromArray(metasForThisItem[0].transform);
@@ -889,6 +899,7 @@ function loadpbde(file: File): void {
                             const wrapperGroup = new THREE.Group();
                             wrapperGroup.name = `wrapper_head_${item.textureUrl}`;
                             wrapperGroup.matrixAutoUpdate = true; // TransformControls가 자동으로 업데이트
+                            wrapperGroup.userData.displayType = 'item_display'; // 플레이어 헤드는 item_display
                             
                             // 변환 행렬 처리
                             const finalMatrix = new THREE.Matrix4();

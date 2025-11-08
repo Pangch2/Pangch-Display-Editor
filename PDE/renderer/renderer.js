@@ -8,6 +8,9 @@ import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
 // 전역 변수로 선언
 let scene, camera, renderer, controls, transformControls;
 let selectedObject = null;
+let pivotMode = 'origin'; // 'origin' 또는 'center'
+let currentSpace = 'world'; // 'world' 또는 'local'
+let selectionOverlay = null; // 선택된 객체의 오버레이
 
 // 앱 시작 로직을 비동기 함수로 감싸기
 async function startApp() {
@@ -79,7 +82,6 @@ function createFullAxesHelper(size = 50) {
 }
 
 // 'Z>' 모양을 XZ 평면(바닥) 위에 그리는 헬퍼
-// position: 중심 위치(Vector3), size: 전체 높이/폭 스칼라, color: 라인 색상
 function createZGreaterSymbol(position = new THREE.Vector3(0.5, 0, 0.5), size = 0.5, color = 0x515151) {
     const group = new THREE.Group();
     group.position.copy(position);
@@ -123,6 +125,143 @@ function createZGreaterSymbol(position = new THREE.Vector3(0.5, 0, 0.5), size = 
     return group;
 }
 
+// 스케일/전단 변형이 포함된 행렬에서 순수 회전 쿼터니언을 추출하는 헬퍼 함수
+function getRotationFromMatrix(matrix) {
+    const R = new THREE.Matrix4();
+    // 기저 벡터(basis vectors) 추출
+    const x = new THREE.Vector3().setFromMatrixColumn(matrix, 0);
+    const y = new THREE.Vector3().setFromMatrixColumn(matrix, 1);
+    const z = new THREE.Vector3().setFromMatrixColumn(matrix, 2);
+
+    // X 기저 벡터 정규화
+    x.normalize();
+
+    // 그람-슈미트 직교화 (Y)
+    const yDotX = y.dot(x);
+    y.sub(x.clone().multiplyScalar(yDotX)).normalize();
+
+    // Z는 X와 Y의 외적(cross product)
+    z.crossVectors(x, y).normalize();
+
+    // 직교화된 기저 벡터들로 회전 행렬 재구성
+    R.makeBasis(x, y, z);
+
+    // 쿼터니언 추출
+    const quaternion = new THREE.Quaternion();
+    quaternion.setFromRotationMatrix(R);
+    return quaternion;
+}
+
+// 피벗 위치를 갱신하는 통합 헬퍼 함수
+function updatePivot(wrapper) {
+    if (!wrapper) return;
+    const content = wrapper.children[0];
+    if (!content) return;
+
+    // 1. 목표 피벗의 로컬 좌표 결정
+    let targetPivotLocal = new THREE.Vector3(0, 0, 0);
+    if (pivotMode === 'center') {
+        const box = new THREE.Box3();
+        content.traverse(child => {
+            if (child.isMesh) {
+                if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
+                box.union(child.geometry.boundingBox);
+            }
+        });
+        box.getCenter(targetPivotLocal);
+    }
+
+    // 2. 목표 피벗의 월드 좌표 계산
+    content.updateWorldMatrix(true, false);
+    const targetPivotWorld = targetPivotLocal.clone().applyMatrix4(content.matrixWorld);
+
+    // 3. 현재 피벗 위치(wrapper.position)에서 목표 위치까지의 차이(adjustment) 계산
+    const adjustmentOffset = targetPivotWorld.clone().sub(wrapper.position);
+
+    // 4. 조정이 필요한 경우에만 적용 (무한 루프 방지)
+    if (adjustmentOffset.lengthSq() > 0.000001) {
+        // Wrapper(피벗)를 새로운 목표 위치로 이동
+        wrapper.position.add(adjustmentOffset);
+
+        // Content가 시각적으로 움직이지 않도록 역으로 보정
+        const localCounter = adjustmentOffset.clone().applyQuaternion(wrapper.quaternion.clone().invert());
+        const inverseTranslate = new THREE.Matrix4().makeTranslation(-localCounter.x, -localCounter.y, -localCounter.z);
+        content.matrix.premultiply(inverseTranslate);
+        content.matrixWorldNeedsUpdate = true;
+    }
+}
+
+// 선택된 객체에 오버레이를 생성하거나 업데이트하는 함수
+function updateSelectionOverlay(wrapper) {
+    // 기존 오버레이 제거
+    if (selectionOverlay) {
+        if (selectionOverlay.parent) {
+            selectionOverlay.parent.remove(selectionOverlay);
+        }
+        selectionOverlay.traverse(child => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) child.material.dispose();
+        });
+        selectionOverlay = null;
+    }
+
+    if (!wrapper) return;
+
+    const content = wrapper.children[0];
+    if (!content) return;
+
+    // displayType에 따라 색상 결정
+    const displayType = wrapper.userData?.displayType;
+    let overlayColor;
+    if (displayType === 'block_display') {
+        overlayColor = 0xFFD147; // #FFD147
+    } else if (displayType === 'item_display') {
+        overlayColor = 0x2E87EC; // #2E87EC
+    } else {
+        return; // 타입을 알 수 없으면 오버레이를 표시하지 않음
+    }
+
+    // 로컬 좌표계 기준의 바운딩 박스 계산
+    const localBox = new THREE.Box3();
+    content.traverse(child => {
+        if (child.isMesh && child.geometry) {
+            if (!child.geometry.boundingBox) {
+                child.geometry.computeBoundingBox();
+            }
+            // 자식의 지오메트리 바운딩 박스를 자식의 월드 변환을 적용하여 확장
+            const childBox = child.geometry.boundingBox.clone();
+            childBox.applyMatrix4(child.matrix);
+            localBox.union(childBox);
+        }
+    });
+
+    const size = new THREE.Vector3();
+    localBox.getSize(size);
+    const center = new THREE.Vector3();
+    localBox.getCenter(center);
+
+    // 지오메트리 생성 및 중심 맞춤
+    const overlayGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+    overlayGeometry.translate(center.x, center.y, center.z);
+
+    // 외곽선 생성
+    const edges = new THREE.EdgesGeometry(overlayGeometry);
+    const overlayMaterial = new THREE.LineBasicMaterial({
+        color: overlayColor,
+        depthTest: true,
+        depthWrite: false,
+        transparent: true,
+        opacity: 0.9
+    });
+
+    selectionOverlay = new THREE.LineSegments(edges, overlayMaterial);
+    selectionOverlay.renderOrder = 1000;
+    selectionOverlay.matrixAutoUpdate = false; // 수동으로 매트릭스 업데이트
+
+    scene.add(selectionOverlay);
+}
+
+
 async function initScene() {
     // 1. 장면(Scene)
     scene = new THREE.Scene();
@@ -155,59 +294,78 @@ async function initScene() {
     // 5. TransformControls
     transformControls = new TransformControls(camera, renderer.domElement);
     transformControls.setMode('translate');
-    transformControls.setSpace('world'); // 각도 gizmo를 월드 좌표계로 고정
+    transformControls.setSpace('world'); // 초기 공간은 월드
     transformControls.setColors(0xEF3751, 0x6FA21C, 0x437FD0);
     scene.add(transformControls.getHelper());
 
-    // 드래그 조작 상태를 저장하기 위한 변수
+    // --- 드래그 상태 관리를 위한 변수 ---
     const dragInitialMatrix = new THREE.Matrix4();
+    const dragInitialQuaternion = new THREE.Quaternion();
+    const dragInitialScale = new THREE.Vector3();
     let draggingMode = null;
 
-    // 드래그 시작과 끝 시점에만 변환을 계산하여 적용 (과다 적용 문제 해결)
+    // --- 드래그 이벤트 핸들러 ---
     transformControls.addEventListener('dragging-changed', (event) => {
         controls.enabled = !event.value;
 
-        const object = transformControls.object;
-        if (!object) return;
+        const wrapper = transformControls.object;
+        if (!wrapper) return;
 
-        const transformGroup = object.children[0];
-        if (!transformGroup) return;
+        const content = wrapper.children[0];
+        if (!content) return;
 
         if (event.value) { // 드래그 시작
-            dragInitialMatrix.copy(transformGroup.matrix);
+            dragInitialMatrix.copy(content.matrix);
+            dragInitialQuaternion.copy(wrapper.quaternion);
+            dragInitialScale.copy(wrapper.scale);
             draggingMode = transformControls.mode;
         } else { // 드래그 끝
-            if (draggingMode === 'scale') {
-                const scaleApplied = object.scale.clone();
-                const scaleMatrix = new THREE.Matrix4().makeScale(scaleApplied.x, scaleApplied.y, scaleApplied.z);
-                
-                // 월드 스케일을 기존 행렬에 적용
-                transformGroup.matrix.copy(dragInitialMatrix).premultiply(scaleMatrix);
+            if (!draggingMode) return;
 
-            } else if (draggingMode === 'rotate') {
-                const rotationApplied = object.quaternion.clone();
-                const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(rotationApplied);
-
-                // 월드 회전을 기존 행렬에 적용
-                transformGroup.matrix.copy(dragInitialMatrix).premultiply(rotationMatrix);
+            // 1. 객체 변형 적용
+            if (currentSpace === 'local') {
+                if (draggingMode === 'rotate') {
+                    // 로컬 회전은 wrapper의 quaternion에 누적되므로, content matrix는 수정하지 않음
+                } else if (draggingMode === 'scale') {
+                    const finalScale = wrapper.scale.clone();
+                    if (dragInitialScale.x !== 0 && dragInitialScale.y !== 0 && dragInitialScale.z !== 0) {
+                        const deltaScale = finalScale.divide(dragInitialScale);
+                        const deltaScaleMatrix = new THREE.Matrix4().makeScale(deltaScale.x, deltaScale.y, deltaScale.z);
+                        content.matrix.copy(dragInitialMatrix).premultiply(deltaScaleMatrix);
+                    }
+                }
+            } else { // WORLD SPACE
+                if (draggingMode === 'scale') {
+                    const finalScale = wrapper.scale.clone();
+                    const deltaScale = finalScale.divide(dragInitialScale);
+                    const deltaScaleMatrix = new THREE.Matrix4().makeScale(deltaScale.x, deltaScale.y, deltaScale.z);
+                    content.matrix.copy(dragInitialMatrix).premultiply(deltaScaleMatrix);
+                } else if (draggingMode === 'rotate') {
+                    const finalQuaternion = wrapper.quaternion.clone();
+                    const deltaQuaternion = finalQuaternion.multiply(dragInitialQuaternion.clone().invert());
+                    const deltaRotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(deltaQuaternion);
+                    content.matrix.copy(dragInitialMatrix).premultiply(deltaRotationMatrix);
+                }
             }
-            
-            transformGroup.matrixWorldNeedsUpdate = true;
+            content.matrixWorldNeedsUpdate = true;
 
-            // 다음 조작을 위해 wrapper group의 변환을 리셋
-            object.quaternion.set(0, 0, 0, 1);
-            object.scale.set(1, 1, 1);
+            // 2. Wrapper 상태 리셋
+            wrapper.scale.set(1, 1, 1);
+            if (!(draggingMode === 'rotate' && currentSpace === 'local')) {
+                wrapper.quaternion.copy(dragInitialQuaternion);
+            }
+
+            // 3. 피벗 위치 갱신
+            updatePivot(wrapper);
             
             draggingMode = null;
         }
     });
 
-    // TransformControls 변경사항을 자동으로 반영 (래퍼 그룹이 matrixAutoUpdate=true이므로 자동 처리됨)
-    // 내부 그룹(matrixAutoUpdate=false)은 원본 변환을 보존하므로 비균등 스케일이 유지됨
-
-    // 6. 키보드 이벤트 (t: translate, r: rotate, s: scale)
+    // 6. 키보드 이벤트
     window.addEventListener('keydown', (event) => {
-        if (!transformControls.object) return;
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+        const wrapper = transformControls.object;
 
         switch (event.key.toLowerCase()) {
             case 't':
@@ -219,36 +377,103 @@ async function initScene() {
             case 's':
                 transformControls.setMode('scale');
                 break;
+            case 'x': { // 공간 전환 (World/Local)
+                currentSpace = currentSpace === 'world' ? 'local' : 'world';
+                transformControls.setSpace(currentSpace);
+                console.log('TransformControls Space:', currentSpace);
+
+                if (wrapper) {
+                    const content = wrapper.children[0];
+                    if (currentSpace === 'local') {
+                        content.updateWorldMatrix(true, false);
+                        const quaternion = getRotationFromMatrix(content.matrixWorld);
+                        wrapper.quaternion.copy(quaternion);
+                        const inverseQuaternion = quaternion.clone().invert();
+                        const inverseRotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(inverseQuaternion);
+                        content.matrix.premultiply(inverseRotationMatrix);
+                        content.matrixWorldNeedsUpdate = true;
+                    } else { // 'world'
+                        const quaternion = wrapper.quaternion.clone(); 
+                        const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quaternion);
+                        content.matrix.premultiply(rotationMatrix);
+                        content.matrixWorldNeedsUpdate = true;
+                        wrapper.quaternion.set(0, 0, 0, 1);
+                    }
+                    // 피벗 위치 갱신
+                    updatePivot(wrapper);
+                }
+                break;
+            }
+            case 'z': { // 피벗 전환 (Origin/Center)
+                pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
+                console.log('Pivot Mode:', pivotMode);
+                if (wrapper) {
+                    updatePivot(wrapper);
+                }
+                break;
+            }
         }
     });
 
     // 7. Raycaster로 객체 선택
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
+    let mouseDownPos = null;
+
+    function resetSelectionAndDeselect() {
+        if (selectedObject) {
+            const wrapper = transformControls.object;
+            if (wrapper) {
+                if (currentSpace === 'local') {
+                    const quaternion = wrapper.quaternion.clone();
+                    const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quaternion);
+                    const content = wrapper.children[0];
+                    if (content) {
+                        content.matrix.premultiply(rotationMatrix);
+                        content.matrixWorldNeedsUpdate = true;
+                    }
+                }
+                wrapper.quaternion.set(0, 0, 0, 1);
+                wrapper.scale.set(1, 1, 1);
+            }
+            transformControls.detach();
+            selectedObject = null;
+            
+            // 오버레이 제거
+            updateSelectionOverlay(null);
+            
+            console.log('선택 해제');
+        }
+    }
+
+    loadedObjectGroup.userData.resetSelection = resetSelectionAndDeselect;
 
     renderer.domElement.addEventListener('pointerdown', (event) => {
-        // 마우스 버튼이 아니면 무시
         if (event.button !== 0) return;
-        
-        // TransformControls가 드래그 중이면 선택 무시
         if (transformControls.dragging) return;
+        mouseDownPos = { x: event.clientX, y: event.clientY };
+    });
+
+    renderer.domElement.addEventListener('pointerup', (event) => {
+        if (!mouseDownPos) return;
+        const dist = Math.sqrt((event.clientX - mouseDownPos.x) ** 2 + (event.clientY - mouseDownPos.y) ** 2);
+        if (dist > 5) {
+            mouseDownPos = null;
+            return;
+        }
+        mouseDownPos = null;
 
         const rect = renderer.domElement.getBoundingClientRect();
         mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
         raycaster.setFromCamera(mouse, camera);
-
-        // loadedObjectGroup의 모든 메시 대상으로 raycast (TransformControls 제외)
         const intersects = raycaster.intersectObjects(loadedObjectGroup.children, true);
 
         if (intersects.length > 0) {
-            // Gizmo와 헬퍼를 제외한 실제 객체만 선택
             let targetObject = null;
             for (const intersect of intersects) {
                 let obj = intersect.object;
-                
-                // TransformControls의 Gizmo인지 확인
                 let isGizmo = false;
                 let checkParent = obj;
                 while (checkParent) {
@@ -258,7 +483,6 @@ async function initScene() {
                     }
                     checkParent = checkParent.parent;
                 }
-                
                 if (!isGizmo) {
                     targetObject = obj;
                     break;
@@ -266,28 +490,40 @@ async function initScene() {
             }
             
             if (targetObject) {
-                // 최상위 그룹 찾기 (래퍼 그룹까지)
                 while (targetObject.parent && targetObject.parent !== loadedObjectGroup) {
                     targetObject = targetObject.parent;
                 }
 
-                // 선택된 객체가 변경되었을 때만 업데이트
                 if (selectedObject !== targetObject) {
                     selectedObject = targetObject;
                     transformControls.attach(selectedObject);
+                    
+                    if (currentSpace === 'local') {
+                        const content = selectedObject.children[0];
+                        content.updateWorldMatrix(true, false);
+                        const quaternion = getRotationFromMatrix(content.matrixWorld);
+                        selectedObject.quaternion.copy(quaternion);
+                        const inverseQuaternion = quaternion.clone().invert();
+                        const inverseRotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(inverseQuaternion);
+                        content.matrix.premultiply(inverseRotationMatrix);
+                        content.matrixWorldNeedsUpdate = true;
+                    }
+                    
+                    // 피벗 위치 갱신
+                    updatePivot(selectedObject);
+                    
+                    // 오버레이 생성
+                    updateSelectionOverlay(selectedObject);
+                    
                     console.log('선택된 객체:', selectedObject);
                 }
             }
         } else {
-            // 빈 공간 클릭 시 선택 해제
             if (selectedObject) {
-                transformControls.detach();
-                selectedObject = null;
-                console.log('선택 해제');
+                resetSelectionAndDeselect();
             }
         }
     });
-
 
     // 8. 헬퍼(Helper)
     const axes = createFullAxesHelper(150);
@@ -302,21 +538,18 @@ async function initScene() {
     Grid.renderOrder = -1; // 큐브보다 먼저 그리기
     scene.add(Grid);
     
-    // 그림자 비활성화
     renderer.shadowMap.enabled = false;
     
-
-    // 격자 라인이 깊이 버퍼를 덮지 않도록 하여 뒤에 있도록 (큐브가 항상 위에)
     [detailGrid, Grid].forEach(helper => {
         const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
         materials.forEach(m => { m.depthWrite = false; });
     });
 
-    // 9. 사용자 정의 기호(Z>): 격자 위 (0.5, 0, -0.25) 위치에 'Z>' 모양 라인 추가
     const zSymbol = createZGreaterSymbol(new THREE.Vector3(0.5, 0, -0.25), 0.125, 0x515151);
-    zSymbol.renderOrder = 10; // 그리드/객체 위로 UI 표시성 높임
+    zSymbol.renderOrder = 10;
     scene.add(zSymbol);
 }
+
 //fps표시용1
 let lastTime = performance.now();
 let frameCount = 0;
@@ -337,6 +570,16 @@ function animate() {
     }
 
     if (controls) controls.update();
+    
+    // 선택된 객체가 있으면 오버레이 위치 업데이트
+    if (selectedObject && selectionOverlay) {
+        const content = selectedObject.children[0];
+        if (content) {
+            content.updateWorldMatrix(true, false);
+            selectionOverlay.matrix.copy(content.matrixWorld);
+        }
+    }
+    
     if (renderer && scene && camera) {
         renderer.render(scene, camera);
     }
