@@ -118,31 +118,48 @@ function createWindow() {
       try {
         await fs.mkdir(CACHE_DIR, { recursive: true });
 
-        // ✅ client.jar 다운로드 (메모리 상에서 처리)
+        const startTime = Date.now();
+
+        // client.jar 다운로드
         const url = 'https://piston-data.mojang.com/v1/objects/26551033b7b935436f3407b85d14cac835e65640/client.jar';
+        console.log('Downloading client.jar...');
         const response = await axios({
           url,
           method: 'GET',
           responseType: 'arraybuffer'
         });
+        console.log(`Download complete: ${(response.data.byteLength / 1024 / 1024).toFixed(2)} MB`);
 
-  // ✅ fflate 으로 압축 열기 (Buffer/Uint8Array 직접 사용)
-  const unzipped = await new Promise((resolve, reject) => {
-    unzip(new Uint8Array(response.data), (err, data) => {
-      if (err) reject(err);
-      else resolve(data);
-    });
-  });
+        // assets 폴더만 선택적으로 압축 해제
+        console.log('Unzipping assets only...');
+        const unzipStart = Date.now();
+        
+        const unzipped = await new Promise((resolve, reject) => {
+          unzip(new Uint8Array(response.data), {
+            filter(file) {
+              // assets/minecraft/ 로 시작하고 디렉토리가 아닌 파일만
+              return file.name.startsWith('assets/minecraft/') && !file.name.endsWith('/');
+            }
+          }, (err, data) => {
+            if (err) reject(err);
+            else resolve(data);
+          });
+        });
+        
+        console.log(`Unzip complete in ${Date.now() - unzipStart}ms`);
 
-        // ✅ 사전 필터링 (디렉토리 엔트리 제외)
+        // 필요한 prefix만 추가 필터링
         const allNames = Object.keys(unzipped);
         const assetEntries = allNames.filter(name =>
-          !name.endsWith('/') && requiredPrefixes.some(prefix => name.startsWith(prefix))
+          requiredPrefixes.some(prefix => name.startsWith(prefix))
         );
 
-        //병렬 제한 32
-        const limit = pLimit(32);
+        console.log(`Saving ${assetEntries.length} assets to disk...`);
+
+        // 병렬 파일 쓰기 (제한 64)
+        const limit = pLimit(64);
         let savedCount = 0;
+        const writeStart = Date.now();
 
         await Promise.all(assetEntries.map(name =>
           limit(async () => {
@@ -150,16 +167,20 @@ function createWindow() {
             const fullPath = path.join(CACHE_DIR, relativePath);
 
             await ensureDir(path.dirname(fullPath));
-
-            const data = unzipped[name];
-            await fs.writeFile(fullPath, data);
+            await fs.writeFile(fullPath, unzipped[name]);
 
             savedCount++;
+            if (savedCount % 1000 === 0) {
+              console.log(`Saved ${savedCount}/${assetEntries.length} assets...`);
+            }
           })
         ));
 
-  await fs.writeFile(CACHE_COMPLETE_FLAG, new Date().toISOString());
-        console.log(`Asset caching complete. ${savedCount} assets saved.`);
+        console.log(`File writing complete in ${Date.now() - writeStart}ms`);
+
+        await fs.writeFile(CACHE_COMPLETE_FLAG, new Date().toISOString());
+        const totalTime = Date.now() - startTime;
+        console.log(`Asset caching complete. ${savedCount} assets saved in ${(totalTime / 1000).toFixed(2)}s`);
         event.sender.send('assets-downloaded', []);
 
       } catch (error) {
