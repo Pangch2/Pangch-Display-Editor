@@ -27,7 +27,7 @@ renderer/
 ├ load-project/
 │   ├ pbde-worker.ts - upload-pbde.ts전용 web-worker
 │   └ upload-pbde.ts - pbde-worker.ts의 데이터를 받는 메인쓰레드
-├ renderer.js - 메인 렌더링 엔진
+├ renderer.js - 메인 렌더링 엔진 + gizmo 컨트롤러
 └ ui-open-close.js - UI 열기/닫기 애니메이션
 resources/ - 웹,빌드 이미지 모음
 tsconfig.json

@@ -571,6 +571,41 @@ function animate() {
 
     if (controls) controls.update();
     
+    // Gizmo 방향 업데이트: 카메라 방향에 따라 보이는 쪽을 +축으로 유지 (translate, scale 모드만)
+    if (transformControls && selectedObject) {
+        const helper = transformControls.getHelper();
+        
+        if (transformControls.mode === 'translate' || transformControls.mode === 'scale') {
+            const cameraDir = new THREE.Vector3();
+            camera.getWorldDirection(cameraDir);
+            
+            // local space에서는 카메라 방향을 객체의 로컬 좌표계로 변환
+            let referenceDir = cameraDir.clone();
+            if (currentSpace === 'local') {
+                referenceDir.applyQuaternion(selectedObject.quaternion.clone().invert());
+            }
+            
+            // 카메라가 -축 방향을 보고 있으면 해당 축을 반전 (보이는 쪽이 +가 되도록)
+            const scaleX = referenceDir.x > 0 ? -1 : 1;
+            const scaleY = referenceDir.y > 0 ? -1 : 1;
+            const scaleZ = referenceDir.z > 0 ? -1 : 1;
+            
+            helper.scale.set(scaleX, scaleY, scaleZ);
+            
+            // 스케일 반전으로 인한 위치 오프셋 보정
+            const objPos = selectedObject.position;
+            helper.position.set(
+                scaleX === -1 ? -objPos.x * -2 : 0,
+                scaleY === -1 ? -objPos.y * -2 : 0,
+                scaleZ === -1 ? -objPos.z * -2 : 0
+            );
+        } else if (transformControls.mode === 'rotate') {
+            // rotate 모드에서는 스케일과 위치를 기본값으로 리셋
+            helper.scale.set(1, 1, 1);
+            helper.position.set(0, 0, 0);
+        }
+    }
+    
     // 선택된 객체가 있으면 오버레이 위치 업데이트
     if (selectedObject && selectionOverlay) {
         const content = selectedObject.children[0];

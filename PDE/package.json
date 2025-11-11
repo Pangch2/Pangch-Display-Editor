@@ -7,13 +7,14 @@
     "dev:renderer": "vite",
     "dev:main": "cross-env NODE_ENV=development nodemon --watch main.js --exec electron .",
     "dev": "concurrently --kill-others-on-fail -n \"main,renderer\" \"npm:dev:main\" \"npm:dev:renderer\"",
+    "build": "vite build",
     "pack": "electron-builder --dir",
     "dist": "npm run build && electron-builder"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "^39.1.1",
+    "electron": "^39.1.2",
     "electron-builder": "^26.0.12",
     "vite": "^7.2.1",
     "nodemon": "^3.1.10"
