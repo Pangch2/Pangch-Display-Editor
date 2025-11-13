@@ -298,7 +298,73 @@ async function initScene() {
     transformControls.setColors(0xEF3751, 0x6FA21C, 0x437FD0);
     scene.add(transformControls.getHelper());
 
-    // --- 드래그 상태 관리를 위한 변수 ---
+    // --- TransformControls Gizmo 축 라인 수정 (복제 방식) ---
+    // 이 코드는 기존 축 라인을 복제하고 뒤집어서 음수 방향 축을 추가합니다.
+    try {
+        // transformControls.getHelper()는 TransformControlsRoot를 반환하고,
+        // 그 첫 번째 자식이 TransformControlsGizmo 입니다.
+        const gizmoRoot = transformControls.getHelper();
+        const gizmoContainer = gizmoRoot.children[0];
+
+        const processedMeshes = new Set(); // 중복 처리를 방지하기 위한 Set
+
+        ['translate', 'scale'].forEach(mode => {
+            const modeGizmo = gizmoContainer.gizmo[mode];
+            if (modeGizmo) {
+                const originalLines = [];
+                modeGizmo.traverse((child) => {
+                    if (child.isMesh && child.geometry instanceof THREE.CylinderGeometry && child.geometry.parameters.height === 0.5) {
+                        if (!processedMeshes.has(child)) {
+                           originalLines.push(child);
+                           processedMeshes.add(child);
+                        }
+                    }
+                });
+
+                originalLines.forEach(originalLine => {
+                    // 지오메트리를 복제합니다.
+                    const negativeGeometry = originalLine.geometry.clone();
+
+                    // 각 축의 방향에 맞게 지오메트리를 180도 회전시킵니다.
+                    if (originalLine.name === 'X') {
+                        negativeGeometry.rotateY(Math.PI); // Y축 기준으로 회전하여 -X 방향을 보게 함
+                    } else if (originalLine.name === 'Y') {
+                        negativeGeometry.rotateX(Math.PI); // X축 기준으로 회전하여 -Y 방향을 보게 함
+                    } else if (originalLine.name === 'Z') {
+                        negativeGeometry.rotateY(Math.PI); // Y축 기준으로 회전하여 -Z 방향을 보게 함
+                    }
+
+                    // 회전된 지오메트리로 새로운 메쉬를 생성합니다.
+                    const negativeMaterial = originalLine.material.clone(); // material을 먼저 clone하여 원본 수정 전 상태 유지
+                    const negativeLine = new THREE.Mesh(negativeGeometry, negativeMaterial);
+                    negativeLine.name = originalLine.name;
+                    
+                    // 원본 메쉬의 부모에 새로운 메쉬를 추가합니다.
+                    originalLine.parent.add(negativeLine);
+
+                    // Y 축의 경우 원본에 투명 적용
+                    if (originalLine.name === 'Y') {
+                        const clonedMaterial = originalLine.material.clone();
+                        originalLine.material = clonedMaterial;
+                        clonedMaterial.transparent = true;
+                        clonedMaterial.opacity = 0.1;
+                    }
+                    // Y 축의 경우 복사본에 투명 적용
+                    if (negativeLine.name === 'Y') {
+                        const clonedMaterial = negativeLine.material.clone();
+                        negativeLine.material = clonedMaterial;
+                        clonedMaterial.transparent = true;
+                        clonedMaterial.opacity = 0.1;
+                    }
+
+                    
+                });
+            }
+        });
+    } catch (error) {
+        console.error("TransformControls gizmo patch (clone method) failed:", error);
+    }
+    // --- 수정 끝 ---
     const dragInitialMatrix = new THREE.Matrix4();
     const dragInitialQuaternion = new THREE.Quaternion();
     const dragInitialScale = new THREE.Vector3();
@@ -567,43 +633,6 @@ function animate() {
         }
         frameCount = 0;
         lastTime = currentTime;
-    }
-
-    if (controls) controls.update();
-    
-    // Gizmo 방향 업데이트: 카메라 방향에 따라 보이는 쪽을 +축으로 유지 (translate, scale 모드만)
-    if (transformControls && selectedObject) {
-        const helper = transformControls.getHelper();
-        
-        if (transformControls.mode === 'translate' || transformControls.mode === 'scale') {
-            const cameraDir = new THREE.Vector3();
-            camera.getWorldDirection(cameraDir);
-            
-            // local space에서는 카메라 방향을 객체의 로컬 좌표계로 변환
-            let referenceDir = cameraDir.clone();
-            if (currentSpace === 'local') {
-                referenceDir.applyQuaternion(selectedObject.quaternion.clone().invert());
-            }
-            
-            // 카메라가 -축 방향을 보고 있으면 해당 축을 반전 (보이는 쪽이 +가 되도록)
-            const scaleX = referenceDir.x > 0 ? -1 : 1;
-            const scaleY = referenceDir.y > 0 ? -1 : 1;
-            const scaleZ = referenceDir.z > 0 ? -1 : 1;
-            
-            helper.scale.set(scaleX, scaleY, scaleZ);
-            
-            // 스케일 반전으로 인한 위치 오프셋 보정
-            const objPos = selectedObject.position;
-            helper.position.set(
-                scaleX === -1 ? -objPos.x * -2 : 0,
-                scaleY === -1 ? -objPos.y * -2 : 0,
-                scaleZ === -1 ? -objPos.z * -2 : 0
-            );
-        } else if (transformControls.mode === 'rotate') {
-            // rotate 모드에서는 스케일과 위치를 기본값으로 리셋
-            helper.scale.set(1, 1, 1);
-            helper.position.set(0, 0, 0);
-        }
     }
     
     // 선택된 객체가 있으면 오버레이 위치 업데이트
