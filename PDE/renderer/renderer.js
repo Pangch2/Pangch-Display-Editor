@@ -11,6 +11,12 @@ let selectedObject = null;
 let pivotMode = 'origin'; // 'origin' 또는 'center'
 let currentSpace = 'world'; // 'world' 또는 'local'
 let selectionOverlay = null; // 선택된 객체의 오버레이
+let lastDirections = { X: null, Y: null, Z: null }; // 축 방향 감지 상태 추적
+let gizmoLines = {
+  X: { original: [], negative: [] },
+  Y: { original: [], negative: [] },
+  Z: { original: [], negative: [] }
+}; // Gizmo 축 라인 저장
 
 // 앱 시작 로직을 비동기 함수로 감싸기
 async function startApp() {
@@ -344,20 +350,23 @@ async function initScene() {
 
                     // Y 축의 경우 원본에 투명 적용
                     if (originalLine.name === 'Y') {
-                        const clonedMaterial = originalLine.material.clone();
-                        originalLine.material = clonedMaterial;
-                        clonedMaterial.transparent = true;
-                        clonedMaterial.opacity = 0.1;
-                    }
-                    // Y 축의 경우 복사본에 투명 적용
-                    if (negativeLine.name === 'Y') {
-                        const clonedMaterial = negativeLine.material.clone();
-                        negativeLine.material = clonedMaterial;
-                        clonedMaterial.transparent = true;
-                        clonedMaterial.opacity = 0.1;
+                        // Y축 메쉬 저장 (투명도는 animate()에서 동적으로 적용)
+                        gizmoLines.Y.original.push(originalLine);
+                        gizmoLines.Y.negative.push(negativeLine);
                     }
 
-                    
+                    // X 축 메쉬 저장
+                    if (originalLine.name === 'X') {
+                        gizmoLines.X.original.push(originalLine);
+                        gizmoLines.X.negative.push(negativeLine);
+                    }
+
+                    // Z 축 메쉬 저장
+                    if (originalLine.name === 'Z') {
+                        gizmoLines.Z.original.push(originalLine);
+                        gizmoLines.Z.negative.push(negativeLine);
+                    }
+
                 });
             }
         });
@@ -431,6 +440,24 @@ async function initScene() {
     // 6. 키보드 이벤트
     window.addEventListener('keydown', (event) => {
         if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+
+        // Gizmo 조작 중 모드/공간/피벗 변경 시, 진행 중인 조작을 먼저 완료시킵니다.
+        const keysToHandle = ['t', 'r', 's', 'x', 'z'];
+        if (transformControls.dragging && keysToHandle.includes(event.key.toLowerCase())) {
+            // 1. TransformControls의 드래그를 먼저 정상적으로 종료시킵니다.
+            transformControls.pointerUp({ button: 0 });
+
+            // 2. OrbitControls의 내부 상태를 리셋하여 카메라 점프 현상을 해결합니다.
+            // 가장 확실한 방법은 컨트롤을 재생성하는 것입니다.
+            const oldTarget = controls.target.clone();
+            controls.dispose(); // 기존 컨트롤의 이벤트 리스너 제거
+
+            controls = new OrbitControls(camera, renderer.domElement); // 컨트롤 재생성
+            controls.screenSpacePanning = true; // 기존 설정 다시 적용
+            controls.target.copy(oldTarget); // 기존 타겟 복원
+            controls.update(); // 타겟 변경사항 적용
+        }
+
         const wrapper = transformControls.object;
 
         switch (event.key.toLowerCase()) {
@@ -508,6 +535,9 @@ async function initScene() {
             // 오버레이 제거
             updateSelectionOverlay(null);
             
+            // 축 방향 감지 상태 리셋
+            lastDirections = { X: null, Y: null, Z: null };
+            
             console.log('선택 해제');
         }
     }
@@ -561,6 +591,12 @@ async function initScene() {
                 }
 
                 if (selectedObject !== targetObject) {
+                    // 다른 객체를 선택하기 전에, 이전에 선택된 객체가 있었다면 먼저 상태를 정상적으로 리셋(Deselect)합니다.
+                    // 이렇게 하지 않으면 Local Space 모드에서 이전 객체의 회전 상태가 불안정하게 남는 문제가 발생합니다.
+                    if (selectedObject) {
+                        resetSelectionAndDeselect();
+                    }
+
                     selectedObject = targetObject;
                     transformControls.attach(selectedObject);
                     
@@ -641,6 +677,59 @@ function animate() {
         if (content) {
             content.updateWorldMatrix(true, false);
             selectionOverlay.matrix.copy(content.matrixWorld);
+        }
+    }
+    
+    // 축 방향 감지: translate 또는 scale 모드에서 Gizmo 위치 기준 카메라 축 비교
+    if (selectedObject && (transformControls.mode === 'translate' || transformControls.mode === 'scale')) {
+        const gizmoPos = transformControls.object.position;
+        const camPos = camera.position;
+        const direction = camPos.clone().sub(gizmoPos).normalize();
+
+        // Local space에서는 방향을 로컬 좌표계로 변환
+        if (currentSpace === 'local') {
+            direction.applyQuaternion(transformControls.object.quaternion.clone().invert());
+        }
+
+        const axesConfig = {
+            X: { positive: 'right', negative: 'left', originalLines: gizmoLines.X.original, negativeLines: gizmoLines.X.negative, getDirection: () => direction.x > 0 },
+            Y: { positive: 'up', negative: 'down', originalLines: gizmoLines.Y.original, negativeLines: gizmoLines.Y.negative, getDirection: () => direction.y > 0 },
+            Z: { positive: 'front', negative: 'back', originalLines: gizmoLines.Z.original, negativeLines: gizmoLines.Z.negative, getDirection: () => direction.z > 0 }
+        };
+
+        for (const axis in axesConfig) {
+            const { positive, negative, originalLines, negativeLines, getDirection } = axesConfig[axis];
+            const isPositive = getDirection();
+            const currentDirection = isPositive ? positive : negative;
+            if (currentDirection !== lastDirections[axis]) {
+                lastDirections[axis] = currentDirection;
+                if (isPositive) {
+                    // 양수 방향: 원본 투명 0.1, 음수 투명 1
+                    originalLines.forEach(line => {
+                        const clonedMat = line.material.clone();
+                        line.material = clonedMat;
+                        clonedMat.opacity = 1;
+                    });
+                    negativeLines.forEach(line => {
+                        const clonedMat = line.material.clone();
+                        line.material = clonedMat;
+
+                        clonedMat.opacity = 0.001;
+                    });
+                } else {
+                    // 음수 방향: 음수 투명 0.1, 원본 투명 1
+                    negativeLines.forEach(line => {
+                        const clonedMat = line.material.clone();
+                        line.material = clonedMat;
+                        clonedMat.opacity = 1;
+                    });
+                    originalLines.forEach(line => {
+                        const clonedMat = line.material.clone();
+                        line.material = clonedMat;
+                        clonedMat.opacity = 0.001;
+                    });
+                }
+            }
         }
     }
     
