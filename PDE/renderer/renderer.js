@@ -305,22 +305,21 @@ async function initScene() {
     scene.add(transformControls.getHelper());
 
     // --- TransformControls Gizmo 축 라인 수정 (복제 방식) ---
-    // 이 코드는 기존 축 라인을 복제하고 뒤집어서 음수 방향 축을 추가합니다.
     try {
-        // transformControls.getHelper()는 TransformControlsRoot를 반환하고,
-        // 그 첫 번째 자식이 TransformControlsGizmo 입니다.
         const gizmoRoot = transformControls.getHelper();
         const gizmoContainer = gizmoRoot.children[0];
 
-        const processedMeshes = new Set(); // 중복 처리를 방지하기 위한 Set
+        const processedMeshes = new Set();
 
         ['translate', 'scale'].forEach(mode => {
             const modeGizmo = gizmoContainer.gizmo[mode];
             if (modeGizmo) {
                 const originalLines = [];
                 modeGizmo.traverse((child) => {
-                    if (child.isMesh && child.geometry instanceof THREE.CylinderGeometry && child.geometry.parameters.height === 0.5) {
+                    // Match by axis name (X/Y/Z) rather than geometry class, to avoid module/class mismatch
+                    if (child.isMesh && (child.name === 'X' || child.name === 'Y' || child.name === 'Z')) {
                         if (!processedMeshes.has(child)) {
+                           // Keep reference to original meshes
                            originalLines.push(child);
                            processedMeshes.add(child);
                         }
@@ -328,45 +327,43 @@ async function initScene() {
                 });
 
                 originalLines.forEach(originalLine => {
-                    // 지오메트리를 복제합니다.
                     const negativeGeometry = originalLine.geometry.clone();
 
-                    // 각 축의 방향에 맞게 지오메트리를 180도 회전시킵니다.
                     if (originalLine.name === 'X') {
-                        negativeGeometry.rotateY(Math.PI); // Y축 기준으로 회전하여 -X 방향을 보게 함
+                        negativeGeometry.rotateY(Math.PI);
                     } else if (originalLine.name === 'Y') {
-                        negativeGeometry.rotateX(Math.PI); // X축 기준으로 회전하여 -Y 방향을 보게 함
+                        negativeGeometry.rotateX(Math.PI);
                     } else if (originalLine.name === 'Z') {
-                        negativeGeometry.rotateY(Math.PI); // Y축 기준으로 회전하여 -Z 방향을 보게 함
+                        negativeGeometry.rotateY(Math.PI);
                     }
 
-                    // 회전된 지오메트리로 새로운 메쉬를 생성합니다.
-                    const negativeMaterial = originalLine.material.clone(); // material을 먼저 clone하여 원본 수정 전 상태 유지
+                    const negativeMaterial = originalLine.material.clone();
+                    negativeMaterial.transparent = true;
+                    // Start negative lines hidden
+                    negativeMaterial._opacity = 0.001;
+                    negativeMaterial.opacity = 0.001;
+                    // Ensure original line caches exist too (start visible)
+                    originalLine.material.transparent = true;
+                    originalLine.material._opacity = originalLine.material._opacity || 1;
+                    originalLine.material.opacity = originalLine.material._opacity;
                     const negativeLine = new THREE.Mesh(negativeGeometry, negativeMaterial);
                     negativeLine.name = originalLine.name;
+                    negativeLine.material._opacity = negativeLine.material._opacity || negativeLine.material.opacity;
                     
-                    // 원본 메쉬의 부모에 새로운 메쉬를 추가합니다.
+                    originalLine.material.transparent = true;
+
                     originalLine.parent.add(negativeLine);
 
-                    // Y 축의 경우 원본에 투명 적용
-                    if (originalLine.name === 'Y') {
-                        // Y축 메쉬 저장 (투명도는 animate()에서 동적으로 적용)
-                        gizmoLines.Y.original.push(originalLine);
-                        gizmoLines.Y.negative.push(negativeLine);
-                    }
-
-                    // X 축 메쉬 저장
                     if (originalLine.name === 'X') {
                         gizmoLines.X.original.push(originalLine);
                         gizmoLines.X.negative.push(negativeLine);
-                    }
-
-                    // Z 축 메쉬 저장
-                    if (originalLine.name === 'Z') {
+                    } else if (originalLine.name === 'Y') {
+                        gizmoLines.Y.original.push(originalLine);
+                        gizmoLines.Y.negative.push(negativeLine);
+                    } else if (originalLine.name === 'Z') {
                         gizmoLines.Z.original.push(originalLine);
                         gizmoLines.Z.negative.push(negativeLine);
                     }
-
                 });
             }
         });
@@ -397,10 +394,8 @@ async function initScene() {
         } else { // 드래그 끝
             if (!draggingMode) return;
 
-            // 1. 객체 변형 적용
             if (currentSpace === 'local') {
                 if (draggingMode === 'rotate') {
-                    // 로컬 회전은 wrapper의 quaternion에 누적되므로, content matrix는 수정하지 않음
                 } else if (draggingMode === 'scale') {
                     const finalScale = wrapper.scale.clone();
                     if (dragInitialScale.x !== 0 && dragInitialScale.y !== 0 && dragInitialScale.z !== 0) {
@@ -424,43 +419,24 @@ async function initScene() {
             }
             content.matrixWorldNeedsUpdate = true;
 
-            // 2. Wrapper 상태 리셋
             wrapper.scale.set(1, 1, 1);
             if (!(draggingMode === 'rotate' && currentSpace === 'local')) {
                 wrapper.quaternion.copy(dragInitialQuaternion);
             }
 
-            // 3. 피벗 위치 갱신
             updatePivot(wrapper);
             
             draggingMode = null;
         }
     });
 
-    // 6. 키보드 이벤트
-    window.addEventListener('keydown', (event) => {
-        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+    // 6. 키보드 및 마우스 이벤트 처리
+    let isGizmoBusy = false; 
 
-        // Gizmo 조작 중 모드/공간/피벗 변경 시, 진행 중인 조작을 먼저 완료시킵니다.
-        const keysToHandle = ['t', 'r', 's', 'x', 'z'];
-        if (transformControls.dragging && keysToHandle.includes(event.key.toLowerCase())) {
-            // 1. TransformControls의 드래그를 먼저 정상적으로 종료시킵니다.
-            transformControls.pointerUp({ button: 0 });
-
-            // 2. OrbitControls의 내부 상태를 리셋하여 카메라 점프 현상을 해결합니다.
-            // 가장 확실한 방법은 컨트롤을 재생성하는 것입니다.
-            const oldTarget = controls.target.clone();
-            controls.dispose(); // 기존 컨트롤의 이벤트 리스너 제거
-
-            controls = new OrbitControls(camera, renderer.domElement); // 컨트롤 재생성
-            controls.screenSpacePanning = true; // 기존 설정 다시 적용
-            controls.target.copy(oldTarget); // 기존 타겟 복원
-            controls.update(); // 타겟 변경사항 적용
-        }
-
+    const handleKeyPress = (key) => {
         const wrapper = transformControls.object;
 
-        switch (event.key.toLowerCase()) {
+        switch (key) {
             case 't':
                 transformControls.setMode('translate');
                 break;
@@ -470,7 +446,7 @@ async function initScene() {
             case 's':
                 transformControls.setMode('scale');
                 break;
-            case 'x': { // 공간 전환 (World/Local)
+            case 'x': { 
                 currentSpace = currentSpace === 'world' ? 'local' : 'world';
                 transformControls.setSpace(currentSpace);
                 console.log('TransformControls Space:', currentSpace);
@@ -485,19 +461,18 @@ async function initScene() {
                         const inverseRotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(inverseQuaternion);
                         content.matrix.premultiply(inverseRotationMatrix);
                         content.matrixWorldNeedsUpdate = true;
-                    } else { // 'world'
-                        const quaternion = wrapper.quaternion.clone(); 
+                    } else { 
+                        const quaternion = wrapper.quaternion.clone();
                         const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quaternion);
                         content.matrix.premultiply(rotationMatrix);
                         content.matrixWorldNeedsUpdate = true;
                         wrapper.quaternion.set(0, 0, 0, 1);
                     }
-                    // 피벗 위치 갱신
                     updatePivot(wrapper);
                 }
                 break;
             }
-            case 'z': { // 피벗 전환 (Origin/Center)
+            case 'z': { 
                 pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
                 console.log('Pivot Mode:', pivotMode);
                 if (wrapper) {
@@ -505,6 +480,47 @@ async function initScene() {
                 }
                 break;
             }
+        }
+    };
+
+    window.addEventListener('keydown', (event) => {
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+        if (isGizmoBusy) return; 
+
+        const key = event.key.toLowerCase();
+        const keysToHandle = ['t', 'r', 's', 'x', 'z'];
+
+        if (transformControls.dragging && keysToHandle.includes(key)) {
+            isGizmoBusy = true; 
+
+            const attachedObject = transformControls.object;
+            transformControls.pointerUp({ button: 0 });
+
+            const oldTarget = controls.target.clone();
+            controls.dispose();
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.screenSpacePanning = true;
+            controls.target.copy(oldTarget);
+            controls.update();
+
+            setTimeout(() => {
+                if (attachedObject) {
+                    transformControls.detach();
+                    transformControls.attach(attachedObject);
+                }
+                handleKeyPress(key);
+                isGizmoBusy = false; 
+            }, 0);
+            
+            return;
+        }
+
+        if (keysToHandle.includes(key)) {
+            isGizmoBusy = true; 
+            handleKeyPress(key);
+            setTimeout(() => {
+                isGizmoBusy = false; 
+            }, 50);
         }
     });
 
@@ -532,10 +548,8 @@ async function initScene() {
             transformControls.detach();
             selectedObject = null;
             
-            // 오버레이 제거
             updateSelectionOverlay(null);
             
-            // 축 방향 감지 상태 리셋
             lastDirections = { X: null, Y: null, Z: null };
             
             console.log('선택 해제');
@@ -545,6 +559,7 @@ async function initScene() {
     loadedObjectGroup.userData.resetSelection = resetSelectionAndDeselect;
 
     renderer.domElement.addEventListener('pointerdown', (event) => {
+        if (isGizmoBusy) return; 
         if (event.button !== 0) return;
         if (transformControls.dragging) return;
         mouseDownPos = { x: event.clientX, y: event.clientY };
@@ -591,8 +606,6 @@ async function initScene() {
                 }
 
                 if (selectedObject !== targetObject) {
-                    // 다른 객체를 선택하기 전에, 이전에 선택된 객체가 있었다면 먼저 상태를 정상적으로 리셋(Deselect)합니다.
-                    // 이렇게 하지 않으면 Local Space 모드에서 이전 객체의 회전 상태가 불안정하게 남는 문제가 발생합니다.
                     if (selectedObject) {
                         resetSelectionAndDeselect();
                     }
@@ -611,10 +624,8 @@ async function initScene() {
                         content.matrixWorldNeedsUpdate = true;
                     }
                     
-                    // 피벗 위치 갱신
                     updatePivot(selectedObject);
                     
-                    // 오버레이 생성
                     updateSelectionOverlay(selectedObject);
                     
                     console.log('선택된 객체:', selectedObject);
@@ -633,11 +644,11 @@ async function initScene() {
     scene.add(axes);
 
     const detailGrid = new THREE.GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
-    detailGrid.renderOrder = -2; // 큐브보다 먼저 그리기
+    detailGrid.renderOrder = -2; 
     scene.add(detailGrid);
 
     const Grid = new THREE.GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
-    Grid.renderOrder = -1; // 큐브보다 먼저 그리기
+    Grid.renderOrder = -1; 
     scene.add(Grid);
     
     renderer.shadowMap.enabled = false;
@@ -686,7 +697,6 @@ function animate() {
         const camPos = camera.position;
         const direction = camPos.clone().sub(gizmoPos).normalize();
 
-        // Local space에서는 방향을 로컬 좌표계로 변환
         if (currentSpace === 'local') {
             direction.applyQuaternion(transformControls.object.quaternion.clone().invert());
         }
@@ -698,35 +708,40 @@ function animate() {
         };
 
         for (const axis in axesConfig) {
-            const { positive, negative, originalLines, negativeLines, getDirection } = axesConfig[axis];
+            const { originalLines, negativeLines, getDirection } = axesConfig[axis];
             const isPositive = getDirection();
-            const currentDirection = isPositive ? positive : negative;
+            const currentDirection = isPositive ? 'positive' : 'negative';
             if (currentDirection !== lastDirections[axis]) {
                 lastDirections[axis] = currentDirection;
                 if (isPositive) {
-                    // 양수 방향: 원본 투명 0.1, 음수 투명 1
                     originalLines.forEach(line => {
-                        const clonedMat = line.material.clone();
-                        line.material = clonedMat;
-                        clonedMat.opacity = 1;
+                        if (line.material) {
+                            line.material.transparent = true;
+                            line.material.opacity = 1;
+                            line.material._opacity = 1;
+                        }
                     });
                     negativeLines.forEach(line => {
-                        const clonedMat = line.material.clone();
-                        line.material = clonedMat;
-
-                        clonedMat.opacity = 0.001;
+                        if (line.material) {
+                            line.material.transparent = true;
+                            line.material.opacity = 0.001;
+                            line.material._opacity = 0.001;
+                        }
                     });
                 } else {
-                    // 음수 방향: 음수 투명 0.1, 원본 투명 1
                     negativeLines.forEach(line => {
-                        const clonedMat = line.material.clone();
-                        line.material = clonedMat;
-                        clonedMat.opacity = 1;
+                        if (line.material) {
+                            line.material.transparent = true;
+                            line.material.opacity = 1;
+                            line.material._opacity = 1;
+                        }
                     });
                     originalLines.forEach(line => {
-                        const clonedMat = line.material.clone();
-                        line.material = clonedMat;
-                        clonedMat.opacity = 0.001;
+                        if (line.material) {
+                            line.material.transparent = true;
+                            line.material.opacity = 0.001;
+                            line.material._opacity = 0.001;
+                        }
                     });
                 }
             }
