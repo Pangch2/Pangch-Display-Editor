@@ -39,7 +39,7 @@ function getRotationFromMatrix(matrix) {
     return quaternion;
 }
 
-function updatePivot(wrapper) {
+function updatePivot(wrapper, preventWrapperMovement = false) {
     if (!wrapper) return;
     const content = wrapper.children[0];
     if (!content) return;
@@ -60,7 +60,9 @@ function updatePivot(wrapper) {
     const targetPivotWorld = targetPivotLocal.clone().applyMatrix4(content.matrixWorld);
     const adjustmentOffset = targetPivotWorld.clone().sub(wrapper.position);
     if (adjustmentOffset.lengthSq() > 0.000001) {
-        wrapper.position.add(adjustmentOffset);
+        if (!preventWrapperMovement) {
+            wrapper.position.add(adjustmentOffset);
+        }
         const localCounter = adjustmentOffset.clone().applyQuaternion(wrapper.quaternion.clone().invert());
         const inverseTranslate = new THREE.Matrix4().makeTranslation(-localCounter.x, -localCounter.y, -localCounter.z);
         content.matrix.premultiply(inverseTranslate);
@@ -309,6 +311,23 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 if (wrapper) updatePivot(wrapper);
                 break;
             }
+            case 'v': {
+                if (wrapper) {
+                    const content = wrapper.children[0];
+                    if (content) {
+                        const position = new THREE.Vector3();
+                        const quaternion = new THREE.Quaternion();
+                        const scale = new THREE.Vector3();
+                        content.matrix.decompose(position, quaternion, scale);
+                        content.matrix.compose(position, quaternion, scale);
+                        content.matrixWorldNeedsUpdate = true;
+                        updatePivot(wrapper, true);
+                        updateSelectionOverlay(wrapper);
+                        console.log('객체 스케일을 균일하게 조정');
+                    }
+                }
+                break;
+            }
         }
     };
 
@@ -316,7 +335,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
         if (isGizmoBusy) return;
         const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z'];
+        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'v'];
         if (transformControls.dragging && keysToHandle.includes(key)) {
             isGizmoBusy = true;
             const attachedObject = transformControls.object;
