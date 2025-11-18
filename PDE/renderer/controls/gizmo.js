@@ -157,7 +157,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     transformControls = new TransformControls(camera, renderer.domElement);
     transformControls.setMode('translate');
     transformControls.setSpace('world');
-    transformControls.setColors(0xEF3751, 0x6FA21C, 0x437FD0);
+    transformControls.setColors(0xEF3751, 0x6FA21C, 0x437FD0, 0xfeff3e);
     scene.add(transformControls.getHelper());
 
     // patch gizmo visuals (clone negative lines)
