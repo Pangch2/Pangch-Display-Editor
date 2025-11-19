@@ -450,6 +450,34 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
             case 'z': {
                 isCustomPivot = false;
+                const content = wrapper ? wrapper.children[0] : null;
+                // Toggle: if switching to center, save current pivot so we can restore later
+                if (pivotMode === 'origin') {
+                    if (wrapper && content && !wrapper.userData._savedPivotForCenter) {
+                        wrapper.userData._savedPivotForCenter = {
+                            position: wrapper.position.clone(),
+                            contentMatrix: content.matrix.clone()
+                        };
+                        console.log('Pivot center: saved previous pivot position for restore');
+                    }
+                } else {
+                    // switching back to origin: restore saved pivot if it exists
+                    if (wrapper && content && wrapper.userData._savedPivotForCenter) {
+                        try {
+                            const prev = wrapper.userData._savedPivotForCenter;
+                            wrapper.position.copy(prev.position);
+                            content.matrix.copy(prev.contentMatrix);
+                            content.matrixWorldNeedsUpdate = true;
+                        } catch (err) {
+                            console.warn('Failed to restore saved pivot:', err);
+                        }
+                        delete wrapper.userData._savedPivotForCenter;
+                        pivotMode = 'origin';
+                        updateSelectionOverlay(wrapper);
+                        console.log('Pivot Mode: origin (restored)');
+                        break;
+                    }
+                }
                 pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
                 console.log('Pivot Mode:', pivotMode);
                 if (wrapper) updatePivot(wrapper);
@@ -581,7 +609,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         isGizmoBusy = false;
         // Reset custom pivot state to default
         isCustomPivot = false;
-        console.log('Gizmo: clearing Alt/pivot state due to focus/visibility change');
+        //console.log('Gizmo: clearing Alt/pivot state due to focus/visibility change');
         // If TransformControls is mid-drag, ask it to release.
         try {
             if (transformControls && transformControls.dragging) {
