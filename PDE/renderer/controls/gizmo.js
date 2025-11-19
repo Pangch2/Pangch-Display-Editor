@@ -1,7 +1,6 @@
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
 
-// Gizmo module/internal state
 let scene, camera, renderer, controls, loadedObjectGroup;
 let transformControls = null;
 let selectedObject = null;
@@ -679,12 +678,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(mouse, camera);
-
-        // Check if we clicked on gizmo
-        if (selectedObject) {
-            const gizmoIntersects = raycaster.intersectObject(transformControls.getHelper(), true);
-            if (gizmoIntersects.length > 0) return;
-        }
 
         const intersects = raycaster.intersectObjects(loadedObjectGroup.children, true);
         if (intersects.length > 0) {
