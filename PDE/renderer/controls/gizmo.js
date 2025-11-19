@@ -28,6 +28,7 @@ let dragAnchorDirections = { x: true, y: true, z: true };
 let previousGizmoMode = 'translate';
 let isPivotEditMode = false;
 let isCustomPivot = false;
+let pivotOffset = new THREE.Vector3(0, 0, 0);
 
 // Helpers (originally in renderer.js)
 function getRotationFromMatrix(matrix) {
@@ -48,7 +49,7 @@ function getRotationFromMatrix(matrix) {
 
 function updatePivot(wrapper, preventWrapperMovement = false) {
     if (!wrapper) return;
-    if (isCustomPivot) return;
+    // if (isCustomPivot) return; // Removed to allow pivotOffset to work
     const content = wrapper.children[0];
     if (!content) return;
 
@@ -62,6 +63,8 @@ function updatePivot(wrapper, preventWrapperMovement = false) {
             }
         });
         box.getCenter(targetPivotLocal);
+    } else if (pivotMode === 'origin') {
+        targetPivotLocal.copy(pivotOffset);
     }
 
     content.updateWorldMatrix(true, false);
@@ -76,6 +79,23 @@ function updatePivot(wrapper, preventWrapperMovement = false) {
         content.matrix.premultiply(inverseTranslate);
         content.matrixWorldNeedsUpdate = true;
     }
+}
+
+function updatePivotOffsetFromWrapper() {
+    const wrapper = transformControls.object;
+    if (!wrapper) return;
+    const content = wrapper.children[0];
+    if (!content) return;
+    
+    // pivotOffset is Wrapper Origin (0,0,0) in Content Local Space
+    // Wrapper Origin in Content Local = (0,0,0) transformed by inverse(Content Matrix)
+    // Content Matrix transforms Content Local -> Wrapper Local
+    const invContentMatrix = content.matrix.clone().invert();
+    pivotOffset.setFromMatrixPosition(invContentMatrix);
+    console.log('Pivot updated manually:', pivotOffset);
+    
+    // Force mode to origin so the manual pivot is respected
+    pivotMode = 'origin';
 }
 
 function updateSelectionOverlay(wrapper) {
@@ -286,10 +306,26 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 content.traverse(child => {
                     if (child.isMesh && child.geometry) {
                         if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
-                        const childBox = child.geometry.boundingBox.clone();
-                        childBox.applyMatrix4(child.matrixWorld);
-                        childBox.applyMatrix4(inverseWrapperMat);
-                        dragInitialBoundingBox.union(childBox);
+                        
+                        // Transform all 8 corners to get tight AABB in wrapper space
+                        const bbox = child.geometry.boundingBox;
+                        const corners = [
+                            new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
+                            new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.max.z),
+                            new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.min.z),
+                            new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.max.z),
+                            new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.min.z),
+                            new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.max.z),
+                            new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.min.z),
+                            new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.max.z)
+                        ];
+
+                        const combinedMat = inverseWrapperMat.clone().multiply(child.matrixWorld);
+                        
+                        corners.forEach(corner => {
+                            corner.applyMatrix4(combinedMat);
+                            dragInitialBoundingBox.expandByPoint(corner);
+                        });
                     }
                 });
 
@@ -305,11 +341,17 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     if (currentSpace === 'local') {
                         axisVec.applyQuaternion(wrapper.quaternion);
                     }
-                    const axisPointWorld = wrapper.position.clone().add(axisVec.normalize());
-                    const axisPointNDC = axisPointWorld.clone().project(camera);
-                    axisPointNDC.z = 0;
-                    const axisDir = axisPointNDC.clone().sub(gizmoNDC);
-                    return mouseDir.dot(axisDir) > 0;
+                    
+                    const origin = wrapper.position.clone();
+                    const target = origin.clone().add(axisVec);
+                    
+                    origin.project(camera);
+                    target.project(camera);
+                    
+                    const dir = new THREE.Vector2(target.x - origin.x, target.y - origin.y);
+                    const mouse = new THREE.Vector2(mouseInput.x - origin.x, mouseInput.y - origin.y);
+                    
+                    return mouse.dot(dir) > 0;
                 };
 
                 dragAnchorDirections = {
@@ -322,7 +364,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             if (!draggingMode) return;
 
             if (isPivotEditMode && draggingMode === 'translate') {
-                isCustomPivot = true;
+                updatePivotOffsetFromWrapper();
                 draggingMode = null;
                 return;
             }
@@ -450,36 +492,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
             case 'z': {
                 isCustomPivot = false;
-                const content = wrapper ? wrapper.children[0] : null;
-                // Toggle: if switching to center, save current pivot so we can restore later
-                if (pivotMode === 'origin') {
-                    if (wrapper && content && !wrapper.userData._savedPivotForCenter) {
-                        wrapper.userData._savedPivotForCenter = {
-                            position: wrapper.position.clone(),
-                            contentMatrix: content.matrix.clone()
-                        };
-                        console.log('Pivot center: saved previous pivot position for restore');
-                    }
-                } else {
-                    // switching back to origin: restore saved pivot if it exists
-                    if (wrapper && content && wrapper.userData._savedPivotForCenter) {
-                        try {
-                            const prev = wrapper.userData._savedPivotForCenter;
-                            wrapper.position.copy(prev.position);
-                            content.matrix.copy(prev.contentMatrix);
-                            content.matrixWorldNeedsUpdate = true;
-                        } catch (err) {
-                            console.warn('Failed to restore saved pivot:', err);
-                        }
-                        delete wrapper.userData._savedPivotForCenter;
-                        pivotMode = 'origin';
-                        updateSelectionOverlay(wrapper);
-                        console.log('Pivot Mode: origin (restored)');
-                        break;
-                    }
-                }
                 pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
                 console.log('Pivot Mode:', pivotMode);
+                const wrapper = transformControls.object;
                 if (wrapper) updatePivot(wrapper);
                 break;
             }
@@ -539,8 +554,10 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
             if (event.ctrlKey) {
                 isCustomPivot = false;
+                pivotOffset.set(0, 0, 0);
                 const wrapper = transformControls.object;
                 if (wrapper) updatePivot(wrapper);
+                console.log('Pivot reset to origin (0,0,0)');
             }
         }
 
@@ -607,9 +624,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         }
         // If any busy flags were left set from mid-key or mid-drag, clear them so the app isn't stuck
         isGizmoBusy = false;
-        // Reset custom pivot state to default
-        isCustomPivot = false;
-        //console.log('Gizmo: clearing Alt/pivot state due to focus/visibility change');
+        // Do not reset custom pivot state on focus change, as user might want to keep it
+        // isCustomPivot = false; 
+        
         // If TransformControls is mid-drag, ask it to release.
         try {
             if (transformControls && transformControls.dragging) {
@@ -662,6 +679,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(mouse, camera);
+
+        // Check if we clicked on gizmo
+        if (selectedObject) {
+            const gizmoIntersects = raycaster.intersectObject(transformControls.getHelper(), true);
+            if (gizmoIntersects.length > 0) return;
+        }
+
         const intersects = raycaster.intersectObjects(loadedObjectGroup.children, true);
         if (intersects.length > 0) {
             let targetObject = null;
