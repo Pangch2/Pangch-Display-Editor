@@ -19,8 +19,15 @@ let gizmoLines = {
 const dragInitialMatrix = new THREE.Matrix4();
 const dragInitialQuaternion = new THREE.Quaternion();
 const dragInitialScale = new THREE.Vector3();
+const dragInitialPosition = new THREE.Vector3();
+const dragInitialBoundingBox = new THREE.Box3();
 let draggingMode = null;
 let isGizmoBusy = false;
+let blockbenchScaleMode = false;
+let dragAnchorDirections = { x: true, y: true, z: true };
+let previousGizmoMode = 'translate';
+let isPivotEditMode = false;
+let isCustomPivot = false;
 
 // Helpers (originally in renderer.js)
 function getRotationFromMatrix(matrix) {
@@ -41,6 +48,7 @@ function getRotationFromMatrix(matrix) {
 
 function updatePivot(wrapper, preventWrapperMovement = false) {
     if (!wrapper) return;
+    if (isCustomPivot) return;
     const content = wrapper.children[0];
     if (!content) return;
 
@@ -155,6 +163,37 @@ function resetSelectionAndDeselect() {
 
 function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitControls, loadedObjectGroup: lg, setControls}) {
     scene = s; camera = cam; renderer = rend; controls = orbitControls; loadedObjectGroup = lg;
+
+    const mouseInput = new THREE.Vector2();
+    let detectedAnchorDirections = { x: null, y: null, z: null };
+
+    renderer.domElement.addEventListener('pointerdown', (event) => {
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouseInput.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouseInput.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        // Reset detected directions
+        detectedAnchorDirections = { x: null, y: null, z: null };
+
+        if (!transformControls.dragging) {
+            raycaster.setFromCamera(mouseInput, camera);
+            const gizmo = transformControls.getHelper();
+            const intersects = raycaster.intersectObject(gizmo, true);
+
+            if (intersects.length > 0) {
+                const object = intersects[0].object;
+                const check = (axis) => {
+                    if (gizmoLines[axis].negative.includes(object)) return false;
+                    if (gizmoLines[axis].original.includes(object)) return true;
+                    return null;
+                };
+                detectedAnchorDirections.x = check('X');
+                detectedAnchorDirections.y = check('Y');
+                detectedAnchorDirections.z = check('Z');
+            }
+        }
+    }, true);
+
     // create transformControls
     transformControls = new TransformControls(camera, renderer.domElement);
     transformControls.setMode('translate');
@@ -188,6 +227,10 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     } else if (originalLine.name === 'Z') {
                         negativeGeometry.rotateY(Math.PI);
                     }
+
+                    // Clone material for original line to prevent affecting other gizmos (like rotate)
+                    originalLine.material = originalLine.material.clone();
+
                     const negativeMaterial = originalLine.material.clone();
                     negativeMaterial.transparent = true;
                     negativeMaterial._opacity = 0.001;
@@ -231,9 +274,59 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             dragInitialMatrix.copy(content.matrix);
             dragInitialQuaternion.copy(wrapper.quaternion);
             dragInitialScale.copy(wrapper.scale);
+            dragInitialPosition.copy(wrapper.position);
             draggingMode = transformControls.mode;
+
+            if (blockbenchScaleMode && draggingMode === 'scale') {
+                dragInitialBoundingBox.makeEmpty();
+                
+                content.updateWorldMatrix(true, true);
+                wrapper.updateWorldMatrix(true, false);
+                const inverseWrapperMat = new THREE.Matrix4().copy(wrapper.matrixWorld).invert();
+                content.traverse(child => {
+                    if (child.isMesh && child.geometry) {
+                        if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
+                        const childBox = child.geometry.boundingBox.clone();
+                        childBox.applyMatrix4(child.matrixWorld);
+                        childBox.applyMatrix4(inverseWrapperMat);
+                        dragInitialBoundingBox.union(childBox);
+                    }
+                });
+
+                const gizmoPos = wrapper.position.clone();
+                const gizmoNDC = gizmoPos.clone().project(camera);
+                gizmoNDC.z = 0;
+
+                const mouseNDC = new THREE.Vector3(mouseInput.x, mouseInput.y, 0);
+                const mouseDir = mouseNDC.clone().sub(gizmoNDC);
+
+                const checkAxis = (x, y, z) => {
+                    const axisVec = new THREE.Vector3(x, y, z);
+                    if (currentSpace === 'local') {
+                        axisVec.applyQuaternion(wrapper.quaternion);
+                    }
+                    const axisPointWorld = wrapper.position.clone().add(axisVec.normalize());
+                    const axisPointNDC = axisPointWorld.clone().project(camera);
+                    axisPointNDC.z = 0;
+                    const axisDir = axisPointNDC.clone().sub(gizmoNDC);
+                    return mouseDir.dot(axisDir) > 0;
+                };
+
+                dragAnchorDirections = {
+                    x: detectedAnchorDirections.x !== null ? detectedAnchorDirections.x : checkAxis(1, 0, 0),
+                    y: detectedAnchorDirections.y !== null ? detectedAnchorDirections.y : checkAxis(0, 1, 0),
+                    z: detectedAnchorDirections.z !== null ? detectedAnchorDirections.z : checkAxis(0, 0, 1)
+                };
+            }
         } else {
             if (!draggingMode) return;
+
+            if (isPivotEditMode && draggingMode === 'translate') {
+                isCustomPivot = true;
+                draggingMode = null;
+                return;
+            }
+
             if (currentSpace === 'local') {
                 if (draggingMode === 'rotate') {
                 } else if (draggingMode === 'scale') {
@@ -264,6 +357,56 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
             updatePivot(wrapper);
             draggingMode = null;
+        }
+    });
+
+    transformControls.addEventListener('change', (event) => {
+        if (transformControls.dragging) {
+            if (isPivotEditMode && transformControls.mode === 'translate') {
+                const wrapper = transformControls.object;
+                if (wrapper) {
+                    const content = wrapper.children[0];
+                    if (content) {
+                        const initialWrapperMatrixWorld = new THREE.Matrix4().compose(dragInitialPosition, dragInitialQuaternion, dragInitialScale);
+                        const initialContentWorldMatrix = initialWrapperMatrixWorld.clone().multiply(dragInitialMatrix);
+
+                        wrapper.updateMatrixWorld();
+                        const currentWrapperMatrixWorld = wrapper.matrixWorld;
+
+                        const currentWrapperInverse = currentWrapperMatrixWorld.clone().invert();
+                        const newContentLocal = currentWrapperInverse.multiply(initialContentWorldMatrix);
+
+                        content.matrix.copy(newContentLocal);
+                        content.matrix.decompose(content.position, content.quaternion, content.scale);
+                        content.matrixWorldNeedsUpdate = true;
+                    }
+                }
+            } else if (blockbenchScaleMode && transformControls.mode === 'scale') {
+                const wrapper = transformControls.object;
+                if (wrapper && !dragInitialBoundingBox.isEmpty()) {
+                    const deltaScale = wrapper.scale; // Since initial is 1,1,1
+                    const shift = new THREE.Vector3();
+                    
+                    if (Math.abs(deltaScale.x - 1) > 0.0001) {
+                        const isPositive = dragAnchorDirections.x;
+                        const fixedVal = isPositive ? dragInitialBoundingBox.min.x : dragInitialBoundingBox.max.x;
+                        shift.x = fixedVal * (1 - deltaScale.x);
+                    }
+                    if (Math.abs(deltaScale.y - 1) > 0.0001) {
+                        const isPositive = dragAnchorDirections.y;
+                        const fixedVal = isPositive ? dragInitialBoundingBox.min.y : dragInitialBoundingBox.max.y;
+                        shift.y = fixedVal * (1 - deltaScale.y);
+                    }
+                    if (Math.abs(deltaScale.z - 1) > 0.0001) {
+                        const isPositive = dragAnchorDirections.z;
+                        const fixedVal = isPositive ? dragInitialBoundingBox.min.z : dragInitialBoundingBox.max.z;
+                        shift.z = fixedVal * (1 - deltaScale.z);
+                    }
+                    
+                    const shiftWorld = shift.clone().applyQuaternion(wrapper.quaternion);
+                    wrapper.position.copy(dragInitialPosition).add(shiftWorld);
+                }
+            }
         }
     });
 
@@ -306,6 +449,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 break;
             }
             case 'z': {
+                isCustomPivot = false;
                 pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
                 console.log('Pivot Mode:', pivotMode);
                 if (wrapper) updatePivot(wrapper);
@@ -315,17 +459,41 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 if (wrapper) {
                     const content = wrapper.children[0];
                     if (content) {
-                        const position = new THREE.Vector3();
-                        const quaternion = new THREE.Quaternion();
-                        const scale = new THREE.Vector3();
-                        content.matrix.decompose(position, quaternion, scale);
-                        content.matrix.compose(position, quaternion, scale);
+                        // We may need to apply the decompose/compose pass multiple times if skew/shear
+                        // is still present after one pass. Try up to 4 passes and break early when
+                        // changes are negligible.
+                        const epsilon = 1e-6; // threshold to consider matrix unchanged
+                        let prevMatrix = content.matrix.clone();
+                        let iter = 0;
+                        for (; iter < 7; iter++) {
+                            const position = new THREE.Vector3();
+                            const quaternion = new THREE.Quaternion();
+                            const scale = new THREE.Vector3();
+                            content.matrix.decompose(position, quaternion, scale);
+                            content.matrix.compose(position, quaternion, scale);
+                            // compute change magnitude between prevMatrix and current content.matrix
+                            let diff = 0;
+                            const a = prevMatrix.elements;
+                            const b = content.matrix.elements;
+                            for (let i = 0; i < 16; i++) diff += Math.abs(a[i] - b[i]);
+                            if (diff <= epsilon) break;
+                            prevMatrix.copy(content.matrix);
+                        }
                         content.matrixWorldNeedsUpdate = true;
                         updatePivot(wrapper, true);
                         updateSelectionOverlay(wrapper);
-                        console.log('객체 스케일을 균일하게 조정');
+                        if (iter > 0) {
+                            console.log('객체 스케일을 균일하게 조정: 반복 적용됨 (iterations=', iter + 1, ')');
+                        } else {
+                            console.log('객체 스케일을 균일하게 조정');
+                        }
                     }
                 }
+                break;
+            }
+            case 'b': {
+                blockbenchScaleMode = !blockbenchScaleMode;
+                console.log(`blockbench scale모드 ${blockbenchScaleMode ? '켜짐' : '꺼짐'}`);
                 break;
             }
         }
@@ -333,9 +501,32 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
     window.addEventListener('keydown', (event) => {
         if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+
+        if (event.key === 'Alt') {
+            event.preventDefault();
+            if (!isPivotEditMode) {
+                isPivotEditMode = true;
+                previousGizmoMode = transformControls.mode;
+                transformControls.setMode('translate');
+            }
+            if (event.ctrlKey) {
+                isCustomPivot = false;
+                const wrapper = transformControls.object;
+                if (wrapper) updatePivot(wrapper);
+            }
+        }
+
+        if (event.key === 'Control') {
+            if (isPivotEditMode) {
+                isCustomPivot = false;
+                const wrapper = transformControls.object;
+                if (wrapper) updatePivot(wrapper);
+            }
+        }
+
         if (isGizmoBusy) return;
         const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'v'];
+        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'v', 'b'];
         if (transformControls.dragging && keysToHandle.includes(key)) {
             isGizmoBusy = true;
             const attachedObject = transformControls.object;
@@ -363,6 +554,61 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             handleKeyPress(key);
             setTimeout(() => { isGizmoBusy = false; }, 50);
         }
+    });
+
+    window.addEventListener('keyup', (event) => {
+        if (event.key === 'Alt') {
+            if (isPivotEditMode) {
+                isPivotEditMode = false;
+                transformControls.setMode(previousGizmoMode);
+            }
+        }
+    });
+
+    // If the window loses focus (e.g., Alt+Tab) or visibility changes, reset any "stuck" modifier
+    // states such as Alt that may have been pressed while the window was out of focus.
+    const clearAltState = () => {
+        // Only act if we actually changed something to avoid unnecessary overhead
+        if (isPivotEditMode) {
+            isPivotEditMode = false;
+            try {
+                transformControls.setMode(previousGizmoMode);
+            } catch (err) {
+                console.warn('Failed to restore transformControls mode on blur/visibility change', err);
+            }
+        }
+        // If any busy flags were left set from mid-key or mid-drag, clear them so the app isn't stuck
+        isGizmoBusy = false;
+        // Reset custom pivot state to default
+        isCustomPivot = false;
+        console.log('Gizmo: clearing Alt/pivot state due to focus/visibility change');
+        // If TransformControls is mid-drag, ask it to release.
+        try {
+            if (transformControls && transformControls.dragging) {
+                transformControls.pointerUp({ button: 0 });
+            }
+        } catch (err) {
+            // pointerUp not guaranteed or may fail in some versions; ignore to avoid crashes
+        }
+    };
+
+    // When the window loses focus, the browser may never fire a keyup for the key the user
+    // released while outside our document (for example Alt during Alt+Tab). Reset any
+    // pivot/Alt state so the gizmo doesn't remain in pivot-edit while the window is refocused.
+    window.addEventListener('blur', () => {
+        clearAltState();
+    });
+
+    // Also reset on visibility change — this covers cases where a tab becomes hidden/visible.
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) clearAltState();
+    });
+
+    // When focusing back to the window, clearAltState again to ensure no modifier keys are
+    // considered pressed. This prevents Alt from remaining logically pressed if it was
+    // released while the user switched away.
+    window.addEventListener('focus', () => {
+        clearAltState();
     });
 
     // selection with raycaster
@@ -415,6 +661,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         content.matrix.premultiply(inverseRotationMatrix);
                         content.matrixWorldNeedsUpdate = true;
                     }
+                    isCustomPivot = false;
                     updatePivot(selectedObject);
                     updateSelectionOverlay(selectedObject);
                     console.log('선택된 객체:', selectedObject);
