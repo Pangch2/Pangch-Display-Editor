@@ -26,8 +26,9 @@ let blockbenchScaleMode = false;
 let dragAnchorDirections = { x: true, y: true, z: true };
 let previousGizmoMode = 'translate';
 let isPivotEditMode = false;
-let isCustomPivot = false;
+let isCustomPivot;
 let pivotOffset = new THREE.Vector3(0, 0, 0);
+let isUniformScale = false;
 
 // Helpers (originally in renderer.js)
 function getRotationFromMatrix(matrix) {
@@ -201,14 +202,20 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
             if (intersects.length > 0) {
                 const object = intersects[0].object;
-                const check = (axis) => {
-                    if (gizmoLines[axis].negative.includes(object)) return false;
-                    if (gizmoLines[axis].original.includes(object)) return true;
-                    return null;
-                };
-                detectedAnchorDirections.x = check('X');
-                detectedAnchorDirections.y = check('Y');
-                detectedAnchorDirections.z = check('Z');
+                // Check if it's the central uniform scale handle
+                if (object.name === 'XYZ') {
+                    isUniformScale = true;
+                } else {
+                    isUniformScale = false;
+                    const check = (axis) => {
+                        if (gizmoLines[axis].negative.includes(object)) return false;
+                        if (gizmoLines[axis].original.includes(object)) return true;
+                        return null;
+                    };
+                    detectedAnchorDirections.x = check('X');
+                    detectedAnchorDirections.y = check('Y');
+                    detectedAnchorDirections.z = check('Z');
+                }
             }
         }
     }, true);
@@ -296,7 +303,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             dragInitialPosition.copy(wrapper.position);
             draggingMode = transformControls.mode;
 
-            if (blockbenchScaleMode && draggingMode === 'scale') {
+            if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
                 dragInitialBoundingBox.makeEmpty();
                 
                 content.updateWorldMatrix(true, true);
@@ -398,6 +405,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
             updatePivot(wrapper);
             draggingMode = null;
+            isUniformScale = false;
         }
     });
 
@@ -422,7 +430,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         content.matrixWorldNeedsUpdate = true;
                     }
                 }
-            } else if (blockbenchScaleMode && transformControls.mode === 'scale') {
+            } else if (blockbenchScaleMode && transformControls.mode === 'scale' && !isUniformScale) {
                 const wrapper = transformControls.object;
                 if (wrapper && !dragInitialBoundingBox.isEmpty()) {
                     const deltaScale = wrapper.scale; // Since initial is 1,1,1
@@ -524,6 +532,36 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         content.matrixWorldNeedsUpdate = true;
                         updatePivot(wrapper, true);
                         updateSelectionOverlay(wrapper);
+                        // Ensure gizmo space and wrapper orientation stay consistent if
+                        // the gizmo is already in local space. This mirrors the logic
+                        // in the 'x' key handler which toggles local/world space and
+                        // adjusts wrapper/content matrices accordingly.
+                        try {
+                            if (currentSpace === 'local' && transformControls) {
+                                transformControls.setSpace('local');
+                                if (wrapper) {
+                                    const content = wrapper.children[0];
+                                    if (content) {
+                                        // Save wrapper world transform before change
+                                        wrapper.updateMatrixWorld(true);
+                                        const worldBefore = wrapper.matrixWorld.clone();                               
+                                        // Determine desired wrapper orientation from content's world transform
+                                        content.updateWorldMatrix(true, false);
+                                        const desiredQuat = getRotationFromMatrix(content.matrixWorld);                             
+                                        // Apply desired orientation to wrapper
+                                        wrapper.quaternion.copy(desiredQuat);
+                                        wrapper.updateMatrixWorld(true);                           
+                                        // Compute delta that maps worldAfter -> worldBefore and apply to content
+                                        const worldAfter = wrapper.matrixWorld.clone();
+                                        const delta = worldAfter.clone().invert().multiply(worldBefore);
+                                        content.matrix.premultiply(delta);
+                                        content.matrixWorldNeedsUpdate = true;
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            console.warn('Failed to enforce local gizmo space after uniform scaling', err);
+                        }
                         if (iter > 0) {
                             console.log('객체 스케일을 균일하게 조정: 반복 적용됨 (iterations=', iter + 1, ')');
                         } else {
