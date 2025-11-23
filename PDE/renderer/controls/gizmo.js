@@ -322,6 +322,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         const content = wrapper.children[0];
         if (!content) return;
         if (event.value) {
+            if (transformControls.axis === 'XYZ') isUniformScale = true;
+
             dragInitialMatrix.copy(content.matrix);
             dragInitialQuaternion.copy(wrapper.quaternion);
             dragInitialScale.copy(wrapper.scale);
