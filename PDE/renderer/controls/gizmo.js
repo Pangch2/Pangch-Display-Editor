@@ -331,34 +331,69 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
                 dragInitialBoundingBox.makeEmpty();
                 
-                content.updateWorldMatrix(true, true);
-                wrapper.updateWorldMatrix(true, false);
-                const inverseWrapperMat = new THREE.Matrix4().copy(wrapper.matrixWorld).invert();
-                content.traverse(child => {
-                    if (child.isMesh && child.geometry) {
-                        if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
-                        
-                        // Transform all 8 corners to get tight AABB in wrapper space
-                        const bbox = child.geometry.boundingBox;
-                        const corners = [
-                            new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
-                            new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.max.z),
-                            new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.min.z),
-                            new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.max.z),
-                            new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.min.z),
-                            new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.max.z),
-                            new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.min.z),
-                            new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.max.z)
-                        ];
+                if (content.userData.isPlayerHead) {
+                    let localBox = new THREE.Box3();
+                    content.traverse(child => {
+                        if (child.isMesh && child.geometry) {
+                            if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
+                            localBox.union(child.geometry.boundingBox);
+                        }
+                    });
 
-                        const combinedMat = inverseWrapperMat.clone().multiply(child.matrixWorld);
-                        
-                        corners.forEach(corner => {
-                            corner.applyMatrix4(combinedMat);
-                            dragInitialBoundingBox.expandByPoint(corner);
-                        });
+                    const isLayer2 = wrapper.userData.isCustomPivot && wrapper.userData.customPivot && Math.abs(wrapper.userData.customPivot.y) > 0.0001;
+
+                    if (!isLayer2 && !localBox.isEmpty()) {
+                        const center = new THREE.Vector3();
+                        localBox.getCenter(center);
+                        const size = 1.0;
+                        localBox.setFromCenterAndSize(center, new THREE.Vector3(size, size, size));
                     }
-                });
+
+                    const corners = [
+                        new THREE.Vector3(localBox.min.x, localBox.min.y, localBox.min.z),
+                        new THREE.Vector3(localBox.min.x, localBox.min.y, localBox.max.z),
+                        new THREE.Vector3(localBox.min.x, localBox.max.y, localBox.min.z),
+                        new THREE.Vector3(localBox.min.x, localBox.max.y, localBox.max.z),
+                        new THREE.Vector3(localBox.max.x, localBox.min.y, localBox.min.z),
+                        new THREE.Vector3(localBox.max.x, localBox.min.y, localBox.max.z),
+                        new THREE.Vector3(localBox.max.x, localBox.max.y, localBox.min.z),
+                        new THREE.Vector3(localBox.max.x, localBox.max.y, localBox.max.z)
+                    ];
+
+                    corners.forEach(corner => {
+                        corner.applyMatrix4(content.matrix);
+                        dragInitialBoundingBox.expandByPoint(corner);
+                    });
+                } else {
+                    content.updateWorldMatrix(true, true);
+                    wrapper.updateWorldMatrix(true, false);
+                    const inverseWrapperMat = new THREE.Matrix4().copy(wrapper.matrixWorld).invert();
+                    content.traverse(child => {
+                        if (child.isMesh && child.geometry) {
+                            if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
+                            
+                            // Transform all 8 corners to get tight AABB in wrapper space
+                            const bbox = child.geometry.boundingBox;
+                            const corners = [
+                                new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
+                                new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.max.z),
+                                new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.min.z),
+                                new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.max.z),
+                                new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.min.z),
+                                new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.max.z),
+                                new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.min.z),
+                                new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.max.z)
+                            ];
+
+                            const combinedMat = inverseWrapperMat.clone().multiply(child.matrixWorld);
+                            
+                            corners.forEach(corner => {
+                                corner.applyMatrix4(combinedMat);
+                                dragInitialBoundingBox.expandByPoint(corner);
+                            });
+                        }
+                    });
+                }
 
                 const gizmoPos = wrapper.position.clone();
                 const gizmoNDC = gizmoPos.clone().project(camera);
