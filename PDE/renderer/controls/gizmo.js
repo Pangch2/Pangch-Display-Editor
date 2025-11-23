@@ -26,7 +26,7 @@ let blockbenchScaleMode = false;
 let dragAnchorDirections = { x: true, y: true, z: true };
 let previousGizmoMode = 'translate';
 let isPivotEditMode = false;
-let isCustomPivot;
+let isCustomPivot = false;
 let pivotOffset = new THREE.Vector3(0, 0, 0);
 let isUniformScale = false;
 
@@ -49,7 +49,7 @@ function getRotationFromMatrix(matrix) {
 
 function updatePivot(wrapper, preventWrapperMovement = false) {
     if (!wrapper) return;
-    // if (isCustomPivot) return; // Removed to allow pivotOffset to work
+    // if (isCustomPivot) return; // This is intentionally commented out.
     const content = wrapper.children[0];
     if (!content) return;
 
@@ -64,7 +64,28 @@ function updatePivot(wrapper, preventWrapperMovement = false) {
         });
         box.getCenter(targetPivotLocal);
     } else if (pivotMode === 'origin') {
-        targetPivotLocal.copy(pivotOffset);
+        if (wrapper.userData.isCustomPivot) {
+            targetPivotLocal.copy(wrapper.userData.customPivot);
+        } else {
+            const displayType = wrapper.userData?.displayType;
+            if (displayType === 'block_display') {
+                const localBox = new THREE.Box3();
+                content.traverse(child => {
+                    if (child.isMesh && child.geometry) {
+                        if (!child.geometry.boundingBox) {
+                            child.geometry.computeBoundingBox();
+                        }
+                        const childBox = child.geometry.boundingBox.clone();
+                        childBox.applyMatrix4(child.matrix);
+                        localBox.union(childBox);
+                    }
+                });
+                targetPivotLocal.copy(localBox.min);
+            } else {
+                // Default origin for non-block displays is 0,0,0
+                targetPivotLocal.set(0, 0, 0);
+            }
+        }
     }
 
     content.updateWorldMatrix(true, false);
@@ -91,11 +112,15 @@ function updatePivotOffsetFromWrapper() {
     // Wrapper Origin in Content Local = (0,0,0) transformed by inverse(Content Matrix)
     // Content Matrix transforms Content Local -> Wrapper Local
     const invContentMatrix = content.matrix.clone().invert();
-    pivotOffset.setFromMatrixPosition(invContentMatrix);
-    console.log('Pivot updated manually:', pivotOffset);
+    const newPivotOffset = new THREE.Vector3().setFromMatrixPosition(invContentMatrix);
+    console.log('Pivot updated manually:', newPivotOffset);
     
     // Force mode to origin so the manual pivot is respected
     pivotMode = 'origin';
+    
+    // Save custom pivot to the object's user data
+    wrapper.userData.customPivot = newPivotOffset;
+    wrapper.userData.isCustomPivot = true;
 }
 
 function updateSelectionOverlay(wrapper) {
@@ -498,20 +523,18 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 break;
             }
             case 'z': {
-                isCustomPivot = false;
                 pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
                 console.log('Pivot Mode:', pivotMode);
                 const wrapper = transformControls.object;
-                if (wrapper) updatePivot(wrapper);
+                if (wrapper) {
+                    updatePivot(wrapper);
+                }
                 break;
             }
             case 'v': {
                 if (wrapper) {
                     const content = wrapper.children[0];
                     if (content) {
-                        // We may need to apply the decompose/compose pass multiple times if skew/shear
-                        // is still present after one pass. Try up to 4 passes and break early when
-                        // changes are negligible.
                         const epsilon = 1e-6; // threshold to consider matrix unchanged
                         let prevMatrix = content.matrix.clone();
                         let iter = 0;
@@ -532,10 +555,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         content.matrixWorldNeedsUpdate = true;
                         updatePivot(wrapper, true);
                         updateSelectionOverlay(wrapper);
-                        // Ensure gizmo space and wrapper orientation stay consistent if
-                        // the gizmo is already in local space. This mirrors the logic
-                        // in the 'x' key handler which toggles local/world space and
-                        // adjusts wrapper/content matrices accordingly.
+
                         try {
                             if (currentSpace === 'local' && transformControls) {
                                 transformControls.setSpace('local');
@@ -590,10 +610,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 transformControls.setMode('translate');
             }
             if (event.ctrlKey) {
-                isCustomPivot = false;
-                pivotOffset.set(0, 0, 0);
                 const wrapper = transformControls.object;
-                if (wrapper) updatePivot(wrapper);
+                if (wrapper) {
+                    wrapper.userData.isCustomPivot = false;
+                    delete wrapper.userData.customPivot;
+                    updatePivot(wrapper);
+                }
                 console.log('Pivot reset to origin (0,0,0)');
             }
         }
@@ -646,11 +668,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
         }
     });
-
-    // If the window loses focus (e.g., Alt+Tab) or visibility changes, reset any "stuck" modifier
-    // states such as Alt that may have been pressed while the window was out of focus.
     const clearAltState = () => {
-        // Only act if we actually changed something to avoid unnecessary overhead
         if (isPivotEditMode) {
             isPivotEditMode = false;
             try {
@@ -659,36 +677,20 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 console.warn('Failed to restore transformControls mode on blur/visibility change', err);
             }
         }
-        // If any busy flags were left set from mid-key or mid-drag, clear them so the app isn't stuck
         isGizmoBusy = false;
-        // Do not reset custom pivot state on focus change, as user might want to keep it
-        // isCustomPivot = false; 
-        
-        // If TransformControls is mid-drag, ask it to release.
         try {
             if (transformControls && transformControls.dragging) {
                 transformControls.pointerUp({ button: 0 });
             }
         } catch (err) {
-            // pointerUp not guaranteed or may fail in some versions; ignore to avoid crashes
         }
     };
-
-    // When the window loses focus, the browser may never fire a keyup for the key the user
-    // released while outside our document (for example Alt during Alt+Tab). Reset any
-    // pivot/Alt state so the gizmo doesn't remain in pivot-edit while the window is refocused.
     window.addEventListener('blur', () => {
         clearAltState();
     });
-
-    // Also reset on visibility change — this covers cases where a tab becomes hidden/visible.
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) clearAltState();
     });
-
-    // When focusing back to the window, clearAltState again to ensure no modifier keys are
-    // considered pressed. This prevents Alt from remaining logically pressed if it was
-    // released while the user switched away.
     window.addEventListener('focus', () => {
         clearAltState();
     });
@@ -744,7 +746,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         content.matrix.premultiply(inverseRotationMatrix);
                         content.matrixWorldNeedsUpdate = true;
                     }
-                    isCustomPivot = false;
                     updatePivot(selectedObject);
                     updateSelectionOverlay(selectedObject);
                     console.log('선택된 객체:', selectedObject);

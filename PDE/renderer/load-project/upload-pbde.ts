@@ -616,6 +616,47 @@ const materialCache = new WeakMap<THREE.Texture, THREE.Material>();
 
 
 /**
+ * 텍스처의 특정 UV 영역이 완전히 투명한지 확인합니다.
+ * @param texture - 검사할 텍스처
+ * @param uvRegions - 검사할 UV 좌표 배열 [x, y, width, height]
+ * @returns 모든 픽셀이 투명하면 true
+ */
+function isLayerTransparent(texture: THREE.Texture, uvRegions: number[][]): boolean {
+    try {
+        const img = texture.image;
+        if (!img || !img.width || !img.height) return false;
+
+        // Canvas를 사용하여 픽셀 데이터 추출
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return false;
+
+        ctx.drawImage(img, 0, 0);
+        
+        // 각 UV 영역을 검사
+        for (const [x, y, width, height] of uvRegions) {
+            const imageData = ctx.getImageData(x, y, width, height);
+            const data = imageData.data;
+            
+            // 알파 채널 검사 (RGBA의 A)
+            for (let i = 3; i < data.length; i += 4) {
+                if (data[i] > 0) {
+                    // 투명하지 않은 픽셀 발견
+                    return false;
+                }
+            }
+        }
+        
+        return true; // 모든 픽셀이 투명함
+    } catch (err) {
+        console.warn('Layer transparency check failed:', err);
+        return false; // 오류 발생 시 투명하지 않다고 가정
+    }
+}
+
+/**
  * 병합된(merged) 지오메트리를 사용하는 단일 메시 생성 (base+layer -> 1 draw call)
  */
 function createOptimizedHeadMerged(texture: THREE.Texture): THREE.Mesh {
@@ -930,6 +971,38 @@ function loadpbde(file: File): void {
 
                             try {
                                 const tex = await loadPlayerHeadTexture(item.textureUrl, myGen);
+                                
+                                // 2번 레이어(hat layer)의 UV 영역 정의
+                                const layerUVRegions = [
+                                    [48, 8, 8, 8],  // right
+                                    [32, 8, 8, 8],  // left
+                                    [40, 0, 8, 8],  // top
+                                    [48, 0, 8, 8],  // bottom
+                                    [56, 8, 8, 8],  // front
+                                    [40, 8, 8, 8]   // back
+                                ];
+                                
+                                // 2번 레이어가 투명한지 확인
+                                const isLayer2Transparent = isLayerTransparent(tex, layerUVRegions);
+                                
+                                // 피벗 오프셋 계산
+                                // 두 레이어 모두 translate(0, -0.5, 0)로 바닥이 y=0에 위치
+                                // 1번 레이어: scale 1.0 -> 중심 (0, 0.5, 0)
+                                // 2번 레이어: scale 1.0625 -> 중심 (0, 0.53125, 0)
+                                // 차이: 0.03125 (= (1.0625 - 1.0) / 2)
+                                let pivotOffset = new THREE.Vector3(0, 0, 0);
+                                
+                                if (!isLayer2Transparent) {
+                                    // 2번 레이어가 보이면 2번 레이어의 중심을 기준으로
+                                    // Y축으로만 0.03125 오프셋 (바닥은 같지만 높이가 더 높음)
+                                    pivotOffset.set(0, 0.03125, 0);
+                                }
+                                // isLayer2Transparent가 true면 pivotOffset은 (0,0,0)으로 1번 레이어 기준
+                                
+                                // customPivot을 wrapper에 설정
+                                wrapperGroup.userData.customPivot = pivotOffset.clone();
+                                wrapperGroup.userData.isCustomPivot = true;
+                                
                                 transformGroup.add(createOptimizedHeadMerged(tex));
                             } catch (err) {
                                 console.error('플레이어 헤드 텍스처 로드 실패:', err);
