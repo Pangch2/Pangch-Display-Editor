@@ -722,11 +722,31 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         } catch (err) {
         }
     };
+    const resetOrbitControls = () => {
+        if (controls && setControls) {
+            const oldTarget = controls.target.clone();
+            const oldScreenSpacePanning = controls.screenSpacePanning;
+            controls.dispose();
+            
+            const newControls = new (controls.constructor)(camera, renderer.domElement);
+            newControls.screenSpacePanning = oldScreenSpacePanning;
+            newControls.target.copy(oldTarget);
+            newControls.update();
+            
+            setControls(newControls);
+            controls = newControls;
+        }
+    }
+
     window.addEventListener('blur', () => {
         clearAltState();
+        resetOrbitControls();
     });
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) clearAltState();
+        if (document.hidden) {
+            clearAltState();
+            resetOrbitControls();
+        }
     });
     window.addEventListener('focus', () => {
         clearAltState();
