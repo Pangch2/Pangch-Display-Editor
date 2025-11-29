@@ -24,7 +24,7 @@ renderer/
 ├ entityMaterial.js - 모델에 넣을 셰이더
 ├ global.d.ts
 ├ index.html - 메인 화면
-├ load-project/
+├ load-project/ - 프로젝트 불러오기 관련 폴더(block_display, item_display, player_head 처리)
 │   ├ pbde-worker.ts - upload-pbde.ts전용 web-worker
 │   └ upload-pbde.ts - pbde-worker.ts의 데이터를 받는 메인쓰레드
 ├ controls/
