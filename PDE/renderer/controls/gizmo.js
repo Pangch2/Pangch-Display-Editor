@@ -3,7 +3,15 @@ import * as THREE from 'three/webgpu';
 
 let scene, camera, renderer, controls, loadedObjectGroup;
 let transformControls = null;
-let selectedObject = null;
+let selectionHelper = null;
+let previousHelperMatrix = new THREE.Matrix4();
+
+// Selection State
+let currentSelection = {
+    mesh: null,
+    instanceIds: []
+};
+
 let pivotMode = 'origin';
 let currentSpace = 'world';
 let selectionOverlay = null;
@@ -15,22 +23,15 @@ let gizmoLines = {
 };
 
 // drag state
-const dragInitialMatrix = new THREE.Matrix4();
-const dragInitialQuaternion = new THREE.Quaternion();
-const dragInitialScale = new THREE.Vector3();
-const dragInitialPosition = new THREE.Vector3();
-const dragInitialBoundingBox = new THREE.Box3();
 let draggingMode = null;
 let isGizmoBusy = false;
 let blockbenchScaleMode = false;
 let dragAnchorDirections = { x: true, y: true, z: true };
 let previousGizmoMode = 'translate';
 let isPivotEditMode = false;
-let isCustomPivot = false;
-let pivotOffset = new THREE.Vector3(0, 0, 0);
 let isUniformScale = false;
 
-// Helpers (originally in renderer.js)
+// Helpers
 function getRotationFromMatrix(matrix) {
     const R = new THREE.Matrix4();
     const x = new THREE.Vector3().setFromMatrixColumn(matrix, 0);
@@ -47,83 +48,7 @@ function getRotationFromMatrix(matrix) {
     return quaternion;
 }
 
-function updatePivot(wrapper, preventWrapperMovement = false) {
-    if (!wrapper) return;
-    // if (isCustomPivot) return; // This is intentionally commented out.
-    const content = wrapper.children[0];
-    if (!content) return;
-
-    let targetPivotLocal = new THREE.Vector3(0, 0, 0);
-    if (pivotMode === 'center') {
-        const box = new THREE.Box3();
-        content.traverse(child => {
-            if (child.isMesh) {
-                if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
-                box.union(child.geometry.boundingBox);
-            }
-        });
-        box.getCenter(targetPivotLocal);
-    } else if (pivotMode === 'origin') {
-        if (wrapper.userData.isCustomPivot) {
-            targetPivotLocal.copy(wrapper.userData.customPivot);
-        } else {
-            const displayType = wrapper.userData?.displayType;
-            if (displayType === 'block_display') {
-                const localBox = new THREE.Box3();
-                content.traverse(child => {
-                    if (child.isMesh && child.geometry) {
-                        if (!child.geometry.boundingBox) {
-                            child.geometry.computeBoundingBox();
-                        }
-                        const childBox = child.geometry.boundingBox.clone();
-                        childBox.applyMatrix4(child.matrix);
-                        localBox.union(childBox);
-                    }
-                });
-                targetPivotLocal.copy(localBox.min);
-            } else {
-                // Default origin for non-block displays is 0,0,0
-                targetPivotLocal.set(0, 0, 0);
-            }
-        }
-    }
-
-    content.updateWorldMatrix(true, false);
-    const targetPivotWorld = targetPivotLocal.clone().applyMatrix4(content.matrixWorld);
-    const adjustmentOffset = targetPivotWorld.clone().sub(wrapper.position);
-    if (adjustmentOffset.lengthSq() > 0.000001) {
-        if (!preventWrapperMovement) {
-            wrapper.position.add(adjustmentOffset);
-        }
-        const localCounter = adjustmentOffset.clone().applyQuaternion(wrapper.quaternion.clone().invert());
-        const inverseTranslate = new THREE.Matrix4().makeTranslation(-localCounter.x, -localCounter.y, -localCounter.z);
-        content.matrix.premultiply(inverseTranslate);
-        content.matrixWorldNeedsUpdate = true;
-    }
-}
-
-function updatePivotOffsetFromWrapper() {
-    const wrapper = transformControls.object;
-    if (!wrapper) return;
-    const content = wrapper.children[0];
-    if (!content) return;
-    
-    // pivotOffset is Wrapper Origin (0,0,0) in Content Local Space
-    // Wrapper Origin in Content Local = (0,0,0) transformed by inverse(Content Matrix)
-    // Content Matrix transforms Content Local -> Wrapper Local
-    const invContentMatrix = content.matrix.clone().invert();
-    const newPivotOffset = new THREE.Vector3().setFromMatrixPosition(invContentMatrix);
-    console.log('Pivot updated manually:', newPivotOffset);
-    
-    // Force mode to origin so the manual pivot is respected
-    pivotMode = 'origin';
-    
-    // Save custom pivot to the object's user data
-    wrapper.userData.customPivot = newPivotOffset;
-    wrapper.userData.isCustomPivot = true;
-}
-
-function updateSelectionOverlay(wrapper) {
+function updateSelectionOverlay() {
     if (selectionOverlay) {
         if (selectionOverlay.parent) {
             selectionOverlay.parent.remove(selectionOverlay);
@@ -135,42 +60,33 @@ function updateSelectionOverlay(wrapper) {
         selectionOverlay = null;
     }
 
-    if (!wrapper) return;
-    const content = wrapper.children[0];
-    if (!content) return;
+    if (!currentSelection.mesh || currentSelection.instanceIds.length === 0) return;
 
-    const displayType = wrapper.userData?.displayType;
-    let overlayColor;
-    if (displayType === 'block_display') {
-        overlayColor = 0xFFD147;
-    } else if (displayType === 'item_display') {
-        overlayColor = 0x2E87EC;
-    } else {
-        return;
+    const mesh = currentSelection.mesh;
+    const box = new THREE.Box3();
+    const tempMat = new THREE.Matrix4();
+    const tempBox = new THREE.Box3();
+
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+    const geoBox = mesh.geometry.boundingBox;
+
+    for (const id of currentSelection.instanceIds) {
+        mesh.getMatrixAt(id, tempMat);
+        tempBox.copy(geoBox).applyMatrix4(tempMat);
+        box.union(tempBox);
     }
 
-    const localBox = new THREE.Box3();
-    content.traverse(child => {
-        if (child.isMesh && child.geometry) {
-            if (!child.geometry.boundingBox) {
-                child.geometry.computeBoundingBox();
-            }
-            const childBox = child.geometry.boundingBox.clone();
-            childBox.applyMatrix4(child.matrix);
-            localBox.union(childBox);
-        }
-    });
-
     const size = new THREE.Vector3();
-    localBox.getSize(size);
+    box.getSize(size);
     const center = new THREE.Vector3();
-    localBox.getCenter(center);
+    box.getCenter(center);
+
     const overlayGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
     overlayGeometry.translate(center.x, center.y, center.z);
     const edges = new THREE.EdgesGeometry(overlayGeometry);
     const overlayMaterial = new THREE.LineBasicMaterial({
-        color: overlayColor,
-        depthTest: true,
+        color: 0xFFD147,
+        depthTest: false,
         depthWrite: false,
         transparent: true,
         opacity: 0.9
@@ -183,31 +99,49 @@ function updateSelectionOverlay(wrapper) {
 }
 
 function resetSelectionAndDeselect() {
-    if (selectedObject) {
-        const wrapper = transformControls.object;
-        if (wrapper) {
-            if (currentSpace === 'local') {
-                const quaternion = wrapper.quaternion.clone();
-                const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quaternion);
-                const content = wrapper.children[0];
-                if (content) {
-                    content.matrix.premultiply(rotationMatrix);
-                    content.matrixWorldNeedsUpdate = true;
-                }
-            }
-            wrapper.quaternion.set(0, 0, 0, 1);
-            wrapper.scale.set(1, 1, 1);
-        }
+    if (currentSelection.mesh) {
         transformControls.detach();
-        selectedObject = null;
-        updateSelectionOverlay(null);
+        currentSelection = { mesh: null, instanceIds: [] };
+        updateSelectionOverlay();
         lastDirections = { X: null, Y: null, Z: null };
         console.log('선택 해제');
     }
 }
 
+function applySelection(mesh, instanceIds) {
+    currentSelection = { mesh, instanceIds };
+    
+    // Calculate center of selection
+    const center = new THREE.Vector3();
+    const tempPos = new THREE.Vector3();
+    const tempMat = new THREE.Matrix4();
+    
+    instanceIds.forEach(id => {
+        mesh.getMatrixAt(id, tempMat);
+        tempPos.setFromMatrixPosition(tempMat);
+        center.add(tempPos);
+    });
+    center.divideScalar(instanceIds.length);
+
+    // Position helper
+    selectionHelper.position.copy(center);
+    selectionHelper.quaternion.set(0, 0, 0, 1);
+    selectionHelper.scale.set(1, 1, 1);
+    selectionHelper.updateMatrixWorld();
+
+    transformControls.attach(selectionHelper);
+    previousHelperMatrix.copy(selectionHelper.matrixWorld);
+    
+    updateSelectionOverlay();
+    console.log(`선택됨: InstancedMesh (IDs: ${instanceIds.join(',')})`);
+}
+
 function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitControls, loadedObjectGroup: lg, setControls}) {
     scene = s; camera = cam; renderer = rend; controls = orbitControls; loadedObjectGroup = lg;
+
+    // Create Selection Helper
+    selectionHelper = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), new THREE.MeshBasicMaterial({ visible: false }));
+    scene.add(selectionHelper);
 
     const mouseInput = new THREE.Vector2();
     let detectedAnchorDirections = { x: null, y: null, z: null };
@@ -227,7 +161,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
             if (intersects.length > 0) {
                 const object = intersects[0].object;
-                // Check if it's the central uniform scale handle
                 if (object.name === 'XYZ') {
                     isUniformScale = true;
                 } else {
@@ -279,7 +212,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         negativeGeometry.rotateY(Math.PI);
                     }
 
-                    // Clone material for original line to prevent affecting other gizmos (like rotate)
                     originalLine.material = originalLine.material.clone();
 
                     const negativeMaterial = originalLine.material.clone();
@@ -292,8 +224,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     const negativeLine = new THREE.Mesh(negativeGeometry, negativeMaterial);
                     negativeLine.name = originalLine.name;
                     negativeLine.material._opacity = negativeLine.material._opacity || negativeLine.material.opacity;
-                    // Ensure original and negative have deterministic renderOrder: negative above original
-
                     negativeLine.renderOrder = originalLine.renderOrder + 1;
                     originalLine.material.transparent = true;
                     originalLine.parent.add(negativeLine);
@@ -317,213 +247,38 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     // drag handler
     transformControls.addEventListener('dragging-changed', (event) => {
         controls.enabled = !event.value;
-        const wrapper = transformControls.object;
-        if (!wrapper) return;
-        const content = wrapper.children[0];
-        if (!content) return;
         if (event.value) {
-            if (transformControls.axis === 'XYZ') isUniformScale = true;
-
-            dragInitialMatrix.copy(content.matrix);
-            dragInitialQuaternion.copy(wrapper.quaternion);
-            dragInitialScale.copy(wrapper.scale);
-            dragInitialPosition.copy(wrapper.position);
             draggingMode = transformControls.mode;
-
-            if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
-                dragInitialBoundingBox.makeEmpty();
-                
-                if (content.userData.isPlayerHead) {
-                    let localBox = new THREE.Box3();
-                    content.traverse(child => {
-                        if (child.isMesh && child.geometry) {
-                            if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
-                            localBox.union(child.geometry.boundingBox);
-                        }
-                    });
-
-                    const isLayer2 = wrapper.userData.isCustomPivot && wrapper.userData.customPivot && Math.abs(wrapper.userData.customPivot.y) > 0.0001;
-
-                    if (!isLayer2 && !localBox.isEmpty()) {
-                        const center = new THREE.Vector3();
-                        localBox.getCenter(center);
-                        const size = 1.0;
-                        localBox.setFromCenterAndSize(center, new THREE.Vector3(size, size, size));
-                    }
-
-                    const corners = [
-                        new THREE.Vector3(localBox.min.x, localBox.min.y, localBox.min.z),
-                        new THREE.Vector3(localBox.min.x, localBox.min.y, localBox.max.z),
-                        new THREE.Vector3(localBox.min.x, localBox.max.y, localBox.min.z),
-                        new THREE.Vector3(localBox.min.x, localBox.max.y, localBox.max.z),
-                        new THREE.Vector3(localBox.max.x, localBox.min.y, localBox.min.z),
-                        new THREE.Vector3(localBox.max.x, localBox.min.y, localBox.max.z),
-                        new THREE.Vector3(localBox.max.x, localBox.max.y, localBox.min.z),
-                        new THREE.Vector3(localBox.max.x, localBox.max.y, localBox.max.z)
-                    ];
-
-                    corners.forEach(corner => {
-                        corner.applyMatrix4(content.matrix);
-                        dragInitialBoundingBox.expandByPoint(corner);
-                    });
-                } else {
-                    content.updateWorldMatrix(true, true);
-                    wrapper.updateWorldMatrix(true, false);
-                    const inverseWrapperMat = new THREE.Matrix4().copy(wrapper.matrixWorld).invert();
-                    content.traverse(child => {
-                        if (child.isMesh && child.geometry) {
-                            if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
-                            
-                            // Transform all 8 corners to get tight AABB in wrapper space
-                            const bbox = child.geometry.boundingBox;
-                            const corners = [
-                                new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
-                                new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.max.z),
-                                new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.min.z),
-                                new THREE.Vector3(bbox.min.x, bbox.max.y, bbox.max.z),
-                                new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.min.z),
-                                new THREE.Vector3(bbox.max.x, bbox.min.y, bbox.max.z),
-                                new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.min.z),
-                                new THREE.Vector3(bbox.max.x, bbox.max.y, bbox.max.z)
-                            ];
-
-                            const combinedMat = inverseWrapperMat.clone().multiply(child.matrixWorld);
-                            
-                            corners.forEach(corner => {
-                                corner.applyMatrix4(combinedMat);
-                                dragInitialBoundingBox.expandByPoint(corner);
-                            });
-                        }
-                    });
-                }
-
-                const gizmoPos = wrapper.position.clone();
-                const gizmoNDC = gizmoPos.clone().project(camera);
-                gizmoNDC.z = 0;
-
-                const mouseNDC = new THREE.Vector3(mouseInput.x, mouseInput.y, 0);
-                const mouseDir = mouseNDC.clone().sub(gizmoNDC);
-
-                const checkAxis = (x, y, z) => {
-                    const axisVec = new THREE.Vector3(x, y, z);
-                    if (currentSpace === 'local') {
-                        axisVec.applyQuaternion(wrapper.quaternion);
-                    }
-                    
-                    const origin = wrapper.position.clone();
-                    const target = origin.clone().add(axisVec);
-                    
-                    origin.project(camera);
-                    target.project(camera);
-                    
-                    const dir = new THREE.Vector2(target.x - origin.x, target.y - origin.y);
-                    const mouse = new THREE.Vector2(mouseInput.x - origin.x, mouseInput.y - origin.y);
-                    
-                    return mouse.dot(dir) > 0;
-                };
-
-                dragAnchorDirections = {
-                    x: detectedAnchorDirections.x !== null ? detectedAnchorDirections.x : checkAxis(1, 0, 0),
-                    y: detectedAnchorDirections.y !== null ? detectedAnchorDirections.y : checkAxis(0, 1, 0),
-                    z: detectedAnchorDirections.z !== null ? detectedAnchorDirections.z : checkAxis(0, 0, 1)
-                };
-            }
         } else {
-            if (!draggingMode) return;
-
-            if (isPivotEditMode && draggingMode === 'translate') {
-                updatePivotOffsetFromWrapper();
-                draggingMode = null;
-                return;
-            }
-
-            if (currentSpace === 'local') {
-                if (draggingMode === 'rotate') {
-                } else if (draggingMode === 'scale') {
-                    const finalScale = wrapper.scale.clone();
-                    if (dragInitialScale.x !== 0 && dragInitialScale.y !== 0 && dragInitialScale.z !== 0) {
-                        const deltaScale = finalScale.divide(dragInitialScale);
-                        const deltaScaleMatrix = new THREE.Matrix4().makeScale(deltaScale.x, deltaScale.y, deltaScale.z);
-                        content.matrix.copy(dragInitialMatrix).premultiply(deltaScaleMatrix);
-                    }
-                }
-            } else {
-                if (draggingMode === 'scale') {
-                    const finalScale = wrapper.scale.clone();
-                    const deltaScale = finalScale.divide(dragInitialScale);
-                    const deltaScaleMatrix = new THREE.Matrix4().makeScale(deltaScale.x, deltaScale.y, deltaScale.z);
-                    content.matrix.copy(dragInitialMatrix).premultiply(deltaScaleMatrix);
-                } else if (draggingMode === 'rotate') {
-                    const finalQuaternion = wrapper.quaternion.clone();
-                    const deltaQuaternion = finalQuaternion.multiply(dragInitialQuaternion.clone().invert());
-                    const deltaRotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(deltaQuaternion);
-                    content.matrix.copy(dragInitialMatrix).premultiply(deltaRotationMatrix);
-                }
-            }
-            content.matrixWorldNeedsUpdate = true;
-            wrapper.scale.set(1, 1, 1);
-            if (!(draggingMode === 'rotate' && currentSpace === 'local')) {
-                wrapper.quaternion.copy(dragInitialQuaternion);
-            }
-            updatePivot(wrapper);
             draggingMode = null;
             isUniformScale = false;
         }
     });
 
     transformControls.addEventListener('change', (event) => {
-        if (transformControls.dragging) {
-            if (isPivotEditMode && transformControls.mode === 'translate') {
-                const wrapper = transformControls.object;
-                if (wrapper) {
-                    const content = wrapper.children[0];
-                    if (content) {
-                        const initialWrapperMatrixWorld = new THREE.Matrix4().compose(dragInitialPosition, dragInitialQuaternion, dragInitialScale);
-                        const initialContentWorldMatrix = initialWrapperMatrixWorld.clone().multiply(dragInitialMatrix);
+        if (transformControls.dragging && currentSelection.mesh) {
+            const tempMatrix = new THREE.Matrix4();
+            const deltaMatrix = new THREE.Matrix4();
 
-                        wrapper.updateMatrixWorld();
-                        const currentWrapperMatrixWorld = wrapper.matrixWorld;
+            // Calculate delta: current * inverse(previous)
+            tempMatrix.copy(previousHelperMatrix).invert();
+            deltaMatrix.multiplyMatrices(selectionHelper.matrixWorld, tempMatrix);
 
-                        const currentWrapperInverse = currentWrapperMatrixWorld.clone().invert();
-                        const newContentLocal = currentWrapperInverse.multiply(initialContentWorldMatrix);
+            const instanceMatrix = new THREE.Matrix4();
+            currentSelection.instanceIds.forEach(id => {
+                currentSelection.mesh.getMatrixAt(id, instanceMatrix);
+                instanceMatrix.premultiply(deltaMatrix);
+                currentSelection.mesh.setMatrixAt(id, instanceMatrix);
+            });
+            currentSelection.mesh.instanceMatrix.needsUpdate = true;
 
-                        content.matrix.copy(newContentLocal);
-                        content.matrix.decompose(content.position, content.quaternion, content.scale);
-                        content.matrixWorldNeedsUpdate = true;
-                    }
-                }
-            } else if (blockbenchScaleMode && transformControls.mode === 'scale' && !isUniformScale) {
-                const wrapper = transformControls.object;
-                if (wrapper && !dragInitialBoundingBox.isEmpty()) {
-                    const deltaScale = wrapper.scale; // Since initial is 1,1,1
-                    const shift = new THREE.Vector3();
-                    
-                    if (Math.abs(deltaScale.x - 1) > 0.0001) {
-                        const isPositive = dragAnchorDirections.x;
-                        const fixedVal = isPositive ? dragInitialBoundingBox.min.x : dragInitialBoundingBox.max.x;
-                        shift.x = fixedVal * (1 - deltaScale.x);
-                    }
-                    if (Math.abs(deltaScale.y - 1) > 0.0001) {
-                        const isPositive = dragAnchorDirections.y;
-                        const fixedVal = isPositive ? dragInitialBoundingBox.min.y : dragInitialBoundingBox.max.y;
-                        shift.y = fixedVal * (1 - deltaScale.y);
-                    }
-                    if (Math.abs(deltaScale.z - 1) > 0.0001) {
-                        const isPositive = dragAnchorDirections.z;
-                        const fixedVal = isPositive ? dragInitialBoundingBox.min.z : dragInitialBoundingBox.max.z;
-                        shift.z = fixedVal * (1 - deltaScale.z);
-                    }
-                    
-                    const shiftWorld = shift.clone().applyQuaternion(wrapper.quaternion);
-                    wrapper.position.copy(dragInitialPosition).add(shiftWorld);
-                }
-            }
+            previousHelperMatrix.copy(selectionHelper.matrixWorld);
+            updateSelectionOverlay();
         }
     });
 
     // key handling
     const handleKeyPress = (key) => {
-        const wrapper = transformControls.object;
         switch (key) {
             case 't':
                 transformControls.setMode('translate');
@@ -538,94 +293,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 currentSpace = currentSpace === 'world' ? 'local' : 'world';
                 transformControls.setSpace(currentSpace);
                 console.log('TransformControls Space:', currentSpace);
-                if (wrapper) {
-                    const content = wrapper.children[0];
-                    if (currentSpace === 'local') {
-                        content.updateWorldMatrix(true, false);
-                        const quaternion = getRotationFromMatrix(content.matrixWorld);
-                        wrapper.quaternion.copy(quaternion);
-                        const inverseQuaternion = quaternion.clone().invert();
-                        const inverseRotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(inverseQuaternion);
-                        content.matrix.premultiply(inverseRotationMatrix);
-                        content.matrixWorldNeedsUpdate = true;
-                    } else {
-                        const quaternion = wrapper.quaternion.clone();
-                        const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quaternion);
-                        content.matrix.premultiply(rotationMatrix);
-                        content.matrixWorldNeedsUpdate = true;
-                        wrapper.quaternion.set(0, 0, 0, 1);
-                    }
-                    updatePivot(wrapper);
-                }
-                break;
-            }
-            case 'z': {
-                pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
-                console.log('Pivot Mode:', pivotMode);
-                const wrapper = transformControls.object;
-                if (wrapper) {
-                    updatePivot(wrapper);
-                }
-                break;
-            }
-            case 'v': {
-                if (wrapper) {
-                    const content = wrapper.children[0];
-                    if (content) {
-                        const epsilon = 1e-6; // threshold to consider matrix unchanged
-                        let prevMatrix = content.matrix.clone();
-                        let iter = 0;
-                        for (; iter < 7; iter++) {
-                            const position = new THREE.Vector3();
-                            const quaternion = new THREE.Quaternion();
-                            const scale = new THREE.Vector3();
-                            content.matrix.decompose(position, quaternion, scale);
-                            content.matrix.compose(position, quaternion, scale);
-                            // compute change magnitude between prevMatrix and current content.matrix
-                            let diff = 0;
-                            const a = prevMatrix.elements;
-                            const b = content.matrix.elements;
-                            for (let i = 0; i < 16; i++) diff += Math.abs(a[i] - b[i]);
-                            if (diff <= epsilon) break;
-                            prevMatrix.copy(content.matrix);
-                        }
-                        content.matrixWorldNeedsUpdate = true;
-                        updatePivot(wrapper, true);
-                        updateSelectionOverlay(wrapper);
-
-                        try {
-                            if (currentSpace === 'local' && transformControls) {
-                                transformControls.setSpace('local');
-                                if (wrapper) {
-                                    const content = wrapper.children[0];
-                                    if (content) {
-                                        // Save wrapper world transform before change
-                                        wrapper.updateMatrixWorld(true);
-                                        const worldBefore = wrapper.matrixWorld.clone();                               
-                                        // Determine desired wrapper orientation from content's world transform
-                                        content.updateWorldMatrix(true, false);
-                                        const desiredQuat = getRotationFromMatrix(content.matrixWorld);                             
-                                        // Apply desired orientation to wrapper
-                                        wrapper.quaternion.copy(desiredQuat);
-                                        wrapper.updateMatrixWorld(true);                           
-                                        // Compute delta that maps worldAfter -> worldBefore and apply to content
-                                        const worldAfter = wrapper.matrixWorld.clone();
-                                        const delta = worldAfter.clone().invert().multiply(worldBefore);
-                                        content.matrix.premultiply(delta);
-                                        content.matrixWorldNeedsUpdate = true;
-                                    }
-                                }
-                            }
-                        } catch (err) {
-                            console.warn('Failed to enforce local gizmo space after uniform scaling', err);
-                        }
-                        if (iter > 0) {
-                            console.log('객체 스케일을 균일하게 조정: 반복 적용됨 (iterations=', iter + 1, ')');
-                        } else {
-                            console.log('객체 스케일을 균일하게 조정');
-                        }
-                    }
-                }
                 break;
             }
             case 'b': {
@@ -645,23 +312,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 isPivotEditMode = true;
                 previousGizmoMode = transformControls.mode;
                 transformControls.setMode('translate');
-            }
-            if (event.ctrlKey) {
-                const wrapper = transformControls.object;
-                if (wrapper) {
-                    wrapper.userData.isCustomPivot = false;
-                    delete wrapper.userData.customPivot;
-                    updatePivot(wrapper);
-                }
-                console.log('Pivot reset to origin (0,0,0)');
-            }
-        }
-
-        if (event.key === 'Control') {
-            if (isPivotEditMode) {
-                isCustomPivot = false;
-                const wrapper = transformControls.object;
-                if (wrapper) updatePivot(wrapper);
             }
         }
 
@@ -778,38 +428,28 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
         const intersects = raycaster.intersectObjects(loadedObjectGroup.children, true);
         if (intersects.length > 0) {
-            let targetObject = null;
+            let targetIntersect = null;
+            // Find first InstancedMesh intersection
             for (const intersect of intersects) {
-                let obj = intersect.object; let isGizmo = false; let checkParent = obj;
-                while (checkParent) {
-                    if (checkParent === transformControls || checkParent.isTransformControlsGizmo) { isGizmo = true; break; }
-                    checkParent = checkParent.parent;
+                if (intersect.object.isInstancedMesh) {
+                    targetIntersect = intersect;
+                    break;
                 }
-                if (!isGizmo) { targetObject = obj; break; }
             }
-            if (targetObject) {
-                while (targetObject.parent && targetObject.parent !== loadedObjectGroup) targetObject = targetObject.parent;
-                if (selectedObject !== targetObject) {
-                    if (selectedObject) resetSelectionAndDeselect();
-                    selectedObject = targetObject;
-                    transformControls.attach(selectedObject);
-                    if (currentSpace === 'local') {
-                        const content = selectedObject.children[0];
-                        content.updateWorldMatrix(true, false);
-                        const quaternion = getRotationFromMatrix(content.matrixWorld);
-                        selectedObject.quaternion.copy(quaternion);
-                        const inverseQuaternion = quaternion.clone().invert();
-                        const inverseRotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(inverseQuaternion);
-                        content.matrix.premultiply(inverseRotationMatrix);
-                        content.matrixWorldNeedsUpdate = true;
-                    }
-                    updatePivot(selectedObject);
-                    updateSelectionOverlay(selectedObject);
-                    console.log('선택된 객체:', selectedObject);
+
+            if (targetIntersect) {
+                const { object, instanceId } = targetIntersect;
+                // Check if already selected
+                if (currentSelection.mesh === object && currentSelection.instanceIds.includes(instanceId)) {
+                    // Already selected, maybe do nothing or toggle? For now, just re-select (no-op)
+                } else {
+                    applySelection(object, [instanceId]);
                 }
+            } else {
+                resetSelectionAndDeselect();
             }
         } else {
-            if (selectedObject) resetSelectionAndDeselect();
+            resetSelectionAndDeselect();
         }
     });
 
@@ -817,15 +457,15 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         getTransformControls: () => transformControls,
         updateGizmo: () => {
             // overlay update
-            if (selectedObject && selectionOverlay) {
-                const content = selectedObject.children[0];
-                if (content) {
-                    content.updateWorldMatrix(true, false);
-                    selectionOverlay.matrix.copy(content.matrixWorld);
-                }
+            if (currentSelection.mesh) {
+                // Overlay is updated in change event, but maybe we need it here too?
+                // Actually, overlay follows the mesh instances which are updated.
+                // But if we want the overlay to be perfectly synced during animation if any, we might update here.
+                // For now, it's static unless transformed.
             }
+            
             // gizmo axis positive/negative toggling
-            if (selectedObject && (transformControls.mode === 'translate' || transformControls.mode === 'scale')) {
+            if (currentSelection.mesh && (transformControls.mode === 'translate' || transformControls.mode === 'scale')) {
                 const gizmoPos = transformControls.object.position;
                 const camPos = camera.position;
                 const direction = camPos.clone().sub(gizmoPos).normalize();
@@ -853,7 +493,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
         },
         resetSelection: resetSelectionAndDeselect,
-        getSelectedObject: () => selectedObject
+        getSelectedObject: () => currentSelection.mesh // Return mesh or null
     };
 }
 

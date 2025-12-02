@@ -841,7 +841,8 @@ async function processBlockDisplay(item) {
                 // block_display 지오메트리는 별도 중심 이동을 하지 않는다. 아이템 디스플레이만 -0.5 보정을 적용한다.
                 allGeometryData.push({
                     modelMatrix: modelMatrix.elements,
-                    geometries: geometryData
+                    geometries: geometryData,
+                    geometryId: resolved.id
                 });
             }
         }
@@ -1466,7 +1467,7 @@ async function processItemModelDisplay(node) {
             originalName: node.name,
             displayType: displayType || null,
             tints: tintList || null,
-            models: [{ modelMatrix: modelMatrix.elements.slice(), geometries: geomData }],
+            models: [{ modelMatrix: modelMatrix.elements.slice(), geometries: geomData, geometryId: modelId }],
             transform: node.transform || node.transforms || null
         };
     } catch (e) {
@@ -1754,16 +1755,8 @@ self.onmessage = async (e) => {
                 const matrixArray = (Array.isArray(model.modelMatrix) || ArrayBuffer.isView(model.modelMatrix))
                     ? model.modelMatrix
                     : identityMatrix;
-                if (matrixArray && matrixArray.length === 16) {
-                    tempMatrix4.fromArray(matrixArray as any);
-                } else {
-                    tempMatrix4.identity();
-                }
-                tempNormalMatrix.getNormalMatrix(tempMatrix4);
-                const m = tempMatrix4.elements;
-                const n = tempNormalMatrix.elements;
 
-                for (const geomData of model.geometries) {
+                model.geometries.forEach((geomData, geomIndex) => {
                     const { positions, normals, uvs, indices } = geomData;
 
                     const posStart = posCursor;
@@ -1771,30 +1764,11 @@ self.onmessage = async (e) => {
                     const uvStart = uvCursor;
                     const idxStart = indicesCursor;
 
-                    for (let i = 0; i < positions.length; i += 3) {
-                        const x = positions[i];
-                        const y = positions[i + 1];
-                        const z = positions[i + 2];
-                        const w = m[3] * x + m[7] * y + m[11] * z + m[15];
-                        const invW = w !== 0 ? 1 / w : 1;
-                        posView[posCursor++] = (m[0] * x + m[4] * y + m[8] * z + m[12]) * invW;
-                        posView[posCursor++] = (m[1] * x + m[5] * y + m[9] * z + m[13]) * invW;
-                        posView[posCursor++] = (m[2] * x + m[6] * y + m[10] * z + m[14]) * invW;
-                    }
+                    posView.set(positions, posCursor);
+                    posCursor += positions.length;
 
-                    for (let i = 0; i < normals.length; i += 3) {
-                        const nx = normals[i];
-                        const ny = normals[i + 1];
-                        const nz = normals[i + 2];
-                        const tx = n[0] * nx + n[3] * ny + n[6] * nz;
-                        const ty = n[1] * nx + n[4] * ny + n[7] * nz;
-                        const tz = n[2] * nx + n[5] * ny + n[8] * nz;
-                        const lenSq = tx * tx + ty * ty + tz * tz;
-                        const invLen = lenSq > 0 ? 1 / Math.sqrt(lenSq) : 1;
-                        normView[normCursor++] = tx * invLen;
-                        normView[normCursor++] = ty * invLen;
-                        normView[normCursor++] = tz * invLen;
-                    }
+                    normView.set(normals, normCursor);
+                    normCursor += normals.length;
 
                     uvView.set(uvs, uvCursor);
                     uvCursor += uvs.length;
@@ -1805,6 +1779,9 @@ self.onmessage = async (e) => {
                     metadata.push({
                         itemId: itemId,
                         transform: item.transform,
+                        modelMatrix: matrixArray,
+                        geometryId: model.geometryId,
+                        geometryIndex: geomIndex,
                         texPath: geomData.texPath,
                         tintHex: geomData.tintHex,
                         isItemDisplayModel: item.type === 'itemDisplayModel',
@@ -1817,7 +1794,7 @@ self.onmessage = async (e) => {
                         indicesByteOffset: indicesByteOffset + idxStart * indexElementSize,
                         indicesLen: indices.length,
                     });
-                }
+                });
             }
         }
 

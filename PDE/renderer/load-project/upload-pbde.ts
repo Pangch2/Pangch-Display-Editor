@@ -151,7 +151,7 @@ const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); //
 let sharedPlaceholderMaterial: THREE.Material | null = null;
 
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
-const MAX_TEXTURE_DECODE_CONCURRENCY = 256;
+const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 function acquireTextureSlot() {
@@ -170,94 +170,6 @@ function releaseTextureSlot() {
     }
 }
 
-// --- 플레이어 머리 텍스처 캐시 ---
-const headTextureCache = new Map<string, THREE.Texture>(); // 텍스처 URL별 THREE.Texture 캐시
-const headTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // `${gen}|${url}` 키별 로드 프라미스 캐시
-
-const dataUrlBlobCache = new Map<string, Blob | null>();
-const dataUrlBlobPromiseCache = new Map<string, Promise<Blob | null>>();
-const MAX_DATA_URL_BLOBS = 16;
-
-async function dataUrlToBlob(dataUrl: string): Promise<Blob | null> {
-    if (!dataUrl) return null;
-    if (dataUrlBlobCache.has(dataUrl)) return dataUrlBlobCache.get(dataUrl);
-    if (dataUrlBlobPromiseCache.has(dataUrl)) return dataUrlBlobPromiseCache.get(dataUrl);
-    const p = (async () => {
-        try {
-            const response = await fetch(dataUrl);
-            if (!response.ok) return null;
-            const blob = await response.blob();
-            dataUrlBlobCache.set(dataUrl, blob);
-            if (dataUrlBlobCache.size > MAX_DATA_URL_BLOBS) {
-                const oldestKey = dataUrlBlobCache.keys().next().value as string | undefined;
-                if (oldestKey) {
-                    dataUrlBlobCache.delete(oldestKey);
-                }
-            }
-            return blob;
-        } catch {
-            return null;
-        } finally {
-            dataUrlBlobPromiseCache.delete(dataUrl);
-        }
-    })();
-    dataUrlBlobPromiseCache.set(dataUrl, p);
-    return p;
-}
-
-async function loadPlayerHeadTexture(url: string, gen: number): Promise<THREE.Texture> {
-    if (headTextureCache.has(url) && gen === currentLoadGen) return headTextureCache.get(url)!;
-    const promiseKey = `${gen}|${url}`;
-    if (headTexturePromiseCache.has(promiseKey)) return headTexturePromiseCache.get(promiseKey)!;
-
-    const p = (async () => {
-        await acquireTextureSlot();
-        try {
-            let blob: Blob | null;
-            if (url.startsWith('data:')) {
-                blob = await dataUrlToBlob(url);
-                if (!blob) throw new Error('Invalid data URL');
-            } else {
-                // http를 https로 요청하도록 변경
-                if (url.startsWith('http://')) {
-                    url = url.replace('http://', 'https://');
-                }
-                const resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                blob = await resp.blob();
-            }
-            if (!blob) throw new Error('Texture decode failed: empty blob');
-
-            const imageBitmap = await createImageBitmap(blob);
-            const tex = new THREE.Texture(imageBitmap);
-            // 엔티티 텍스처에 맞는 필터 설정을 적용한다.
-            tex.magFilter = THREE.NearestFilter;
-            tex.minFilter = THREE.NearestFilter;
-            tex.generateMipmaps = false;
-            tex.anisotropy = 1;
-            tex.colorSpace = THREE.SRGBColorSpace;
-            tex.wrapS = THREE.ClampToEdgeWrapping;
-            tex.wrapT = THREE.ClampToEdgeWrapping;
-            tex.needsUpdate = true;
-
-            if (gen !== currentLoadGen) {
-                disposeTexture(tex);
-                throw new Error('Stale generation');
-            }
-            headTextureCache.set(url, tex);
-            return tex;
-        } finally {
-            releaseTextureSlot();
-        }
-    })();
-
-    headTexturePromiseCache.set(promiseKey, p);
-    try {
-        return await p;
-    } finally {
-        headTexturePromiseCache.delete(promiseKey);
-    }
-}
 
 // 리로드 이후 늦게 도착한 비동기 결과를 무시하기 위한 세대 토큰
 let currentLoadGen = 0;
@@ -357,6 +269,64 @@ async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Tex
     }
 }
 
+enum TransparencyType {
+    Opaque = 0,
+    Cutout = 1,
+    Translucent = 2
+}
+
+function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
+    if (texture.userData.transparencyType !== undefined) {
+        return texture.userData.transparencyType;
+    }
+
+    try {
+        const image = texture.image;
+        if (!image || !image.width || !image.height) return TransparencyType.Opaque;
+
+        const width = image.width;
+        const height = image.height;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        
+        if (!ctx) return TransparencyType.Opaque;
+        
+        ctx.drawImage(image, 0, 0);
+        const imgData = ctx.getImageData(0, 0, width, height);
+        const data = imgData.data;
+        
+        let hasAlpha = false;
+        let hasIntermediateAlpha = false;
+
+        for (let i = 3; i < data.length; i += 4) {
+            const alpha = data[i];
+            if (alpha < 255) {
+                hasAlpha = true;
+                if (alpha > 0 && alpha < 250) { 
+                    hasIntermediateAlpha = true;
+                    break; 
+                }
+            }
+        }
+
+        let type = TransparencyType.Opaque;
+        if (hasIntermediateAlpha) {
+            type = TransparencyType.Translucent;
+        } else if (hasAlpha) {
+            type = TransparencyType.Cutout;
+        }
+
+        texture.userData.transparencyType = type;
+        return type;
+
+    } catch (e) {
+        console.warn("Texture analysis failed:", e);
+        return TransparencyType.Opaque;
+    }
+}
+
 async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number): Promise<THREE.Material> {
     const key = `${texPath}|${(tintHex >>> 0)}`;
     if (blockMaterialCache.has(key) && gen === currentLoadGen) return blockMaterialCache.get(key)!;
@@ -369,6 +339,28 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
         material.toneMapped = false;
         material.fog = false;
         material.flatShading = true;
+
+        // 텍스처 분석을 통한 투명도 및 렌더링 설정 자동화
+        const transparencyType = analyzeTextureTransparency(tex);
+        
+        if (transparencyType === TransparencyType.Translucent) {
+            // 반투명 (유리, 물, 얼음 등)
+            material.transparent = true;
+            material.depthWrite = false; 
+            material.alphaTest = 0;
+        } else if (transparencyType === TransparencyType.Cutout) {
+            // 컷아웃 (잔디, 꽃, 묘목, 나뭇잎 등)
+            material.transparent = false; 
+            material.depthWrite = true;
+            material.alphaTest = 0.1;
+        } else {
+            // 불투명 (일반 블록)
+            material.transparent = false;
+            material.depthWrite = true;
+            material.alphaTest = 0;
+            material.side = THREE.FrontSide;
+        }
+
         if (gen !== currentLoadGen) {
             // 오래된 세대 결과면 즉시 폐기하고 캐시에 넣지 않는다.
             try { material.dispose(); } catch {}
@@ -461,54 +453,6 @@ function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.Buffe
 }
 
 
-/**
- * 주의: BoxGeometry는 인덱스가 있는 BufferGeometry를 반환합니다.
- * 병합을 위해 toNonIndexed()로 변환한 뒤 attribute들을 concat 합니다.
- */
-function mergeNonIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
-    // 모든 geometry는 non-indexed 상태여야 한다 (toNonIndexed()로 보장)
-    if (!geometries || geometries.length === 0) return null;
-
-    const first = geometries[0];
-    const merged = new THREE.BufferGeometry();
-
-    // 합쳐야 할 attribute 이름 목록을 수집 (position, normal, uv 등)
-    const attrNames = Object.keys(first.attributes);
-
-    attrNames.forEach(name => {
-        const arrays = [];
-        let itemSize = null;
-        let ArrayType = Float32Array;
-
-        for (const g of geometries) {
-            const attr = g.getAttribute(name) as THREE.BufferAttribute | null;
-            if (!attr) {
-                console.warn(`mergeNonIndexedGeometries: geometry missing attribute ${name}`);
-                continue;
-            }
-            arrays.push(attr.array);
-            itemSize = attr.itemSize;
-            ArrayType = attr.array.constructor; // 유지되는 typed array 타입 사용
-        }
-
-        // 총 길이 계산
-        const totalLen = arrays.reduce((s, a) => s + a.length, 0);
-        const mergedArray = new ArrayType(totalLen);
-        let offset = 0;
-        for (const a of arrays) {
-            mergedArray.set(a, offset);
-            offset += a.length;
-        }
-        if (itemSize != null) {
-            merged.setAttribute(name, new THREE.BufferAttribute(mergedArray, itemSize));
-        }
-    });
-
-    // 인덱스는 이미 non-indexed 이므로 설정할 필요 없음
-    merged.computeBoundingBox();
-    merged.computeBoundingSphere();
-    return merged;
-}
 
 /**
  * 재사용 가능한 머리 지오메트리들을 생성하고 UV를 한 번만 설정합니다.
@@ -584,11 +528,9 @@ function createHeadGeometries() {
     const base = createGeometry(false);
     const layer = createGeometry(true);
 
-    // 병합 지오메트리 생성 (non-indexed로 변환 후 concat)
+    // 병합 지오메트리 생성 (indexed)
     try {
-        const baseNI = base.toNonIndexed();
-        const layerNI = layer.toNonIndexed();
-        const merged = mergeNonIndexedGeometries([baseNI, layerNI]);
+        const merged = mergeIndexedGeometries([base, layer]);
         headGeometries = {
             base: base,
             layer: layer,
@@ -612,99 +554,97 @@ function createHeadGeometries() {
  * @param {boolean} isLayer - (호환용) true면 layer 지오메트리, false면 base 지오메트리 반환
  * @returns {THREE.Mesh} 최적화된 머리 메시 객체
  */
-const materialCache = new WeakMap<THREE.Texture, THREE.Material>();
-
-
-/**
- * 텍스처의 특정 UV 영역이 완전히 투명한지 확인합니다.
- * @param texture - 검사할 텍스처
- * @param uvRegions - 검사할 UV 좌표 배열 [x, y, width, height]
- * @returns 모든 픽셀이 투명하면 true
- */
-function isLayerTransparent(texture: THREE.Texture, uvRegions: number[][]): boolean {
-    try {
-        const img = texture.image;
-        if (!img || !img.width || !img.height) return false;
-
-        // Canvas를 사용하여 픽셀 데이터 추출
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) return false;
-
-        ctx.drawImage(img, 0, 0);
-        
-        // 각 UV 영역을 검사
-        for (const [x, y, width, height] of uvRegions) {
-            const imageData = ctx.getImageData(x, y, width, height);
-            const data = imageData.data;
-            
-            // 알파 채널 검사 (RGBA의 A)
-            for (let i = 3; i < data.length; i += 4) {
-                if (data[i] > 0) {
-                    // 투명하지 않은 픽셀 발견
-                    return false;
-                }
-            }
-        }
-        
-        return true; // 모든 픽셀이 투명함
-    } catch (err) {
-        console.warn('Layer transparency check failed:', err);
-        return false; // 오류 발생 시 투명하지 않다고 가정
-    }
-}
-
-/**
- * 병합된(merged) 지오메트리를 사용하는 단일 메시 생성 (base+layer -> 1 draw call)
- */
-function createOptimizedHeadMerged(texture: THREE.Texture): THREE.Mesh {
-    if (!headGeometries) {
-        createHeadGeometries();
-    }
-    const geometry = (headGeometries?.merged || headGeometries?.base) ?? new THREE.BoxGeometry(1, 1, 1);
-
-    const tex = texture as OptimizedTexture;
-    if (!tex.__optimizedSetupDone) {
-        tex.magFilter = THREE.NearestFilter;
-        tex.minFilter = THREE.NearestFilter;
-        tex.generateMipmaps = false;
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.__optimizedSetupDone = true;
-    }
-
-    let material = materialCache.get(texture);
-    if (!material) {
-        const matData = createEntityMaterial(texture);
-        material = matData.material;
-        material.toneMapped = false;
-        material.fog = false;
-        material.flatShading = true;
-        materialCache.set(texture, material);
-    }
-
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
-    return mesh;
-}
+//const materialCache = new WeakMap<THREE.Texture, THREE.Material>();
+//
+//
+///**
+// * 텍스처의 특정 UV 영역이 완전히 투명한지 확인합니다.
+// * @param texture - 검사할 텍스처
+// * @param uvRegions - 검사할 UV 좌표 배열 [x, y, width, height]
+// * @returns 모든 픽셀이 투명하면 true
+// */
+//function isLayerTransparent(texture: THREE.Texture, uvRegions: number[][]): boolean {
+//    try {
+//        const img = texture.image;
+//        if (!img || !img.width || !img.height) return false;
+//
+//        // Canvas를 사용하여 픽셀 데이터 추출
+//        const canvas = document.createElement('canvas');
+//        canvas.width = img.width;
+//        canvas.height = img.height;
+//        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+//        if (!ctx) return false;
+//
+//        ctx.drawImage(img, 0, 0);
+//        
+//        // 각 UV 영역을 검사
+//        for (const [x, y, width, height] of uvRegions) {
+//            const imageData = ctx.getImageData(x, y, width, height);
+//            const data = imageData.data;
+//            
+//            // 알파 채널 검사 (RGBA의 A)
+//            for (let i = 3; i < data.length; i += 4) {
+//                if (data[i] > 0) {
+//                    // 투명하지 않은 픽셀 발견
+//                    return false;
+//                }
+//            }
+//        }
+//        
+//        return true; // 모든 픽셀이 투명함
+//    } catch (err) {
+//        console.warn('Layer transparency check failed:', err);
+//        return false; // 오류 발생 시 투명하지 않다고 가정
+//    }
+//}
+//
+///**
+// * 병합된(merged) 지오메트리를 사용하는 단일 메시 생성 (base+layer -> 1 draw call)
+// */
+//function createOptimizedHeadMerged(texture: THREE.Texture): THREE.Mesh {
+//    if (!headGeometries) {
+//        createHeadGeometries();
+//    }
+//    const geometry = (headGeometries?.merged || headGeometries?.base) ?? new THREE.BoxGeometry(1, 1, 1);
+//
+//    const tex = texture as OptimizedTexture;
+//    if (!tex.__optimizedSetupDone) {
+//        tex.magFilter = THREE.NearestFilter;
+//        tex.minFilter = THREE.NearestFilter;
+//        tex.generateMipmaps = false;
+//        tex.colorSpace = THREE.SRGBColorSpace;
+//        tex.__optimizedSetupDone = true;
+//    }
+//
+//    let material = materialCache.get(texture);
+//    if (!material) {
+//        const matData = createEntityMaterial(texture);
+//        material = matData.material;
+//        material.toneMapped = false;
+//        material.fog = false;
+//        material.flatShading = true;
+//        
+//        // 플레이어 스킨의 2차 레이어(모자 등)는 투명한 부분이 있으므로 alphaTest 적용
+//        material.transparent = false;
+//        material.alphaTest = 0.1;
+//        material.depthWrite = true;
+//        material.side = THREE.DoubleSide;
+//
+//        materialCache.set(texture, material);
+//    }
+//
+//    const mesh = new THREE.Mesh(geometry, material);
+//    mesh.castShadow = false;
+//    mesh.receiveShadow = false;
+//    return mesh;
+//}
 
 
 /**
  * PBDE 파일을 로드하고 3D 씬에 객체를 배치합니다.
  * @param {File} file - 불러올 .pbde 또는 .bde 파일
  */
-function loadpbde(file: File): void {
-    // 0. 새 프로젝트를 로드하기 전에 현재 선택 상태를 리셋합니다.
-    // 이는 TransformControls가 제거될 객체를 참조하는 것을 방지합니다.
-    if (loadedObjectGroup.userData.resetSelection) {
-        loadedObjectGroup.userData.resetSelection();
-    }
-
-    // 1. 이전 객체 및 리소스 완벽 해제
-    const myGen = ++currentLoadGen;
-    
+function _clearSceneAndCaches(): void {
     // 1-1. 캐시된 텍스처 및 리소스 완벽 해제
     textureCache.forEach(cachedItem => {
         if (cachedItem && cachedItem instanceof THREE.Texture) {
@@ -721,10 +661,7 @@ function loadpbde(file: File): void {
     blockTextureCache.clear();
     blockTexturePromiseCache.clear();
 
-    // 1-1-c. 플레이어 헤드 텍스처 캐시 해제 및 초기화
-    headTextureCache.forEach((tex) => { try { disposeTexture(tex); } catch {} });
-    headTextureCache.clear();
-    headTexturePromiseCache.clear();
+
 
     // 1-1-d. 지오메트리 캐시 해제
     geometryCache.forEach((geo) => { try { geo.dispose(); } catch {} });
@@ -761,14 +698,26 @@ function loadpbde(file: File): void {
 
     // 1-4. Three.js 전역 캐시 비우기
     THREE.Cache.clear();
+}
 
+function _loadAndRenderPbde(file: File, isMerge: boolean): void {
+    // 0. 새 프로젝트를 로드하기 전에 현재 선택 상태를 리셋합니다.
+    if (loadedObjectGroup.userData.resetSelection) {
+        loadedObjectGroup.userData.resetSelection();
+    }
+
+    const myGen = ++currentLoadGen;
+
+    if (!isMerge) {
+        _clearSceneAndCaches();
+    }
+    
     if (worker) {
         worker.terminate();
     }
-    // 2. 웹 워커 생성
+    
     worker = new PbdeWorker();
 
-    // --- 최적화: 머리 지오메트리 생성 (필요한 경우) ---
     createHeadGeometries();
 
     worker.onmessage = (e) => {
@@ -817,58 +766,22 @@ function loadpbde(file: File): void {
 
             console.log(`[Debug] Processing ${geometryMetas.length + otherItems.length} items from worker (binary).`);
 
-            const itemsById = new Map();
+            const instancedGeometries = new Map<string, THREE.BufferGeometry>();
+            const instancedMaterials = new Map<string, THREE.Material>();
+            const materialPromises = new Map<string, Promise<THREE.Material>>();
+            
+            // Grouping structure: GeometryId -> InstanceTransformString -> PartMeta[]
+            const blocks = new Map<string, Map<string, any[]>>();
+
+            ensureSharedPlaceholder();
+            const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
+
             for (const meta of geometryMetas) {
-                if (!itemsById.has(meta.itemId)) {
-                    itemsById.set(meta.itemId, []);
-                }
-                itemsById.get(meta.itemId).push(meta);
-            }
+                const geomKey = `${meta.geometryId}|${meta.geometryIndex}`;
+                let geometry = instancedGeometries.get(geomKey);
 
-            for (const [itemId, metasForThisItem] of itemsById.entries()) {
-                // 2중 그룹 구조: TransformControls용 래퍼 + 원본 데이터 보존용 내부 그룹
-                const wrapperGroup = new THREE.Group();
-                wrapperGroup.name = `wrapper_${itemId}`;
-                wrapperGroup.matrixAutoUpdate = true; // TransformControls가 자동으로 업데이트
-                
-                // 타입 정보를 wrapper에 저장 (block_display / item_display 구분)
-                const isItemDisplay = metasForThisItem[0].isItemDisplayModel;
-                wrapperGroup.userData.displayType = isItemDisplay ? 'item_display' : 'block_display';
-                
-                // 변환 행렬 처리
-                const finalMatrix = new THREE.Matrix4();
-                finalMatrix.fromArray(metasForThisItem[0].transform);
-                finalMatrix.transpose();
-                
-                // 위치만 추출
-                const position = new THREE.Vector3();
-                position.setFromMatrixPosition(finalMatrix);
-                
-                // 래퍼 그룹에 위치만 적용 (TransformControls가 이 위치에서 작동)
-                wrapperGroup.position.copy(position);
-                
-                // 변환 행렬 그룹 (회전과 스케일만 적용, 비균등 스케일 보존)
-                const transformGroup = new THREE.Group();
-                transformGroup.name = `content_${itemId}`;
-                transformGroup.matrixAutoUpdate = false;
-                
-                // 위치를 제거한 로컬 변환 행렬 생성 (회전과 스케일만 포함)
-                const localMatrix = finalMatrix.clone();
-                localMatrix.setPosition(0, 0, 0);
-                transformGroup.matrix.copy(localMatrix);
-                transformGroup.matrixWorldNeedsUpdate = true;
-                
-                // 래퍼 그룹에 내부 그룹 추가
-                wrapperGroup.add(transformGroup);
-                
-                ensureSharedPlaceholder();
-
-                // 같은 텍스처·틴트 조합끼리 모아 한 번에 머티리얼을 할당한다.
-                const materialGroups = new Map();
-
-                for (const meta of metasForThisItem) {
-                    const geom = new THREE.BufferGeometry();
-
+                if (!geometry) {
+                    geometry = new THREE.BufferGeometry();
                     const positions = new Float32Array(sharedBuffer, meta.posByteOffset, meta.posLen);
                     const normals = new Float32Array(sharedBuffer, meta.normByteOffset, meta.normLen);
                     const uvs = new Float32Array(sharedBuffer, meta.uvByteOffset, meta.uvLen);
@@ -876,53 +789,139 @@ function loadpbde(file: File): void {
                         ? new Uint32Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen)
                         : new Uint16Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen);
 
-                    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                    geom.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-                    geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-                    geom.setIndex(new THREE.BufferAttribute(indices, 1));
-
-                    const key = `${meta.texPath}|${(meta.tintHex ?? 0xffffff) >>> 0}`;
-                    let entry = materialGroups.get(key);
-                    if (!entry) {
-                        entry = { texPath: meta.texPath, tintHex: meta.tintHex ?? 0xffffff, geoms: [] };
-                        materialGroups.set(key, entry);
-                    }
-                    entry.geoms.push(geom);
+                    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+                    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+                    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+                    geometry.computeBoundingSphere();
+                    instancedGeometries.set(geomKey, geometry);
                 }
 
-                for (const entry of materialGroups.values()) {
-                    const mergedGeom = entry.geoms.length > 1 ? mergeIndexedGeometries(entry.geoms) : entry.geoms[0];
-                    if (mergedGeom && entry.geoms.length > 1) {
-                        for (const g of entry.geoms) if (g !== mergedGeom) g.dispose();
+                const geomId = meta.geometryId;
+                // Use transform (Instance Matrix) as key to identify the instance
+                const instanceMat = meta.transform.join(',');
+                
+                let geomGroup = blocks.get(geomId);
+                if (!geomGroup) {
+                    geomGroup = new Map();
+                    blocks.set(geomId, geomGroup);
+                }
+                
+                let instanceParts = geomGroup.get(instanceMat);
+                if (!instanceParts) {
+                    instanceParts = [];
+                    geomGroup.set(instanceMat, instanceParts);
+                }
+                instanceParts.push(meta);
+            }
+
+            // Process grouped blocks
+            for (const [geomId, instancesMap] of blocks) {
+                // Group instances by Signature (combination of parts and materials)
+                const signatureGroups = new Map<string, { parts: any[], matrices: THREE.Matrix4[] }>();
+
+                for (const [matrixStr, parts] of instancesMap) {
+                    // Sort parts by geometryIndex to ensure consistent order
+                    parts.sort((a, b) => a.geometryIndex - b.geometryIndex);
+
+                    // Create Signature (modelMatrix 포함하여 facing 등 blockstate 정보 반영)
+                    const signature = parts.map(p => 
+                        `${p.geometryIndex}|${p.texPath}|${p.tintHex ?? 0xffffff}|${p.modelMatrix.join(',')}`
+                    ).join('||');
+
+                    let group = signatureGroups.get(signature);
+                    if (!group) {
+                        group = { parts: parts, matrices: [] };
+                        signatureGroups.set(signature, group);
                     }
-                    if (mergedGeom) {
-                        // 🚀 최적화 2: Frustum Culling - 정확한 바운딩 계산
-                        if (!mergedGeom.boundingBox) mergedGeom.computeBoundingBox();
-                        if (!mergedGeom.boundingSphere) mergedGeom.computeBoundingSphere();
+                    
+                    // Reconstruct instance matrix
+                    const matrix = new THREE.Matrix4().fromArray(parts[0].transform).transpose();
+                    group.matrices.push(matrix);
+                }
 
-                        const placeholderMaterial = (sharedPlaceholderMaterial as THREE.Material);
-                        const mesh = new THREE.Mesh(mergedGeom, placeholderMaterial);
-                        mesh.castShadow = false;
-                        mesh.receiveShadow = false;
-                        
-                        // 🚀 최적화 2: Frustum Culling 활성화
-                        mesh.frustumCulled = true;
-                        
-                        transformGroup.add(mesh);
+                // Create InstancedMesh for each signature group
+                for (const [sig, group] of signatureGroups) {
+                    const representativeParts = group.parts;
+                    const matrices = group.matrices;
 
-                        (async () => {
-                            try {
-                                const mat = await getBlockMaterial(entry.texPath, entry.tintHex, myGen);
-                                if (myGen !== currentLoadGen) return; // 오래된 결과 무시
-                                mesh.material = mat;
-                                mesh.material.needsUpdate = true;
-                            } catch (e) {
-                                console.warn(`[Texture] Error while loading ${entry.texPath}:`, e);
+                    // Merge Geometries
+                    const geometriesToMerge: THREE.BufferGeometry[] = [];
+                    const materials: THREE.Material[] = [];
+                    const matPromisesForMesh: Promise<THREE.Material>[] = [];
+
+                    for (const part of representativeParts) {
+                        const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                        const baseGeo = instancedGeometries.get(geomKey)!;
+                        
+                        // Clone and apply local transform (modelMatrix)
+                        const clonedGeo = baseGeo.clone();
+                        const localMatrix = new THREE.Matrix4().fromArray(part.modelMatrix);
+                        clonedGeo.applyMatrix4(localMatrix);
+                        geometriesToMerge.push(clonedGeo);
+
+                        // Prepare Material
+                        const matKey = `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}`;
+                        let material = instancedMaterials.get(matKey);
+                        
+                        if (!material) {
+                            // If not loaded, use placeholder and load it
+                            material = placeholderMaterial;
+                            if (!materialPromises.has(matKey)) {
+                                const p = getBlockMaterial(part.texPath, part.tintHex, myGen).then(m => {
+                                    if (myGen === currentLoadGen) {
+                                        instancedMaterials.set(matKey, m);
+                                    }
+                                    return m;
+                                });
+                                materialPromises.set(matKey, p);
                             }
-                        })();
+                            matPromisesForMesh.push(materialPromises.get(matKey)!);
+                        } else {
+                            matPromisesForMesh.push(Promise.resolve(material));
+                        }
+                        materials.push(material);
+                    }
+
+                    const mergedGeo = mergeIndexedGeometries(geometriesToMerge);
+                    if (mergedGeo) {
+                        // Add groups for multi-material support
+                        let start = 0;
+                        for (let i = 0; i < geometriesToMerge.length; i++) {
+                            const count = geometriesToMerge[i].getIndex()!.count;
+                            mergedGeo.addGroup(start, count, i);
+                            start += count;
+                        }
+
+                        const instancedMesh = new THREE.InstancedMesh(mergedGeo, materials, matrices.length);
+                        instancedMesh.frustumCulled = true;
+
+                        for (let i = 0; i < matrices.length; i++) {
+                            instancedMesh.setMatrixAt(i, matrices[i]);
+                        }
+                        instancedMesh.instanceMatrix.needsUpdate = true;
+                        loadedObjectGroup.add(instancedMesh);
+
+                        // Handle async material loading
+                        if (matPromisesForMesh.length > 0) {
+                            Promise.all(matPromisesForMesh).then(loadedMats => {
+                                if (myGen === currentLoadGen) {
+                                    instancedMesh.material = loadedMats;
+                                    // Check transparency
+                                    if (loadedMats.some(m => m.transparent)) {
+                                        instancedMesh.renderOrder = 1;
+                                    }
+                                }
+                            }).catch(e => {
+                                console.warn(`[Texture] Error loading materials for ${geomId}:`, e);
+                            });
+                        } else {
+                             if (materials.some(m => m.transparent)) {
+                                instancedMesh.renderOrder = 1;
+                            }
+                        }
                     }
                 }
-                loadedObjectGroup.add(wrapperGroup); // 래퍼 그룹을 씬에 추가
             }
 
             const playerHeadItems: Array<any> = [];
@@ -935,96 +934,151 @@ function loadpbde(file: File): void {
             if (playerHeadItems.length > 0) {
                 (async () => {
                     try {
-                        const headGroups = await Promise.all(playerHeadItems.map(async (item) => {
-                            // 2중 그룹 구조: TransformControls용 래퍼 + 원본 데이터 보존용 내부 그룹
-                            const wrapperGroup = new THREE.Group();
-                            wrapperGroup.name = `wrapper_head_${item.textureUrl}`;
-                            wrapperGroup.matrixAutoUpdate = true; // TransformControls가 자동으로 업데이트
-                            wrapperGroup.userData.displayType = 'item_display'; // 플레이어 헤드는 item_display
-                            
-                            // 변환 행렬 처리
-                            const finalMatrix = new THREE.Matrix4();
-                            finalMatrix.fromArray(item.transform);
-                            finalMatrix.transpose();
-                            const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
-                            finalMatrix.multiply(scaleMatrix);
-                            
-                            // 위치만 추출
-                            const position = new THREE.Vector3();
-                            position.setFromMatrixPosition(finalMatrix);
-                            
-                            // 래퍼 그룹에 위치만 적용 (TransformControls가 이 위치에서 작동)
-                            wrapperGroup.position.copy(position);
-                            
-                            // 변환 행렬 그룹 (회전과 스케일만 적용, 비균등 스케일 보존)
-                            const transformGroup = new THREE.Group();
-                            transformGroup.name = `content_head_${item.textureUrl}`;
-                            transformGroup.userData.isPlayerHead = true;
-                            transformGroup.userData.gen = myGen;
-                            transformGroup.matrixAutoUpdate = false;
-                            
-                            // 위치를 제거한 로컬 변환 행렬 생성 (회전과 스케일만 포함)
-                            const localMatrix = finalMatrix.clone();
-                            localMatrix.setPosition(0, 0, 0);
-                            transformGroup.matrix.copy(localMatrix);
-                            transformGroup.matrixWorldNeedsUpdate = true;
-
-                            try {
-                                const tex = await loadPlayerHeadTexture(item.textureUrl, myGen);
-                                
-                                // 2번 레이어(hat layer)의 UV 영역 정의
-                                const layerUVRegions = [
-                                    [48, 8, 8, 8],  // right
-                                    [32, 8, 8, 8],  // left
-                                    [40, 0, 8, 8],  // top
-                                    [48, 0, 8, 8],  // bottom
-                                    [56, 8, 8, 8],  // front
-                                    [40, 8, 8, 8]   // back
-                                ];
-                                
-                                // 2번 레이어가 투명한지 확인
-                                const isLayer2Transparent = isLayerTransparent(tex, layerUVRegions);
-                                
-                                // 피벗 오프셋 계산
-                                // 두 레이어 모두 translate(0, -0.5, 0)로 바닥이 y=0에 위치
-                                // 1번 레이어: scale 1.0 -> 중심 (0, 0.5, 0)
-                                // 2번 레이어: scale 1.0625 -> 중심 (0, 0.53125, 0)
-                                // 차이: 0.03125 (= (1.0625 - 1.0) / 2)
-                                let pivotOffset = new THREE.Vector3(0, 0, 0);
-                                
-                                if (!isLayer2Transparent) {
-                                    // 2번 레이어가 보이면 2번 레이어의 중심을 기준으로
-                                    // Y축으로만 0.03125 오프셋 (바닥은 같지만 높이가 더 높음)
-                                    pivotOffset.set(0, 0.03125, 0);
-                                }
-                                // isLayer2Transparent가 true면 pivotOffset은 (0,0,0)으로 1번 레이어 기준
-                                
-                                // customPivot을 wrapper에 설정
-                                wrapperGroup.userData.customPivot = pivotOffset.clone();
-                                wrapperGroup.userData.isCustomPivot = true;
-                                
-                                transformGroup.add(createOptimizedHeadMerged(tex));
-                            } catch (err) {
-                                console.error('플레이어 헤드 텍스처 로드 실패:', err);
-                            }
-
-                            // 래퍼 그룹에 내부 그룹 추가
-                            wrapperGroup.add(transformGroup);
-                            
-                            return wrapperGroup;
-                        }));
-
-                        if (myGen !== currentLoadGen) {
+                        if (!headGeometries || !headGeometries.merged) {
+                            console.error("Head geometries not available for instancing.");
                             return;
                         }
 
-                        headGroups.forEach((group) => {
-                            if (group) {
-                                loadedObjectGroup.add(group);
-                            }
+                        const uniqueUrls = [...new Set(playerHeadItems.map(item => item.textureUrl))];
+                        
+                        const ATLAS_SIZE = 2048;
+                        const PART_SIZE = 8;
+                        const PART_BLOCK_WIDTH = PART_SIZE * 3;
+                        const PART_BLOCK_HEIGHT = PART_SIZE * 4;
+                        const BLOCKS_PER_ROW = Math.floor(ATLAS_SIZE / PART_BLOCK_WIDTH);
+
+                        const atlasCanvas = document.createElement('canvas');
+                        atlasCanvas.width = ATLAS_SIZE;
+                        atlasCanvas.height = ATLAS_SIZE;
+                        const atlasCtx = atlasCanvas.getContext('2d');
+                        if (!atlasCtx) return;
+                        atlasCtx.imageSmoothingEnabled = false;
+
+                        const skinLayouts = new Map<string, { x: number, y: number }>();
+                        
+                        const faceParts = {
+                            right:  { s: [16, 8] }, left:   { s: [0, 8] },
+                            top:    { s: [8, 0] },  bottom: { s: [16, 0] },
+                            front:  { s: [24, 8] }, back:   { s: [8, 8] },
+                            layer_right:  { s: [48, 8] }, layer_left:   { s: [32, 8] },
+                            layer_top:    { s: [40, 0] }, layer_bottom: { s: [48, 0] },
+                            layer_front:  { s: [56, 8] }, layer_back:   { s: [40, 8] }
+                        };
+                        const partOrder = Object.keys(faceParts);
+
+                        const imagePromises = uniqueUrls.map((url, index) => {
+                            return new Promise<void>((resolve, reject) => {
+                                const img = new Image();
+                                img.crossOrigin = 'anonymous';
+                                img.onload = () => {
+                                    const blockX = (index % BLOCKS_PER_ROW) * PART_BLOCK_WIDTH;
+                                    const blockY = Math.floor(index / BLOCKS_PER_ROW) * PART_BLOCK_HEIGHT;
+                                    skinLayouts.set(url, { x: blockX, y: blockY });
+                                    
+                                    partOrder.forEach((key, i) => {
+                                        const part = faceParts[key as keyof typeof faceParts];
+                                        const dx = (i % 3) * PART_SIZE;
+                                        const dy = Math.floor(i / 3) * PART_SIZE;
+                                        atlasCtx.drawImage(img, part.s[0], part.s[1], 8, 8, blockX + dx, blockY + dy, 8, 8);
+                                    });
+                                    resolve();
+                                };
+                                img.onerror = (e) => reject(new Error(`Failed to load image: ${url}, error: ${e}`));
+                                img.src = url; 
+                            });
                         });
+
+                        await Promise.all(imagePromises);
+
+                        const atlasTexture = new THREE.Texture(atlasCanvas);
+                        atlasTexture.needsUpdate = true;
+                        atlasTexture.magFilter = THREE.NearestFilter;
+                        atlasTexture.minFilter = THREE.NearestFilter;
+                        atlasTexture.colorSpace = THREE.SRGBColorSpace;
+                        
+                        const atlasMaterial = createEntityMaterial(atlasTexture, 0xffffff, true).material;
+                        atlasMaterial.toneMapped = false;
+                        atlasMaterial.fog = false;
+                        atlasMaterial.flatShading = true;
+                        atlasMaterial.side = THREE.DoubleSide;
+                        
+                        const sharedGeometry = (headGeometries.merged as THREE.BufferGeometry).clone();
+                        const newUvAttr = sharedGeometry.getAttribute('uv') as THREE.BufferAttribute;
+
+                        const baseFaceOrder = ['left', 'right', 'top', 'bottom', 'front', 'back']; // BoxGeometry order
+                        const allFaceKeys = [...baseFaceOrder, ...baseFaceOrder.map(k => `layer_${k}`)];
+
+                        for (let faceIdx = 0; faceIdx < 12; faceIdx++) {
+                            const partKey = allFaceKeys[faceIdx];
+                            const partIndex = partOrder.indexOf(partKey);
+
+                            if (partIndex === -1) continue;
+
+                            const dx = (partIndex % 3) * PART_SIZE;
+                            const dy = Math.floor(partIndex / 3) * PART_SIZE;
+                            
+                            const inset = 0;
+                            const u0 = (dx + inset) / ATLAS_SIZE;
+                            const u1 = (dx + PART_SIZE - inset) / ATLAS_SIZE;
+
+                            const v1 = (PART_BLOCK_HEIGHT - dy - inset) / ATLAS_SIZE;
+                            const v0 = (PART_BLOCK_HEIGHT - (dy + PART_SIZE) - inset) / ATLAS_SIZE;
+                            
+                            const baseFaceName = baseFaceOrder[faceIdx % 6];
+                            const uvWriteIndex = faceIdx * 4;
+                            
+                            if (baseFaceName === 'top') {
+                                newUvAttr.setXY(uvWriteIndex + 0, u1, v0);
+                                newUvAttr.setXY(uvWriteIndex + 1, u0, v0);
+                                newUvAttr.setXY(uvWriteIndex + 2, u1, v1);
+                                newUvAttr.setXY(uvWriteIndex + 3, u0, v1);
+                            } else if (baseFaceName === 'bottom') {
+                                newUvAttr.setXY(uvWriteIndex + 0, u1, v1);
+                                newUvAttr.setXY(uvWriteIndex + 1, u0, v1);
+                                newUvAttr.setXY(uvWriteIndex + 2, u1, v0);
+                                newUvAttr.setXY(uvWriteIndex + 3, u0, v0);
+                            } else {
+                                newUvAttr.setXY(uvWriteIndex + 0, u0, v1);
+                                newUvAttr.setXY(uvWriteIndex + 1, u1, v1);
+                                newUvAttr.setXY(uvWriteIndex + 2, u0, v0);
+                                newUvAttr.setXY(uvWriteIndex + 3, u1, v0);
+                            }
+                        }
+                        newUvAttr.needsUpdate = true;
+
+                        const totalInstances = playerHeadItems.length;
+                        const matrices = new Float32Array(totalInstances * 16);
+                        const uvOffsets = new Float32Array(totalInstances * 2);
+
+                        let i = 0;
+                        for (const item of playerHeadItems) {
+                            const matrix = new THREE.Matrix4().fromArray(item.transform).transpose();
+                            const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
+                            matrix.multiply(scaleMatrix);
+                            matrix.toArray(matrices, i * 16);
+
+                            const skinBlockPos = skinLayouts.get(item.textureUrl);
+                            if (skinBlockPos) {
+                                const uOffset = skinBlockPos.x / ATLAS_SIZE;
+                                const vOffset = 1.0 - (skinBlockPos.y + PART_BLOCK_HEIGHT) / ATLAS_SIZE;
+                                
+                                uvOffsets[i * 2 + 0] = uOffset;
+                                uvOffsets[i * 2 + 1] = vOffset;
+                            }
+                            i++;
+                        }
+                        
+                        sharedGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
+
+                        const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, totalInstances);
+                        instancedMesh.instanceMatrix.needsUpdate = true;
+                        instancedMesh.instanceMatrix.array = matrices;
+                        instancedMesh.frustumCulled = false;
+
+                        loadedObjectGroup.add(instancedMesh);
+
                     } catch (err) {
-                        console.error('플레이어 헤드 생성 처리 실패:', err);
+                        console.error('Player head instancing failed:', err);
                     }
                 })();
             }
@@ -1056,6 +1110,14 @@ function loadpbde(file: File): void {
         }
     };
     reader.readAsText(file);
+}
+
+function loadpbde(file: File): void {
+    _loadAndRenderPbde(file, false);
+}
+
+function mergepbde(file: File): void {
+    _loadAndRenderPbde(file, true);
 }
 
 
@@ -1132,7 +1194,7 @@ function createDropModal(file?: File) {
     if (mergeProjectBtn) {
         mergeProjectBtn.addEventListener('click', () => {
             if (file) {
-                loadpbde(file);
+                mergepbde(file);
             }
             closeDropModal();
         });

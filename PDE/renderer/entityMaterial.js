@@ -1,10 +1,15 @@
 import { MeshBasicNodeMaterial } from 'three/webgpu';
 import * as TSL from 'three/tsl';
-export function createEntityMaterial(diffuseTex, tintHex = 0xffffff) {
+
+export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false) {
   const blockLightLevel = TSL.uniform(1.0);
   const skyLightLevel = TSL.uniform(1.0);
 
-  const diffuseNode = TSL.texture(diffuseTex, TSL.uv());
+  // 🚀 Instanced UV 지원
+  // useInstancedUv가 true이면, 정점(vertex)의 기본 uv에 인스턴스별로 제공되는 instancedUvOffset을 더해 최종 uv를 계산합니다.
+  const uv = TSL.uv();
+  const finalUv = useInstancedUv ? uv.add(TSL.attribute('instancedUvOffset', 'vec2')) : uv;
+  const diffuseNode = TSL.texture(diffuseTex, finalUv);
 
   // Apply optional tint as a constant multiplier. Incoming hex is in sRGB,
   // so convert to linear before multiplying with the (linearized) sampled texture.
