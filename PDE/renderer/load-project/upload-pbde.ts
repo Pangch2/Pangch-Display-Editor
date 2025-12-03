@@ -4,7 +4,6 @@ import PbdeWorker from './pbde-worker?worker&inline';
 import { createEntityMaterial } from '../entityMaterial.js';
 
 type AssetPayload = string | Uint8Array | ArrayBuffer | unknown;
-type OptimizedTexture = THREE.Texture & { __optimizedSetupDone?: boolean };
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 
 interface HeadGeometrySet {
@@ -448,7 +447,7 @@ function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.Buffe
     }
     merged.setIndex(new THREE.BufferAttribute(mergedIndex, 1));
 
-    merged.boundingSphere = new THREE.Sphere(new THREE.Vector3(0.5, 0.5, 0.5), 0.9);
+    merged.computeBoundingSphere();
     return merged;
 }
 
@@ -557,46 +556,45 @@ function createHeadGeometries() {
 //const materialCache = new WeakMap<THREE.Texture, THREE.Material>();
 //
 //
-///**
-// * 텍스처의 특정 UV 영역이 완전히 투명한지 확인합니다.
-// * @param texture - 검사할 텍스처
-// * @param uvRegions - 검사할 UV 좌표 배열 [x, y, width, height]
-// * @returns 모든 픽셀이 투명하면 true
-// */
-//function isLayerTransparent(texture: THREE.Texture, uvRegions: number[][]): boolean {
-//    try {
-//        const img = texture.image;
-//        if (!img || !img.width || !img.height) return false;
-//
-//        // Canvas를 사용하여 픽셀 데이터 추출
-//        const canvas = document.createElement('canvas');
-//        canvas.width = img.width;
-//        canvas.height = img.height;
-//        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-//        if (!ctx) return false;
-//
-//        ctx.drawImage(img, 0, 0);
-//        
-//        // 각 UV 영역을 검사
-//        for (const [x, y, width, height] of uvRegions) {
-//            const imageData = ctx.getImageData(x, y, width, height);
-//            const data = imageData.data;
-//            
-//            // 알파 채널 검사 (RGBA의 A)
-//            for (let i = 3; i < data.length; i += 4) {
-//                if (data[i] > 0) {
-//                    // 투명하지 않은 픽셀 발견
-//                    return false;
-//                }
-//            }
-//        }
-//        
-//        return true; // 모든 픽셀이 투명함
-//    } catch (err) {
-//        console.warn('Layer transparency check failed:', err);
-//        return false; // 오류 발생 시 투명하지 않다고 가정
-//    }
-//}
+/**
+ * 텍스처의 특정 UV 영역이 완전히 투명한지 확인합니다.
+ * @param texture - 검사할 텍스처
+ * @param uvRegions - 검사할 UV 좌표 배열 [x, y, width, height]
+ * @returns 모든 픽셀이 투명하면 true
+ */
+function isLayerTransparent(img: HTMLImageElement, uvRegions: number[][]): boolean {
+    try {
+        if (!img || !img.width || !img.height) return false;
+
+        // Canvas를 사용하여 픽셀 데이터 추출
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return false;
+
+        ctx.drawImage(img, 0, 0);
+        
+        // 각 UV 영역을 검사
+        for (const [x, y, width, height] of uvRegions) {
+            const imageData = ctx.getImageData(x, y, width, height);
+            const data = imageData.data;
+            
+            // 알파 채널 검사 (RGBA의 A)
+            for (let i = 3; i < data.length; i += 4) {
+                if (data[i] > 0) {
+                    // 투명하지 않은 픽셀 발견
+                    return false;
+                }
+            }
+        }
+        
+        return true; // 모든 픽셀이 투명함
+    } catch (err) {
+        console.warn('Layer transparency check failed:', err);
+        return false; // 오류 발생 시 투명하지 않다고 가정
+    }
+}
 //
 ///**
 // * 병합된(merged) 지오메트리를 사용하는 단일 메시 생성 (base+layer -> 1 draw call)
@@ -798,8 +796,8 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                 }
 
                 const geomId = meta.geometryId;
-                // Use transform (Instance Matrix) as key to identify the instance
-                const instanceMat = meta.transform.join(',');
+                // Use itemId as key to identify the instance uniquely
+                const instanceKey = String(meta.itemId);
                 
                 let geomGroup = blocks.get(geomId);
                 if (!geomGroup) {
@@ -807,10 +805,10 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                     blocks.set(geomId, geomGroup);
                 }
                 
-                let instanceParts = geomGroup.get(instanceMat);
+                let instanceParts = geomGroup.get(instanceKey);
                 if (!instanceParts) {
                     instanceParts = [];
-                    geomGroup.set(instanceMat, instanceParts);
+                    geomGroup.set(instanceKey, instanceParts);
                 }
                 instanceParts.push(meta);
             }
@@ -894,12 +892,21 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         }
 
                         const instancedMesh = new THREE.InstancedMesh(mergedGeo, materials, matrices.length);
-                        instancedMesh.frustumCulled = true;
+                        
+                        // Use metadata from worker to determine display type
+                        if (representativeParts[0].isItemDisplayModel) {
+                            instancedMesh.userData.displayType = 'item_display';
+                        } else {
+                            instancedMesh.userData.displayType = 'block_display';
+                        }
+                        
+                        instancedMesh.frustumCulled = false;
 
                         for (let i = 0; i < matrices.length; i++) {
                             instancedMesh.setMatrixAt(i, matrices[i]);
                         }
                         instancedMesh.instanceMatrix.needsUpdate = true;
+                        instancedMesh.computeBoundingSphere();
                         loadedObjectGroup.add(instancedMesh);
 
                         // Handle async material loading
@@ -955,6 +962,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         atlasCtx.imageSmoothingEnabled = false;
 
                         const skinLayouts = new Map<string, { x: number, y: number }>();
+                        const skinTransparency = new Map<string, boolean>(); // URL -> isLayerTransparent
                         
                         const faceParts = {
                             right:  { s: [16, 8] }, left:   { s: [0, 8] },
@@ -966,6 +974,12 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         };
                         const partOrder = Object.keys(faceParts);
 
+                        const layerRegions = [
+                            [48, 8, 8, 8], [32, 8, 8, 8],
+                            [40, 0, 8, 8], [48, 0, 8, 8],
+                            [56, 8, 8, 8], [40, 8, 8, 8]
+                        ];
+
                         const imagePromises = uniqueUrls.map((url, index) => {
                             return new Promise<void>((resolve, reject) => {
                                 const img = new Image();
@@ -975,6 +989,10 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                                     const blockY = Math.floor(index / BLOCKS_PER_ROW) * PART_BLOCK_HEIGHT;
                                     skinLayouts.set(url, { x: blockX, y: blockY });
                                     
+                                    // Check transparency
+                                    const isTransparent = isLayerTransparent(img, layerRegions);
+                                    skinTransparency.set(url, isTransparent);
+
                                     partOrder.forEach((key, i) => {
                                         const part = faceParts[key as keyof typeof faceParts];
                                         const dx = (i % 3) * PART_SIZE;
@@ -984,7 +1002,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                                     resolve();
                                 };
                                 img.onerror = (e) => reject(new Error(`Failed to load image: ${url}, error: ${e}`));
-                                img.src = url; 
+                                img.src = url.replace('http://', 'https://');
                             });
                         });
 
@@ -1049,6 +1067,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         const totalInstances = playerHeadItems.length;
                         const matrices = new Float32Array(totalInstances * 16);
                         const uvOffsets = new Float32Array(totalInstances * 2);
+                        const hasHatArray = new Array(totalInstances).fill(false);
 
                         let i = 0;
                         for (const item of playerHeadItems) {
@@ -1065,15 +1084,25 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                                 uvOffsets[i * 2 + 0] = uOffset;
                                 uvOffsets[i * 2 + 1] = vOffset;
                             }
+
+                            const isTransparent = skinTransparency.get(item.textureUrl);
+                            // If layer is NOT transparent, it has a hat.
+                            hasHatArray[i] = !isTransparent;
+
                             i++;
                         }
                         
                         sharedGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
 
                         const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, totalInstances);
+                        instancedMesh.userData.displayType = 'item_display';
+                        instancedMesh.userData.hasHat = hasHatArray; // Store hat info for gizmo
                         instancedMesh.instanceMatrix.needsUpdate = true;
+                        instancedMesh.frustumCulled = false;
                         instancedMesh.instanceMatrix.array = matrices;
                         instancedMesh.frustumCulled = false;
+                        instancedMesh.layers.enable(2);
+                        instancedMesh.computeBoundingSphere();
 
                         loadedObjectGroup.add(instancedMesh);
 

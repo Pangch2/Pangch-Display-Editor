@@ -9,7 +9,8 @@ let previousHelperMatrix = new THREE.Matrix4();
 // Selection State
 let currentSelection = {
     mesh: null,
-    instanceIds: []
+    instanceIds: [],
+    edgesGeometry: null
 };
 
 let pivotMode = 'origin';
@@ -23,6 +24,12 @@ let gizmoLines = {
 };
 
 // drag state
+const dragInitialMatrix = new THREE.Matrix4();
+const dragInitialQuaternion = new THREE.Quaternion();
+const dragInitialScale = new THREE.Vector3();
+const dragInitialPosition = new THREE.Vector3();
+const dragInitialBoundingBox = new THREE.Box3();
+const dragStartAvgOrigin = new THREE.Vector3();
 let draggingMode = null;
 let isGizmoBusy = false;
 let blockbenchScaleMode = false;
@@ -30,6 +37,8 @@ let dragAnchorDirections = { x: true, y: true, z: true };
 let previousGizmoMode = 'translate';
 let isPivotEditMode = false;
 let isUniformScale = false;
+let isCustomPivot = false;
+let pivotOffset = new THREE.Vector3(0, 0, 0);
 
 // Helpers
 function getRotationFromMatrix(matrix) {
@@ -48,13 +57,32 @@ function getRotationFromMatrix(matrix) {
     return quaternion;
 }
 
+function calculateAvgOrigin(mesh, instanceIds) {
+    const center = new THREE.Vector3();
+    const tempPos = new THREE.Vector3();
+    const tempMat = new THREE.Matrix4();
+    
+    instanceIds.forEach(id => {
+        mesh.getMatrixAt(id, tempMat);
+        tempMat.premultiply(mesh.matrixWorld);
+        
+        let localY = 0;
+        if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && mesh.userData.hasHat[id]) {
+            localY = 0.03125;
+        }
+        
+        tempPos.set(0, localY, 0).applyMatrix4(tempMat);
+        center.add(tempPos);
+    });
+    center.divideScalar(instanceIds.length);
+    return center;
+}
+
 function updateSelectionOverlay() {
     if (selectionOverlay) {
-        if (selectionOverlay.parent) {
-            selectionOverlay.parent.remove(selectionOverlay);
-        }
+        scene.remove(selectionOverlay);
         selectionOverlay.traverse(child => {
-            if (child.geometry) child.geometry.dispose();
+            if (child.geometry && child.geometry !== currentSelection.edgesGeometry) child.geometry.dispose();
             if (child.material) child.material.dispose();
         });
         selectionOverlay = null;
@@ -63,74 +91,164 @@ function updateSelectionOverlay() {
     if (!currentSelection.mesh || currentSelection.instanceIds.length === 0) return;
 
     const mesh = currentSelection.mesh;
-    const box = new THREE.Box3();
-    const tempMat = new THREE.Matrix4();
-    const tempBox = new THREE.Box3();
+    
+    // Use cached edges geometry or create new one
+    if (!currentSelection.edgesGeometry) {
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        const box = mesh.geometry.boundingBox;
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        
+        const boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
+        boxGeo.translate(center.x, center.y, center.z);
 
-    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-    const geoBox = mesh.geometry.boundingBox;
-
-    for (const id of currentSelection.instanceIds) {
-        mesh.getMatrixAt(id, tempMat);
-        tempBox.copy(geoBox).applyMatrix4(tempMat);
-        box.union(tempBox);
+        currentSelection.edgesGeometry = new THREE.EdgesGeometry(boxGeo);
     }
+    const edgesGeo = currentSelection.edgesGeometry;
 
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const center = new THREE.Vector3();
-    box.getCenter(center);
+    const displayType = mesh.userData.displayType;
+    const overlayColor = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
 
-    const overlayGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
-    overlayGeometry.translate(center.x, center.y, center.z);
-    const edges = new THREE.EdgesGeometry(overlayGeometry);
     const overlayMaterial = new THREE.LineBasicMaterial({
-        color: 0xFFD147,
-        depthTest: false,
+        color: overlayColor,
+        depthTest: true,
         depthWrite: false,
         transparent: true,
         opacity: 0.9
     });
 
-    selectionOverlay = new THREE.LineSegments(edges, overlayMaterial);
+    selectionOverlay = new THREE.Group();
     selectionOverlay.renderOrder = 1000;
     selectionOverlay.matrixAutoUpdate = false;
+
+    const tempMat = new THREE.Matrix4();
+    for (const id of currentSelection.instanceIds) {
+        mesh.getMatrixAt(id, tempMat);
+        const line = new THREE.LineSegments(edgesGeo, overlayMaterial);
+        line.matrixAutoUpdate = false;
+        // Calculate World Matrix for the overlay line
+        // Overlay is in Scene (World) space.
+        // Mesh Instance Matrix is in Mesh Local Space.
+        // Line Matrix = Mesh World Matrix * Instance Matrix
+        line.matrix.multiplyMatrices(mesh.matrixWorld, tempMat);
+        selectionOverlay.add(line);
+    }
     scene.add(selectionOverlay);
 }
 
 function resetSelectionAndDeselect() {
     if (currentSelection.mesh) {
         transformControls.detach();
-        currentSelection = { mesh: null, instanceIds: [] };
+        if (currentSelection.edgesGeometry) {
+            currentSelection.edgesGeometry.dispose();
+            currentSelection.edgesGeometry = null;
+        }
+        currentSelection = { mesh: null, instanceIds: [], edgesGeometry: null };
         updateSelectionOverlay();
         lastDirections = { X: null, Y: null, Z: null };
         console.log('선택 해제');
     }
 }
 
-function applySelection(mesh, instanceIds) {
-    currentSelection = { mesh, instanceIds };
+function updateHelperPosition() {
+    if (!currentSelection.mesh || currentSelection.instanceIds.length === 0) return;
     
+    const mesh = currentSelection.mesh;
+    const instanceIds = currentSelection.instanceIds;
+
     // Calculate center of selection
     const center = new THREE.Vector3();
-    const tempPos = new THREE.Vector3();
-    const tempMat = new THREE.Matrix4();
     
-    instanceIds.forEach(id => {
-        mesh.getMatrixAt(id, tempMat);
-        tempPos.setFromMatrixPosition(tempMat);
-        center.add(tempPos);
-    });
-    center.divideScalar(instanceIds.length);
+    if (pivotMode === 'center') {
+        // Bounding box center
+        const box = new THREE.Box3();
+        const tempMat = new THREE.Matrix4();
+        const tempBox = new THREE.Box3();
+        
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        const geoBox = mesh.geometry.boundingBox;
+
+        instanceIds.forEach(id => {
+            mesh.getMatrixAt(id, tempMat);
+            tempMat.premultiply(mesh.matrixWorld);
+            tempBox.copy(geoBox).applyMatrix4(tempMat);
+            box.union(tempBox);
+        });
+        box.getCenter(center);
+    } else {
+        // Origin (average of origins)
+        center.copy(calculateAvgOrigin(mesh, instanceIds));
+    }
+
+    // Apply custom pivot offset
+    if (pivotMode === 'origin') {
+        center.add(pivotOffset);
+    }
 
     // Position helper
     selectionHelper.position.copy(center);
-    selectionHelper.quaternion.set(0, 0, 0, 1);
-    selectionHelper.scale.set(1, 1, 1);
-    selectionHelper.updateMatrixWorld();
+    
+    // Align helper rotation with the first selected instance
+    if (instanceIds.length > 0) {
+        const firstId = instanceIds[0];
+        const instanceMatrix = new THREE.Matrix4();
+        mesh.getMatrixAt(firstId, instanceMatrix);
+        const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
+        
+        const quaternion = getRotationFromMatrix(worldMatrix);
+        
+        if (currentSpace === 'world') {
+            selectionHelper.quaternion.set(0, 0, 0, 1);
+        } else {
+            selectionHelper.quaternion.copy(quaternion);
+        }
 
+        selectionHelper.scale.set(1, 1, 1);
+
+    } else {
+        selectionHelper.quaternion.set(0, 0, 0, 1);
+        selectionHelper.scale.set(1, 1, 1);
+    }
+
+    selectionHelper.updateMatrixWorld();
     transformControls.attach(selectionHelper);
     previousHelperMatrix.copy(selectionHelper.matrixWorld);
+}
+
+function applySelection(mesh, instanceIds) {
+    // Clean up previous selection geometry if switching meshes
+    if (currentSelection.mesh && currentSelection.mesh !== mesh) {
+        if (currentSelection.edgesGeometry) {
+            currentSelection.edgesGeometry.dispose();
+            currentSelection.edgesGeometry = null;
+        }
+    }
+
+    // Reset pivot offset when selecting new things
+    if (mesh.userData.customPivot) {
+        isCustomPivot = true;
+        
+        // Calculate Average Origin (Center) to determine offset
+        const center = calculateAvgOrigin(mesh, instanceIds);
+
+        // Calculate Target World Position from Custom Pivot (Local to First Instance)
+        const firstId = instanceIds[0];
+        const tempMat = new THREE.Matrix4();
+        mesh.getMatrixAt(firstId, tempMat);
+        const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
+        const targetWorld = mesh.userData.customPivot.clone().applyMatrix4(worldMatrix);
+        
+        pivotOffset.subVectors(targetWorld, center);
+    } else {
+        pivotOffset.set(0, 0, 0);
+        isCustomPivot = false;
+    }
+
+    currentSelection = { mesh, instanceIds, edgesGeometry: currentSelection.edgesGeometry };
+    
+    updateHelperPosition();
     
     updateSelectionOverlay();
     console.log(`선택됨: InstancedMesh (IDs: ${instanceIds.join(',')})`);
@@ -249,14 +367,161 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         controls.enabled = !event.value;
         if (event.value) {
             draggingMode = transformControls.mode;
+            if (transformControls.axis === 'XYZ') isUniformScale = true;
+
+            dragInitialMatrix.copy(selectionHelper.matrix);
+            dragInitialQuaternion.copy(selectionHelper.quaternion);
+            dragInitialScale.copy(selectionHelper.scale);
+            dragInitialPosition.copy(selectionHelper.position);
+
+            if (isPivotEditMode && currentSelection.mesh && currentSelection.instanceIds.length > 0) {
+                dragStartAvgOrigin.copy(calculateAvgOrigin(currentSelection.mesh, currentSelection.instanceIds));
+            }
+
+            if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
+                dragInitialBoundingBox.makeEmpty();
+                
+                // Calculate bounding box of all selected instances
+                const mesh = currentSelection.mesh;
+                const instanceIds = currentSelection.instanceIds;
+                if (mesh && instanceIds.length > 0) {
+                    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+                    const geoBox = mesh.geometry.boundingBox;
+                    const tempMat = new THREE.Matrix4();
+                    
+                    selectionHelper.updateMatrixWorld();
+                    const inverseHelperMat = selectionHelper.matrixWorld.clone().invert();
+                    
+                    instanceIds.forEach(id => {
+                        mesh.getMatrixAt(id, tempMat);
+                        tempMat.premultiply(mesh.matrixWorld); // Instance World Matrix
+                        
+                        // Transform to Helper Local Space
+                        const combinedMat = inverseHelperMat.clone().multiply(tempMat);
+                        
+                        const corners = [
+                            new THREE.Vector3(geoBox.min.x, geoBox.min.y, geoBox.min.z),
+                            new THREE.Vector3(geoBox.min.x, geoBox.min.y, geoBox.max.z),
+                            new THREE.Vector3(geoBox.min.x, geoBox.max.y, geoBox.min.z),
+                            new THREE.Vector3(geoBox.min.x, geoBox.max.y, geoBox.max.z),
+                            new THREE.Vector3(geoBox.max.x, geoBox.min.y, geoBox.min.z),
+                            new THREE.Vector3(geoBox.max.x, geoBox.min.y, geoBox.max.z),
+                            new THREE.Vector3(geoBox.max.x, geoBox.max.y, geoBox.min.z),
+                            new THREE.Vector3(geoBox.max.x, geoBox.max.y, geoBox.max.z)
+                        ];
+                        
+                        corners.forEach(corner => {
+                            corner.applyMatrix4(combinedMat);
+                            dragInitialBoundingBox.expandByPoint(corner);
+                        });
+                    });
+                }
+
+                const gizmoPos = selectionHelper.position.clone();
+                const gizmoNDC = gizmoPos.clone().project(camera);
+                gizmoNDC.z = 0;
+
+                const mouseNDC = new THREE.Vector3(mouseInput.x, mouseInput.y, 0);
+
+                const checkAxis = (x, y, z) => {
+                    const axisVec = new THREE.Vector3(x, y, z);
+                    if (currentSpace === 'local') {
+                        axisVec.applyQuaternion(selectionHelper.quaternion);
+                    }
+                    
+                    const origin = selectionHelper.position.clone();
+                    const target = origin.clone().add(axisVec);
+                    
+                    origin.project(camera);
+                    target.project(camera);
+                    
+                    const dir = new THREE.Vector2(target.x - origin.x, target.y - origin.y);
+                    const mouse = new THREE.Vector2(mouseInput.x - origin.x, mouseInput.y - origin.y);
+                    
+                    return mouse.dot(dir) > 0;
+                };
+
+                dragAnchorDirections = {
+                    x: detectedAnchorDirections.x !== null ? detectedAnchorDirections.x : checkAxis(1, 0, 0),
+                    y: detectedAnchorDirections.y !== null ? detectedAnchorDirections.y : checkAxis(0, 1, 0),
+                    z: detectedAnchorDirections.z !== null ? detectedAnchorDirections.z : checkAxis(0, 0, 1)
+                };
+            }
+
         } else {
             draggingMode = null;
             isUniformScale = false;
+
+            if (isPivotEditMode) {
+                // Save custom pivot
+                if (currentSelection.mesh && currentSelection.instanceIds.length > 0) {
+                    const mesh = currentSelection.mesh;
+                    const firstId = currentSelection.instanceIds[0];
+                    const pivotWorld = selectionHelper.position.clone();
+                    
+                    const instanceMatrix = new THREE.Matrix4();
+                    mesh.getMatrixAt(firstId, instanceMatrix);
+                    const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
+                    
+                    const invWorldMatrix = worldMatrix.invert();
+                    const localPivot = pivotWorld.applyMatrix4(invWorldMatrix);
+                    
+                    mesh.userData.customPivot = localPivot;
+                    mesh.userData.isCustomPivot = true;
+                }
+            }
+
+            if (currentSelection.mesh) {
+                currentSelection.mesh.boundingSphere = null;
+            }
+
+            if (selectionHelper) {
+                selectionHelper.scale.set(1, 1, 1);
+                selectionHelper.updateMatrixWorld();
+                previousHelperMatrix.copy(selectionHelper.matrixWorld);
+            }
         }
     });
 
     transformControls.addEventListener('change', (event) => {
         if (transformControls.dragging && currentSelection.mesh) {
+            
+            if (isPivotEditMode && transformControls.mode === 'translate') {
+                pivotOffset.subVectors(selectionHelper.position, dragStartAvgOrigin);
+                isCustomPivot = true;
+                
+                previousHelperMatrix.copy(selectionHelper.matrixWorld);
+                return;
+            }
+
+            if (blockbenchScaleMode && transformControls.mode === 'scale' && !isUniformScale) {
+                 if (!dragInitialBoundingBox.isEmpty()) {
+                    const deltaScale = selectionHelper.scale; // Since initial is 1,1,1
+                    const shift = new THREE.Vector3();
+                    
+                    if (Math.abs(deltaScale.x - 1) > 0.0001) {
+                        const isPositive = dragAnchorDirections.x;
+                        const fixedVal = isPositive ? dragInitialBoundingBox.min.x : dragInitialBoundingBox.max.x;
+                        shift.x = fixedVal * (1 - deltaScale.x);
+                    }
+                    if (Math.abs(deltaScale.y - 1) > 0.0001) {
+                        const isPositive = dragAnchorDirections.y;
+                        const fixedVal = isPositive ? dragInitialBoundingBox.min.y : dragInitialBoundingBox.max.y;
+                        shift.y = fixedVal * (1 - deltaScale.y);
+                    }
+                    if (Math.abs(deltaScale.z - 1) > 0.0001) {
+                        const isPositive = dragAnchorDirections.z;
+                        const fixedVal = isPositive ? dragInitialBoundingBox.min.z : dragInitialBoundingBox.max.z;
+                        shift.z = fixedVal * (1 - deltaScale.z);
+                    }
+                    
+                    const shiftWorld = shift.clone().applyQuaternion(selectionHelper.quaternion);
+                    selectionHelper.position.copy(dragInitialPosition).add(shiftWorld);
+                    selectionHelper.updateMatrixWorld();
+                }
+            }
+
+            selectionHelper.updateMatrixWorld();
             const tempMatrix = new THREE.Matrix4();
             const deltaMatrix = new THREE.Matrix4();
 
@@ -265,9 +530,19 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             deltaMatrix.multiplyMatrices(selectionHelper.matrixWorld, tempMatrix);
 
             const instanceMatrix = new THREE.Matrix4();
+            const meshWorldInverse = currentSelection.mesh.matrixWorld.clone().invert();
+            
+            // We need to apply delta in Mesh Local Space.
+            // Delta is in World Space.
+            // NewInstanceMatrix = Inverse(MeshWorld) * Delta * MeshWorld * OldInstanceMatrix
+            
+            const localDelta = new THREE.Matrix4();
+            localDelta.multiplyMatrices(meshWorldInverse, deltaMatrix);
+            localDelta.multiply(currentSelection.mesh.matrixWorld);
+
             currentSelection.instanceIds.forEach(id => {
                 currentSelection.mesh.getMatrixAt(id, instanceMatrix);
-                instanceMatrix.premultiply(deltaMatrix);
+                instanceMatrix.premultiply(localDelta);
                 currentSelection.mesh.setMatrixAt(id, instanceMatrix);
             });
             currentSelection.mesh.instanceMatrix.needsUpdate = true;
@@ -279,20 +554,167 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
     // key handling
     const handleKeyPress = (key) => {
+        const resetHelperRotationForWorldSpace = () => {
+            if (currentSpace === 'world' && currentSelection.mesh && currentSelection.instanceIds.length > 0) {
+                selectionHelper.quaternion.set(0, 0, 0, 1);
+                selectionHelper.updateMatrixWorld();
+                previousHelperMatrix.copy(selectionHelper.matrixWorld);
+            }
+        };
+
         switch (key) {
             case 't':
                 transformControls.setMode('translate');
+                resetHelperRotationForWorldSpace();
                 break;
             case 'r':
                 transformControls.setMode('rotate');
+                resetHelperRotationForWorldSpace();
                 break;
             case 's':
                 transformControls.setMode('scale');
+                resetHelperRotationForWorldSpace();
                 break;
             case 'x': {
                 currentSpace = currentSpace === 'world' ? 'local' : 'world';
                 transformControls.setSpace(currentSpace);
+                
+                // Update selection helper rotation based on new space
+                if (currentSelection.mesh && currentSelection.instanceIds.length > 0) {
+                    if (currentSpace === 'world') {
+                        selectionHelper.quaternion.set(0, 0, 0, 1);
+                    } else {
+                        const firstId = currentSelection.instanceIds[0];
+                        const instanceMatrix = new THREE.Matrix4();
+                        currentSelection.mesh.getMatrixAt(firstId, instanceMatrix);
+                        const worldMatrix = instanceMatrix.premultiply(currentSelection.mesh.matrixWorld);
+                        
+                        // Use getRotationFromMatrix to avoid shear issues
+                        const quaternion = getRotationFromMatrix(worldMatrix);
+                        selectionHelper.quaternion.copy(quaternion);
+                    }
+                    selectionHelper.updateMatrixWorld();
+                    previousHelperMatrix.copy(selectionHelper.matrixWorld);
+                }
+
                 console.log('TransformControls Space:', currentSpace);
+                break;
+            }
+            case 'z': {
+                pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
+                console.log('Pivot Mode:', pivotMode);
+                updateHelperPosition();
+                break;
+            }
+            case 'v': {
+                if (currentSelection.mesh && currentSelection.instanceIds.length > 0) {
+                    const mesh = currentSelection.mesh;
+                    const instanceIds = currentSelection.instanceIds;
+                    
+                    // 1. Capture Gizmo Position (Target)
+                    const targetPosition = selectionHelper.position.clone();
+                    
+                    // 2. Loop max 10 times to remove shear if needed
+                    let shearRemoved = false;
+                    let attempts = 0;
+                    const maxAttempts = 10;
+
+                    while (!shearRemoved && attempts < maxAttempts) {
+                        attempts++;
+                        let maxShear = 0;
+
+                        instanceIds.forEach(id => {
+                            const matrix = new THREE.Matrix4();
+                            mesh.getMatrixAt(id, matrix);
+                            
+                            // Check shear (dot product of normalized basis vectors)
+                            const x = new THREE.Vector3().setFromMatrixColumn(matrix, 0).normalize();
+                            const y = new THREE.Vector3().setFromMatrixColumn(matrix, 1).normalize();
+                            const z = new THREE.Vector3().setFromMatrixColumn(matrix, 2).normalize();
+                            
+                            const dotXY = Math.abs(x.dot(y));
+                            const dotXZ = Math.abs(x.dot(z));
+                            const dotYZ = Math.abs(y.dot(z));
+                            
+                            maxShear = Math.max(maxShear, dotXY, dotXZ, dotYZ);
+                            
+                            const position = new THREE.Vector3();
+                            const quaternion = new THREE.Quaternion();
+                            const scale = new THREE.Vector3();
+                            
+                            matrix.decompose(position, quaternion, scale);
+                            matrix.compose(position, quaternion, scale);
+                            
+                            mesh.setMatrixAt(id, matrix);
+                        });
+
+                        if (maxShear < 0.0001) {
+                            shearRemoved = true;
+                        }
+                    }
+                    mesh.instanceMatrix.needsUpdate = true;
+
+                    // 3. Move Object to Gizmo
+                    // Calculate new center
+                    const currentCenter = new THREE.Vector3();
+                    
+                    if (pivotMode === 'center') {
+                        const box = new THREE.Box3();
+                        const tempMat = new THREE.Matrix4();
+                        const tempBox = new THREE.Box3();
+                        
+                        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+                        const geoBox = mesh.geometry.boundingBox;
+
+                        instanceIds.forEach(id => {
+                            mesh.getMatrixAt(id, tempMat);
+                            tempMat.premultiply(mesh.matrixWorld);
+                            tempBox.copy(geoBox).applyMatrix4(tempMat);
+                            box.union(tempBox);
+                        });
+                        box.getCenter(currentCenter);
+                    } else {
+                        const tempPos = new THREE.Vector3();
+                        const tempMat = new THREE.Matrix4();
+                        
+                        instanceIds.forEach(id => {
+                            mesh.getMatrixAt(id, tempMat);
+                            tempMat.premultiply(mesh.matrixWorld);
+                            
+                            let localY = 0;
+                            if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && mesh.userData.hasHat[id]) {
+                                localY = 0.03125;
+                            }
+                            
+                            tempPos.set(0, localY, 0).applyMatrix4(tempMat);
+                            currentCenter.add(tempPos);
+                        });
+                        currentCenter.divideScalar(instanceIds.length);
+                    }
+                    
+                    // Apply offset
+                    const offset = new THREE.Vector3().subVectors(targetPosition, currentCenter);
+                    const inverseMeshWorld = mesh.matrixWorld.clone().invert();
+                    const tempMat = new THREE.Matrix4();
+                    
+                    instanceIds.forEach(id => {
+                        mesh.getMatrixAt(id, tempMat);
+                        tempMat.premultiply(mesh.matrixWorld);
+                        
+                        // Add offset in World Space
+                        tempMat.elements[12] += offset.x;
+                        tempMat.elements[13] += offset.y;
+                        tempMat.elements[14] += offset.z;
+                        
+                        tempMat.premultiply(inverseMeshWorld);
+                        mesh.setMatrixAt(id, tempMat);
+                    });
+                    mesh.instanceMatrix.needsUpdate = true;
+
+                    updateHelperPosition();
+                    updateSelectionOverlay();
+                    console.log('객체 스케일을 균일하게 조정 (Shear 제거, 10회 반복, 위치 보정)');
+                }
                 break;
             }
             case 'b': {
@@ -312,6 +734,16 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 isPivotEditMode = true;
                 previousGizmoMode = transformControls.mode;
                 transformControls.setMode('translate');
+            }
+            if (event.ctrlKey) {
+                pivotOffset.set(0, 0, 0);
+                isCustomPivot = false;
+                if (currentSelection.mesh) {
+                    delete currentSelection.mesh.userData.customPivot;
+                    delete currentSelection.mesh.userData.isCustomPivot;
+                }
+                updateHelperPosition();
+                console.log('Pivot reset to origin');
             }
         }
 
@@ -404,6 +836,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
     // selection with raycaster
     const raycaster = new THREE.Raycaster();
+    raycaster.layers.enable(2);
     const mouse = new THREE.Vector2();
     let mouseDownPos = null;
 
@@ -412,7 +845,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     renderer.domElement.addEventListener('pointerdown', (event) => {
         if (isGizmoBusy) return;
         if (event.button !== 0) return;
-        if (transformControls.dragging) return;
         mouseDownPos = { x: event.clientX, y: event.clientY };
     });
 
