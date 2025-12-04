@@ -57,6 +57,48 @@ function getRotationFromMatrix(matrix) {
     return quaternion;
 }
 
+function SelectionCenter(mesh, instanceIds, pivotMode, isCustomPivot, pivotOffset) {
+    const center = new THREE.Vector3();
+    const isBlockDisplayWithoutCustomPivotOrigin = pivotMode === 'origin' && mesh.userData.displayType === 'block_display' && !isCustomPivot;
+
+    if (isBlockDisplayWithoutCustomPivotOrigin) {
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        const geoBox = mesh.geometry.boundingBox;
+        const localPivot = geoBox.min;
+
+        const firstId = instanceIds[0];
+        const instanceMatrix = new THREE.Matrix4();
+        mesh.getMatrixAt(firstId, instanceMatrix);
+        const worldMatrix = new THREE.Matrix4().multiplyMatrices(mesh.matrixWorld, instanceMatrix);
+        
+        center.copy(localPivot.clone().applyMatrix4(worldMatrix));
+
+    } else if (pivotMode === 'center') {
+        const box = new THREE.Box3();
+        const tempMat = new THREE.Matrix4();
+        const tempBox = new THREE.Box3();
+        
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        const geoBox = mesh.geometry.boundingBox;
+
+        instanceIds.forEach(id => {
+            mesh.getMatrixAt(id, tempMat);
+            tempMat.premultiply(mesh.matrixWorld);
+            tempBox.copy(geoBox).applyMatrix4(tempMat);
+            box.union(tempBox);
+        });
+        box.getCenter(center);
+    } else {
+        center.copy(calculateAvgOrigin(mesh, instanceIds));
+    }
+
+    if (pivotMode === 'origin') {
+        center.add(pivotOffset);
+    }
+
+    return center;
+}
+
 function calculateAvgOrigin(mesh, instanceIds) {
     const center = new THREE.Vector3();
     const tempPos = new THREE.Vector3();
@@ -120,7 +162,7 @@ function updateSelectionOverlay() {
     });
 
     selectionOverlay = new THREE.Group();
-    selectionOverlay.renderOrder = 1000;
+    selectionOverlay.renderOrder = 0;
     selectionOverlay.matrixAutoUpdate = false;
 
     const tempMat = new THREE.Matrix4();
@@ -158,34 +200,7 @@ function updateHelperPosition() {
     const mesh = currentSelection.mesh;
     const instanceIds = currentSelection.instanceIds;
 
-    // Calculate center of selection
-    const center = new THREE.Vector3();
-    
-    if (pivotMode === 'center') {
-        // Bounding box center
-        const box = new THREE.Box3();
-        const tempMat = new THREE.Matrix4();
-        const tempBox = new THREE.Box3();
-        
-        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-        const geoBox = mesh.geometry.boundingBox;
-
-        instanceIds.forEach(id => {
-            mesh.getMatrixAt(id, tempMat);
-            tempMat.premultiply(mesh.matrixWorld);
-            tempBox.copy(geoBox).applyMatrix4(tempMat);
-            box.union(tempBox);
-        });
-        box.getCenter(center);
-    } else {
-        // Origin (average of origins)
-        center.copy(calculateAvgOrigin(mesh, instanceIds));
-    }
-
-    // Apply custom pivot offset
-    if (pivotMode === 'origin') {
-        center.add(pivotOffset);
-    }
+    const center = SelectionCenter(mesh, instanceIds, pivotMode, isCustomPivot, pivotOffset);
 
     // Position helper
     selectionHelper.position.copy(center);
@@ -386,13 +401,26 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 const instanceIds = currentSelection.instanceIds;
                 if (mesh && instanceIds.length > 0) {
                     if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-                    const geoBox = mesh.geometry.boundingBox;
+                    const originalGeoBox = mesh.geometry.boundingBox;
+
+                    let standardHeadBox = null;
+                    const isPlayerHeadItem = mesh.userData.displayType === 'item_display' && mesh.userData.hasHat;
+                    if (isPlayerHeadItem) {
+                        standardHeadBox = new THREE.Box3();
+                        const center = new THREE.Vector3();
+                        originalGeoBox.getCenter(center);
+                        standardHeadBox.setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
+                    }
+                    
                     const tempMat = new THREE.Matrix4();
                     
                     selectionHelper.updateMatrixWorld();
                     const inverseHelperMat = selectionHelper.matrixWorld.clone().invert();
                     
                     instanceIds.forEach(id => {
+                        const hasHat = isPlayerHeadItem && mesh.userData.hasHat[id];
+                        const geoBox = isPlayerHeadItem && !hasHat ? standardHeadBox : originalGeoBox;
+
                         mesh.getMatrixAt(id, tempMat);
                         tempMat.premultiply(mesh.matrixWorld); // Instance World Matrix
                         
@@ -421,7 +449,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 const gizmoNDC = gizmoPos.clone().project(camera);
                 gizmoNDC.z = 0;
 
-                const mouseNDC = new THREE.Vector3(mouseInput.x, mouseInput.y, 0);
+                //const mouseNDC = new THREE.Vector3(mouseInput.x, mouseInput.y, 0);
 
                 const checkAxis = (x, y, z) => {
                     const axisVec = new THREE.Vector3(x, y, z);
@@ -468,6 +496,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     
                     mesh.userData.customPivot = localPivot;
                     mesh.userData.isCustomPivot = true;
+                    pivotMode = 'origin';
                 }
             }
 
@@ -655,42 +684,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     mesh.instanceMatrix.needsUpdate = true;
 
                     // 3. Move Object to Gizmo
-                    // Calculate new center
-                    const currentCenter = new THREE.Vector3();
-                    
-                    if (pivotMode === 'center') {
-                        const box = new THREE.Box3();
-                        const tempMat = new THREE.Matrix4();
-                        const tempBox = new THREE.Box3();
-                        
-                        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-                        const geoBox = mesh.geometry.boundingBox;
-
-                        instanceIds.forEach(id => {
-                            mesh.getMatrixAt(id, tempMat);
-                            tempMat.premultiply(mesh.matrixWorld);
-                            tempBox.copy(geoBox).applyMatrix4(tempMat);
-                            box.union(tempBox);
-                        });
-                        box.getCenter(currentCenter);
-                    } else {
-                        const tempPos = new THREE.Vector3();
-                        const tempMat = new THREE.Matrix4();
-                        
-                        instanceIds.forEach(id => {
-                            mesh.getMatrixAt(id, tempMat);
-                            tempMat.premultiply(mesh.matrixWorld);
-                            
-                            let localY = 0;
-                            if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && mesh.userData.hasHat[id]) {
-                                localY = 0.03125;
-                            }
-                            
-                            tempPos.set(0, localY, 0).applyMatrix4(tempMat);
-                            currentCenter.add(tempPos);
-                        });
-                        currentCenter.divideScalar(instanceIds.length);
-                    }
+                    const currentCenter = SelectionCenter(mesh, instanceIds, pivotMode, isCustomPivot, pivotOffset);
                     
                     // Apply offset
                     const offset = new THREE.Vector3().subVectors(targetPosition, currentCenter);
