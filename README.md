@@ -17,3 +17,5 @@
 - x (TransformControls Space: world | local) scale gizmo도 world space가능
 - v (객체 스케일의 Shear 제거)
 - b (blockbench 스케일 모드 토글)
+- Alt (Alt + translate gizmo 조작으로 커스텀 피벗 생성)
+- Ctrl + Alt (커스텀 피벗 초기화)
