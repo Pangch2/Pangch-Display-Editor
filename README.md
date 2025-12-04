@@ -1,9 +1,19 @@
 # Pangch-Display-Editor
-Pangch-Display-Editor
-npm run start → 개발 모드 실행
 
-npm run dist → exe 빌드
+## 중요 스크립트 설명
+- npm install(의존성 설치)
+- npm run dev(개발환경 실행)
+- npm run dist(프로젝트 빌드)
 
-npm run pack → 압축 없이 빌드 폴더 생성(테스트용)
+## 현재 기능
+- 프로젝트 불러오기, 프로젝트 합치기 기능
+- display인스턴싱 기능
+- block_display
+- item_display
+- player_head
 
-npm run dev -> 시작
+- t, r, s (translate, rotate, scale) gizmo
+- z (Pivot Mode: origin | center)
+- x (TransformControls Space: world | local) scale gizmo도 world space가능
+- v (객체 스케일의 Shear 제거)
+- b (blockbench 스케일 모드 토글)
