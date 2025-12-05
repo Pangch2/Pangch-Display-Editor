@@ -833,6 +833,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     raycaster.layers.enable(2);
     const mouse = new THREE.Vector2();
     let mouseDownPos = null;
+    const cameraMatrixOnPointerDown = new THREE.Matrix4();
 
     loadedObjectGroup.userData.resetSelection = resetSelectionAndDeselect;
 
@@ -840,10 +841,18 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         if (isGizmoBusy) return;
         if (event.button !== 0) return;
         mouseDownPos = { x: event.clientX, y: event.clientY };
+        cameraMatrixOnPointerDown.copy(camera.matrixWorld);
     });
 
     renderer.domElement.addEventListener('pointerup', (event) => {
         if (!mouseDownPos) return;
+
+        // If camera has moved, it's a drag, not a click.
+        if (!camera.matrixWorld.equals(cameraMatrixOnPointerDown)) {
+            mouseDownPos = null;
+            return;
+        }
+        
         const dist = Math.sqrt((event.clientX - mouseDownPos.x) ** 2 + (event.clientY - mouseDownPos.y) ** 2);
         if (dist > 5) { mouseDownPos = null; return; }
         mouseDownPos = null;
