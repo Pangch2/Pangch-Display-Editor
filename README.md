@@ -6,14 +6,14 @@
 - npm run dist(프로젝트 빌드)
 
 ## 현재 기능
--구현된 기술
+- 구현된 기술
 프로젝트 불러오기, 프로젝트 합치기 기능
 display인스턴싱 기능
 block_display
 item_display
 player_head
 
--조작키 설명
+- 조작키 설명
 t, r, s (translate, rotate, scale) gizmo
 z (Pivot Mode: origin | center)
 x (TransformControls Space: world | local) scale gizmo도 world space가능
