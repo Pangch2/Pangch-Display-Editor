@@ -47,6 +47,10 @@
       "hardcoded/**/*"
     ],
     "icon": "resources/Pangch-Face.ico",
+    "mac": {
+      "icon": "resources/Pangch-Face.icns",
+      "target": "dmg"
+    },
     "win": {
       "icon": "resources/Pangch-Face.ico",
       "target": [
