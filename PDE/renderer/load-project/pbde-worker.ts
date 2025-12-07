@@ -553,10 +553,10 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
     if (!elements || elements.length === 0) return null;
 
     // 🚀 최적화 3: 동일한 모델 ID는 캐시에서 재사용
-    const cacheKey = resolved.id + (opts ? JSON.stringify(opts) : '');
-    if (blockModelGeometryCache.has(cacheKey)) {
-        return blockModelGeometryCache.get(cacheKey);
-    }
+    // const cacheKey = resolved.id + (opts ? JSON.stringify(opts) : '');
+    // if (blockModelGeometryCache.has(cacheKey)) {
+    //     return blockModelGeometryCache.get(cacheKey);
+    // }
 
     const buffers = new Map();
     // 텍스처 경로와 틴트 조합마다 독립된 버퍼를 생성한다.
@@ -720,7 +720,7 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
     const result = Array.from(buffers.values());
     
     // 🚀 최적화 3: 결과를 캐시에 저장
-    blockModelGeometryCache.set(cacheKey, result);
+    // blockModelGeometryCache.set(cacheKey, result);
     
     return result;
 }
@@ -1239,7 +1239,10 @@ const loadTexturePixels: LoadTexturePixelsFn = Object.assign(
                 try {
                     bmp = await createImageBitmap(blob);
                     const w = bmp.width;
-                    const h = bmp.height;
+                    let h = bmp.height;
+                    // If height > width, assume animation strip and crop to top square
+                    if (h > w) h = w;
+
                     if (!w || !h) return null;
                     if (!loadTexturePixels._canvas) loadTexturePixels._canvas = new OffscreenCanvas(w, h);
                     const canvas = loadTexturePixels._canvas;
@@ -1398,9 +1401,11 @@ async function processItemModelDisplay(node) {
         if (!modelId) modelId = `minecraft:item/${baseName}`;
         //try { console.log('[ItemModel] definition', definition ? 'yes' : 'no', 'modelId', modelId, 'tints', tintList ? tintList.length : 0); } catch {}
         // 모델 ID 단위로 지오메트리를 캐싱해 반복 연산을 줄인다.
-        const cacheKey = modelId;
-        let geomData = itemModelGeometryCache.get(cacheKey);
-        let hasElements = itemModelHasElementsCache.get(cacheKey) || false;
+        // const cacheKey = modelId;
+        // let geomData = itemModelGeometryCache.get(cacheKey);
+        // let hasElements = itemModelHasElementsCache.get(cacheKey) || false;
+        let geomData = null;
+        let hasElements = false;
         let resolved = null;
         if (!geomData) {
             resolved = await resolveModelTree(modelId, modelTreeCache);
@@ -1411,10 +1416,10 @@ async function processItemModelDisplay(node) {
             hasElements = !!(resolved.elements && resolved.elements.length > 0);
             //try { console.log('[ItemModel] resolved', modelId, 'elements', hasElements ? resolved.elements.length : 0, 'parent', resolved.parent || 'none'); } catch {}
             geomData = await buildItemModelGeometryData(resolved);
-            if (geomData && geomData.length) {
-                itemModelGeometryCache.set(cacheKey, geomData);
-                itemModelHasElementsCache.set(cacheKey, hasElements);
-            }
+            // if (geomData && geomData.length) {
+            //     itemModelGeometryCache.set(cacheKey, geomData);
+            //     itemModelHasElementsCache.set(cacheKey, hasElements);
+            // }
         }
         if (!resolved) {
             resolved = await resolveModelTree(modelId, modelTreeCache);
@@ -1662,6 +1667,25 @@ async function processNode(node, parentTransform) {
     return renderItems;
 }
 
+function getTransparencyType(pixels: TexturePixelData) {
+    const data = pixels.data;
+    let hasAlpha = false;
+    let hasIntermediateAlpha = false;
+    for (let i = 3; i < data.length; i += 4) {
+        const a = data[i];
+        if (a < 255) {
+            hasAlpha = true;
+            if (a > 0) {
+                hasIntermediateAlpha = true;
+                break;
+            }
+        }
+    }
+    if (hasIntermediateAlpha) return 2; // Translucent
+    if (hasAlpha) return 1; // Cutout
+    return 0; // Opaque
+}
+
 // 메인 스레드에서 전송된 PBDE 프로젝트 데이터를 수신해 처리한다.
 self.onmessage = async (e) => {
     const fileContent = e.data;
@@ -1686,6 +1710,113 @@ self.onmessage = async (e) => {
         // 루트 자식 노드를 병렬로 처리해 렌더 항목을 구성한다.
         const promises = processedChildren.map(node => processNode(node, identityMatrix));
         const renderList = (await Promise.all(promises)).flat();
+
+        // --- Atlas Generation Start ---
+        let atlasInfo = null;
+        try {
+            const texturePaths = new Set();
+            for (const item of renderList) {
+                if (item.type === 'blockDisplay' || item.type === 'itemDisplayModel') {
+                    for (const model of item.models) {
+                        for (const geom of model.geometries) {
+                            if (geom.texPath) texturePaths.add(geom.texPath);
+                        }
+                    }
+                }
+            }
+
+            if (texturePaths.size > 0) {
+                const loadedTextures = [];
+                const textureTypes = new Map();
+                for (const path of texturePaths) {
+                    try {
+                        const pixels = await loadTexturePixels(path as string);
+                        if (pixels) {
+                            loadedTextures.push({ path, pixels });
+                            textureTypes.set(path, getTransparencyType(pixels));
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+
+                if (loadedTextures.length > 0) {
+                    // Sort by height desc
+                    loadedTextures.sort((a, b) => b.pixels.h - a.pixels.h);
+
+                    const totalArea = loadedTextures.reduce((sum, t) => sum + t.pixels.w * t.pixels.h, 0);
+                    let atlasW = Math.max(512, Math.pow(2, Math.ceil(Math.log2(Math.sqrt(totalArea)))));
+                    const maxW = Math.max(...loadedTextures.map(t => t.pixels.w));
+                    if (atlasW < maxW) atlasW = Math.pow(2, Math.ceil(Math.log2(maxW)));
+
+                    let atlasH = 0;
+                    const packed = new Map();
+                    
+                    let x = 0;
+                    let y = 0;
+                    let rowH = 0;
+
+                    for (const t of loadedTextures) {
+                        const w = t.pixels.w;
+                        const h = t.pixels.h;
+                        if (x + w > atlasW) {
+                            x = 0;
+                            y += rowH;
+                            rowH = 0;
+                        }
+                        packed.set(t.path, { x, y, w, h });
+                        x += w;
+                        rowH = Math.max(rowH, h);
+                    }
+                    atlasH = y + rowH;
+                    atlasH = Math.pow(2, Math.ceil(Math.log2(atlasH)));
+
+                    const atlasData = new Uint8ClampedArray(atlasW * atlasH * 4);
+                    for (const t of loadedTextures) {
+                        const info = packed.get(t.path);
+                        const src = t.pixels.data;
+                        const { x, y, w, h } = info;
+                        for (let r = 0; r < h; r++) {
+                            const srcStart = r * w * 4;
+                            const dstStart = ((y + r) * atlasW + x) * 4;
+                            atlasData.set(src.subarray(srcStart, srcStart + w * 4), dstStart);
+                        }
+                    }
+
+                    for (const item of renderList) {
+                        if (item.type === 'blockDisplay' || item.type === 'itemDisplayModel') {
+                            for (const model of item.models) {
+                                for (const geom of model.geometries) {
+                                    const info = packed.get(geom.texPath);
+                                    if (info) {
+                                        const { x, y, w, h } = info;
+                                        for (let i = 0; i < geom.uvs.length; i += 2) {
+                                            const u = geom.uvs[i];
+                                            const v = geom.uvs[i+1];
+                                            geom.uvs[i] = (u * w + x) / atlasW;
+                                            geom.uvs[i+1] = (v * h + (atlasH - y - h)) / atlasH;
+                                        }
+                                        const type = textureTypes.get(geom.texPath);
+                                        if (type === 2) {
+                                            geom.texPath = '__ATLAS_TRANSLUCENT__';
+                                        } else {
+                                            geom.texPath = '__ATLAS__';
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    atlasInfo = {
+                        width: atlasW,
+                        height: atlasH,
+                        data: atlasData
+                    };
+                }
+            }
+        } catch (e) {
+            // console.warn('Atlas generation failed', e);
+        }
+        // --- Atlas Generation End ---
 
         const geometryItems = [];
         const otherItems = [];
@@ -1802,6 +1933,7 @@ self.onmessage = async (e) => {
             geometries: metadata,
             otherItems: otherItems,
             useUint32Indices: useUint32Indices,
+            atlas: atlasInfo,
         };
 
         // 메타데이터와 지오메트리 버퍼를 메인 스레드로 전송한다.

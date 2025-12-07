@@ -86,52 +86,7 @@ const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPaylo
 
 
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
-function cropTextureToFirst16(tex) {
-    try {
-        const img = tex && tex.image;
-        const w = img && img.width;
-        const h = img && img.height;
-        // 이미 16x16이면 픽셀 아트 설정만 적용한다.
-        if (w === 16 && h === 16) {
-            tex.magFilter = THREE.NearestFilter;
-            tex.minFilter = THREE.NearestFilter;
-            tex.generateMipmaps = false;
-            tex.colorSpace = THREE.SRGBColorSpace;
-            tex.needsUpdate = true;
-            return tex;
-        }
-        // 16x16 캔버스에 좌상단 타일을 보간 없이 복사한다.
-        const canvas = document.createElement('canvas');
-        canvas.width = 16;
-        canvas.height = 16;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-            ctx.imageSmoothingEnabled = false;
-            if (img && w && h) {
-                // 원본 이미지의 상단 좌측 타일만 크기 변환 없이 복사한다.
-                const sWidth = Math.min(w || 0, 16);
-                const sHeight = Math.min(h || 0, 16);
-                ctx.drawImage(img, 0, 0, sWidth, sHeight, 0, 0, sWidth, sHeight);
-            }
-        }
-        const newTex = new THREE.Texture(canvas);
-        newTex.magFilter = THREE.NearestFilter;
-        newTex.minFilter = THREE.NearestFilter;
-        newTex.generateMipmaps = false;
-        newTex.colorSpace = THREE.SRGBColorSpace;
-        newTex.needsUpdate = true;
-        return newTex;
-    } catch (e) {
-        if (tex) {
-            tex.magFilter = THREE.NearestFilter;
-            tex.minFilter = THREE.NearestFilter;
-            tex.generateMipmaps = false;
-            tex.colorSpace = THREE.SRGBColorSpace;
-            tex.needsUpdate = true;
-        }
-        return tex;
-    }
-}
+// function cropTextureToFirst16(tex) { ... } // Removed as per request
 
 let worker: Worker | null = null;
 // 로드된 모든 객체를 담을 그룹
@@ -145,12 +100,13 @@ const blockTextureCache = new Map<string, THREE.Texture>(); // 텍스처 경로�
 const blockTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // 텍스처 경로별 로드 프라미스 매핑
 const blockMaterialCache = new Map<string, THREE.Material>(); // `${texPath}|${tintHex}` 조합별 머티리얼 캐시
 const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); // 동일 키에 대한 생성 프라미스 캐시
+let currentAtlasTexture: THREE.Texture | null = null;
 
 // 공유 플레이스홀더 자원
 let sharedPlaceholderMaterial: THREE.Material | null = null;
 
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
-const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
+const MAX_TEXTURE_DECODE_CONCURRENCY = 2048;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 function acquireTextureSlot() {
@@ -214,6 +170,10 @@ function decodeIpcContentToUint8Array(content: unknown): Uint8Array {
 }
 
 async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Texture> {
+    if (texPath === '__ATLAS__' || texPath === '__ATLAS_TRANSLUCENT__') {
+        if (currentAtlasTexture) return currentAtlasTexture;
+        throw new Error("Atlas requested but not loaded");
+    }
     // 동일 텍스처의 중복 로드를 방지한다.
     if (blockTextureCache.has(texPath) && gen === currentLoadGen) return blockTextureCache.get(texPath)!;
     const promiseKey = `${gen}|${texPath}`;
@@ -230,23 +190,18 @@ async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Tex
             const imageBitmap = await createImageBitmap(blob);
             let tex = new THREE.Texture(imageBitmap);
             const isEntityTex = texPath.includes('/textures/entity/');
-            if (!isEntityTex) {
-                // 애니메이션 프레임이 있다면 첫 16x16 타일만 사용한다.
-                const cropped = cropTextureToFirst16(tex);
-                if (cropped !== tex) {
-                    disposeTexture(tex);
-                    tex = cropped;
-                }
-            } else {
-                tex.magFilter = THREE.NearestFilter;
-                tex.minFilter = THREE.NearestFilter;
-                tex.generateMipmaps = false;
+            
+            tex.magFilter = THREE.NearestFilter;
+            tex.minFilter = THREE.NearestFilter;
+            tex.generateMipmaps = false;
+            tex.colorSpace = THREE.SRGBColorSpace;
+            if (isEntityTex) {
                 tex.anisotropy = 1;
-                tex.colorSpace = THREE.SRGBColorSpace;
                 tex.wrapS = THREE.ClampToEdgeWrapping;
                 tex.wrapT = THREE.ClampToEdgeWrapping;
-                tex.needsUpdate = true;
             }
+            tex.needsUpdate = true;
+
             // 로딩 중 세대 토큰이 바뀌면 폐기하고 캐시에 저장하지 않는다.
             if (gen !== currentLoadGen) {
                 disposeTexture(tex);
@@ -340,7 +295,14 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
         material.flatShading = true;
 
         // 텍스처 분석을 통한 투명도 및 렌더링 설정 자동화
-        const transparencyType = analyzeTextureTransparency(tex);
+        let transparencyType = TransparencyType.Opaque;
+        if (texPath === '__ATLAS__') {
+            transparencyType = TransparencyType.Cutout;
+        } else if (texPath === '__ATLAS_TRANSLUCENT__') {
+            transparencyType = TransparencyType.Translucent;
+        } else {
+            transparencyType = analyzeTextureTransparency(tex);
+        }
         
         if (transparencyType === TransparencyType.Translucent) {
             // 반투명 (유리, 물, 얼음 등)
@@ -644,6 +606,10 @@ function isLayerTransparent(img: HTMLImageElement, uvRegions: number[][]): boole
  */
 function _clearSceneAndCaches(): void {
     // 1-1. 캐시된 텍스처 및 리소스 완벽 해제
+    if (currentAtlasTexture) {
+        currentAtlasTexture.dispose();
+        currentAtlasTexture = null;
+    }
     textureCache.forEach(cachedItem => {
         if (cachedItem && cachedItem instanceof THREE.Texture) {
             cachedItem.dispose();
@@ -708,6 +674,17 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
 
     if (!isMerge) {
         _clearSceneAndCaches();
+    } else {
+        // 프로젝트 병합 시, 아틀라스 관련 캐시만 제거하여 새로운 아틀라스가 적용되도록 한다.
+        const keysToRemove = [];
+        for (const key of blockMaterialCache.keys()) {
+            if (key.includes('__ATLAS__')) {
+                keysToRemove.push(key);
+            }
+        }
+        for (const key of keysToRemove) {
+            blockMaterialCache.delete(key);
+        }
     }
     
     if (worker) {
@@ -718,7 +695,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
 
     createHeadGeometries();
 
-    worker.onmessage = (e) => {
+    worker.onmessage = async (e) => {
         const msg = e.data;
 
         if (msg.type === 'requestAsset') {
@@ -755,12 +732,27 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                 console.error('[Debug] Invalid metadata payload from worker.');
                 return;
             }
-            const metadataPayload = metadata as { geometries: any[]; otherItems: any[]; useUint32Indices?: boolean };
+            const metadataPayload = metadata as { geometries: any[]; otherItems: any[]; useUint32Indices?: boolean; atlas?: any };
             if (!Array.isArray(metadataPayload.geometries) || !Array.isArray(metadataPayload.otherItems)) {
                 console.error('[Debug] Invalid metadata payload from worker.');
                 return;
             }
-            const { geometries: geometryMetas, otherItems, useUint32Indices } = metadataPayload;
+            const { geometries: geometryMetas, otherItems, useUint32Indices, atlas } = metadataPayload;
+
+            if (atlas) {
+                try {
+                    const imageData = new ImageData(new Uint8ClampedArray(atlas.data), atlas.width, atlas.height);
+                    const tex = new THREE.Texture(await createImageBitmap(imageData));
+                    tex.magFilter = THREE.NearestFilter;
+                    tex.minFilter = THREE.NearestFilter;
+                    tex.generateMipmaps = false;
+                    tex.colorSpace = THREE.SRGBColorSpace;
+                    tex.needsUpdate = true;
+                    currentAtlasTexture = tex;
+                } catch (e) {
+                    console.warn("Failed to create atlas texture", e);
+                }
+            }
 
             console.log(`[Debug] Processing ${geometryMetas.length + otherItems.length} items from worker (binary).`);
 
