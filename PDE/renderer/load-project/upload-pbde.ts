@@ -106,7 +106,7 @@ let currentAtlasTexture: THREE.Texture | null = null;
 let sharedPlaceholderMaterial: THREE.Material | null = null;
 
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
-const MAX_TEXTURE_DECODE_CONCURRENCY = 2048;
+const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 function acquireTextureSlot() {
@@ -283,7 +283,15 @@ function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
 
 async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number): Promise<THREE.Material> {
     const key = `${texPath}|${(tintHex >>> 0)}`;
-    if (blockMaterialCache.has(key) && gen === currentLoadGen) return blockMaterialCache.get(key)!;
+    if (blockMaterialCache.has(key) && gen === currentLoadGen) {
+        const mat = blockMaterialCache.get(key)!;
+        // 아틀라스 텍스처가 변경되었는지 확인 (프로젝트 병합 시 발생 가능)
+        if (texPath.includes('__ATLAS__') && mat.map !== currentAtlasTexture) {
+            // 캐시된 머티리얼이 이전 아틀라스를 사용 중이므로 무시하고 새로 생성
+        } else {
+            return mat;
+        }
+    }
     const promiseKey = `${gen}|${key}`;
     if (blockMaterialPromiseCache.has(promiseKey)) return blockMaterialPromiseCache.get(promiseKey)!;
 
@@ -307,7 +315,7 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
         if (transparencyType === TransparencyType.Translucent) {
             // 반투명 (유리, 물, 얼음 등)
             material.transparent = true;
-            material.depthWrite = false; 
+            material.depthWrite = true; 
             material.alphaTest = 0;
         } else if (transparencyType === TransparencyType.Cutout) {
             // 컷아웃 (잔디, 꽃, 묘목, 나뭇잎 등)
@@ -623,16 +631,15 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
     if (!isMerge) {
         _clearSceneAndCaches();
     } else {
-        // 프로젝트 병합 시, 아틀라스 관련 캐시만 제거하여 새로운 아틀라스가 적용되도록 한다.
-        const keysToRemove = [];
-        for (const key of blockMaterialCache.keys()) {
-            if (key.includes('__ATLAS__')) {
-                keysToRemove.push(key);
-            }
-        }
-        for (const key of keysToRemove) {
-            blockMaterialCache.delete(key);
-        }
+        // 프로젝트 병합 시, 머티리얼 캐시를 초기화하여 새로운 아틀라스가 적용되도록 한다.
+        // 기존 객체들은 이미 생성된 머티리얼을 참조하고 있으므로 영향받지 않는다.
+        blockMaterialCache.clear();
+        blockMaterialPromiseCache.clear();
+        
+        // 이전 프로젝트의 아틀라스 텍스처 참조를 제거
+        currentAtlasTexture = null;
+        // 이전 프로젝트의 아틀라스 텍스처 참조를 제거하여, 새 프로젝트 로드 실패 시 이전 아틀라스를 사용하는 것을 방지
+        currentAtlasTexture = null;
     }
     
     if (worker) {
