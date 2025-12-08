@@ -509,16 +509,6 @@ function createHeadGeometries() {
 
 
 /**
- * WebGPU에 최적화된 마인크래프트 머리 모델을 생성합니다.
- * 미리 생성된 지오메트리를 사용하여 성능을 향상시킵니다.
- * @param {THREE.Texture} texture - 64x64 머리 텍스처
- * @param {boolean} isLayer - (호환용) true면 layer 지오메트리, false면 base 지오메트리 반환
- * @returns {THREE.Mesh} 최적화된 머리 메시 객체
- */
-//const materialCache = new WeakMap<THREE.Texture, THREE.Material>();
-//
-//
-/**
  * 텍스처의 특정 UV 영역이 완전히 투명한지 확인합니다.
  * @param texture - 검사할 텍스처
  * @param uvRegions - 검사할 UV 좌표 배열 [x, y, width, height]
@@ -557,48 +547,6 @@ function isLayerTransparent(img: HTMLImageElement, uvRegions: number[][]): boole
         return false; // 오류 발생 시 투명하지 않다고 가정
     }
 }
-//
-///**
-// * 병합된(merged) 지오메트리를 사용하는 단일 메시 생성 (base+layer -> 1 draw call)
-// */
-//function createOptimizedHeadMerged(texture: THREE.Texture): THREE.Mesh {
-//    if (!headGeometries) {
-//        createHeadGeometries();
-//    }
-//    const geometry = (headGeometries?.merged || headGeometries?.base) ?? new THREE.BoxGeometry(1, 1, 1);
-//
-//    const tex = texture as OptimizedTexture;
-//    if (!tex.__optimizedSetupDone) {
-//        tex.magFilter = THREE.NearestFilter;
-//        tex.minFilter = THREE.NearestFilter;
-//        tex.generateMipmaps = false;
-//        tex.colorSpace = THREE.SRGBColorSpace;
-//        tex.__optimizedSetupDone = true;
-//    }
-//
-//    let material = materialCache.get(texture);
-//    if (!material) {
-//        const matData = createEntityMaterial(texture);
-//        material = matData.material;
-//        material.toneMapped = false;
-//        material.fog = false;
-//        material.flatShading = true;
-//        
-//        // 플레이어 스킨의 2차 레이어(모자 등)는 투명한 부분이 있으므로 alphaTest 적용
-//        material.transparent = false;
-//        material.alphaTest = 0.1;
-//        material.depthWrite = true;
-//        material.side = THREE.DoubleSide;
-//
-//        materialCache.set(texture, material);
-//    }
-//
-//    const mesh = new THREE.Mesh(geometry, material);
-//    mesh.castShadow = false;
-//    mesh.receiveShadow = false;
-//    return mesh;
-//}
-
 
 /**
  * PBDE 파일을 로드하고 3D 씬에 객체를 배치합니다.

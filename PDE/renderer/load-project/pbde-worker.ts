@@ -461,12 +461,10 @@ function applyBlockstateRotation(matrix, rotX = 0, rotY = 0) {
     const pivot = new THREE.Vector3(0.5, 0.5, 0.5);
     const t1 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
     const t2 = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
-    // 마인크래프트 블록스테이트의 +X 회전은 남쪽(+Z) 방향으로 기울기에 해당한다.
-    // 우핸드 좌표계에서는 음수 회전으로 보정해야 하므로 rotX에 음수를 적용한다.
-    // 이렇게 하면 일부 블록 디스플레이에서 발생하던 위·아래 반전을 방지할 수 있다.
+
     const rx = new THREE.Matrix4().makeRotationX(THREE.MathUtils.degToRad(-rotX));
     const ry = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(-rotY));
-    const r = new THREE.Matrix4().multiply(rx).multiply(ry);
+    const r = new THREE.Matrix4().multiply(ry).multiply(rx);
     const m = new THREE.Matrix4().multiply(t2).multiply(r).multiply(t1);
     matrix.premultiply(m);
 }
