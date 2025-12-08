@@ -241,7 +241,7 @@ function updateSelectionOverlay() {
     });
 
     selectionOverlay = new THREE.Group();
-    selectionOverlay.renderOrder = 0;
+    selectionOverlay.renderOrder = 1;
     selectionOverlay.matrixAutoUpdate = false;
 
     const tempMat = new THREE.Matrix4();
@@ -507,7 +507,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             geoBox = mesh.geometry.boundingBox;
 
                             // Player Head logic for InstancedMesh
-                            if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && mesh.userData.hasHat[id]) {
+                            if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && !mesh.userData.hasHat[id]) {
                                 const center = new THREE.Vector3();
                                 geoBox.getCenter(center);
                                 geoBox = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
