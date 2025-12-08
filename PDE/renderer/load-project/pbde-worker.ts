@@ -1874,9 +1874,6 @@ self.onmessage = async (e) => {
         let uvCursor = 0;
         let indicesCursor = 0;
 
-        const tempMatrix4 = new THREE.Matrix4();
-        const tempNormalMatrix = new THREE.Matrix3();
-
         // 개별 지오메트리 버퍼를 연속 메모리 공간에 복사한다.
         for (const item of geometryItems) {
             itemId++;

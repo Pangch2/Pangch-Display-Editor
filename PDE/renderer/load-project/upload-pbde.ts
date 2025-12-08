@@ -753,6 +753,185 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                 instanceParts.push(meta);
             }
 
+            // --- BatchedMesh Logic for Atlas ---
+            if (currentAtlasTexture) {
+                const batchGroups = {
+                    opaque: { parts: [] as any[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() },
+                    translucent: { parts: [] as any[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() }
+                };
+
+                // 1. Collect parts and calculate requirements
+                // blocks: Map<geomId, Map<instanceKey, PartMeta[]>>
+                // We iterate safely and remove parts that are moved to batch
+                
+                const partsToMerge = new Map<string, { type: 'opaque' | 'translucent', parts: any[] }>();
+
+                for (const [geomId, instancesMap] of blocks) {
+                    for (const [instanceKey, parts] of instancesMap) {
+                        const keepParts = [];
+                        for (const part of parts) {
+                            let type: 'opaque' | 'translucent' | null = null;
+                            if (part.texPath === '__ATLAS__') type = 'opaque';
+                            else if (part.texPath === '__ATLAS_TRANSLUCENT__') type = 'translucent';
+
+                            if (type) {
+                                // Group key: itemId + type + tint
+                                const key = `${instanceKey}|${type}|${part.tintHex ?? 0xffffff}`;
+                                if (!partsToMerge.has(key)) {
+                                    partsToMerge.set(key, { type, parts: [] });
+                                }
+                                partsToMerge.get(key)!.parts.push(part);
+                            } else {
+                                keepParts.push(part);
+                            }
+                        }
+                        
+                        if (keepParts.length > 0) {
+                            instancesMap.set(instanceKey, keepParts);
+                        } else {
+                            instancesMap.delete(instanceKey);
+                        }
+                    }
+                    if (instancesMap.size === 0) {
+                        blocks.delete(geomId);
+                    }
+                }
+
+                // Process merged parts and add to batchGroups
+                for (const [key, { type, parts }] of partsToMerge) {
+                    const targetGroup = type === 'opaque' ? batchGroups.opaque : batchGroups.translucent;
+                    
+                    if (parts.length === 1) {
+                        // Single part, no merge needed
+                        const part = parts[0];
+                        targetGroup.parts.push(part);
+                        const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                        if (!targetGroup.geometries.has(geomKey)) {
+                            const geo = instancedGeometries.get(geomKey)!;
+                            targetGroup.geometries.set(geomKey, geo);
+                            targetGroup.maxVerts += geo.attributes.position.count;
+                            targetGroup.maxIndices += (geo.index ? geo.index.count : 0);
+                        }
+                    } else {
+                        // Merge needed
+                        const geometriesToMerge: THREE.BufferGeometry[] = [];
+                        for (const part of parts) {
+                            const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                            const geo = instancedGeometries.get(geomKey)!;
+                            const clone = geo.clone();
+                            if (part.modelMatrix) {
+                                const m = new THREE.Matrix4().fromArray(part.modelMatrix);
+                                clone.applyMatrix4(m);
+                            }
+                            geometriesToMerge.push(clone);
+                        }
+                        
+                        const mergedGeo = mergeIndexedGeometries(geometriesToMerge);
+                        if (mergedGeo) {
+                            const uniqueId = `merged|${key}`;
+                            const finalGeomKey = `${uniqueId}|0`;
+                            instancedGeometries.set(finalGeomKey, mergedGeo);
+                            
+                            const firstPart = parts[0];
+                            const newPart = {
+                                ...firstPart,
+                                geometryId: uniqueId,
+                                geometryIndex: 0,
+                                modelMatrix: null // Baked into geometry
+                            };
+                            
+                            targetGroup.parts.push(newPart);
+                            
+                            if (!targetGroup.geometries.has(finalGeomKey)) {
+                                targetGroup.geometries.set(finalGeomKey, mergedGeo);
+                                targetGroup.maxVerts += mergedGeo.attributes.position.count;
+                                targetGroup.maxIndices += (mergedGeo.index ? mergedGeo.index.count : 0);
+                            }
+                        }
+                    }
+                }
+
+                // 2. Create BatchedMeshes
+                const createBatchedMesh = async (group: typeof batchGroups.opaque, texPath: string) => {
+                    if (group.parts.length === 0) return;
+
+                    try {
+                        const material = await getBlockMaterial(texPath, undefined, myGen);
+                        // BatchedMesh(maxInstanceCount, maxVertexCount, maxIndexCount, material)
+                        const batch = new THREE.BatchedMesh(group.parts.length, group.maxVerts, group.maxIndices, material);
+                        batch.frustumCulled = false;
+                        batch.userData.displayType = 'block_display'; 
+                        batch.userData.displayTypes = new Map();
+                        batch.userData.geometryBounds = new Map();
+                        batch.userData.instanceGeometryIds = [];
+                        batch.userData.itemIds = new Map();
+                        batch.userData.localMatrices = new Map();
+
+                        // Register geometries
+                        const geomIdMap = new Map<string, number>();
+                        for (const [key, geo] of group.geometries) {
+                            // Use raw geometry without baking modelMatrix
+                            // modelMatrix (blockstate rotation, display transform) will be applied to instance matrix
+                            const batchGeomId = batch.addGeometry(geo);
+                            geomIdMap.set(key, batchGeomId);
+
+                            if (!geo.boundingBox) geo.computeBoundingBox();
+                            batch.userData.geometryBounds.set(batchGeomId, geo.boundingBox.clone());
+                        }
+
+                        // Add instances
+                        const dummyMatrix = new THREE.Matrix4();
+                        const localMatrix = new THREE.Matrix4();
+                        const color = new THREE.Color();
+                        
+                        for (const part of group.parts) {
+                            const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                            const batchGeomId = geomIdMap.get(geomKey);
+                            if (batchGeomId === undefined) continue;
+
+                            const instanceId = batch.addInstance(batchGeomId);
+                            batch.userData.instanceGeometryIds[instanceId] = batchGeomId;
+                            
+                            // part.transform is the instance matrix (world transform, row-major from worker -> transpose)
+                            dummyMatrix.fromArray(part.transform).transpose();
+                            
+                            // part.modelMatrix is the local transform (blockstate, display settings, column-major)
+                            if (part.modelMatrix) {
+                                localMatrix.fromArray(part.modelMatrix);
+                                dummyMatrix.multiply(localMatrix);
+
+                                batch.userData.localMatrices.set(instanceId, localMatrix.clone());
+                            }
+
+                            batch.setMatrixAt(instanceId, dummyMatrix);
+
+                            const tint = part.tintHex ?? 0xffffff;
+                            color.setHex(tint);
+                            batch.setColorAt(instanceId, color);
+
+                            if (batch.userData.displayTypes) {
+                                batch.userData.displayTypes.set(instanceId, part.isItemDisplayModel ? 'item_display' : 'block_display');
+                            }
+                            if (batch.userData.itemIds && part.itemId !== undefined) {
+                                batch.userData.itemIds.set(instanceId, part.itemId);
+                            }
+                        }
+
+                        loadedObjectGroup.add(batch);
+                        
+                        if (material.transparent) {
+                            batch.renderOrder = 1;
+                        }
+
+                    } catch (e) {
+                        console.error("Failed to create BatchedMesh", e);
+                    }
+                };
+
+                await createBatchedMesh(batchGroups.opaque, '__ATLAS__');
+                await createBatchedMesh(batchGroups.translucent, '__ATLAS_TRANSLUCENT__');
+            }
+
             // Process grouped blocks
             for (const [geomId, instancesMap] of blocks) {
                 // Group instances by Signature (combination of parts and materials)

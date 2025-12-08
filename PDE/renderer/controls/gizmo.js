@@ -59,16 +59,43 @@ function getRotationFromMatrix(matrix) {
 
 function SelectionCenter(mesh, instanceIds, pivotMode, isCustomPivot, pivotOffset) {
     const center = new THREE.Vector3();
-    const isBlockDisplayWithoutCustomPivotOrigin = pivotMode === 'origin' && mesh.userData.displayType === 'block_display' && !isCustomPivot;
+
+    let displayType = mesh.userData.displayType;
+    if (mesh.isBatchedMesh && mesh.userData.displayTypes && instanceIds.length > 0) {
+        displayType = mesh.userData.displayTypes.get(instanceIds[0]);
+    }
+
+    const isBlockDisplayWithoutCustomPivotOrigin = pivotMode === 'origin' && displayType === 'block_display' && !isCustomPivot;
 
     if (isBlockDisplayWithoutCustomPivotOrigin) {
-        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-        const geoBox = mesh.geometry.boundingBox;
-        const localPivot = geoBox.min;
+        let localPivot;
+        if (mesh.isBatchedMesh) {
+            localPivot = new THREE.Vector3(0, 0, 0);
+            if (mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
+                const batchId = instanceIds[0];
+                const geomId = mesh.userData.instanceGeometryIds[batchId];
+                const box = mesh.userData.geometryBounds.get(geomId);
+                if (box) {
+                    localPivot.copy(box.min);
+                }
+            }
+        } else {
+            if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+            const geoBox = mesh.geometry.boundingBox;
+            localPivot = geoBox.min;
+        }
 
         const firstId = instanceIds[0];
+        
         const instanceMatrix = new THREE.Matrix4();
         mesh.getMatrixAt(firstId, instanceMatrix);
+
+        if (mesh.isBatchedMesh && mesh.userData.localMatrices && mesh.userData.localMatrices.has(firstId)) {
+             const localMatrix = mesh.userData.localMatrices.get(firstId);
+             const localInverse = localMatrix.clone().invert();
+             instanceMatrix.multiply(localInverse);
+        }
+        
         const worldMatrix = new THREE.Matrix4().multiplyMatrices(mesh.matrixWorld, instanceMatrix);
         
         center.copy(localPivot.clone().applyMatrix4(worldMatrix));
@@ -78,14 +105,25 @@ function SelectionCenter(mesh, instanceIds, pivotMode, isCustomPivot, pivotOffse
         const tempMat = new THREE.Matrix4();
         const tempBox = new THREE.Box3();
         
-        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-        const geoBox = mesh.geometry.boundingBox;
+        if (!mesh.isBatchedMesh) {
+            if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        }
+        const defaultGeoBox = mesh.geometry ? mesh.geometry.boundingBox : null;
 
         instanceIds.forEach(id => {
             mesh.getMatrixAt(id, tempMat);
             tempMat.premultiply(mesh.matrixWorld);
-            tempBox.copy(geoBox).applyMatrix4(tempMat);
-            box.union(tempBox);
+            
+            let geoBox = defaultGeoBox;
+            if (mesh.isBatchedMesh && mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
+                const geomId = mesh.userData.instanceGeometryIds[id];
+                geoBox = mesh.userData.geometryBounds.get(geomId);
+            }
+
+            if (geoBox) {
+                tempBox.copy(geoBox).applyMatrix4(tempMat);
+                box.union(tempBox);
+            }
         });
         box.getCenter(center);
     } else {
@@ -106,10 +144,22 @@ function calculateAvgOrigin(mesh, instanceIds) {
     
     instanceIds.forEach(id => {
         mesh.getMatrixAt(id, tempMat);
+        
+        if (mesh.isBatchedMesh && mesh.userData.localMatrices && mesh.userData.localMatrices.has(id)) {
+             const localMatrix = mesh.userData.localMatrices.get(id);
+             const localInverse = localMatrix.clone().invert();
+             tempMat.multiply(localInverse);
+        }
+
         tempMat.premultiply(mesh.matrixWorld);
         
         let localY = 0;
-        if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && mesh.userData.hasHat[id]) {
+        let displayType = mesh.userData.displayType;
+        if (mesh.isBatchedMesh && mesh.userData.displayTypes) {
+            displayType = mesh.userData.displayTypes.get(id);
+        }
+
+        if (displayType === 'item_display' && mesh.userData.hasHat && mesh.userData.hasHat[id]) {
             localY = 0.03125;
         }
         
@@ -136,21 +186,50 @@ function updateSelectionOverlay() {
     
     // Use cached edges geometry or create new one
     if (!currentSelection.edgesGeometry) {
-        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-        const box = mesh.geometry.boundingBox;
-        const size = new THREE.Vector3();
-        box.getSize(size);
-        const center = new THREE.Vector3();
-        box.getCenter(center);
-        
-        const boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
-        boxGeo.translate(center.x, center.y, center.z);
+        if (mesh.isBatchedMesh) {
+            let boxGeo;
+            if (mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
+                const batchId = currentSelection.instanceIds[0];
+                const geomId = mesh.userData.instanceGeometryIds[batchId];
+                const box = mesh.userData.geometryBounds.get(geomId);
+                
+                if (box) {
+                    const size = new THREE.Vector3();
+                    box.getSize(size);
+                    const center = new THREE.Vector3();
+                    box.getCenter(center);
+                    
+                    boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
+                    boxGeo.translate(center.x, center.y, center.z);
+                }
+            }
 
-        currentSelection.edgesGeometry = new THREE.EdgesGeometry(boxGeo);
+            if (boxGeo) {
+                currentSelection.edgesGeometry = new THREE.EdgesGeometry(boxGeo);
+            }
+        } else {
+            if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+            const box = mesh.geometry.boundingBox;
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const center = new THREE.Vector3();
+            box.getCenter(center);
+            
+            const boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
+            boxGeo.translate(center.x, center.y, center.z);
+
+            currentSelection.edgesGeometry = new THREE.EdgesGeometry(boxGeo);
+        }
     }
+    
+    if (!currentSelection.edgesGeometry) return;
     const edgesGeo = currentSelection.edgesGeometry;
 
-    const displayType = mesh.userData.displayType;
+    let displayType = mesh.userData.displayType;
+    if (mesh.isBatchedMesh && mesh.userData.displayTypes && currentSelection.instanceIds.length > 0) {
+        displayType = mesh.userData.displayTypes.get(currentSelection.instanceIds[0]);
+    }
+
     const overlayColor = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
 
     const overlayMaterial = new THREE.LineBasicMaterial({
@@ -234,7 +313,8 @@ function updateHelperPosition() {
 
 function applySelection(mesh, instanceIds) {
     // Clean up previous selection geometry if switching meshes
-    if (currentSelection.mesh && currentSelection.mesh !== mesh) {
+    // BatchedMesh의 경우 인스턴스마다 지오메트리가 다를 수 있으므로 항상 재생성
+    if (currentSelection.mesh && (currentSelection.mesh !== mesh || mesh.isBatchedMesh)) {
         if (currentSelection.edgesGeometry) {
             currentSelection.edgesGeometry.dispose();
             currentSelection.edgesGeometry = null;
@@ -242,7 +322,17 @@ function applySelection(mesh, instanceIds) {
     }
 
     // Reset pivot offset when selecting new things
-    if (mesh.userData.customPivot) {
+    let customPivot = null;
+    if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots && instanceIds.length > 0) {
+        // Try to get custom pivot from the first selected instance
+        if (mesh.userData.customPivots.has(instanceIds[0])) {
+            customPivot = mesh.userData.customPivots.get(instanceIds[0]);
+        }
+    } else if (mesh.userData.customPivot) {
+        customPivot = mesh.userData.customPivot;
+    }
+
+    if (customPivot) {
         isCustomPivot = true;
         
         // Calculate Average Origin (Center) to determine offset
@@ -253,7 +343,7 @@ function applySelection(mesh, instanceIds) {
         const tempMat = new THREE.Matrix4();
         mesh.getMatrixAt(firstId, tempMat);
         const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
-        const targetWorld = mesh.userData.customPivot.clone().applyMatrix4(worldMatrix);
+        const targetWorld = customPivot.clone().applyMatrix4(worldMatrix);
         
         pivotOffset.subVectors(targetWorld, center);
     } else {
@@ -400,26 +490,31 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 const mesh = currentSelection.mesh;
                 const instanceIds = currentSelection.instanceIds;
                 if (mesh && instanceIds.length > 0) {
-                    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-                    const originalGeoBox = mesh.geometry.boundingBox;
-
-                    let standardHeadBox = null;
-                    const isPlayerHeadItem = mesh.userData.displayType === 'item_display' && mesh.userData.hasHat;
-                    if (isPlayerHeadItem) {
-                        standardHeadBox = new THREE.Box3();
-                        const center = new THREE.Vector3();
-                        originalGeoBox.getCenter(center);
-                        standardHeadBox.setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
-                    }
-                    
-                    const tempMat = new THREE.Matrix4();
-                    
                     selectionHelper.updateMatrixWorld();
                     const inverseHelperMat = selectionHelper.matrixWorld.clone().invert();
-                    
+                    const tempMat = new THREE.Matrix4();
+
                     instanceIds.forEach(id => {
-                        const hasHat = isPlayerHeadItem && mesh.userData.hasHat[id];
-                        const geoBox = isPlayerHeadItem && !hasHat ? standardHeadBox : originalGeoBox;
+                        let geoBox = null;
+
+                        if (mesh.isBatchedMesh) {
+                            if (mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
+                                const geomId = mesh.userData.instanceGeometryIds[id];
+                                geoBox = mesh.userData.geometryBounds.get(geomId);
+                            }
+                        } else {
+                            if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+                            geoBox = mesh.geometry.boundingBox;
+
+                            // Player Head logic for InstancedMesh
+                            if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && mesh.userData.hasHat[id]) {
+                                const center = new THREE.Vector3();
+                                geoBox.getCenter(center);
+                                geoBox = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
+                            }
+                        }
+
+                        if (!geoBox) return;
 
                         mesh.getMatrixAt(id, tempMat);
                         tempMat.premultiply(mesh.matrixWorld); // Instance World Matrix
@@ -494,7 +589,24 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     const invWorldMatrix = worldMatrix.invert();
                     const localPivot = pivotWorld.applyMatrix4(invWorldMatrix);
                     
-                    mesh.userData.customPivot = localPivot;
+                    if (mesh.isBatchedMesh) {
+                        if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
+                        
+                        // Save for all selected instances (assuming they share the same item/pivot)
+                        // Or just save for the first one if we assume they are grouped.
+                        // If we have itemId, use that as key? Or instanceId?
+                        // Using instanceId is safer if we don't have itemId, but if we have itemId, we should probably use that or store for all instances.
+                        
+                        // If we have itemIds, we can store by itemId if we want shared pivot for the item.
+                        // But here we are selecting a group of instances.
+                        
+                        for (const id of currentSelection.instanceIds) {
+                            mesh.userData.customPivots.set(id, localPivot.clone());
+                        }
+                    } else {
+                        mesh.userData.customPivot = localPivot;
+                    }
+                    
                     mesh.userData.isCustomPivot = true;
                     pivotMode = 'origin';
                 }
@@ -574,7 +686,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 instanceMatrix.premultiply(localDelta);
                 currentSelection.mesh.setMatrixAt(id, instanceMatrix);
             });
-            currentSelection.mesh.instanceMatrix.needsUpdate = true;
+            if (currentSelection.mesh.isInstancedMesh) {
+                currentSelection.mesh.instanceMatrix.needsUpdate = true;
+            }
 
             previousHelperMatrix.copy(selectionHelper.matrixWorld);
             updateSelectionOverlay();
@@ -681,7 +795,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             shearRemoved = true;
                         }
                     }
-                    mesh.instanceMatrix.needsUpdate = true;
+                    if (mesh.isInstancedMesh) {
+                        mesh.instanceMatrix.needsUpdate = true;
+                    }
 
                     // 3. Move Object to Gizmo
                     const currentCenter = SelectionCenter(mesh, instanceIds, pivotMode, isCustomPivot, pivotOffset);
@@ -703,7 +819,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         tempMat.premultiply(inverseMeshWorld);
                         mesh.setMatrixAt(id, tempMat);
                     });
-                    mesh.instanceMatrix.needsUpdate = true;
+                    if (mesh.isInstancedMesh) {
+                        mesh.instanceMatrix.needsUpdate = true;
+                    }
 
                     updateHelperPosition();
                     updateSelectionOverlay();
@@ -864,21 +982,43 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         const intersects = raycaster.intersectObjects(loadedObjectGroup.children, true);
         if (intersects.length > 0) {
             let targetIntersect = null;
-            // Find first InstancedMesh intersection
+            // Find first InstancedMesh or BatchedMesh intersection
             for (const intersect of intersects) {
-                if (intersect.object.isInstancedMesh) {
+                if (intersect.object.isInstancedMesh || intersect.object.isBatchedMesh) {
                     targetIntersect = intersect;
                     break;
                 }
             }
 
             if (targetIntersect) {
-                const { object, instanceId } = targetIntersect;
-                // Check if already selected
-                if (currentSelection.mesh === object && currentSelection.instanceIds.includes(instanceId)) {
-                    // Already selected, maybe do nothing or toggle? For now, just re-select (no-op)
-                } else {
-                    applySelection(object, [instanceId]);
+                const object = targetIntersect.object;
+                const instanceId = object.isBatchedMesh ? targetIntersect.batchId : targetIntersect.instanceId;
+                
+                if (instanceId !== undefined) {
+                    let idsToSelect = [instanceId];
+                    
+                    // Group selection by itemId for BatchedMesh
+                    if (object.isBatchedMesh && object.userData.itemIds) {
+                        const targetItemId = object.userData.itemIds.get(instanceId);
+                        if (targetItemId !== undefined) {
+                            idsToSelect = [];
+                            for (const [id, itemId] of object.userData.itemIds) {
+                                if (itemId === targetItemId) {
+                                    idsToSelect.push(id);
+                                }
+                            }
+                        }
+                    }
+
+                    // Check if already selected (simple check: same mesh and same set of IDs)
+                    const isSameMesh = currentSelection.mesh === object;
+                    const isSameSelection = isSameMesh && 
+                        currentSelection.instanceIds.length === idsToSelect.length &&
+                        currentSelection.instanceIds.every(id => idsToSelect.includes(id));
+
+                    if (!isSameSelection) {
+                        applySelection(object, idsToSelect);
+                    }
                 }
             } else {
                 resetSelectionAndDeselect();
