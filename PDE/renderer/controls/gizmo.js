@@ -847,7 +847,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 previousGizmoMode = transformControls.mode;
                 transformControls.setMode('translate');
             }
-            if (event.ctrlKey) {
+        }
+
+        // Handle Ctrl + Alt for pivot reset (order-independent)
+        if (event.altKey && event.ctrlKey) {
+            if (event.key === 'Alt' || event.key === 'Control') {
+                event.preventDefault();
                 pivotOffset.set(0, 0, 0);
                 isCustomPivot = false;
                 if (currentSelection.mesh) {
