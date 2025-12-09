@@ -610,6 +610,33 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     mesh.userData.isCustomPivot = true;
                     pivotMode = 'origin';
                 }
+            } else {
+                if (currentSelection.mesh && currentSelection.instanceIds.length > 0 && isCustomPivot) {
+                    const mesh = currentSelection.mesh;
+                    const instanceIds = currentSelection.instanceIds;
+                    
+                    let customPivot = null;
+                    if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots && instanceIds.length > 0) {
+                        if (mesh.userData.customPivots.has(instanceIds[0])) {
+                            customPivot = mesh.userData.customPivots.get(instanceIds[0]);
+                        }
+                    } else if (mesh.userData.customPivot) {
+                        customPivot = mesh.userData.customPivot;
+                    }
+
+                    if (customPivot) {
+                        mesh.updateMatrixWorld();
+                        const center = calculateAvgOrigin(mesh, instanceIds);
+                        
+                        const firstId = instanceIds[0];
+                        const tempMat = new THREE.Matrix4();
+                        mesh.getMatrixAt(firstId, tempMat);
+                        const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
+                        const targetWorld = customPivot.clone().applyMatrix4(worldMatrix);
+                        
+                        pivotOffset.subVectors(targetWorld, center);
+                    }
+                }
             }
 
             if (currentSelection.mesh) {
