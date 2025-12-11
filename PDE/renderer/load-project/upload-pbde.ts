@@ -938,6 +938,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                 await createBatchedMesh(batchGroups.opaque, '__ATLAS__');
                 await createBatchedMesh(batchGroups.translucent, '__ATLAS_TRANSLUCENT__');
             }
+            //--- BatchedMesh Logic for Atlas End ---
 
             // Process grouped blocks
             for (const [geomId, instancesMap] of blocks) {
