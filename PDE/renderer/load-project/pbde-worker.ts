@@ -1505,6 +1505,18 @@ function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
 
 // --- 원본 워커 흐름 제어 로직 ---
 
+function generateUUID() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+let groups = new Map();
+
 // 두 개의 4x4 행렬을 곱해 누적 변환을 계산한다.
 function apply_transforms(parent, child) {
     const result = new Float32Array(16);
@@ -1561,14 +1573,55 @@ function split_children(children: any) {
 }
 
 // 씬 그래프 노드를 재귀적으로 순회하며 렌더 항목을 만든다.
-async function processNode(node, parentTransform) {
+async function processNode(node, parentTransform, parentGroupId = null) {
     const worldTransform = apply_transforms(parentTransform, node.transforms);
     let renderItems = [];
+
+    let currentGroupId = parentGroupId;
+
+    if (node.isCollection) {
+        const newGroupId = generateUUID();
+
+        const m = new THREE.Matrix4().fromArray(worldTransform).transpose();
+        const position = new THREE.Vector3();
+        const quaternion = new THREE.Quaternion();
+        const scale = new THREE.Vector3();
+        m.decompose(position, quaternion, scale);
+
+        groups.set(newGroupId, {
+            id: newGroupId,
+            isCollection: true,
+            children: [],
+            parent: parentGroupId,
+            name: node.name || 'Group',
+            position: { x: position.x, y: position.y, z: position.z },
+            quaternion: { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w },
+            scale: { x: scale.x, y: scale.y, z: scale.z }
+        });
+
+        if (parentGroupId) {
+            const parentGroup = groups.get(parentGroupId);
+            if (parentGroup) {
+                parentGroup.children.push({ type: 'group', id: newGroupId });
+            }
+        }
+        currentGroupId = newGroupId;
+    }
 
     if (node.isBlockDisplay) {
         const modelData = await processBlockDisplay(node);
         if (modelData) {
             (modelData as any).transform = worldTransform; // 계산된 월드 변환 행렬을 결과에 포함한다.
+            
+            const uuid = generateUUID();
+            (modelData as any).uuid = uuid;
+            (modelData as any).groupId = currentGroupId;
+            
+            if (currentGroupId) {
+                const g = groups.get(currentGroupId);
+                if (g) g.children.push({ type: 'object', id: uuid });
+            }
+
             renderItems.push(modelData);
         }
     } else if (node.isItemDisplay) {
@@ -1631,6 +1684,15 @@ async function processNode(node, parentTransform) {
                 textureUrl = node.paintTexture.startsWith('data:image') ? node.paintTexture : `data:image/png;base64,${node.paintTexture}`;
             }
             itemData.textureUrl = textureUrl || defaultTextureValue;
+
+            const uuid = generateUUID();
+            itemData.uuid = uuid;
+            itemData.groupId = currentGroupId;
+            if (currentGroupId) {
+                const g = groups.get(currentGroupId);
+                if (g) g.children.push({ type: 'object', id: uuid });
+            }
+
             renderItems.push(itemData);
         } else {
             const modelDisplay = await processItemModelDisplay({
@@ -1639,17 +1701,36 @@ async function processNode(node, parentTransform) {
             });
             if (modelDisplay) {
                 (modelDisplay as any).transform = worldTransform;
+
+                const uuid = generateUUID();
+                (modelDisplay as any).uuid = uuid;
+                (modelDisplay as any).groupId = currentGroupId;
+                if (currentGroupId) {
+                    const g = groups.get(currentGroupId);
+                    if (g) g.children.push({ type: 'object', id: uuid });
+                }
+
                 renderItems.push(modelDisplay);
             } else {
                 // 기존 큐브 대체 경로를 유지하기 위해 단순 itemDisplay 객체를 추가한다.
-                renderItems.push({
+                const itemData: any = {
                     type: 'itemDisplay',
                     name: node.name,
                     transform: worldTransform,
                     nbt: node.nbt,
                     options: node.options,
                     brightness: node.brightness
-                });
+                };
+
+                const uuid = generateUUID();
+                itemData.uuid = uuid;
+                itemData.groupId = currentGroupId;
+                if (currentGroupId) {
+                    const g = groups.get(currentGroupId);
+                    if (g) g.children.push({ type: 'object', id: uuid });
+                }
+
+                renderItems.push(itemData);
             }
         }
     } else if (node.isTextDisplay) {
@@ -1657,7 +1738,7 @@ async function processNode(node, parentTransform) {
     }
 
     if (node.children) {
-        const childPromises = node.children.map(child => processNode(child, worldTransform));
+        const childPromises = node.children.map(child => processNode(child, worldTransform, currentGroupId));
         const childRenderItems = await Promise.all(childPromises);
         renderItems = renderItems.concat(childRenderItems.flat());
     }
@@ -1691,6 +1772,7 @@ self.onmessage = async (e) => {
 
     resetWorkerCaches({ clearCanvas: true });
     initializeAssetProvider(workerAssetProvider);
+    groups = new Map();
 
     try {
         // 전달받은 PBDE 파일을 디코딩하고 JSON으로 변환한다.
@@ -1706,7 +1788,7 @@ self.onmessage = async (e) => {
 
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         // 루트 자식 노드를 병렬로 처리해 렌더 항목을 구성한다.
-        const promises = processedChildren.map(node => processNode(node, identityMatrix));
+        const promises = processedChildren.map(node => processNode(node, identityMatrix, null));
         const renderList = (await Promise.all(promises)).flat();
 
         // --- Atlas Generation Start ---
@@ -1919,6 +2001,8 @@ self.onmessage = async (e) => {
                         uvLen: uvs.length,
                         indicesByteOffset: indicesByteOffset + idxStart * indexElementSize,
                         indicesLen: indices.length,
+                        uuid: item.uuid,
+                        groupId: item.groupId
                     });
                 });
             }
@@ -1929,6 +2013,7 @@ self.onmessage = async (e) => {
             otherItems: otherItems,
             useUint32Indices: useUint32Indices,
             atlas: atlasInfo,
+            groups: groups
         };
 
         // 메타데이터와 지오메트리 버퍼를 메인 스레드로 전송한다.

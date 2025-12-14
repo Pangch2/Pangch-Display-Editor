@@ -687,12 +687,60 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                 console.error('[Debug] Invalid metadata payload from worker.');
                 return;
             }
-            const metadataPayload = metadata as { geometries: any[]; otherItems: any[]; useUint32Indices?: boolean; atlas?: any };
+            const metadataPayload = metadata as { geometries: any[]; otherItems: any[]; useUint32Indices?: boolean; atlas?: any; groups?: Map<string, any> };
             if (!Array.isArray(metadataPayload.geometries) || !Array.isArray(metadataPayload.otherItems)) {
                 console.error('[Debug] Invalid metadata payload from worker.');
                 return;
             }
-            const { geometries: geometryMetas, otherItems, useUint32Indices, atlas } = metadataPayload;
+            const { geometries: geometryMetas, otherItems, useUint32Indices, atlas, groups } = metadataPayload;
+
+            // Grouping Setup
+            const objectToGroup = new Map();
+            if (groups) {
+                loadedObjectGroup.userData.groups = groups;
+                loadedObjectGroup.userData.objectToGroup = objectToGroup;
+
+                // Restore THREE objects for group transforms
+                for (const group of groups.values()) {
+                    if (group.quaternion) {
+                        const q = group.quaternion;
+                        if (!(q instanceof THREE.Quaternion)) {
+                            const x = q._x !== undefined ? q._x : q.x;
+                            const y = q._y !== undefined ? q._y : q.y;
+                            const z = q._z !== undefined ? q._z : q.z;
+                            const w = q._w !== undefined ? q._w : q.w;
+                            group.quaternion = new THREE.Quaternion(x, y, z, w);
+                        }
+                    }
+                    if (group.scale) {
+                        const s = group.scale;
+                        if (!(s instanceof THREE.Vector3)) {
+                            group.scale = new THREE.Vector3(s.x, s.y, s.z);
+                        }
+                    }
+                    if (group.position) {
+                        const p = group.position;
+                        if (!(p instanceof THREE.Vector3)) {
+                            group.position = new THREE.Vector3(p.x, p.y, p.z);
+                        }
+                    }
+                }
+            }
+
+            function registerObject(mesh: THREE.Object3D, instanceId: number, uuid: string, groupId: string) {
+                if (groupId && groups) {
+                    const key = `${mesh.uuid}_${instanceId}`;
+                    objectToGroup.set(key, groupId);
+                    
+                    const group = groups.get(groupId);
+                    if (group) {
+                        const childIndex = group.children.findIndex((c: any) => c.type === 'object' && c.id === uuid);
+                        if (childIndex !== -1) {
+                            group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId };
+                        }
+                    }
+                }
+            }
 
             if (atlas) {
                 try {
@@ -922,6 +970,8 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                             if (batch.userData.itemIds && part.itemId !== undefined) {
                                 batch.userData.itemIds.set(instanceId, part.itemId);
                             }
+
+                            registerObject(batch, instanceId, part.uuid, part.groupId);
                         }
 
                         loadedObjectGroup.add(batch);
@@ -943,7 +993,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
             // Process grouped blocks
             for (const [geomId, instancesMap] of blocks) {
                 // Group instances by Signature (combination of parts and materials)
-                const signatureGroups = new Map<string, { parts: any[], matrices: THREE.Matrix4[] }>();
+                const signatureGroups = new Map<string, { parts: any[], matrices: THREE.Matrix4[], instanceMetas: any[] }>();
 
                 for (const [matrixStr, parts] of instancesMap) {
                     // Sort parts by geometryIndex to ensure consistent order
@@ -956,19 +1006,21 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
 
                     let group = signatureGroups.get(signature);
                     if (!group) {
-                        group = { parts: parts, matrices: [] };
+                        group = { parts: parts, matrices: [], instanceMetas: [] };
                         signatureGroups.set(signature, group);
                     }
                     
                     // Reconstruct instance matrix
                     const matrix = new THREE.Matrix4().fromArray(parts[0].transform).transpose();
                     group.matrices.push(matrix);
+                    group.instanceMetas.push({ uuid: parts[0].uuid, groupId: parts[0].groupId });
                 }
 
                 // Create InstancedMesh for each signature group
                 for (const [sig, group] of signatureGroups) {
                     const representativeParts = group.parts;
                     const matrices = group.matrices;
+                    const instanceMetas = group.instanceMetas;
 
                     // Merge Geometries
                     const geometriesToMerge: THREE.BufferGeometry[] = [];
@@ -1031,6 +1083,8 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
 
                         for (let i = 0; i < matrices.length; i++) {
                             instancedMesh.setMatrixAt(i, matrices[i]);
+                            const meta = instanceMetas[i];
+                            registerObject(instancedMesh, i, meta.uuid, meta.groupId);
                         }
                         instancedMesh.instanceMatrix.needsUpdate = true;
                         instancedMesh.computeBoundingSphere();
@@ -1230,6 +1284,10 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         instancedMesh.frustumCulled = false;
                         instancedMesh.layers.enable(2);
                         instancedMesh.computeBoundingSphere();
+
+                        playerHeadItems.forEach((item, idx) => {
+                            registerObject(instancedMesh, idx, item.uuid, item.groupId);
+                        });
 
                         loadedObjectGroup.add(instancedMesh);
 
