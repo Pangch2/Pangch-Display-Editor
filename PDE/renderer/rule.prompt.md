@@ -29,7 +29,7 @@ renderer/
 │   └ upload-pbde.ts - pbde-worker.ts의 데이터를 받는 메인쓰레드
 ├ controls/
 │   └ gizmo.js - gizmo 컨트롤러
-├ renderer.js - 메인 렌더링 엔진
+├ renderer.js - 메인 씬 렌더러
 └ ui-open-close.js - UI 열기/닫기 애니메이션
 resources/ - 웹,빌드 이미지 모음
 tsconfig.json

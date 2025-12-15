@@ -1559,6 +1559,7 @@ function split_children(children: any) {
         if (item.options) newItem.options = item.options;
         if (item.paintTexture) newItem.paintTexture = item.paintTexture;
         if (item.textureValueList) newItem.textureValueList = item.textureValueList;
+        if (item.pivotCustom) newItem.pivotCustom = item.pivotCustom;
 
         // 변환 행렬은 빈 문자열이라도 항상 유지한다.
         newItem.transforms = item.transforms || "";
@@ -1588,6 +1589,8 @@ async function processNode(node, parentTransform, parentGroupId = null) {
         const scale = new THREE.Vector3();
         m.decompose(position, quaternion, scale);
 
+        const pivot = node.pivotCustom || [0.5, 0.5, 0.5];
+
         groups.set(newGroupId, {
             id: newGroupId,
             isCollection: true,
@@ -1596,7 +1599,8 @@ async function processNode(node, parentTransform, parentGroupId = null) {
             name: node.name || 'Group',
             position: { x: position.x, y: position.y, z: position.z },
             quaternion: { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w },
-            scale: { x: scale.x, y: scale.y, z: scale.z }
+            scale: { x: scale.x, y: scale.y, z: scale.z },
+            pivot: pivot
         });
 
         if (parentGroupId) {
