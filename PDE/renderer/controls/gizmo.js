@@ -124,39 +124,101 @@ function getAllGroupChildren(groupId) {
     const groups = getGroups();
     const group = groups.get(groupId);
     if (!group) return [];
-    let children = [];
-    for (const child of group.children) {
+
+    const out = [];
+    const stack = Array.isArray(group.children) ? group.children.slice().reverse() : [];
+    while (stack.length > 0) {
+        const child = stack.pop();
+        if (!child) continue;
+
         if (child.type === 'group') {
-            children = children.concat(getAllGroupChildren(child.id));
+            const sub = groups.get(child.id);
+            if (sub && Array.isArray(sub.children) && sub.children.length > 0) {
+                for (let i = sub.children.length - 1; i >= 0; i--) {
+                    stack.push(sub.children[i]);
+                }
+            }
         } else {
-            children.push(child);
+            out.push(child);
         }
     }
-    return children;
+    return out;
 }
 
 function getAllDescendantGroups(groupId) {
     const groups = getGroups();
     const group = groups.get(groupId);
     if (!group) return [];
-    let descendantGroups = [];
-    for (const child of group.children) {
-        if (child.type === 'group') {
-            descendantGroups.push(child.id);
-            descendantGroups = descendantGroups.concat(getAllDescendantGroups(child.id));
+
+    const out = [];
+    const stack = [];
+    if (Array.isArray(group.children)) {
+        for (let i = group.children.length - 1; i >= 0; i--) {
+            const child = group.children[i];
+            if (child && child.type === 'group') stack.push(child.id);
         }
     }
-    return descendantGroups;
+
+    while (stack.length > 0) {
+        const id = stack.pop();
+        if (!id) continue;
+        out.push(id);
+        const sub = groups.get(id);
+        if (!sub || !Array.isArray(sub.children)) continue;
+        for (let i = sub.children.length - 1; i >= 0; i--) {
+            const child = sub.children[i];
+            if (child && child.type === 'group') stack.push(child.id);
+        }
+    }
+    return out;
+}
+
+// Selection caches (critical for performance when group has many children)
+let _selectedItemsCacheKey = null;
+let _selectedItemsCache = null;
+let _descendantGroupsCacheKey = null;
+let _descendantGroupsCache = null;
+
+function _getSelectionCacheKey() {
+    if (currentSelection.groupId) return `g:${currentSelection.groupId}`;
+    if (currentSelection.mesh && currentSelection.instanceIds && currentSelection.instanceIds.length > 0) {
+        return `m:${currentSelection.mesh.uuid}:${currentSelection.instanceIds.join(',')}`;
+    }
+    return 'none';
+}
+
+function invalidateSelectionCaches() {
+    _selectedItemsCacheKey = null;
+    _selectedItemsCache = null;
+    _descendantGroupsCacheKey = null;
+    _descendantGroupsCache = null;
+}
+
+function getAllDescendantGroupsCached(groupId) {
+    if (_descendantGroupsCacheKey === groupId && _descendantGroupsCache) return _descendantGroupsCache;
+    _descendantGroupsCacheKey = groupId;
+    _descendantGroupsCache = getAllDescendantGroups(groupId);
+    return _descendantGroupsCache;
 }
 
 // Unified helper to get flat list of selected targets
 function getSelectedItems() {
+    const key = _getSelectionCacheKey();
+    if (_selectedItemsCacheKey === key && _selectedItemsCache) return _selectedItemsCache;
+
+    let items = [];
     if (currentSelection.groupId) {
-        return getAllGroupChildren(currentSelection.groupId).map(child => ({ mesh: child.mesh, instanceId: child.instanceId }));
+        items = getAllGroupChildren(currentSelection.groupId)
+            .map(child => ({ mesh: child.mesh, instanceId: child.instanceId }))
+            .filter(it => it.mesh);
     } else if (currentSelection.mesh && currentSelection.instanceIds.length > 0) {
-        return currentSelection.instanceIds.map(id => ({ mesh: currentSelection.mesh, instanceId: id }));
+        const mesh = currentSelection.mesh;
+        items = currentSelection.instanceIds.map(id => ({ mesh, instanceId: id }));
     }
-    return [];
+
+    _selectedItemsCacheKey = key;
+    _selectedItemsCache = items;
+    return items;
 }
 
 function getSelectionBoundingBox() {
@@ -324,6 +386,14 @@ let isUniformScale = false;
 let isCustomPivot = false;
 let pivotOffset = new THREE.Vector3(0, 0, 0);
 
+// Reusable temporaries (avoid allocations during dragging)
+const _tmpPrevInvMatrix = new THREE.Matrix4();
+const _tmpDeltaMatrix = new THREE.Matrix4();
+const _tmpInstanceMatrix = new THREE.Matrix4();
+const _tmpMeshWorldInverse = new THREE.Matrix4();
+const _tmpLocalDelta = new THREE.Matrix4();
+const _meshToInstanceIds = new Map();
+
 // Helpers
 function getRotationFromMatrix(matrix) {
     const R = new THREE.Matrix4();
@@ -483,6 +553,7 @@ function updateSelectionOverlay() {
         } else {
             selectionOverlay.matrix.compose(group.position, group.quaternion, group.scale);
         }
+        selectionOverlay.updateMatrixWorld(true);
 
         selectionOverlay.renderOrder = 1;
         scene.add(selectionOverlay);
@@ -564,6 +635,7 @@ function updateSelectionOverlay() {
     selectionOverlay = new THREE.Group();
     selectionOverlay.renderOrder = 1;
     selectionOverlay.matrixAutoUpdate = false;
+    selectionOverlay.matrix.identity();
 
     const tempMat = new THREE.Matrix4();
     for (const id of currentSelection.instanceIds) {
@@ -573,6 +645,7 @@ function updateSelectionOverlay() {
         line.matrix.multiplyMatrices(mesh.matrixWorld, tempMat);
         selectionOverlay.add(line);
     }
+    selectionOverlay.updateMatrixWorld(true);
     scene.add(selectionOverlay);
 }
 
@@ -584,6 +657,7 @@ function resetSelectionAndDeselect() {
             currentSelection.edgesGeometry = null;
         }
         currentSelection = { mesh: null, instanceIds: [], edgesGeometry: null, groupId: null };
+        invalidateSelectionCaches();
         updateSelectionOverlay();
         lastDirections = { X: null, Y: null, Z: null };
         console.log('선택 해제');
@@ -660,6 +734,7 @@ function applySelection(mesh, instanceIds, groupId = null) {
     }
 
     currentSelection = { mesh, instanceIds, edgesGeometry: currentSelection.edgesGeometry, groupId };
+    invalidateSelectionCaches();
     
     if (customPivot && !groupId) {
         isCustomPivot = true;
@@ -771,6 +846,7 @@ function createGroup() {
     }
 
     groups.set(newGroupId, newGroup);
+    invalidateSelectionCaches();
     applySelection(null, [], newGroupId);
     console.log(`Group created: ${newGroupId}`);
     return newGroupId;
@@ -1122,29 +1198,37 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
 
             selectionHelper.updateMatrixWorld();
-            const tempMatrix = new THREE.Matrix4();
-            const deltaMatrix = new THREE.Matrix4();
-
-            tempMatrix.copy(previousHelperMatrix).invert();
-            deltaMatrix.multiplyMatrices(selectionHelper.matrixWorld, tempMatrix);
+            _tmpPrevInvMatrix.copy(previousHelperMatrix).invert();
+            _tmpDeltaMatrix.multiplyMatrices(selectionHelper.matrixWorld, _tmpPrevInvMatrix);
 
             const items = getSelectedItems();
-            const instanceMatrix = new THREE.Matrix4();
+            _meshToInstanceIds.clear();
+            for (const { mesh, instanceId } of items) {
+                if (!mesh) continue;
+                let list = _meshToInstanceIds.get(mesh);
+                if (!list) {
+                    list = [];
+                    _meshToInstanceIds.set(mesh, list);
+                }
+                list.push(instanceId);
+            }
 
-            items.forEach(({mesh, instanceId}) => {
-                 const meshWorldInverse = mesh.matrixWorld.clone().invert();
-                 const localDelta = new THREE.Matrix4();
-                 localDelta.multiplyMatrices(meshWorldInverse, deltaMatrix);
-                 localDelta.multiply(mesh.matrixWorld);
+            for (const [mesh, instanceIds] of _meshToInstanceIds) {
+                _tmpMeshWorldInverse.copy(mesh.matrixWorld).invert();
+                _tmpLocalDelta.multiplyMatrices(_tmpMeshWorldInverse, _tmpDeltaMatrix);
+                _tmpLocalDelta.multiply(mesh.matrixWorld);
 
-                 mesh.getMatrixAt(instanceId, instanceMatrix);
-                 instanceMatrix.premultiply(localDelta);
-                 mesh.setMatrixAt(instanceId, instanceMatrix);
+                for (let i = 0; i < instanceIds.length; i++) {
+                    const instanceId = instanceIds[i];
+                    mesh.getMatrixAt(instanceId, _tmpInstanceMatrix);
+                    _tmpInstanceMatrix.premultiply(_tmpLocalDelta);
+                    mesh.setMatrixAt(instanceId, _tmpInstanceMatrix);
+                }
 
-                 if (mesh.isInstancedMesh) {
+                if (mesh.isInstancedMesh) {
                     mesh.instanceMatrix.needsUpdate = true;
-                 }
-            });
+                }
+            }
 
             if (currentSelection.groupId) {
                 const groups = getGroups();
@@ -1156,7 +1240,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         const gScale = group.scale || new THREE.Vector3(1, 1, 1);
                         group.matrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
                     }
-                    group.matrix.premultiply(deltaMatrix);
+                    group.matrix.premultiply(_tmpDeltaMatrix);
                     if (!group.position) group.position = new THREE.Vector3();
                     if (!group.quaternion) group.quaternion = new THREE.Quaternion();
                     if (!group.scale) group.scale = new THREE.Vector3(1, 1, 1);
@@ -1164,7 +1248,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 }
 
                 // Update descendant groups
-                const descendantIds = getAllDescendantGroups(currentSelection.groupId);
+                const descendantIds = getAllDescendantGroupsCached(currentSelection.groupId);
                 descendantIds.forEach(subId => {
                     const subGroup = groups.get(subId);
                     if (subGroup) {
@@ -1174,7 +1258,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             const sScale = subGroup.scale || new THREE.Vector3(1, 1, 1);
                             subGroup.matrix = new THREE.Matrix4().compose(sPos, sQuat, sScale);
                         }
-                        subGroup.matrix.premultiply(deltaMatrix);
+                        subGroup.matrix.premultiply(_tmpDeltaMatrix);
                         
                         if (!subGroup.position) subGroup.position = new THREE.Vector3();
                         if (!subGroup.quaternion) subGroup.quaternion = new THREE.Quaternion();
@@ -1183,10 +1267,25 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         subGroup.matrix.decompose(subGroup.position, subGroup.quaternion, subGroup.scale);
                     }
                 });
+
+                // Keep overlay in sync without rebuilding geometry
+                if (selectionOverlay) {
+                    if (group && group.matrix) {
+                        selectionOverlay.matrix.copy(group.matrix);
+                    } else if (group) {
+                        selectionOverlay.matrix.compose(group.position, group.quaternion, group.scale);
+                    }
+                    selectionOverlay.updateMatrixWorld(true);
+                }
             }
 
             previousHelperMatrix.copy(selectionHelper.matrixWorld);
-            updateSelectionOverlay();
+
+            // Non-group selection overlay: apply the same delta in world space
+            if (!currentSelection.groupId && selectionOverlay) {
+                selectionOverlay.matrix.premultiply(_tmpDeltaMatrix);
+                selectionOverlay.updateMatrixWorld(true);
+            }
         }
     });
 
@@ -1323,6 +1422,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                          const groups = getGroups();
                          const group = groups.get(currentSelection.groupId);
                          if (group && group.matrix) delete group.matrix;
+
+                         const descendantIds = getAllDescendantGroups(currentSelection.groupId);
+                         descendantIds.forEach(subId => {
+                             const subGroup = groups.get(subId);
+                             if (subGroup && subGroup.matrix) delete subGroup.matrix;
+                         });
                     }
 
                     updateHelperPosition();
