@@ -1,6 +1,101 @@
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
 
+// Small shared temporaries (avoid allocations in hot paths)
+const _TMP_MAT4_A = new THREE.Matrix4();
+const _TMP_MAT4_B = new THREE.Matrix4();
+const _TMP_BOX3_A = new THREE.Box3();
+const _TMP_VEC3_A = new THREE.Vector3();
+const _TMP_VEC3_B = new THREE.Vector3();
+
+function getDisplayType(mesh, instanceId) {
+    if (!mesh) return undefined;
+    if (mesh.isBatchedMesh && mesh.userData?.displayTypes) {
+        return mesh.userData.displayTypes.get(instanceId);
+    }
+    return mesh.userData?.displayType;
+}
+
+function isItemDisplayHatEnabled(mesh, instanceId) {
+    return !!(getDisplayType(mesh, instanceId) === 'item_display' && mesh?.userData?.hasHat && mesh.userData.hasHat[instanceId]);
+}
+
+function getInstanceLocalBoxMin(mesh, instanceId, out = new THREE.Vector3()) {
+    const box = getInstanceLocalBox(mesh, instanceId);
+    if (!box) return null;
+    return out.copy(box.min);
+}
+
+// Used for origin/center computations where BatchedMesh localMatrices should be removed.
+function getInstanceWorldMatrixForOrigin(mesh, instanceId, outMatrix) {
+    outMatrix.identity();
+    if (!mesh) return outMatrix;
+
+    mesh.getMatrixAt(instanceId, outMatrix);
+    if (mesh.isBatchedMesh && mesh.userData?.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
+        _TMP_MAT4_B.copy(mesh.userData.localMatrices.get(instanceId)).invert();
+        outMatrix.multiply(_TMP_MAT4_B);
+    }
+    outMatrix.premultiply(mesh.matrixWorld);
+    return outMatrix;
+}
+
+function calculateAvgOriginForChildren(children, out = new THREE.Vector3()) {
+    out.set(0, 0, 0);
+    if (!Array.isArray(children) || children.length === 0) return out;
+
+    const tempPos = _TMP_VEC3_A;
+    const tempMat = _TMP_MAT4_A;
+
+    children.forEach(child => {
+        const m = child.mesh;
+        const id = child.instanceId;
+        if (!m && m !== 0) return;
+
+        getInstanceWorldMatrixForOrigin(m, id, tempMat);
+        const localY = isItemDisplayHatEnabled(m, id) ? 0.03125 : 0;
+        tempPos.set(0, localY, 0).applyMatrix4(tempMat);
+        out.add(tempPos);
+    });
+
+    out.divideScalar(children.length);
+    return out;
+}
+
+function getGroupWorldMatrixWithFallback(groupId, out = new THREE.Matrix4()) {
+    out.identity();
+    const groups = getGroups();
+    const group = groups.get(groupId);
+    if (!group) return out;
+    if (group.matrix) return out.copy(group.matrix);
+
+    let gPos = group.position;
+    if (!gPos) {
+        const children = getAllGroupChildren(groupId);
+        gPos = calculateAvgOriginForChildren(children, _TMP_VEC3_B);
+    }
+    if (!group.quaternion) group.quaternion = new THREE.Quaternion();
+    if (!group.scale) group.scale = new THREE.Vector3(1, 1, 1);
+    return out.compose(gPos, group.quaternion, group.scale);
+}
+
+function createEdgesGeometryFromBox3(box) {
+    if (!box || box.isEmpty()) return null;
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+    const boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
+    boxGeo.translate(center.x, center.y, center.z);
+    return new THREE.EdgesGeometry(boxGeo);
+}
+
+function unionTransformedBox3(targetBox, localBox, matrix, tempBox = _TMP_BOX3_A) {
+    if (!targetBox || !localBox) return;
+    tempBox.copy(localBox).applyMatrix4(matrix);
+    targetBox.union(tempBox);
+}
+
 function getInstanceLocalBox(mesh, instanceId) {
     if (!mesh) return null;
 
@@ -21,7 +116,7 @@ function getInstanceLocalBox(mesh, instanceId) {
     let box = mesh.geometry.boundingBox.clone();
 
     // Player Head: when hat is disabled, treat as 1x1x1 around center (matches existing selection bounding logic)
-    if (mesh.userData?.displayType === 'item_display' && mesh.userData?.hasHat && !mesh.userData.hasHat[instanceId]) {
+    if (getDisplayType(mesh, instanceId) === 'item_display' && mesh.userData?.hasHat && !mesh.userData.hasHat[instanceId]) {
         const center = new THREE.Vector3();
         box.getCenter(center);
         box = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
@@ -291,31 +386,12 @@ function getSelectionBoundingBox() {
 
     items.forEach(({ mesh, instanceId: id }) => {
         if (!mesh) return;
+        const localBox = getInstanceLocalBox(mesh, id);
+        if (!localBox) return;
 
-        mesh.getMatrixAt(id, tempMat);
-        tempMat.premultiply(mesh.matrixWorld);
-
-        let geoBox = null;
-        if (mesh.isBatchedMesh) {
-            if (mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
-                const geomId = mesh.userData.instanceGeometryIds[id];
-                geoBox = mesh.userData.geometryBounds.get(geomId);
-            }
-        } else {
-            if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-            geoBox = mesh.geometry.boundingBox;
-             // Player Head logic
-             if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && !mesh.userData.hasHat[id]) {
-                const center = new THREE.Vector3();
-                geoBox.getCenter(center);
-                geoBox = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
-            }
-        }
-
-        if (geoBox) {
-            tempBox.copy(geoBox).applyMatrix4(tempMat);
-            box.union(tempBox);
-        }
+        getInstanceWorldMatrix(mesh, id, tempMat);
+        tempBox.copy(localBox).applyMatrix4(tempMat);
+        box.union(tempBox);
     });
     return box;
 }
@@ -325,43 +401,7 @@ function getGroupLocalBoundingBox(groupId) {
     const group = groups.get(groupId);
     if (!group) return new THREE.Box3();
 
-    let groupMatrix;
-    if (group.matrix) {
-        groupMatrix = group.matrix.clone();
-    } else {
-        let gPos = group.position;
-        if (!gPos) {
-            const children = getAllGroupChildren(groupId);
-            const center = new THREE.Vector3();
-            if (children.length > 0) {
-                const tempPos = new THREE.Vector3();
-                const tempMat = new THREE.Matrix4();
-                children.forEach(child => {
-                    const m = child.mesh;
-                    const id = child.instanceId;
-                    m.getMatrixAt(id, tempMat);
-                    if (m.isBatchedMesh && m.userData.localMatrices && m.userData.localMatrices.has(id)) {
-                         tempMat.multiply(m.userData.localMatrices.get(id).clone().invert());
-                    }
-                    tempMat.premultiply(m.matrixWorld);
-                    let localY = 0;
-                    let displayType = m.userData.displayType;
-                    if (m.isBatchedMesh && m.userData.displayTypes) displayType = m.userData.displayTypes.get(id);
-                    if (displayType === 'item_display' && m.userData.hasHat && m.userData.hasHat[id]) localY = 0.03125;
-                    tempPos.set(0, localY, 0).applyMatrix4(tempMat);
-                    center.add(tempPos);
-                });
-                center.divideScalar(children.length);
-            }
-            gPos = center;
-        }
-
-        if (!group.quaternion) group.quaternion = new THREE.Quaternion();
-        if (!group.scale) group.scale = new THREE.Vector3(1, 1, 1);
-
-        groupMatrix = new THREE.Matrix4().compose(gPos, group.quaternion, group.scale);
-    }
-
+    const groupMatrix = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
     const groupInverse = groupMatrix.clone().invert();
 
     const children = getAllGroupChildren(groupId);
@@ -377,31 +417,13 @@ function getGroupLocalBoundingBox(groupId) {
 
         if (!mesh) return;
 
-        mesh.getMatrixAt(id, tempMat);
-        tempMat.premultiply(mesh.matrixWorld);
+        const localBox = getInstanceLocalBox(mesh, id);
+        if (!localBox) return;
+
+        getInstanceWorldMatrix(mesh, id, tempMat);
         tempMat.premultiply(groupInverse);
-
-        let geoBox = null;
-        if (mesh.isBatchedMesh) {
-            if (mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
-                const geomId = mesh.userData.instanceGeometryIds[id];
-                geoBox = mesh.userData.geometryBounds.get(geomId);
-            }
-        } else {
-            if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-            geoBox = mesh.geometry.boundingBox;
-             
-             if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && !mesh.userData.hasHat[id]) {
-                const center = new THREE.Vector3();
-                geoBox.getCenter(center);
-                geoBox = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
-            }
-        }
-
-        if (geoBox) {
-            tempBox.copy(geoBox).applyMatrix4(tempMat);
-            box.union(tempBox);
-        }
+        tempBox.copy(localBox).applyMatrix4(tempMat);
+        box.union(tempBox);
     });
     return box;
 }
@@ -489,15 +511,7 @@ function SelectionCenter(pivotMode, isCustomPivot, pivotOffset) {
              
              const box = getGroupLocalBoundingBox(currentSelection.groupId);
              if (!box.isEmpty()) {
-                 let groupMatrix;
-                 if (group.matrix) {
-                     groupMatrix = group.matrix.clone();
-                 } else {
-                     const gPos = group.position || calculateAvgOrigin();
-                     const gQuat = group.quaternion || new THREE.Quaternion();
-                     const gScale = group.scale || new THREE.Vector3(1, 1, 1);
-                     groupMatrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
-                 }
+                 const groupMatrix = getGroupWorldMatrixWithFallback(currentSelection.groupId, new THREE.Matrix4());
                  center.copy(box.min).applyMatrix4(groupMatrix);
              } else if (group && group.position) {
                  center.copy(group.position);
@@ -507,33 +521,17 @@ function SelectionCenter(pivotMode, isCustomPivot, pivotOffset) {
         } else {
              const firstItem = items[0];
              const mesh = firstItem.mesh;
-             let displayType = mesh.userData.displayType;
-             if (mesh.isBatchedMesh && mesh.userData.displayTypes) {
-                displayType = mesh.userData.displayTypes.get(firstItem.instanceId);
-             }
+             const displayType = getDisplayType(mesh, firstItem.instanceId);
 
              const isBlockDisplayWithoutCustomPivot = displayType === 'block_display' && !isCustomPivot;
              if (isBlockDisplayWithoutCustomPivot) {
-                 let localPivot = new THREE.Vector3(0,0,0);
-                 if (mesh.isBatchedMesh) {
-                     if (mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
-                         const geomId = mesh.userData.instanceGeometryIds[firstItem.instanceId];
-                         const box = mesh.userData.geometryBounds.get(geomId);
-                         if (box) localPivot.copy(box.min);
-                     }
+                 const localPivot = getInstanceLocalBoxMin(mesh, firstItem.instanceId, new THREE.Vector3(0, 0, 0));
+                 if (localPivot) {
+                     const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, firstItem.instanceId, new THREE.Matrix4());
+                     center.copy(localPivot.applyMatrix4(worldMatrix));
                  } else {
-                     if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-                     localPivot.copy(mesh.geometry.boundingBox.min);
+                     center.copy(calculateAvgOrigin());
                  }
-                 
-                 const instanceMatrix = new THREE.Matrix4();
-                 mesh.getMatrixAt(firstItem.instanceId, instanceMatrix);
-                 if (mesh.isBatchedMesh && mesh.userData.localMatrices && mesh.userData.localMatrices.has(firstItem.instanceId)) {
-                     const localMatrix = mesh.userData.localMatrices.get(firstItem.instanceId);
-                     instanceMatrix.multiply(localMatrix.clone().invert());
-                 }
-                 const worldMatrix = new THREE.Matrix4().multiplyMatrices(mesh.matrixWorld, instanceMatrix);
-                 center.copy(localPivot.applyMatrix4(worldMatrix));
              } else {
                  center.copy(calculateAvgOrigin());
              }
@@ -557,26 +555,8 @@ function calculateAvgOrigin() {
     const tempMat = new THREE.Matrix4();
     
     items.forEach(({mesh, instanceId}) => {
-        mesh.getMatrixAt(instanceId, tempMat);
-        
-        if (mesh.isBatchedMesh && mesh.userData.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
-             const localMatrix = mesh.userData.localMatrices.get(instanceId);
-             const localInverse = localMatrix.clone().invert();
-             tempMat.multiply(localInverse);
-        }
-
-        tempMat.premultiply(mesh.matrixWorld);
-        
-        let localY = 0;
-        let displayType = mesh.userData.displayType;
-        if (mesh.isBatchedMesh && mesh.userData.displayTypes) {
-            displayType = mesh.userData.displayTypes.get(instanceId);
-        }
-
-        if (displayType === 'item_display' && mesh.userData.hasHat && mesh.userData.hasHat[instanceId]) {
-            localY = 0.03125;
-        }
-        
+        getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+        const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
         tempPos.set(0, localY, 0).applyMatrix4(tempMat);
         center.add(tempPos);
     });
@@ -602,14 +582,8 @@ function updateSelectionOverlay() {
         const localBox = getGroupLocalBoundingBox(currentSelection.groupId);
         if (localBox.isEmpty()) return;
 
-        const size = new THREE.Vector3();
-        localBox.getSize(size);
-        const center = new THREE.Vector3();
-        localBox.getCenter(center);
-
-        const boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
-        boxGeo.translate(center.x, center.y, center.z);
-        const edgesGeo = new THREE.EdgesGeometry(boxGeo);
+        const edgesGeo = createEdgesGeometryFromBox3(localBox);
+        if (!edgesGeo) return;
         
         const overlayMaterial = new THREE.LineBasicMaterial({
             color: 0x6FA21C,
@@ -622,11 +596,7 @@ function updateSelectionOverlay() {
         selectionOverlay = new THREE.LineSegments(edgesGeo, overlayMaterial);
         
         selectionOverlay.matrixAutoUpdate = false;
-        if (group.matrix) {
-            selectionOverlay.matrix.copy(group.matrix);
-        } else {
-            selectionOverlay.matrix.compose(group.position, group.quaternion, group.scale);
-        }
+        selectionOverlay.matrix.copy(getGroupWorldMatrixWithFallback(currentSelection.groupId, new THREE.Matrix4()));
         selectionOverlay.updateMatrixWorld(true);
 
         selectionOverlay.renderOrder = 1;
@@ -639,62 +609,16 @@ function updateSelectionOverlay() {
     const mesh = currentSelection.mesh;
     
     if (!currentSelection.edgesGeometry) {
-        if (mesh.isBatchedMesh) {
-            let boxGeo;
-            if (mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
-                const batchId = currentSelection.instanceIds[0];
-                const geomId = mesh.userData.instanceGeometryIds[batchId];
-                const box = mesh.userData.geometryBounds.get(geomId);
-                
-                if (box) {
-                    const size = new THREE.Vector3();
-                    box.getSize(size);
-                    const center = new THREE.Vector3();
-                    box.getCenter(center);
-                    
-                    boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
-                    boxGeo.translate(center.x, center.y, center.z);
-                }
-            }
-
-            if (boxGeo) {
-                currentSelection.edgesGeometry = new THREE.EdgesGeometry(boxGeo);
-            }
-        } else {
-            let box = null;
-            if (mesh.geometry) {
-                if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-                box = mesh.geometry.boundingBox;
-            }
-            // Player Head: hat disabled uses 1x1x1 box around center (match click hitbox)
-            if (box && mesh.userData?.displayType === 'item_display' && mesh.userData?.hasHat && currentSelection.instanceIds.length > 0) {
-                const id0 = currentSelection.instanceIds[0];
-                if (!mesh.userData.hasHat[id0]) {
-                    const center = new THREE.Vector3();
-                    box.getCenter(center);
-                    box = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
-                }
-            }
-            if (!box) return;
-            const size = new THREE.Vector3();
-            box.getSize(size);
-            const center = new THREE.Vector3();
-            box.getCenter(center);
-            
-            const boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
-            boxGeo.translate(center.x, center.y, center.z);
-
-            currentSelection.edgesGeometry = new THREE.EdgesGeometry(boxGeo);
-        }
+        const id0 = currentSelection.instanceIds[0];
+        const localBox = getInstanceLocalBox(mesh, id0);
+        if (!localBox) return;
+        currentSelection.edgesGeometry = createEdgesGeometryFromBox3(localBox);
     }
     
     if (!currentSelection.edgesGeometry) return;
     const edgesGeo = currentSelection.edgesGeometry;
 
-    let displayType = mesh.userData.displayType;
-    if (mesh.isBatchedMesh && mesh.userData.displayTypes && currentSelection.instanceIds.length > 0) {
-        displayType = mesh.userData.displayTypes.get(currentSelection.instanceIds[0]);
-    }
+    const displayType = getDisplayType(mesh, currentSelection.instanceIds[0]);
 
     const overlayColor = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
 
@@ -1075,38 +999,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 if (currentSelection.groupId) {
                     const groupBox = getGroupLocalBoundingBox(currentSelection.groupId);
                     if (!groupBox.isEmpty()) {
-                        const groups = getGroups();
-                        const group = groups.get(currentSelection.groupId);
-                        
-                        let groupMatrix;
-                        if (group.matrix) {
-                            groupMatrix = group.matrix.clone();
-                        } else {
-                            const gPos = group.position || calculateAvgOrigin();
-                            const gQuat = group.quaternion || new THREE.Quaternion();
-                            const gScale = group.scale || new THREE.Vector3(1,1,1);
-                            groupMatrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
-                        }
+                        const groupMatrix = getGroupWorldMatrixWithFallback(currentSelection.groupId, new THREE.Matrix4());
                         
                         selectionHelper.updateMatrixWorld();
                         const inverseHelperMat = selectionHelper.matrixWorld.clone().invert();
                         const transformMat = inverseHelperMat.multiply(groupMatrix);
-                        
-                        const corners = [
-                            new THREE.Vector3(groupBox.min.x, groupBox.min.y, groupBox.min.z),
-                            new THREE.Vector3(groupBox.min.x, groupBox.min.y, groupBox.max.z),
-                            new THREE.Vector3(groupBox.min.x, groupBox.max.y, groupBox.min.z),
-                            new THREE.Vector3(groupBox.min.x, groupBox.max.y, groupBox.max.z),
-                            new THREE.Vector3(groupBox.max.x, groupBox.min.y, groupBox.min.z),
-                            new THREE.Vector3(groupBox.max.x, groupBox.min.y, groupBox.max.z),
-                            new THREE.Vector3(groupBox.max.x, groupBox.max.y, groupBox.min.z),
-                            new THREE.Vector3(groupBox.max.x, groupBox.max.y, groupBox.max.z)
-                        ];
-                        
-                        corners.forEach(p => {
-                            p.applyMatrix4(transformMat);
-                            dragInitialBoundingBox.expandByPoint(p);
-                        });
+
+                        unionTransformedBox3(dragInitialBoundingBox, groupBox, transformMat);
                     }
                 } else {
                     const items = getSelectedItems();
@@ -1116,44 +1015,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         const tempMat = new THREE.Matrix4();
 
                         items.forEach(({mesh, instanceId}) => {
-                            let geoBox = null;
-                            if (mesh.isBatchedMesh) {
-                                if (mesh.userData.instanceGeometryIds && mesh.userData.geometryBounds) {
-                                    const geomId = mesh.userData.instanceGeometryIds[instanceId];
-                                    geoBox = mesh.userData.geometryBounds.get(geomId);
-                                }
-                            } else {
-                                if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-                                geoBox = mesh.geometry.boundingBox;
-                                if (mesh.userData.displayType === 'item_display' && mesh.userData.hasHat && !mesh.userData.hasHat[instanceId]) {
-                                    const center = new THREE.Vector3();
-                                    geoBox.getCenter(center);
-                                    geoBox = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
-                                }
-                            }
+                            const localBox = getInstanceLocalBox(mesh, instanceId);
+                            if (!localBox) return;
 
-                            if (!geoBox) return;
+                            getInstanceWorldMatrix(mesh, instanceId, tempMat);
 
-                            mesh.getMatrixAt(instanceId, tempMat);
-                            tempMat.premultiply(mesh.matrixWorld);
-                            
-                            const combinedMat = inverseHelperMat.clone().multiply(tempMat);
-                            
-                            const corners = [
-                                new THREE.Vector3(geoBox.min.x, geoBox.min.y, geoBox.min.z),
-                                new THREE.Vector3(geoBox.min.x, geoBox.min.y, geoBox.max.z),
-                                new THREE.Vector3(geoBox.min.x, geoBox.max.y, geoBox.min.z),
-                                new THREE.Vector3(geoBox.min.x, geoBox.max.y, geoBox.max.z),
-                                new THREE.Vector3(geoBox.max.x, geoBox.min.y, geoBox.min.z),
-                                new THREE.Vector3(geoBox.max.x, geoBox.min.y, geoBox.max.z),
-                                new THREE.Vector3(geoBox.max.x, geoBox.max.y, geoBox.min.z),
-                                new THREE.Vector3(geoBox.max.x, geoBox.max.y, geoBox.max.z)
-                            ];
-                            
-                            corners.forEach(corner => {
-                                corner.applyMatrix4(combinedMat);
-                                dragInitialBoundingBox.expandByPoint(corner);
-                            });
+                            const combinedMat = _TMP_MAT4_A.copy(inverseHelperMat).multiply(tempMat);
+                            unionTransformedBox3(dragInitialBoundingBox, localBox, combinedMat);
                         });
                     }
                 }
