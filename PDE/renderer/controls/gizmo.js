@@ -173,6 +173,66 @@ function getAllDescendantGroups(groupId) {
     return out;
 }
 
+// Group Pivot Helpers
+const _DEFAULT_GROUP_PIVOT = new THREE.Vector3(0.5, 0.5, 0.5);
+const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
+
+function _nearlyEqual(a, b, eps = 1e-6) {
+    return Math.abs(a - b) <= eps;
+}
+
+function normalizePivotToVector3(pivot, out = new THREE.Vector3()) {
+    if (!pivot) return null;
+    if (pivot.isVector3) return out.copy(pivot);
+    if (Array.isArray(pivot) && pivot.length >= 3) return out.set(pivot[0], pivot[1], pivot[2]);
+    if (typeof pivot === 'object' && pivot.x !== undefined && pivot.y !== undefined && pivot.z !== undefined) {
+        return out.set(pivot.x, pivot.y, pivot.z);
+    }
+    return null;
+}
+
+function isCustomGroupPivot(pivot) {
+    const v = normalizePivotToVector3(pivot, new THREE.Vector3());
+    if (!v) return false;
+    return !(
+        _nearlyEqual(v.x, _DEFAULT_GROUP_PIVOT.x) &&
+        _nearlyEqual(v.y, _DEFAULT_GROUP_PIVOT.y) &&
+        _nearlyEqual(v.z, _DEFAULT_GROUP_PIVOT.z)
+    );
+}
+
+function getGroupWorldMatrix(group, out = new THREE.Matrix4()) {
+    out.identity();
+    if (!group) return out;
+    if (group.matrix) return out.copy(group.matrix);
+
+    const gPos = group.position || new THREE.Vector3();
+    const gQuat = group.quaternion || new THREE.Quaternion();
+    const gScale = group.scale || new THREE.Vector3(1, 1, 1);
+    return out.compose(gPos, gQuat, gScale);
+}
+
+function shouldUseGroupPivot(group) {
+    if (!group) return false;
+    if (group.isCustomPivot) return true;
+    return isCustomGroupPivot(group.pivot);
+}
+
+// Baseline origin used by SelectionCenter for groups in pivotMode === 'origin' (without pivotOffset).
+function getGroupOriginWorld(groupId, out = new THREE.Vector3()) {
+    const groups = getGroups();
+    const group = groups.get(groupId);
+    if (!group) return out.set(0, 0, 0);
+
+    const box = getGroupLocalBoundingBox(groupId);
+    if (!box.isEmpty()) {
+        const m = getGroupWorldMatrix(group, new THREE.Matrix4());
+        return out.copy(box.min).applyMatrix4(m);
+    }
+    if (group.position) return out.copy(group.position);
+    return out.copy(calculateAvgOrigin());
+}
+
 // Selection caches (critical for performance when group has many children)
 let _selectedItemsCacheKey = null;
 let _selectedItemsCache = null;
@@ -376,6 +436,7 @@ const dragInitialScale = new THREE.Vector3();
 const dragInitialPosition = new THREE.Vector3();
 const dragInitialBoundingBox = new THREE.Box3();
 const dragStartAvgOrigin = new THREE.Vector3();
+const dragStartPivotBaseWorld = new THREE.Vector3();
 let draggingMode = null;
 let isGizmoBusy = false;
 let blockbenchScaleMode = false;
@@ -425,7 +486,20 @@ function SelectionCenter(pivotMode, isCustomPivot, pivotOffset) {
         if (currentSelection.groupId) {
              const groups = getGroups();
              const group = groups.get(currentSelection.groupId);
-             if (group && group.position) {
+             
+             const box = getGroupLocalBoundingBox(currentSelection.groupId);
+             if (!box.isEmpty()) {
+                 let groupMatrix;
+                 if (group.matrix) {
+                     groupMatrix = group.matrix.clone();
+                 } else {
+                     const gPos = group.position || calculateAvgOrigin();
+                     const gQuat = group.quaternion || new THREE.Quaternion();
+                     const gScale = group.scale || new THREE.Vector3(1, 1, 1);
+                     groupMatrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
+                 }
+                 center.copy(box.min).applyMatrix4(groupMatrix);
+             } else if (group && group.position) {
                  center.copy(group.position);
              } else {
                  center.copy(calculateAvgOrigin());
@@ -735,6 +809,25 @@ function applySelection(mesh, instanceIds, groupId = null) {
 
     currentSelection = { mesh, instanceIds, edgesGeometry: currentSelection.edgesGeometry, groupId };
     invalidateSelectionCaches();
+
+    if (groupId) {
+        const groups = getGroups();
+        const group = groups.get(groupId);
+
+        // Apply group pivot (from pbde-worker: group.pivot) only when it is actually custom.
+        // When no custom pivot exists, Pivot Mode: origin should stick to the overlay corner (box.min) like block_display.
+        if (group && shouldUseGroupPivot(group)) {
+            const localPivot = normalizePivotToVector3(group.pivot, new THREE.Vector3());
+            const groupMatrix = getGroupWorldMatrix(group, new THREE.Matrix4());
+            const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
+            const baseWorld = getGroupOriginWorld(groupId, new THREE.Vector3());
+            pivotOffset.subVectors(targetWorld, baseWorld);
+            isCustomPivot = true;
+        } else {
+            pivotOffset.set(0, 0, 0);
+            isCustomPivot = false;
+        }
+    }
     
     if (customPivot && !groupId) {
         isCustomPivot = true;
@@ -971,7 +1064,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             dragInitialPosition.copy(selectionHelper.position);
 
             if (isPivotEditMode) {
-                 dragStartAvgOrigin.copy(calculateAvgOrigin());
+                  // Pivot edit: compute pivotOffset relative to the same baseline that SelectionCenter(origin) uses.
+                  dragStartPivotBaseWorld.copy(SelectionCenter('origin', false, _ZERO_VEC3));
+                  dragStartAvgOrigin.copy(calculateAvgOrigin());
             }
 
             if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
@@ -1097,53 +1192,93 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             isUniformScale = false;
 
             if (isPivotEditMode) {
-                const items = getSelectedItems();
-                if (items.length > 0) {
-                    const firstItem = items[0];
-                    const mesh = firstItem.mesh;
-                    
-                    const pivotWorld = selectionHelper.position.clone();
-                    const instanceMatrix = new THREE.Matrix4();
-                    mesh.getMatrixAt(firstItem.instanceId, instanceMatrix);
-                    const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
-                    const invWorldMatrix = worldMatrix.invert();
-                    const localPivot = pivotWorld.applyMatrix4(invWorldMatrix);
-                    
-                    if (mesh.isBatchedMesh) {
-                        if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
-                        items.forEach(({instanceId}) => {
-                             mesh.userData.customPivots.set(instanceId, localPivot.clone());
-                        });
-                    } else {
-                        mesh.userData.customPivot = localPivot;
+                if (currentSelection.groupId) {
+                    const groups = getGroups();
+                    const group = groups.get(currentSelection.groupId);
+                    if (group) {
+                        const pivotWorld = selectionHelper.position.clone();
+                        const groupMatrix = getGroupWorldMatrix(group, new THREE.Matrix4());
+                        const invGroupMatrix = groupMatrix.clone().invert();
+                        const localPivot = pivotWorld.applyMatrix4(invGroupMatrix);
+
+                        // Persist as group.pivot (compatible with pbde-worker payload shape).
+                        group.pivot = localPivot.clone();
+                        group.isCustomPivot = true;
+
+                        // Ensure offset matches the baseline origin mode for groups.
+                        const baseWorld = getGroupOriginWorld(currentSelection.groupId, new THREE.Vector3());
+                        const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
+                        pivotOffset.subVectors(targetWorld, baseWorld);
+                        isCustomPivot = true;
+                        pivotMode = 'origin';
                     }
-                    
-                    mesh.userData.isCustomPivot = true;
-                    pivotMode = 'origin';
+                } else {
+                    const items = getSelectedItems();
+                    if (items.length > 0) {
+                        const firstItem = items[0];
+                        const mesh = firstItem.mesh;
+
+                        const pivotWorld = selectionHelper.position.clone();
+                        const instanceMatrix = new THREE.Matrix4();
+                        mesh.getMatrixAt(firstItem.instanceId, instanceMatrix);
+                        const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
+                        const invWorldMatrix = worldMatrix.invert();
+                        const localPivot = pivotWorld.applyMatrix4(invWorldMatrix);
+
+                        if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                            if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
+                            items.forEach(({ instanceId }) => {
+                                mesh.userData.customPivots.set(instanceId, localPivot.clone());
+                            });
+                        } else {
+                            mesh.userData.customPivot = localPivot;
+                        }
+
+                        mesh.userData.isCustomPivot = true;
+                        pivotMode = 'origin';
+                    }
                 }
             } else {
-                const items = getSelectedItems();
-                if (items.length > 0 && isCustomPivot) {
-                    const firstItem = items[0];
-                    const mesh = firstItem.mesh;
-                    let customPivot = null;
-                    
-                    if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
-                        if (mesh.userData.customPivots.has(firstItem.instanceId)) {
-                            customPivot = mesh.userData.customPivots.get(firstItem.instanceId);
+                if (currentSelection.groupId) {
+                    const groups = getGroups();
+                    const group = groups.get(currentSelection.groupId);
+                    if (group && shouldUseGroupPivot(group)) {
+                        const localPivot = normalizePivotToVector3(group.pivot, new THREE.Vector3());
+                        if (localPivot) {
+                            const groupMatrix = getGroupWorldMatrix(group, new THREE.Matrix4());
+                            const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
+                            const baseWorld = getGroupOriginWorld(currentSelection.groupId, new THREE.Vector3());
+                            pivotOffset.subVectors(targetWorld, baseWorld);
+                            isCustomPivot = true;
                         }
-                    } else if (mesh.userData.customPivot) {
-                        customPivot = mesh.userData.customPivot;
+                    } else {
+                        pivotOffset.set(0, 0, 0);
+                        isCustomPivot = false;
                     }
+                } else {
+                    const items = getSelectedItems();
+                    if (items.length > 0 && isCustomPivot) {
+                        const firstItem = items[0];
+                        const mesh = firstItem.mesh;
+                        let customPivot = null;
 
-                    if (customPivot) {
-                        mesh.updateMatrixWorld();
-                        const center = calculateAvgOrigin();
-                        const tempMat = new THREE.Matrix4();
-                        mesh.getMatrixAt(firstItem.instanceId, tempMat);
-                        const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
-                        const targetWorld = customPivot.clone().applyMatrix4(worldMatrix);
-                        pivotOffset.subVectors(targetWorld, center);
+                        if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
+                            if (mesh.userData.customPivots.has(firstItem.instanceId)) {
+                                customPivot = mesh.userData.customPivots.get(firstItem.instanceId);
+                            }
+                        } else if (mesh.userData.customPivot) {
+                            customPivot = mesh.userData.customPivot;
+                        }
+
+                        if (customPivot) {
+                            mesh.updateMatrixWorld();
+                            const center = calculateAvgOrigin();
+                            const tempMat = new THREE.Matrix4();
+                            mesh.getMatrixAt(firstItem.instanceId, tempMat);
+                            const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
+                            const targetWorld = customPivot.clone().applyMatrix4(worldMatrix);
+                            pivotOffset.subVectors(targetWorld, center);
+                        }
                     }
                 }
             }
@@ -1164,7 +1299,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         if (transformControls.dragging && (currentSelection.mesh || currentSelection.groupId)) {
             
             if (isPivotEditMode && transformControls.mode === 'translate') {
-                pivotOffset.subVectors(selectionHelper.position, dragStartAvgOrigin);
+                // Keep pivotOffset consistent with SelectionCenter(origin) baseline (group uses box.min, block_display uses min when not custom).
+                pivotOffset.subVectors(selectionHelper.position, dragStartPivotBaseWorld);
                 isCustomPivot = true;
                 previousHelperMatrix.copy(selectionHelper.matrixWorld);
                 return;
@@ -1461,9 +1597,23 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 event.preventDefault();
                 pivotOffset.set(0, 0, 0);
                 isCustomPivot = false;
-                if (currentSelection.mesh) {
-                    delete currentSelection.mesh.userData.customPivot;
-                    delete currentSelection.mesh.userData.isCustomPivot;
+                if (currentSelection.groupId) {
+                    const groups = getGroups();
+                    const group = groups.get(currentSelection.groupId);
+                    if (group) {
+                        // Clear pivot override (default pivot behavior resumes).
+                        group.pivot = _DEFAULT_GROUP_PIVOT.clone();
+                        delete group.isCustomPivot;
+                    }
+                } else if (currentSelection.mesh) {
+                    const mesh = currentSelection.mesh;
+                    if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
+                        currentSelection.instanceIds.forEach(id => {
+                            mesh.userData.customPivots.delete(id);
+                        });
+                    }
+                    delete mesh.userData.customPivot;
+                    delete mesh.userData.isCustomPivot;
                 }
                 updateHelperPosition();
                 console.log('Pivot reset to origin');
