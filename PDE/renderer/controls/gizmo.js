@@ -838,6 +838,13 @@ function getRotationFromMatrix(matrix) {
     return quaternion;
 }
 
+function getGroupRotationQuaternion(groupId, out = new THREE.Quaternion()) {
+    if (!groupId) return out.set(0, 0, 0, 1);
+    const m = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
+    const q = getRotationFromMatrix(m);
+    return out.copy(q);
+}
+
 function SelectionCenter(pivotMode, isCustomPivot, pivotOffset) {
     const center = new THREE.Vector3();
     const items = getSelectedItems();
@@ -1079,8 +1086,9 @@ function updateHelperPosition() {
         const group = groups.get(singleGroupId);
         if (currentSpace === 'world') {
             selectionHelper.quaternion.set(0, 0, 0, 1);
-        } else if (group && group.quaternion) {
-            selectionHelper.quaternion.copy(group.quaternion);
+        } else if (group) {
+            // Groups may have shear in their matrix; derive a stable orthonormal rotation for local space.
+            getGroupRotationQuaternion(singleGroupId, selectionHelper.quaternion);
         } else {
             selectionHelper.quaternion.set(0, 0, 0, 1);
         }
@@ -1736,8 +1744,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 if (singleGroupId && currentSpace !== 'world') {
                     const groups = getGroups();
                     const group = groups.get(singleGroupId);
-                    if (group && group.quaternion) {
-                        selectionHelper.quaternion.copy(group.quaternion);
+                    if (group) {
+                        // Groups may have shear in their matrix; derive a stable orthonormal rotation for local space.
+                        getGroupRotationQuaternion(singleGroupId, selectionHelper.quaternion);
                         selectionHelper.updateMatrixWorld();
                         previousHelperMatrix.copy(selectionHelper.matrixWorld);
                     }
@@ -1798,6 +1807,23 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                          if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
                     });
 
+                    // For group selections, drop shear-carrying cached matrices BEFORE computing SelectionCenter.
+                    // This ensures the center used for offset matches what updateHelperPosition() will use next.
+                    if (currentSelection.groups && currentSelection.groups.size > 0) {
+                        const groups = getGroups();
+                        const toClear = new Set();
+                        for (const rootId of currentSelection.groups) {
+                            if (!rootId) continue;
+                            toClear.add(rootId);
+                            const descendants = getAllDescendantGroups(rootId);
+                            for (const subId of descendants) toClear.add(subId);
+                        }
+                        for (const id of toClear) {
+                            const g = groups.get(id);
+                            if (g && g.matrix) delete g.matrix;
+                        }
+                    }
+
                     const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
                     const offset = new THREE.Vector3().subVectors(targetPosition, currentCenter);
                     
@@ -1816,21 +1842,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         mesh.setMatrixAt(instanceId, tempMat);
                         if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
                     });
-
-                    if (currentSelection.groups && currentSelection.groups.size > 0) {
-                        const groups = getGroups();
-                        const toClear = new Set();
-                        for (const rootId of currentSelection.groups) {
-                            if (!rootId) continue;
-                            toClear.add(rootId);
-                            const descendants = getAllDescendantGroups(rootId);
-                            for (const subId of descendants) toClear.add(subId);
-                        }
-                        for (const id of toClear) {
-                            const g = groups.get(id);
-                            if (g && g.matrix) delete g.matrix;
-                        }
-                    }
 
                     updateHelperPosition();
                     updateSelectionOverlay();
