@@ -694,14 +694,54 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
             }
             const { geometries: geometryMetas, otherItems, useUint32Indices, atlas, groups } = metadataPayload;
 
-            // Grouping Setup
-            const objectToGroup = new Map();
-            if (groups) {
-                loadedObjectGroup.userData.groups = groups;
-                loadedObjectGroup.userData.objectToGroup = objectToGroup;
+            const newlyAddedSelectableMeshes = new Set<THREE.Object3D>();
 
-                // Restore THREE objects for group transforms
-                for (const group of groups.values()) {
+            // Grouping Setup
+            const incomingGroups = groups;
+            const groupIdRemap = new Map<string, string>();
+
+            // Keep existing group maps on merge; replace on fresh load.
+            if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map<string, any>();
+            if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map<string, string>();
+
+            const effectiveGroups: Map<string, any> = isMerge
+                ? (loadedObjectGroup.userData.groups as Map<string, any>)
+                : (incomingGroups ?? new Map<string, any>());
+
+            const objectToGroup: Map<string, string> = isMerge
+                ? (loadedObjectGroup.userData.objectToGroup as Map<string, string>)
+                : new Map<string, string>();
+
+            loadedObjectGroup.userData.groups = effectiveGroups;
+            loadedObjectGroup.userData.objectToGroup = objectToGroup;
+
+            if (incomingGroups) {
+                // Precompute ID remaps (very unlikely, but safe on merge)
+                if (isMerge) {
+                    for (const [id] of incomingGroups) {
+                        if (effectiveGroups.has(id)) {
+                            groupIdRemap.set(id, THREE.MathUtils.generateUUID());
+                        }
+                    }
+                }
+
+                // Merge incoming groups into effectiveGroups
+                for (const [origId, group] of incomingGroups) {
+                    const newId = groupIdRemap.get(origId) ?? origId;
+                    if (newId !== origId) group.id = newId;
+
+                    if (group.parent && groupIdRemap.has(group.parent)) {
+                        group.parent = groupIdRemap.get(group.parent);
+                    }
+                    if (Array.isArray(group.children)) {
+                        for (const child of group.children) {
+                            if (child && child.type === 'group' && child.id && groupIdRemap.has(child.id)) {
+                                child.id = groupIdRemap.get(child.id);
+                            }
+                        }
+                    }
+
+                    // Restore THREE objects for group transforms
                     if (group.quaternion) {
                         const q = group.quaternion;
                         if (!(q instanceof THREE.Quaternion)) {
@@ -724,20 +764,22 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                             group.position = new THREE.Vector3(p.x, p.y, p.z);
                         }
                     }
+
+                    effectiveGroups.set(newId, group);
                 }
             }
 
             function registerObject(mesh: THREE.Object3D, instanceId: number, uuid: string, groupId: string) {
-                if (groupId && groups) {
-                    const key = `${mesh.uuid}_${instanceId}`;
-                    objectToGroup.set(key, groupId);
-                    
-                    const group = groups.get(groupId);
-                    if (group) {
-                        const childIndex = group.children.findIndex((c: any) => c.type === 'object' && c.id === uuid);
-                        if (childIndex !== -1) {
-                            group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId };
-                        }
+                if (!groupId || !incomingGroups) return;
+                const finalGroupId = groupIdRemap.get(groupId) ?? groupId;
+                const key = `${mesh.uuid}_${instanceId}`;
+                objectToGroup.set(key, finalGroupId);
+
+                const group = effectiveGroups.get(finalGroupId);
+                if (group && Array.isArray(group.children)) {
+                    const childIndex = group.children.findIndex((c: any) => c && c.type === 'object' && c.id === uuid);
+                    if (childIndex !== -1) {
+                        group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId };
                     }
                 }
             }
@@ -975,6 +1017,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         }
 
                         loadedObjectGroup.add(batch);
+                        newlyAddedSelectableMeshes.add(batch);
                         
                         if (material.transparent) {
                             batch.renderOrder = 1;
@@ -1089,6 +1132,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         instancedMesh.instanceMatrix.needsUpdate = true;
                         instancedMesh.computeBoundingSphere();
                         loadedObjectGroup.add(instancedMesh);
+                        newlyAddedSelectableMeshes.add(instancedMesh);
 
                         // Handle async material loading
                         if (matPromisesForMesh.length > 0) {
@@ -1120,7 +1164,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
             });
 
             if (playerHeadItems.length > 0) {
-                (async () => {
+                const playerHeadPromise = (async () => {
                     try {
                         if (!headGeometries || !headGeometries.merged) {
                             console.error("Head geometries not available for instancing.");
@@ -1290,11 +1334,84 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         });
 
                         loadedObjectGroup.add(instancedMesh);
+                        newlyAddedSelectableMeshes.add(instancedMesh);
 
                     } catch (err) {
                         console.error('Player head instancing failed:', err);
                     }
                 })();
+
+                try { await playerHeadPromise; } catch { /* ignore */ }
+            }
+
+            // After merge: select the newly added items as a multi-selection.
+            if (isMerge) {
+                const selectGroupsObjectsFn = (loadedObjectGroup.userData as any)?.replaceSelectionWithGroupsAndObjects as
+                    | undefined
+                    | ((groupIds: Set<string>, meshToIds: Map<any, Set<number>>, opts?: any) => void);
+                const selectObjectsFn = (loadedObjectGroup.userData as any)?.replaceSelectionWithObjectsMap as
+                    | undefined
+                    | ((meshToIds: Map<any, Set<number>>, opts?: any) => void);
+
+                if (newlyAddedSelectableMeshes.size > 0) {
+                    const groupsMap = (loadedObjectGroup.userData.groups as Map<string, any>) ?? new Map<string, any>();
+                    const objectToGroupMap = (loadedObjectGroup.userData.objectToGroup as Map<string, string>) ?? new Map<string, string>();
+
+                    const resolveRootGroupId = (groupId: string | null | undefined): string | null => {
+                        if (!groupId) return null;
+                        let current = groupId;
+                        for (let i = 0; i < 128; i++) {
+                            const g = groupsMap.get(current);
+                            if (!g) break;
+                            const parent = g.parent;
+                            if (!parent) break;
+                            current = parent;
+                        }
+                        return current || null;
+                    };
+
+                    const groupIds = new Set<string>();
+                    const meshToIds = new Map<any, Set<number>>();
+
+                    for (const mesh of newlyAddedSelectableMeshes) {
+                        if (!mesh || (!(mesh as any).isInstancedMesh && !(mesh as any).isBatchedMesh)) continue;
+
+                        let instanceCount = 0;
+                        if ((mesh as any).isInstancedMesh) {
+                            instanceCount = (mesh as any).count ?? 0;
+                        } else {
+                            const geomIds = (mesh as any).userData?.instanceGeometryIds;
+                            instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
+                        }
+                        if (instanceCount <= 0) continue;
+
+                        let ids: Set<number> | null = null;
+                        for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
+                            const key = `${(mesh as any).uuid}_${instanceId}`;
+                            const immediateGroupId = objectToGroupMap.get(key);
+                            if (immediateGroupId) {
+                                const root = resolveRootGroupId(immediateGroupId) ?? immediateGroupId;
+                                if (root) groupIds.add(root);
+                                continue;
+                            }
+
+                            if (!ids) ids = new Set<number>();
+                            ids.add(instanceId);
+                        }
+
+                        if (ids && ids.size > 0) {
+                            meshToIds.set(mesh, ids);
+                        }
+                    }
+
+                    // Group-priority selection: if an instance belongs to a group, select the (root) group instead.
+                    if (typeof selectGroupsObjectsFn === 'function') {
+                        selectGroupsObjectsFn(groupIds, meshToIds, { anchorMode: 'center' });
+                    } else if (typeof selectObjectsFn === 'function') {
+                        // Fallback: select raw objects if gizmo API is not available.
+                        selectObjectsFn(meshToIds, { anchorMode: 'center' });
+                    }
+                }
             }
 
             console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
