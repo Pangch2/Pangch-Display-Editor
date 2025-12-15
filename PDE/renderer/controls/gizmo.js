@@ -869,6 +869,55 @@ function createGroup() {
     return newGroupId;
 }
 
+function ungroupGroup(groupId) {
+    if (!groupId) return;
+    const groups = getGroups();
+    const objectToGroup = getObjectToGroup();
+    const group = groups.get(groupId);
+    if (!group) return;
+
+    const parentId = group.parent || null;
+    const parentGroup = parentId ? groups.get(parentId) : null;
+
+    const children = Array.isArray(group.children) ? group.children.slice() : [];
+
+    // Re-parent children to the parent group (or to root when no parent)
+    for (const child of children) {
+        if (!child) continue;
+        if (child.type === 'group') {
+            const sub = groups.get(child.id);
+            if (sub) sub.parent = parentId;
+        } else if (child.type === 'object') {
+            const key = getGroupKey(child.mesh, child.instanceId);
+            if (parentId) objectToGroup.set(key, parentId);
+            else objectToGroup.delete(key);
+        }
+    }
+
+    // Replace this group in parent's children list, or just drop it if it's root.
+    if (parentGroup) {
+        if (!Array.isArray(parentGroup.children)) parentGroup.children = [];
+        const idx = parentGroup.children.findIndex(c => c && c.type === 'group' && c.id === groupId);
+        if (idx !== -1) {
+            parentGroup.children.splice(idx, 1, ...children);
+        } else {
+            parentGroup.children.push(...children);
+        }
+    }
+
+    groups.delete(groupId);
+    invalidateSelectionCaches();
+
+    // After ungrouping, select the parent group if it exists, otherwise deselect.
+    if (parentId && groups.has(parentId)) {
+        applySelection(null, [], parentId);
+    } else {
+        resetSelectionAndDeselect();
+    }
+
+    console.log(`Group removed: ${groupId}`);
+}
+
 function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitControls, loadedObjectGroup: lg, setControls}) {
     scene = s; camera = cam; renderer = rend; controls = orbitControls; loadedObjectGroup = lg;
 
@@ -1445,6 +1494,17 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 console.log(`blockbench scale모드 ${blockbenchScaleMode ? '켜짐' : '꺼짐'}`);
                 break;
             }
+            case 'g': {
+                if (currentSelection.groupId) {
+                    ungroupGroup(currentSelection.groupId);
+                    break;
+                }
+                const items = getSelectedItems();
+                if (items.length > 0) {
+                    createGroup();
+                }
+                break;
+            }
         }
     };
 
@@ -1490,7 +1550,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
         if (isGizmoBusy) return;
         const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'v', 'b'];
+        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'v', 'b', 'g'];
         if (transformControls.dragging && keysToHandle.includes(key)) {
             isGizmoBusy = true;
             const attachedObject = transformControls.object;
