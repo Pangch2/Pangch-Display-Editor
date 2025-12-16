@@ -679,6 +679,17 @@ let lastDirections = { X: null, Y: null, Z: null };
 const _gizmoAnchorPosition = new THREE.Vector3();
 let _gizmoAnchorValid = false;
 
+// Multi-selection Pivot Mode: origin position cache.
+// This lets us temporarily switch pivotMode (e.g. origin -> center -> origin)
+// without losing the multi-selection origin pivot position.
+const _multiSelectionOriginAnchorPosition = new THREE.Vector3();
+let _multiSelectionOriginAnchorValid = false;
+
+// The very first remembered origin anchor for the current multi-selection session.
+// Used by "Pivot reset to origin" to restore the original temporary origin.
+const _multiSelectionOriginAnchorInitialPosition = new THREE.Vector3();
+let _multiSelectionOriginAnchorInitialValid = false;
+
 // When selection is created without a meaningful "first" target (Ctrl+A / marquee),
 // anchor the gizmo at the selection center.
 let _selectionAnchorMode = 'default'; // 'default' | 'center'
@@ -686,6 +697,22 @@ let _selectionAnchorMode = 'default'; // 'default' | 'center'
 function _clearGizmoAnchor() {
     _gizmoAnchorValid = false;
     _gizmoAnchorPosition.set(0, 0, 0);
+
+    _multiSelectionOriginAnchorValid = false;
+    _multiSelectionOriginAnchorPosition.set(0, 0, 0);
+
+    _multiSelectionOriginAnchorInitialValid = false;
+    _multiSelectionOriginAnchorInitialPosition.set(0, 0, 0);
+}
+
+function _syncMultiSelectionOriginAnchorToCurrent() {
+    if (!_hasAnySelection()) return;
+    if (!_isMultiSelection()) return;
+
+    // Cache the actual gizmo position we would use in Pivot Mode: origin
+    // (includes pivotOffset when applicable).
+    _multiSelectionOriginAnchorPosition.copy(SelectionCenter('origin', isCustomPivot, pivotOffset));
+    _multiSelectionOriginAnchorValid = true;
 }
 
 function _getSelectionCenterWorld(out = new THREE.Vector3()) {
@@ -1055,6 +1082,12 @@ function resetSelectionAndDeselect() {
         transformControls.detach();
         _clearSelectionState();
         _clearGizmoAnchor();
+
+        // Clear any selection-derived pivot state so it can't leak into the next selection.
+        pivotOffset.set(0, 0, 0);
+        isCustomPivot = false;
+        _selectionAnchorMode = 'default';
+
         invalidateSelectionCaches();
         updateSelectionOverlay();
         lastDirections = { X: null, Y: null, Z: null };
@@ -1067,10 +1100,28 @@ function updateHelperPosition() {
     if (items.length === 0 && !_hasAnySelection()) return;
 
     // Pivot Mode center must always work: recompute each time.
-    // Only lock the gizmo position in Pivot Mode origin.
-    const lockGizmoPosition = (pivotMode === 'origin') && _gizmoAnchorValid && _isMultiSelection();
-    if (lockGizmoPosition) {
-        selectionHelper.position.copy(_gizmoAnchorPosition);
+    // For multi-selection, Pivot Mode origin should stay stable (anchored) even when
+    // the selection set changes (Shift+Click). Additionally, remember the origin pivot
+    // so we can return to it after temporarily switching pivotMode.
+    const isMulti = _isMultiSelection();
+
+    // When a selection grows from single -> multi (Shift+Click add), we want Pivot Mode: origin
+    // to keep the original gizmo position (first selected) instead of jumping to a newly
+    // computed origin. Seed the multi-origin anchor from the existing gizmo anchor.
+    if (pivotMode === 'origin' && isMulti && !_multiSelectionOriginAnchorValid && _gizmoAnchorValid) {
+        _multiSelectionOriginAnchorPosition.copy(_gizmoAnchorPosition);
+        _multiSelectionOriginAnchorValid = true;
+        if (!_multiSelectionOriginAnchorInitialValid) {
+            _multiSelectionOriginAnchorInitialPosition.copy(_gizmoAnchorPosition);
+            _multiSelectionOriginAnchorInitialValid = true;
+        }
+    }
+
+    const lockMultiOrigin = (pivotMode === 'origin') && isMulti && _multiSelectionOriginAnchorValid;
+    if (lockMultiOrigin) {
+        selectionHelper.position.copy(_multiSelectionOriginAnchorPosition);
+        _gizmoAnchorPosition.copy(_multiSelectionOriginAnchorPosition);
+        _gizmoAnchorValid = true;
     } else {
         const center = (_selectionAnchorMode === 'center')
             ? _getSelectionCenterWorld(new THREE.Vector3())
@@ -1078,6 +1129,16 @@ function updateHelperPosition() {
         selectionHelper.position.copy(center);
         _gizmoAnchorPosition.copy(center);
         _gizmoAnchorValid = true;
+
+        // When computing an origin pivot position, keep the multi-origin cache up to date.
+        if (pivotMode === 'origin' && isMulti) {
+            _multiSelectionOriginAnchorPosition.copy(center);
+            _multiSelectionOriginAnchorValid = true;
+            if (!_multiSelectionOriginAnchorInitialValid) {
+                _multiSelectionOriginAnchorInitialPosition.copy(center);
+                _multiSelectionOriginAnchorInitialValid = true;
+            }
+        }
     }
     
     const singleGroupId = _getSingleSelectedGroupId();
@@ -1122,6 +1183,8 @@ function updateHelperPosition() {
     transformControls.attach(selectionHelper);
     previousHelperMatrix.copy(selectionHelper.matrixWorld);
 }
+
+let _pivotEditPreviousPivotMode = null;
 
 function applySelection(mesh, instanceIds, groupId = null) {
     // Selection replacement should also drop any ephemeral multi-selection pivot edits.
@@ -1519,7 +1582,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
                         pivotOffset.subVectors(targetWorld, baseWorld);
                         isCustomPivot = true;
-                        pivotMode = 'origin';
                     }
                 } else {
                     // Persist per-mesh custom pivots only when objects are selected.
@@ -1547,9 +1609,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
                             mesh.userData.isCustomPivot = true;
                         }
-
-                        pivotMode = 'origin';
                     }
+                }
+
+                // Preserve the user's pivotMode (e.g. allow creating a custom pivot while in center mode).
+                if (_pivotEditPreviousPivotMode) {
+                    pivotMode = _pivotEditPreviousPivotMode;
                 }
 
                 // Arm the undo so that deselect (or selection replace) removes these pivots.
@@ -1562,8 +1627,26 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 _gizmoAnchorPosition.copy(selectionHelper.position);
                 _gizmoAnchorValid = true;
                 _selectionAnchorMode = 'default';
+
+                // Multi-selection: remember the edited custom pivot location as the origin anchor.
+                if (_isMultiSelection()) {
+                    _multiSelectionOriginAnchorPosition.copy(selectionHelper.position);
+                    _multiSelectionOriginAnchorValid = true;
+                    // Do not overwrite the initial anchor; pivot reset should restore that.
+                    if (!_multiSelectionOriginAnchorInitialValid) {
+                        _multiSelectionOriginAnchorInitialPosition.copy(selectionHelper.position);
+                        _multiSelectionOriginAnchorInitialValid = true;
+                    }
+                }
             } else {
                 _recomputePivotStateForSelection();
+
+                // If we were transforming a multi-selection in Pivot Mode: origin, keep the cached
+                // origin anchor following the moved gizmo.
+                if (_isMultiSelection() && pivotMode === 'origin') {
+                    _multiSelectionOriginAnchorPosition.copy(selectionHelper.position);
+                    _multiSelectionOriginAnchorValid = true;
+                }
             }
 
             // Invalidate bounding spheres for all affected meshes
@@ -1588,6 +1671,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 // Keep pivotOffset consistent with SelectionCenter(origin) baseline (group uses box.min, block_display uses min when not custom).
                 pivotOffset.subVectors(selectionHelper.position, dragStartPivotBaseWorld);
                 isCustomPivot = true;
+
+                // Multi-selection: keep the origin anchor in sync with the edited pivot while dragging.
+                if (_isMultiSelection()) {
+                    _multiSelectionOriginAnchorPosition.copy(selectionHelper.position);
+                    _multiSelectionOriginAnchorValid = true;
+                }
                 previousHelperMatrix.copy(selectionHelper.matrixWorld);
                 return;
             }
@@ -1756,9 +1845,16 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 break;
             }
             case 'z': {
-                pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
-                console.log('Pivot Mode:', pivotMode);
-                updateHelperPosition();
+                if (pivotMode === 'center' && isCustomPivot) {
+                    _recomputePivotStateForSelection();
+                    pivotMode = 'center';
+                    console.log('Pivot Mode:', pivotMode);
+                    updateHelperPosition();
+                } else {
+                    pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
+                    console.log('Pivot Mode:', pivotMode);
+                    updateHelperPosition();
+                }
                 break;
             }
             case 'v': {
@@ -1949,6 +2045,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             if (!isPivotEditMode) {
                 isPivotEditMode = true;
                 previousGizmoMode = transformControls.mode;
+                _pivotEditPreviousPivotMode = pivotMode;
                 transformControls.setMode('translate');
             }
         }
@@ -1956,8 +2053,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         if (event.altKey && event.ctrlKey) {
             if (event.key === 'Alt' || event.key === 'Control') {
                 event.preventDefault();
+
+                // Reset should also drop any ephemeral multi-selection pivot edits.
+                _revertEphemeralPivotUndoIfAny();
+
                 pivotOffset.set(0, 0, 0);
                 isCustomPivot = false;
+                pivotMode = 'origin';
 
                 // Clear group pivot overrides
                 if (currentSelection.groups && currentSelection.groups.size > 0) {
@@ -1983,6 +2085,26 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 }
 
                 _recomputePivotStateForSelection();
+
+                // Multi-selection: restore the initial temporary origin anchor.
+                if (_isMultiSelection()) {
+                    if (!_multiSelectionOriginAnchorInitialValid) {
+                        const initial = SelectionCenter('origin', false, _ZERO_VEC3);
+                        _multiSelectionOriginAnchorInitialPosition.copy(initial);
+                        _multiSelectionOriginAnchorInitialValid = true;
+                    }
+
+                    _multiSelectionOriginAnchorPosition.copy(_multiSelectionOriginAnchorInitialPosition);
+                    _multiSelectionOriginAnchorValid = true;
+
+                    _gizmoAnchorPosition.copy(_multiSelectionOriginAnchorInitialPosition);
+                    _gizmoAnchorValid = true;
+                } else {
+                    // Not multi-selection: clear multi-selection caches.
+                    _multiSelectionOriginAnchorValid = false;
+                    _multiSelectionOriginAnchorInitialValid = false;
+                }
+
                 updateHelperPosition();
                 console.log('Pivot reset to origin');
             }
@@ -2025,6 +2147,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             if (isPivotEditMode) {
                 isPivotEditMode = false;
                 transformControls.setMode(previousGizmoMode);
+                _pivotEditPreviousPivotMode = null;
             }
         }
     });
@@ -2090,6 +2213,17 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     let marqueeDiv = null;
     let marqueePrevControlsEnabled = true;
 
+    // Used when marquee attempt is pre-empted by another interaction (e.g. TransformControls drag).
+    // Do NOT touch OrbitControls.enabled here; TransformControls owns that while dragging.
+    const abortMarqueeNoControls = () => {
+        marqueeActive = false;
+        marqueeCandidate = false;
+        marqueeIgnoreGroups = false;
+        marqueeStart = null;
+        if (marqueeDiv && marqueeDiv.parentElement) marqueeDiv.parentElement.removeChild(marqueeDiv);
+        marqueeDiv = null;
+    };
+
     const ensureMarqueeDiv = () => {
         if (marqueeDiv) return marqueeDiv;
         marqueeDiv = document.createElement('div');
@@ -2143,6 +2277,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
         // Ctrl+Drag: marquee selection (start only after the user actually drags)
         if ((event.ctrlKey || event.metaKey) && !transformControls.dragging) {
+            // NOTE:
+            // We intentionally do NOT raycast against TransformControls here.
+            // The helper contains large/hidden picker meshes, which can cause
+            // intersectObject(...) to always hit and permanently disable marquee.
+            // Instead, we allow marquee to begin as a candidate and cancel it
+            // if TransformControls actually starts dragging.
+
             marqueeCandidate = true;
             marqueeIgnoreGroups = !!event.shiftKey;
             marqueeStart = { x: event.clientX, y: event.clientY };
@@ -2160,6 +2301,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
     renderer.domElement.addEventListener('pointermove', (event) => {
         if (!marqueeStart) return;
+
+        // If another interaction takes over (e.g. user grabbed the gizmo), abort marquee.
+        if (transformControls.dragging) {
+            abortMarqueeNoControls();
+            return;
+        }
 
         if (marqueeCandidate && !marqueeActive) {
             const dx = event.clientX - marqueeStart.x;
@@ -2179,6 +2326,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     });
 
     renderer.domElement.addEventListener('pointerup', (event) => {
+        // If TransformControls is handling a drag, marquee should not run.
+        if (marqueeStart && transformControls.dragging) {
+            abortMarqueeNoControls();
+            mouseDownPos = null;
+            return;
+        }
+
         if (marqueeActive && marqueeStart) {
             event.preventDefault();
 
