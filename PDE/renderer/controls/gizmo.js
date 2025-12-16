@@ -7,6 +7,10 @@ const _TMP_MAT4_B = new THREE.Matrix4();
 const _TMP_BOX3_A = new THREE.Box3();
 const _TMP_VEC3_A = new THREE.Vector3();
 const _TMP_VEC3_B = new THREE.Vector3();
+const _TMP_MAT3_A = new THREE.Matrix3();
+const _TMP_MAT3_B = new THREE.Matrix3();
+const _TMP_MAT4_C = new THREE.Matrix4();
+const _TMP_QUAT_A = new THREE.Quaternion();
 
 function getDisplayType(mesh, instanceId) {
     if (!mesh) return undefined;
@@ -850,9 +854,14 @@ const _meshToInstanceIds = new Map();
 
 // Helpers
 function getRotationFromMatrix(matrix) {
+    // Robust rotation extraction even when matrix contains shear.
+    // Use Gram-Schmidt orthogonalization to preserve the primary axis (X) direction.
+    // This ensures that if an object is sheared along X (Y tilted), the X axis remains stable.
+    // (Previously used Polar Decomposition which caused wobbling/tilting for sheared objects)
+    
     const R = new THREE.Matrix4();
-    const x = new THREE.Vector3().setFromMatrixColumn(matrix, 0);
-    const y = new THREE.Vector3().setFromMatrixColumn(matrix, 1);
+    const x = _TMP_VEC3_A.setFromMatrixColumn(matrix, 0);
+    const y = _TMP_VEC3_B.setFromMatrixColumn(matrix, 1);
     const z = new THREE.Vector3().setFromMatrixColumn(matrix, 2);
 
     x.normalize();
@@ -860,9 +869,39 @@ function getRotationFromMatrix(matrix) {
     y.sub(x.clone().multiplyScalar(yDotX)).normalize();
     z.crossVectors(x, y).normalize();
     R.makeBasis(x, y, z);
+    
     const quaternion = new THREE.Quaternion();
     quaternion.setFromRotationMatrix(R);
     return quaternion;
+}
+
+// Blockbench scale mode needs a stable "pivot frame" transform.
+// For groups, this must include shear from the group's world matrix, but be anchored at the current gizmo pivot position.
+const _BB_PIVOT_FRAME_MAT4 = new THREE.Matrix4();
+const _BB_PIVOT_FRAME_MAT4_INV = new THREE.Matrix4();
+const _BB_PIVOT_FRAME_MAT3 = new THREE.Matrix3();
+
+function _computeBlockbenchPivotFrameMatrixWorld(outMat4, outInvMat4, outMat3, pivotWorld) {
+    // Default: use the current selectionHelper world matrix (no shear support).
+    outMat4.copy(selectionHelper.matrixWorld);
+
+    // In world space mode, Blockbench anchor should behave like world axes.
+    if (currentSpace === 'world') {
+        outMat4.identity();
+        outMat4.setPosition(pivotWorld);
+    } else {
+        const singleGroupId = _getSingleSelectedGroupId();
+        if (singleGroupId) {
+            // Match object behavior: use group rotation only (ignore scale/shear), anchored at the current pivot.
+            // This keeps Blockbench scale anchor/pivot shifting consistent between groups and objects.
+            const q = getGroupRotationQuaternion(singleGroupId, _TMP_QUAT_A);
+            outMat4.makeRotationFromQuaternion(q);
+            outMat4.setPosition(pivotWorld);
+        }
+    }
+
+    outInvMat4.copy(outMat4).invert();
+    outMat3.setFromMatrix4(outMat4);
 }
 
 function getGroupRotationQuaternion(groupId, out = new THREE.Quaternion()) {
@@ -879,8 +918,27 @@ function SelectionCenter(pivotMode, isCustomPivot, pivotOffset) {
     if (items.length === 0) return center;
 
     if (pivotMode === 'center') {
-        const box = getSelectionBoundingBox();
-        box.getCenter(center);
+        // For a single group selection, use the group's *local* bounding box center (OBB center),
+        // then transform by the group matrix. Using a world AABB center would shift when rotated.
+        const singleGroupId = _getSingleSelectedGroupId();
+        if (singleGroupId) {
+            const groups = getGroups();
+            const group = groups.get(singleGroupId);
+            const box = getGroupLocalBoundingBox(singleGroupId);
+            if (!box.isEmpty()) {
+                const groupMatrix = getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
+                box.getCenter(center);
+                center.applyMatrix4(groupMatrix);
+            } else if (group && group.position) {
+                center.copy(group.position);
+            } else {
+                center.copy(calculateAvgOrigin());
+            }
+        } else {
+            const box = getSelectionBoundingBox();
+            if (box && !box.isEmpty()) box.getCenter(center);
+            else center.copy(calculateAvgOrigin());
+        }
     } else {
         // Origin (Average Position)
         const singleGroupId = _getSingleSelectedGroupId();
@@ -1153,11 +1211,8 @@ function updateHelperPosition() {
         } else {
             selectionHelper.quaternion.set(0, 0, 0, 1);
         }
-        if (group && group.scale) {
-            selectionHelper.scale.copy(group.scale);
-        } else {
-            selectionHelper.scale.set(1, 1, 1);
-        }
+        // Keep helper scale neutral so scale gizmo math is consistent with object selection.
+        selectionHelper.scale.set(1, 1, 1);
     } else if (items.length > 0) {
         const firstItem = items[0];
         const instanceMatrix = new THREE.Matrix4();
@@ -1515,7 +1570,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 const items = getSelectedItems();
                 if (items.length > 0) {
                     selectionHelper.updateMatrixWorld();
-                    const inverseHelperMat = selectionHelper.matrixWorld.clone().invert();
+                    const pivotWorld = selectionHelper.position;
+                    _computeBlockbenchPivotFrameMatrixWorld(
+                        _BB_PIVOT_FRAME_MAT4,
+                        _BB_PIVOT_FRAME_MAT4_INV,
+                        _BB_PIVOT_FRAME_MAT3,
+                        pivotWorld
+                    );
                     const tempMat = new THREE.Matrix4();
 
                     items.forEach(({mesh, instanceId}) => {
@@ -1524,7 +1585,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
                         getInstanceWorldMatrix(mesh, instanceId, tempMat);
 
-                        const combinedMat = _TMP_MAT4_A.copy(inverseHelperMat).multiply(tempMat);
+                        const combinedMat = _TMP_MAT4_A.copy(_BB_PIVOT_FRAME_MAT4_INV).multiply(tempMat);
                         unionTransformedBox3(dragInitialBoundingBox, localBox, combinedMat);
                     });
                 }
@@ -1689,20 +1750,32 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     if (Math.abs(deltaScale.x - dragInitialScale.x) > 0.0001) {
                         const isPositive = dragAnchorDirections.x;
                         const fixedVal = isPositive ? dragInitialBoundingBox.min.x : dragInitialBoundingBox.max.x;
-                        shift.x = fixedVal * (dragInitialScale.x - deltaScale.x);
+                        if (Math.abs(dragInitialScale.x) > 1e-6) {
+                            shift.x = (fixedVal * (dragInitialScale.x - deltaScale.x)) / dragInitialScale.x;
+                        }
                     }
                     if (Math.abs(deltaScale.y - dragInitialScale.y) > 0.0001) {
                         const isPositive = dragAnchorDirections.y;
                         const fixedVal = isPositive ? dragInitialBoundingBox.min.y : dragInitialBoundingBox.max.y;
-                        shift.y = fixedVal * (dragInitialScale.y - deltaScale.y);
+                        if (Math.abs(dragInitialScale.y) > 1e-6) {
+                            shift.y = (fixedVal * (dragInitialScale.y - deltaScale.y)) / dragInitialScale.y;
+                        }
                     }
                     if (Math.abs(deltaScale.z - dragInitialScale.z) > 0.0001) {
                         const isPositive = dragAnchorDirections.z;
                         const fixedVal = isPositive ? dragInitialBoundingBox.min.z : dragInitialBoundingBox.max.z;
-                        shift.z = fixedVal * (dragInitialScale.z - deltaScale.z);
+                        if (Math.abs(dragInitialScale.z) > 1e-6) {
+                            shift.z = (fixedVal * (dragInitialScale.z - deltaScale.z)) / dragInitialScale.z;
+                        }
                     }
                     
-                    const shiftWorld = shift.clone().applyQuaternion(selectionHelper.quaternion);
+                    // Convert from pivot-frame local shift to world.
+                    // When the selected target is a group that contains shear, the pivot frame includes that shear
+                    // so the anchor/overlay space stays consistent.
+                    const shiftWorld = shift.clone();
+                    if (currentSpace === 'local') {
+                        shiftWorld.applyMatrix3(_BB_PIVOT_FRAME_MAT3);
+                    }
                     selectionHelper.position.copy(dragInitialPosition).add(shiftWorld);
                     selectionHelper.updateMatrixWorld();
                 }
@@ -1845,16 +1918,15 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 break;
             }
             case 'z': {
-                if (pivotMode === 'center' && isCustomPivot) {
-                    _recomputePivotStateForSelection();
+                if (pivotMode === 'center' && isCustomPivot) {   
                     pivotMode = 'center';
-                    console.log('Pivot Mode:', pivotMode);
-                    updateHelperPosition();
                 } else {
                     pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
-                    console.log('Pivot Mode:', pivotMode);
-                    updateHelperPosition();
+
                 }
+                isCustomPivot = false;
+                console.log('Pivot Mode:', pivotMode);
+                updateHelperPosition();
                 break;
             }
             case 'v': {
