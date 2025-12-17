@@ -1500,6 +1500,9 @@ function createDuplicationContext() {
         batchPool: new Map(), // key -> BatchedMesh
         batchWorldInv: new WeakMap(), // BatchedMesh -> Matrix4
         batchGeometryToId: new WeakMap(), // BatchedMesh -> Map<BufferGeometry, number>
+        batchPlans: new Map(), // key -> { instanceCount, maxVerts, maxIndices, geometries:Set<BufferGeometry> }
+        fullBatches: new WeakSet(), // BatchedMesh that hit max during this duplication pass
+        headPool: new Map(), // key -> InstancedMesh (player_head)
         tmpSourceWorld: new THREE.Matrix4(),
         tmpTargetLocal: new THREE.Matrix4(),
         tmpInv: new THREE.Matrix4(),
@@ -1507,10 +1510,206 @@ function createDuplicationContext() {
     };
 }
 
-function _batchPoolKey(targetGroupId, material) {
-    const gid = targetGroupId || 'root';
+function _nextPow2(v) {
+    let x = v | 0;
+    if (x <= 1) return 1;
+    x--;
+    x |= x >> 1;
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;
+    return x + 1;
+}
+
+function _headPoolKey(sourceMesh) {
+    if (!sourceMesh) return 'head|null';
+    let material = sourceMesh.material;
+    if (Array.isArray(material)) material = material[0];
     const matKey = material && material.uuid ? material.uuid : String(material);
-    return `${gid}|${matKey}`;
+    return `head|${matKey}`;
+}
+
+function _isPlayerHeadMesh(obj) {
+    return !!(obj && obj.isInstancedMesh && obj.geometry && obj.geometry.attributes && obj.geometry.attributes.instancedUvOffset && obj.userData && obj.userData.displayType === 'item_display');
+}
+
+function _getHeadCapacity(mesh) {
+    if (!mesh) return 0;
+    const max = mesh.instanceMatrix && mesh.instanceMatrix.count ? mesh.instanceMatrix.count : 0;
+    return mesh.userData && typeof mesh.userData._pdeHeadCapacity === 'number' ? mesh.userData._pdeHeadCapacity : max;
+}
+
+function _getHeadUsed(mesh) {
+    if (!mesh) return 0;
+    if (mesh.userData && typeof mesh.userData._pdeHeadUsed === 'number') return mesh.userData._pdeHeadUsed;
+    // Prefer render count if set.
+    if (typeof mesh.count === 'number') return mesh.count;
+    return 0;
+}
+
+function _setHeadUsed(mesh, used) {
+    if (!mesh.userData) mesh.userData = {};
+    mesh.userData._pdeHeadUsed = used;
+    mesh.count = used;
+}
+
+function _createWritableHeadMeshFromSource(sourceMesh, capacity) {
+    const sourceGeometry = sourceMesh.geometry;
+    const sourceMaterial = sourceMesh.material;
+
+    const geo = new THREE.BufferGeometry();
+    if (sourceGeometry.index) geo.setIndex(sourceGeometry.index);
+    if (sourceGeometry.attributes) {
+        for (const name in sourceGeometry.attributes) {
+            if (name === 'instancedUvOffset') continue;
+            geo.setAttribute(name, sourceGeometry.attributes[name]);
+        }
+    }
+    if (Array.isArray(sourceGeometry.groups) && sourceGeometry.groups.length) {
+        geo.groups = sourceGeometry.groups.slice();
+    }
+    if (sourceGeometry.drawRange) {
+        geo.drawRange.start = sourceGeometry.drawRange.start;
+        geo.drawRange.count = sourceGeometry.drawRange.count;
+    }
+    if (sourceGeometry.boundingBox) geo.boundingBox = sourceGeometry.boundingBox;
+    if (sourceGeometry.boundingSphere) geo.boundingSphere = sourceGeometry.boundingSphere;
+
+    const uvOffsets = new Float32Array(capacity * 2);
+    geo.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
+
+    const mesh = new THREE.InstancedMesh(geo, sourceMaterial, capacity);
+    mesh.userData.displayType = 'item_display';
+    mesh.userData.hasHat = {};
+    mesh.userData.isWritableHead = true;
+    mesh.userData._pdeHeadCapacity = capacity;
+    mesh.userData._pdeHeadSourceGeoUuid = sourceGeometry && sourceGeometry.uuid ? sourceGeometry.uuid : null;
+    mesh.frustumCulled = false;
+    _setHeadUsed(mesh, 0);
+    return mesh;
+}
+
+function _getOrCreateWritableHeadMesh(sourceMesh, additionalCount, ctx) {
+    if (!sourceMesh || !ctx) return null;
+
+    const key = _headPoolKey(sourceMesh);
+    const cached = ctx.headPool.get(key);
+    if (cached && _isPlayerHeadMesh(cached)) {
+        const used = _getHeadUsed(cached);
+        const cap = _getHeadCapacity(cached);
+        if (used + additionalCount <= cap) return cached;
+    }
+
+    // Search existing scene for a reusable writable head mesh
+    for (const child of loadedObjectGroup.children) {
+        if (!_isPlayerHeadMesh(child)) continue;
+        if (!child.userData || !child.userData.isWritableHead) continue;
+
+        let matA = child.material;
+        let matB = sourceMesh.material;
+        if (Array.isArray(matA)) matA = matA[0];
+        if (Array.isArray(matB)) matB = matB[0];
+        if (matA !== matB) continue;
+
+        // We intentionally pool by material only to keep draw calls low.
+
+        const used = _getHeadUsed(child);
+        const cap = _getHeadCapacity(child);
+        if (used + additionalCount <= cap) {
+            ctx.headPool.set(key, child);
+            return child;
+        }
+    }
+
+    // Create a new pooled mesh with slack capacity
+    const base = Math.max(256, additionalCount);
+    const capacity = Math.max(2048, _nextPow2(base));
+    const mesh = _createWritableHeadMeshFromSource(sourceMesh, capacity);
+    loadedObjectGroup.add(mesh);
+    ctx.headPool.set(key, mesh);
+    return mesh;
+}
+
+function _getBatchMaxInstances(batch) {
+    if (!batch) return null;
+    if (batch.userData && typeof batch.userData._pdeMaxInstances === 'number') return batch.userData._pdeMaxInstances;
+    // Prefer public property if present, otherwise fall back to three internal fields.
+    const publicMax = batch.maxInstanceCount;
+    if (typeof publicMax === 'number') {
+        if (!batch.userData) batch.userData = {};
+        batch.userData._pdeMaxInstances = publicMax;
+        return publicMax;
+    }
+    const internalMax = batch._maxInstanceCount;
+    if (typeof internalMax === 'number') {
+        if (!batch.userData) batch.userData = {};
+        batch.userData._pdeMaxInstances = internalMax;
+        return internalMax;
+    }
+    return null;
+}
+
+function _getBatchCurrentInstances(batch) {
+    if (!batch) return 0;
+    if (batch.userData && Array.isArray(batch.userData.instanceGeometryIds)) return batch.userData.instanceGeometryIds.length;
+    const internalCount = batch._instanceCount;
+    if (typeof internalCount === 'number') return internalCount;
+    return 0;
+}
+
+function _batchHasSpace(batch) {
+    const max = _getBatchMaxInstances(batch);
+    if (!max) return true; // Unknown: allow and rely on retry path
+    return _getBatchCurrentInstances(batch) < max;
+}
+
+function _planWritableBatchFor(mesh, instanceId, targetGroupId, ctx) {
+    if (!ctx || !mesh) return;
+
+    // Player heads are handled by a dedicated bulk path (InstancedMesh with instancedUvOffset)
+    if (mesh.isInstancedMesh && mesh.geometry && mesh.geometry.attributes && mesh.geometry.attributes.instancedUvOffset) {
+        return;
+    }
+
+    let geometry = null;
+    let material = mesh.material;
+    if (Array.isArray(material)) material = material[0];
+
+    if (mesh.isBatchedMesh) {
+        const geomId = mesh.userData && mesh.userData.instanceGeometryIds ? mesh.userData.instanceGeometryIds[instanceId] : null;
+        if (geomId !== null && mesh.userData && mesh.userData.originalGeometries) {
+            geometry = mesh.userData.originalGeometries.get(geomId);
+        }
+    } else if (mesh.isInstancedMesh) {
+        geometry = mesh.geometry;
+    }
+
+    if (!geometry || !material) return;
+
+    // Pool writable batches globally by material (not by group) to keep draw calls low,
+    // matching how the loader batches blocks while storing group membership separately.
+    const key = _batchPoolKey(material);
+    let plan = ctx.batchPlans.get(key);
+    if (!plan) {
+        plan = { instanceCount: 0, maxVerts: 0, maxIndices: 0, geometries: new Set() };
+        ctx.batchPlans.set(key, plan);
+    }
+
+    plan.instanceCount++;
+
+    if (!plan.geometries.has(geometry)) {
+        plan.geometries.add(geometry);
+        const pos = geometry.attributes && geometry.attributes.position;
+        const idx = geometry.index;
+        plan.maxVerts += pos ? pos.count : 0;
+        plan.maxIndices += idx ? idx.count : 0;
+    }
+}
+
+function _batchPoolKey(material) {
+    const matKey = material && material.uuid ? material.uuid : String(material);
+    return `${matKey}`;
 }
 
 function _getBatchWorldInverse(batch, ctx) {
@@ -1553,87 +1752,82 @@ function _getOrCreateBatchGeometryId(batch, geometry, ctx) {
 
 let _pendingHeadClones = [];
 
-function flushPendingHeadClones() {
+function flushPendingHeadClones(ctx) {
     if (_pendingHeadClones.length === 0) return [];
 
     const newSelectionItems = [];
-    const jobsBySource = new Map();
+    const jobsByKey = new Map();
 
-    // Group by source mesh (to share geometry/material)
+    // Group by pooling key (material) so we reuse a single InstancedMesh across repeated duplicates
     for (const job of _pendingHeadClones) {
-        if (!jobsBySource.has(job.sourceMesh)) {
-            jobsBySource.set(job.sourceMesh, []);
+        const key = _headPoolKey(job.sourceMesh);
+        let entry = jobsByKey.get(key);
+        if (!entry) {
+            entry = { sourceMesh: job.sourceMesh, jobs: [] };
+            jobsByKey.set(key, entry);
         }
-        jobsBySource.get(job.sourceMesh).push(job);
+        entry.jobs.push(job);
     }
 
     _pendingHeadClones = []; // Clear global
 
-    for (const [sourceMesh, jobs] of jobsBySource) {
-        const count = jobs.length;
-        const sourceGeometry = sourceMesh.geometry;
-        const sourceMaterial = sourceMesh.material;
-        
-        // Clone geometry to attach new instanced attributes while sharing buffers
-        const newGeometry = sourceGeometry.clone(); 
-        
-        // Prepare new instanced attribute
-        const newUvOffsets = new Float32Array(count * 2);
-        
-        const newMesh = new THREE.InstancedMesh(newGeometry, sourceMaterial, count);
-        newMesh.userData.displayType = 'item_display';
-        newMesh.userData.hasHat = {};
-        newMesh.frustumCulled = false;
+    const parentInv = loadedObjectGroup.matrixWorld.clone().invert();
+    const sourceMatrix = new THREE.Matrix4();
 
-        const dummy = new THREE.Matrix4();
-        const sourceMatrix = new THREE.Matrix4();
-        const sourceAttr = sourceGeometry.attributes.instancedUvOffset;
-        const parentInv = loadedObjectGroup.matrixWorld.clone().invert();
+    for (const { sourceMesh, jobs } of jobsByKey.values()) {
+        const count = jobs.length;
+        const targetMesh = _getOrCreateWritableHeadMesh(sourceMesh, count, ctx);
+        if (!targetMesh) continue;
+
+        const start = _getHeadUsed(targetMesh);
+        const uvAttr = targetMesh.geometry && targetMesh.geometry.attributes ? targetMesh.geometry.attributes.instancedUvOffset : null;
+        if (!uvAttr) continue;
+        const uvArray = uvAttr.array;
 
         for (let i = 0; i < count; i++) {
-            const { sourceMesh: sm, sourceId, targetGroupId } = jobs[i];
-            
+            const { sourceMesh: sm, sourceId, targetGroupId, coveredByGroup } = jobs[i];
+            const dstId = start + i;
+
             // Matrix: Source World -> Target Local
             sm.getMatrixAt(sourceId, sourceMatrix);
             sourceMatrix.premultiply(sm.matrixWorld);
             const targetLocal = sourceMatrix.multiply(parentInv);
-            
-            newMesh.setMatrixAt(i, targetLocal);
-            
+            targetMesh.setMatrixAt(dstId, targetLocal);
+
             // UV Offset
+            const sourceAttr = sm.geometry && sm.geometry.attributes ? sm.geometry.attributes.instancedUvOffset : null;
             if (sourceAttr) {
                 const u = sourceAttr.getX(sourceId);
                 const v = sourceAttr.getY(sourceId);
-                newUvOffsets[i * 2] = u;
-                newUvOffsets[i * 2 + 1] = v;
+                const o = dstId * 2;
+                uvArray[o] = u;
+                uvArray[o + 1] = v;
             }
-            
+
             // HasHat
-            if (sm.userData.hasHat && sm.userData.hasHat[sourceId] !== undefined) {
-                newMesh.userData.hasHat[i] = sm.userData.hasHat[sourceId];
+            if (sm.userData && sm.userData.hasHat && sm.userData.hasHat[sourceId] !== undefined) {
+                targetMesh.userData.hasHat[dstId] = sm.userData.hasHat[sourceId];
             }
-            
-            // Register Group
+
+            // Register Group mapping
             if (targetGroupId) {
-               const groups = getGroups();
-               const group = groups.get(targetGroupId);
-               if (group) {
-                   if (!Array.isArray(group.children)) group.children = [];
-                   group.children.push({ type: 'object', mesh: newMesh, instanceId: i });
-               }
-               const objectToGroup = getObjectToGroup();
-               const key = getGroupKey(newMesh, i);
-               objectToGroup.set(key, targetGroupId);
+                const groups = getGroups();
+                const group = groups.get(targetGroupId);
+                if (group) {
+                    if (!Array.isArray(group.children)) group.children = [];
+                    group.children.push({ type: 'object', mesh: targetMesh, instanceId: dstId });
+                }
+                const objectToGroup = getObjectToGroup();
+                const key = getGroupKey(targetMesh, dstId);
+                objectToGroup.set(key, targetGroupId);
             }
-            
-            newSelectionItems.push({ mesh: newMesh, instanceId: i, targetGroupId });
+
+            newSelectionItems.push({ mesh: targetMesh, instanceId: dstId, targetGroupId, coveredByGroup });
         }
-        
-        newGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(newUvOffsets, 2));
-        newMesh.instanceMatrix.needsUpdate = true;
-        
-        // Add to scene
-        loadedObjectGroup.add(newMesh);
+
+        _setHeadUsed(targetMesh, start + count);
+        targetMesh.instanceMatrix.needsUpdate = true;
+        uvAttr.needsUpdate = true;
     }
     
     return newSelectionItems;
@@ -1644,51 +1838,66 @@ const _WRITABLE_BATCH_MAX_VERTS = _WRITABLE_BATCH_SIZE * 512;
 const _WRITABLE_BATCH_MAX_INDICES = _WRITABLE_BATCH_SIZE * 768; 
 
 function getOrCreateWritableBatch(targetGroupId, material, geometry, ctx) {
-    const groups = getGroups();
-    const group = targetGroupId ? groups.get(targetGroupId) : null;
-
     if (ctx) {
-        const key = _batchPoolKey(targetGroupId, material);
+        const key = _batchPoolKey(material);
         const cached = ctx.batchPool.get(key);
-        if (cached) return cached;
+        if (cached) {
+            if (ctx.fullBatches && ctx.fullBatches.has(cached)) {
+                ctx.batchPool.delete(key);
+            } else if (!_batchHasSpace(cached)) {
+                ctx.fullBatches && ctx.fullBatches.add(cached);
+                ctx.batchPool.delete(key);
+            } else {
+                return cached;
+            }
+        }
     }
     
     let candidateMesh = null;
-    
-    if (group && Array.isArray(group.children)) {
-        for (const child of group.children) {
-            if (child.type !== 'object' || !child.mesh || !child.mesh.isBatchedMesh) continue;
-            const m = child.mesh;
-            if (m.userData.isWritable && m.material === material) {
-                // BatchedMesh capacity check (simplified)
-                if (m._maxInstanceCount && m._instanceCount < m._maxInstanceCount) {
-                     candidateMesh = m;
-                     break;
-                }
-            }
-        }
-    } else if (!targetGroupId) {
-        // Search global scope for a writable batch if no target group is specified.
-        // This allows pooling batches for root objects.
-        for (const child of loadedObjectGroup.children) {
-            if (child.isBatchedMesh && child.userData.isWritable && child.material === material) {
-                 if (child._maxInstanceCount && child._instanceCount < child._maxInstanceCount) {
-                     candidateMesh = child;
-                     break;
-                }
-            }
+
+    // Always search globally for a reusable writable batch.
+    // Group membership is tracked in the custom group maps, not in the Three.js scene graph.
+    for (const child of loadedObjectGroup.children) {
+        if (!child || !child.isBatchedMesh) continue;
+        if (!child.userData || !child.userData.isWritable) continue;
+        if (child.material !== material) continue;
+        if (ctx && ctx.fullBatches && ctx.fullBatches.has(child)) continue;
+        const maxInstances = _getBatchMaxInstances(child);
+        const currentInstances = _getBatchCurrentInstances(child);
+        if (!maxInstances || currentInstances < maxInstances) {
+            candidateMesh = child;
+            break;
         }
     }
 
     if (candidateMesh) {
-        if (ctx) ctx.batchPool.set(_batchPoolKey(targetGroupId, material), candidateMesh);
+        if (ctx) ctx.batchPool.set(_batchPoolKey(material), candidateMesh);
         return candidateMesh;
     }
 
-    // 2. Create new batch
-    const batch = new THREE.BatchedMesh(_WRITABLE_BATCH_SIZE, _WRITABLE_BATCH_MAX_VERTS, _WRITABLE_BATCH_MAX_INDICES, material);
+    // 2. Create new batch (size from plan when available to avoid reallocation / overflow)
+    const planKey = ctx ? _batchPoolKey(material) : null;
+    const plan = (ctx && planKey) ? ctx.batchPlans.get(planKey) : null;
+
+    let maxInstances = _WRITABLE_BATCH_SIZE;
+    let maxVerts = _WRITABLE_BATCH_MAX_VERTS;
+    let maxIndices = _WRITABLE_BATCH_MAX_INDICES;
+
+    if (plan) {
+        // Small slack to prevent edge overflow while still being tight.
+        const inst = Math.max(1, plan.instanceCount);
+        const verts = Math.max(64, plan.maxVerts);
+        const indices = Math.max(64, plan.maxIndices);
+
+        maxInstances = Math.ceil(inst * 1.1) + 8;
+        maxVerts = Math.ceil(verts * 1.1) + 64;
+        maxIndices = Math.ceil(indices * 1.1) + 64;
+    }
+
+    const batch = new THREE.BatchedMesh(maxInstances, maxVerts, maxIndices, material);
     batch.frustumCulled = false;
     batch.userData.isWritable = true;
+    batch.userData._pdeMaxInstances = maxInstances;
     batch.userData.displayType = 'block_display';
     batch.userData.displayTypes = new Map();
     batch.userData.geometryBounds = new Map();
@@ -1700,16 +1909,16 @@ function getOrCreateWritableBatch(targetGroupId, material, geometry, ctx) {
 
     loadedObjectGroup.add(batch);
 
-    if (ctx) ctx.batchPool.set(_batchPoolKey(targetGroupId, material), batch);
+    if (ctx) ctx.batchPool.set(_batchPoolKey(material), batch);
     return batch;
 }
 
-function cloneInstance(mesh, instanceId, targetGroupId, ctx) {
+function cloneInstance(mesh, instanceId, targetGroupId, ctx, coveredByGroup = false) {
     if (!mesh) return null;
 
     // Detect Player Head (InstancedMesh with instancedUvOffset) for Bulk Cloning
     if (mesh.isInstancedMesh && mesh.geometry && mesh.geometry.attributes.instancedUvOffset) {
-        _pendingHeadClones.push({ sourceMesh: mesh, sourceId: instanceId, targetGroupId });
+        _pendingHeadClones.push({ sourceMesh: mesh, sourceId: instanceId, targetGroupId, coveredByGroup });
         return { isPending: true };
     }
 
@@ -1772,10 +1981,22 @@ function cloneInstance(mesh, instanceId, targetGroupId, ctx) {
     if (Array.isArray(material)) material = material[0];
 
     // Find target batch
-    const targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
+    let targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
     if (!targetBatch) {
         console.error('Failed to create writable batch');
         return null;
+    }
+
+    // If the cached/candidate batch is already full, force rollover before adding.
+    if (ctx && !_batchHasSpace(targetBatch)) {
+        const key = _batchPoolKey(material);
+        ctx.fullBatches && ctx.fullBatches.add(targetBatch);
+        ctx.batchPool && ctx.batchPool.delete(key);
+        targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
+        if (!targetBatch) {
+            console.error('Failed to create writable batch (rollover)');
+            return null;
+        }
     }
 
     // Add Geometry (reuse if exists in target) - O(1) via per-duplication cache
@@ -1798,9 +2019,28 @@ function cloneInstance(mesh, instanceId, targetGroupId, ctx) {
         return id;
     })();
 
-    // Add Instance
-    const newInstanceId = targetBatch.addInstance(targetGeomId);
-    targetBatch.userData.instanceGeometryIds[newInstanceId] = targetGeomId;
+    // Add Instance (retry once on capacity error)
+    let newInstanceId;
+    let usedGeomId = targetGeomId;
+    try {
+        newInstanceId = targetBatch.addInstance(targetGeomId);
+    } catch (e) {
+        const msg = (e && e.message) ? String(e.message) : '';
+        if (ctx && msg.includes('Maximum item count reached')) {
+            const key = _batchPoolKey(material);
+            ctx.fullBatches && ctx.fullBatches.add(targetBatch);
+            ctx.batchPool && ctx.batchPool.delete(key);
+
+            // Create/resolve a new batch and retry once
+            targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
+            const retryGeomId = ctx ? _getOrCreateBatchGeometryId(targetBatch, geometry, ctx) : targetGeomId;
+            usedGeomId = retryGeomId;
+            newInstanceId = targetBatch.addInstance(retryGeomId);
+        } else {
+            throw e;
+        }
+    }
+    targetBatch.userData.instanceGeometryIds[newInstanceId] = usedGeomId;
 
     // Copy Transforms
     // 1. World Matrix of source instance
@@ -1918,14 +2158,12 @@ function cloneGroup(groupId, parentId, idMap, ctx) {
         }
     }
 
-    // Clone Children
+    // Clone Children (structure only) + plan/collect object clone jobs for a second pass
     if (Array.isArray(sourceGroup.children)) {
         for (const child of sourceGroup.children) {
             if (!child) continue;
             if (child.type === 'group') {
                 cloneGroup(child.id, newGroupId, idMap, ctx);
-            } else if (child.type === 'object') {
-                cloneInstance(child.mesh, child.instanceId, newGroupId, ctx);
             }
         }
     }
@@ -1933,10 +2171,30 @@ function cloneGroup(groupId, parentId, idMap, ctx) {
     return newGroupId;
 }
 
+function _collectCloneJobsFromGroup(groupId, newGroupId, ctx, outJobs) {
+    const groups = getGroups();
+    const sourceGroup = groups.get(groupId);
+    if (!sourceGroup || !Array.isArray(sourceGroup.children)) return;
+
+    for (const child of sourceGroup.children) {
+        if (!child) continue;
+        if (child.type === 'object') {
+            _planWritableBatchFor(child.mesh, child.instanceId, newGroupId, ctx);
+            outJobs.push({ mesh: child.mesh, instanceId: child.instanceId, targetGroupId: newGroupId, coveredByGroup: true });
+        } else if (child.type === 'group') {
+            const mappedChildId = ctx && ctx._groupIdMap ? ctx._groupIdMap.get(child.id) : null;
+            // If called with a mapping, descend using mapped group id; otherwise just recurse with same newGroupId.
+            _collectCloneJobsFromGroup(child.id, mappedChildId || newGroupId, ctx, outJobs);
+        }
+    }
+}
+
 function duplicateGroupsAndObjects(groupIds, objectEntries, ctx) {
     const newSelection = { groups: new Set(), objects: new Map() };
     const idMap = new Map(); // OldGroupID -> NewGroupID
     const groups = getGroups();
+    const jobs = [];
+    if (ctx) ctx._groupIdMap = idMap;
     
     // 1. Duplicate Groups
     if (groupIds) {
@@ -1963,6 +2221,32 @@ function duplicateGroupsAndObjects(groupIds, objectEntries, ctx) {
             }
         }
     }
+
+    // Collect clone jobs for all objects inside newly-created group trees
+    if (groupIds) {
+        for (const groupId of groupIds) {
+            // Only roots were added to selection; collect from roots only.
+            const newGroupId = idMap.get(groupId);
+            if (!newGroupId) continue;
+
+            // If parent is selected, it wasn't mapped at root-level here; skip non-roots.
+            const group = groups.get(groupId);
+            if (!group) continue;
+            let isParentSelected = false;
+            let curr = group.parent;
+            while (curr) {
+                if (groupIds.has(curr)) {
+                    isParentSelected = true;
+                    break;
+                }
+                const p = groups.get(curr);
+                curr = p ? p.parent : null;
+            }
+            if (isParentSelected) continue;
+
+            _collectCloneJobsFromGroup(groupId, newGroupId, ctx, jobs);
+        }
+    }
     
     // 2. Duplicate Objects
     // If an object is inside a selected group, it's already cloned.
@@ -1987,16 +2271,22 @@ function duplicateGroupsAndObjects(groupIds, objectEntries, ctx) {
              }
              
              if (!isAncestorSelected) {
-                 // Clone this object
+                 // Plan + clone in a second pass
                  const targetGroup = parentGroupId; // Stay in same group
-                 const result = cloneInstance(mesh, instanceId, targetGroup, ctx);
-                 if (result && !result.isPending) {
-                     if (!newSelection.objects.has(result.mesh)) {
-                         newSelection.objects.set(result.mesh, new Set());
-                     }
-                     newSelection.objects.get(result.mesh).add(result.instanceId);
-                 }
+                 _planWritableBatchFor(mesh, instanceId, targetGroup, ctx);
+                 jobs.push({ mesh, instanceId, targetGroupId: targetGroup, coveredByGroup: false });
              }
+        }
+    }
+
+    // Execute clone jobs
+    for (const job of jobs) {
+        const result = cloneInstance(job.mesh, job.instanceId, job.targetGroupId, ctx, job.coveredByGroup);
+        if (result && !result.isPending && !job.coveredByGroup) {
+            if (!newSelection.objects.has(result.mesh)) {
+                newSelection.objects.set(result.mesh, new Set());
+            }
+            newSelection.objects.get(result.mesh).add(result.instanceId);
         }
     }
     
@@ -2021,29 +2311,13 @@ function duplicateSelected() {
     const newSel = duplicateGroupsAndObjects(selectedGroupIds, selectedObjects, ctx);
 
     // Flush pending bulk clones (Player Heads)
-    const newHeads = flushPendingHeadClones();
-    const groups = getGroups();
-
-    for (const { mesh, instanceId, targetGroupId } of newHeads) {
-        let isCovered = false;
-        if (targetGroupId) {
-            let curr = targetGroupId;
-            while (curr) {
-                if (newSel.groups.has(curr)) {
-                    isCovered = true;
-                    break;
-                }
-                const g = groups.get(curr);
-                curr = g ? g.parent : null;
-            }
+    const newHeads = flushPendingHeadClones(ctx);
+    for (const { mesh, instanceId, coveredByGroup } of newHeads) {
+        if (coveredByGroup) continue;
+        if (!newSel.objects.has(mesh)) {
+            newSel.objects.set(mesh, new Set());
         }
-
-        if (!isCovered) {
-            if (!newSel.objects.has(mesh)) {
-                newSel.objects.set(mesh, new Set());
-            }
-            newSel.objects.get(mesh).add(instanceId);
-        }
+        newSel.objects.get(mesh).add(instanceId);
     }
 
     // Apply new selection
