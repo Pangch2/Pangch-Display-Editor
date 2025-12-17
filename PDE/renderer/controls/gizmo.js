@@ -8,10 +8,50 @@ const _TMP_MAT4_B = new THREE.Matrix4();
 const _TMP_BOX3_A = new THREE.Box3();
 const _TMP_VEC3_A = new THREE.Vector3();
 const _TMP_VEC3_B = new THREE.Vector3();
-const _TMP_MAT3_A = new THREE.Matrix3();
-const _TMP_MAT3_B = new THREE.Matrix3();
-const _TMP_MAT4_C = new THREE.Matrix4();
-const _TMP_QUAT_A = new THREE.Quaternion();
+
+function getInstanceCount(mesh) {
+    if (!mesh) return 0;
+    if (mesh.isInstancedMesh) return mesh.count ?? 0;
+    if (mesh.isBatchedMesh) {
+        const geomIds = mesh.userData?.instanceGeometryIds;
+        return Array.isArray(geomIds) ? geomIds.length : 0;
+    }
+    return 0;
+}
+
+function disposeThreeObjectTree(root) {
+    if (!root) return;
+    root.traverse(child => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) child.material.dispose();
+    });
+}
+
+function createOverlayLineMaterial(color) {
+    return new THREE.LineBasicMaterial({
+        color,
+        depthTest: true,
+        depthWrite: false,
+        transparent: true,
+        opacity: 0.9
+    });
+}
+
+function _beginSelectionReplace({ anchorMode = 'default', detachTransform = false } = {}) {
+    _revertEphemeralPivotUndoIfAny();
+    if (detachTransform && transformControls) transformControls.detach();
+    _clearSelectionState();
+    _clearGizmoAnchor();
+
+    _selectionAnchorMode = anchorMode;
+
+    // New selection starts with no transient custom pivot.
+    pivotOffset.set(0, 0, 0);
+    isCustomPivot = false;
+
+    currentSelection.primary = null;
+    invalidateSelectionCaches();
+}
 
 function getDisplayType(mesh, instanceId) {
     if (!mesh) return undefined;
@@ -153,13 +193,7 @@ function pickInstanceByOverlayBox(raycaster, rootGroup) {
 
         const mesh = obj;
 
-        let instanceCount = 0;
-        if (mesh.isInstancedMesh) {
-            instanceCount = mesh.count ?? 0;
-        } else {
-            const geomIds = mesh.userData?.instanceGeometryIds;
-            instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
-        }
+        const instanceCount = getInstanceCount(mesh);
 
         if (instanceCount <= 0) return;
 
@@ -342,8 +376,6 @@ function getGroupOriginWorld(groupId, out = new THREE.Vector3()) {
 // Selection caches (critical for performance when group has many children)
 let _selectedItemsCacheKey = null;
 let _selectedItemsCache = null;
-let _descendantGroupsCacheKey = null;
-let _descendantGroupsCache = null;
 
 let _ephemeralPivotUndo = null;
 let _pivotEditUndoCapture = null;
@@ -560,15 +592,6 @@ function _getSelectionCacheKey() {
 function invalidateSelectionCaches() {
     _selectedItemsCacheKey = null;
     _selectedItemsCache = null;
-    _descendantGroupsCacheKey = null;
-    _descendantGroupsCache = null;
-}
-
-function getAllDescendantGroupsCached(groupId) {
-    if (_descendantGroupsCacheKey === groupId && _descendantGroupsCache) return _descendantGroupsCache;
-    _descendantGroupsCacheKey = groupId;
-    _descendantGroupsCache = getAllDescendantGroups(groupId);
-    return _descendantGroupsCache;
 }
 
 // Unified helper to get flat list of selected targets
@@ -710,16 +733,6 @@ function _clearGizmoAnchor() {
     _multiSelectionOriginAnchorInitialPosition.set(0, 0, 0);
 }
 
-function _syncMultiSelectionOriginAnchorToCurrent() {
-    if (!_hasAnySelection()) return;
-    if (!_isMultiSelection()) return;
-
-    // Cache the actual gizmo position we would use in Pivot Mode: origin
-    // (includes pivotOffset when applicable).
-    _multiSelectionOriginAnchorPosition.copy(SelectionCenter('origin', isCustomPivot, pivotOffset));
-    _multiSelectionOriginAnchorValid = true;
-}
-
 function _getSelectionCenterWorld(out = new THREE.Vector3()) {
     const box = getSelectionBoundingBox();
     if (box && !box.isEmpty()) {
@@ -734,25 +747,13 @@ function _replaceSelectionWithObjectsMap(meshToIds, { anchorMode = 'default' } =
         return;
     }
 
-    _revertEphemeralPivotUndoIfAny();
-    if (transformControls) transformControls.detach();
-    _clearSelectionState();
-    _clearGizmoAnchor();
-
-    // This kind of selection has no "first" item; default anchor is center.
-    _selectionAnchorMode = anchorMode;
-
-    // New selection starts with no transient custom pivot.
-    pivotOffset.set(0, 0, 0);
-    isCustomPivot = false;
+    _beginSelectionReplace({ anchorMode, detachTransform: true });
 
     for (const [mesh, ids] of meshToIds) {
         if (!mesh || !ids || ids.size === 0) continue;
         currentSelection.objects.set(mesh, ids);
     }
 
-    currentSelection.primary = null;
-    invalidateSelectionCaches();
     _recomputePivotStateForSelection();
     updateHelperPosition();
     updateSelectionOverlay();
@@ -766,16 +767,7 @@ function _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode
         return;
     }
 
-    _revertEphemeralPivotUndoIfAny();
-    if (transformControls) transformControls.detach();
-    _clearSelectionState();
-    _clearGizmoAnchor();
-
-    _selectionAnchorMode = anchorMode;
-
-    // New selection starts with no transient custom pivot.
-    pivotOffset.set(0, 0, 0);
-    isCustomPivot = false;
+    _beginSelectionReplace({ anchorMode, detachTransform: true });
 
     if (hasGroups) {
         for (const gid of groupIds) {
@@ -789,8 +781,6 @@ function _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode
         }
     }
 
-    currentSelection.primary = null;
-    invalidateSelectionCaches();
     _recomputePivotStateForSelection();
     updateHelperPosition();
     updateSelectionOverlay();
@@ -804,13 +794,7 @@ function _selectAllObjectsVisibleInScene() {
         if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
         if (obj.visible === false) return;
 
-        let instanceCount = 0;
-        if (obj.isInstancedMesh) {
-            instanceCount = obj.count ?? 0;
-        } else {
-            const geomIds = obj.userData?.instanceGeometryIds;
-            instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
-        }
+        const instanceCount = getInstanceCount(obj);
         if (instanceCount <= 0) return;
 
         const ids = new Set();
@@ -1000,10 +984,7 @@ function calculateAvgOrigin() {
 function updateSelectionOverlay() {
     if (selectionOverlay) {
         scene.remove(selectionOverlay);
-        selectionOverlay.traverse(child => {
-            if (child.geometry) child.geometry.dispose();
-            if (child.material) child.material.dispose();
-        });
+        disposeThreeObjectTree(selectionOverlay);
         selectionOverlay = null;
     }
 
@@ -1031,13 +1012,7 @@ function updateSelectionOverlay() {
             const edgesGeo = createEdgesGeometryFromBox3(localBox);
             if (!edgesGeo) continue;
 
-            const overlayMaterial = new THREE.LineBasicMaterial({
-                color: 0x6FA21C,
-                depthTest: true,
-                depthWrite: false,
-                transparent: true,
-                opacity: 0.9
-            });
+            const overlayMaterial = createOverlayLineMaterial(0x6FA21C);
 
             const line = new THREE.LineSegments(edgesGeo, overlayMaterial);
             line.matrixAutoUpdate = false;
@@ -1062,13 +1037,7 @@ function updateSelectionOverlay() {
                 const displayType = getDisplayType(mesh, id);
                 const overlayColor = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
 
-                const overlayMaterial = new THREE.LineBasicMaterial({
-                    color: overlayColor,
-                    depthTest: true,
-                    depthWrite: false,
-                    transparent: true,
-                    opacity: 0.9
-                });
+                const overlayMaterial = createOverlayLineMaterial(overlayColor);
 
                 mesh.getMatrixAt(id, tempMat);
                 const line = new THREE.LineSegments(edgesGeo, overlayMaterial);
@@ -1084,13 +1053,7 @@ function updateSelectionOverlay() {
         const worldBox = getSelectionBoundingBox();
         const edgesGeo = createEdgesGeometryFromBox3(worldBox);
         if (edgesGeo) {
-            const overlayMaterial = new THREE.LineBasicMaterial({
-                color: 0xFFFFFF,
-                depthTest: true,
-                depthWrite: false,
-                transparent: true,
-                opacity: 0.9
-            });
+            const overlayMaterial = createOverlayLineMaterial(0xFFFFFF);
             multiSelectionOverlay = new THREE.LineSegments(edgesGeo, overlayMaterial);
             multiSelectionOverlay.renderOrder = 1;
             multiSelectionOverlay.matrixAutoUpdate = false;
@@ -1532,6 +1495,62 @@ function deleteSelectedItems() {
 
 // --- Duplication Logic ---
 
+function createDuplicationContext() {
+    return {
+        batchPool: new Map(), // key -> BatchedMesh
+        batchWorldInv: new WeakMap(), // BatchedMesh -> Matrix4
+        batchGeometryToId: new WeakMap(), // BatchedMesh -> Map<BufferGeometry, number>
+        tmpSourceWorld: new THREE.Matrix4(),
+        tmpTargetLocal: new THREE.Matrix4(),
+        tmpInv: new THREE.Matrix4(),
+        tmpColor: new THREE.Color()
+    };
+}
+
+function _batchPoolKey(targetGroupId, material) {
+    const gid = targetGroupId || 'root';
+    const matKey = material && material.uuid ? material.uuid : String(material);
+    return `${gid}|${matKey}`;
+}
+
+function _getBatchWorldInverse(batch, ctx) {
+    const cached = ctx.batchWorldInv.get(batch);
+    if (cached) return cached;
+    const inv = new THREE.Matrix4().copy(batch.matrixWorld).invert();
+    ctx.batchWorldInv.set(batch, inv);
+    return inv;
+}
+
+function _getOrCreateBatchGeometryId(batch, geometry, ctx) {
+    if (!batch || !geometry) return -1;
+
+    let map = ctx.batchGeometryToId.get(batch);
+    if (!map) {
+        map = new Map();
+        // Seed from existing geometries once (avoids scanning originalGeometries per clone)
+        if (batch.userData && batch.userData.originalGeometries) {
+            for (const [id, geo] of batch.userData.originalGeometries) {
+                if (geo) map.set(geo, id);
+            }
+        }
+        ctx.batchGeometryToId.set(batch, map);
+    }
+
+    const existing = map.get(geometry);
+    if (existing !== undefined) return existing;
+
+    const newId = batch.addGeometry(geometry);
+    if (!batch.userData.originalGeometries) batch.userData.originalGeometries = new Map();
+    batch.userData.originalGeometries.set(newId, geometry);
+
+    if (!batch.userData.geometryBounds) batch.userData.geometryBounds = new Map();
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    if (geometry.boundingBox) batch.userData.geometryBounds.set(newId, geometry.boundingBox.clone());
+
+    map.set(geometry, newId);
+    return newId;
+}
+
 let _pendingHeadClones = [];
 
 function flushPendingHeadClones() {
@@ -1624,9 +1643,15 @@ const _WRITABLE_BATCH_SIZE = 512;
 const _WRITABLE_BATCH_MAX_VERTS = _WRITABLE_BATCH_SIZE * 512; 
 const _WRITABLE_BATCH_MAX_INDICES = _WRITABLE_BATCH_SIZE * 768; 
 
-function getOrCreateWritableBatch(targetGroupId, material, geometry) {
+function getOrCreateWritableBatch(targetGroupId, material, geometry, ctx) {
     const groups = getGroups();
     const group = targetGroupId ? groups.get(targetGroupId) : null;
+
+    if (ctx) {
+        const key = _batchPoolKey(targetGroupId, material);
+        const cached = ctx.batchPool.get(key);
+        if (cached) return cached;
+    }
     
     let candidateMesh = null;
     
@@ -1655,7 +1680,10 @@ function getOrCreateWritableBatch(targetGroupId, material, geometry) {
         }
     }
 
-    if (candidateMesh) return candidateMesh;
+    if (candidateMesh) {
+        if (ctx) ctx.batchPool.set(_batchPoolKey(targetGroupId, material), candidateMesh);
+        return candidateMesh;
+    }
 
     // 2. Create new batch
     const batch = new THREE.BatchedMesh(_WRITABLE_BATCH_SIZE, _WRITABLE_BATCH_MAX_VERTS, _WRITABLE_BATCH_MAX_INDICES, material);
@@ -1671,11 +1699,12 @@ function getOrCreateWritableBatch(targetGroupId, material, geometry) {
     batch.userData.customPivots = new Map();
 
     loadedObjectGroup.add(batch);
-    
+
+    if (ctx) ctx.batchPool.set(_batchPoolKey(targetGroupId, material), batch);
     return batch;
 }
 
-function cloneInstance(mesh, instanceId, targetGroupId) {
+function cloneInstance(mesh, instanceId, targetGroupId, ctx) {
     if (!mesh) return null;
 
     // Detect Player Head (InstancedMesh with instancedUvOffset) for Bulk Cloning
@@ -1743,29 +1772,31 @@ function cloneInstance(mesh, instanceId, targetGroupId) {
     if (Array.isArray(material)) material = material[0];
 
     // Find target batch
-    const targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry);
+    const targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
     if (!targetBatch) {
         console.error('Failed to create writable batch');
         return null;
     }
 
-    // Add Geometry (reuse if exists in target)
-    let targetGeomId = -1;
-    // Simple dedupe check in target batch
-    for (const [id, geo] of targetBatch.userData.originalGeometries) {
-        if (geo === geometry) {
-            targetGeomId = id;
-            break;
+    // Add Geometry (reuse if exists in target) - O(1) via per-duplication cache
+    const targetGeomId = ctx ? _getOrCreateBatchGeometryId(targetBatch, geometry, ctx) : (() => {
+        // Fallback (should be rare)
+        let id = -1;
+        if (targetBatch.userData && targetBatch.userData.originalGeometries) {
+            for (const [gid, geo] of targetBatch.userData.originalGeometries) {
+                if (geo === geometry) { id = gid; break; }
+            }
         }
-    }
-
-    if (targetGeomId === -1) {
-        targetGeomId = targetBatch.addGeometry(geometry);
-        targetBatch.userData.originalGeometries.set(targetGeomId, geometry);
-        if (geometry.boundingBox) {
-             targetBatch.userData.geometryBounds.set(targetGeomId, geometry.boundingBox.clone());
+        if (id === -1) {
+            id = targetBatch.addGeometry(geometry);
+            if (!targetBatch.userData.originalGeometries) targetBatch.userData.originalGeometries = new Map();
+            targetBatch.userData.originalGeometries.set(id, geometry);
+            if (!targetBatch.userData.geometryBounds) targetBatch.userData.geometryBounds = new Map();
+            if (!geometry.boundingBox) geometry.computeBoundingBox();
+            if (geometry.boundingBox) targetBatch.userData.geometryBounds.set(id, geometry.boundingBox.clone());
         }
-    }
+        return id;
+    })();
 
     // Add Instance
     const newInstanceId = targetBatch.addInstance(targetGeomId);
@@ -1773,12 +1804,15 @@ function cloneInstance(mesh, instanceId, targetGroupId) {
 
     // Copy Transforms
     // 1. World Matrix of source instance
-    const sourceMatrix = new THREE.Matrix4();
-    mesh.getMatrixAt(instanceId, sourceMatrix);
-    sourceMatrix.premultiply(mesh.matrixWorld); // World space
+    // 1. World Matrix of source instance
+    const sourceWorld = ctx ? ctx.tmpSourceWorld : new THREE.Matrix4();
+    mesh.getMatrixAt(instanceId, sourceWorld);
+    sourceWorld.premultiply(mesh.matrixWorld); // World space
 
     // 2. Target Local Matrix (Target Batch World Inverse * Source World)
-    const targetLocal = sourceMatrix.clone().premultiply(targetBatch.matrixWorld.clone().invert());
+    const targetLocal = ctx ? ctx.tmpTargetLocal : new THREE.Matrix4();
+    const invTargetWorld = ctx ? _getBatchWorldInverse(targetBatch, ctx) : targetBatch.matrixWorld.clone().invert();
+    targetLocal.copy(sourceWorld).premultiply(invTargetWorld);
     targetBatch.setMatrixAt(newInstanceId, targetLocal);
 
     // Copy UserData
@@ -1793,10 +1827,10 @@ function cloneInstance(mesh, instanceId, targetGroupId) {
         if (mesh.isInstancedMesh && !mesh.instanceColor) {
             // No instance colors to copy
         } else {
-            const color = new THREE.Color();
             try {
-                mesh.getColorAt(instanceId, color);
-                targetBatch.setColorAt(newInstanceId, color);
+                const c = ctx ? ctx.tmpColor : new THREE.Color();
+                mesh.getColorAt(instanceId, c);
+                targetBatch.setColorAt(newInstanceId, c);
             } catch (e) {
                 // Ignore color copy errors
             }
@@ -1845,7 +1879,7 @@ function cloneInstance(mesh, instanceId, targetGroupId) {
     return { mesh: targetBatch, instanceId: newInstanceId };
 }
 
-function cloneGroup(groupId, parentId, idMap) {
+function cloneGroup(groupId, parentId, idMap, ctx) {
     const groups = getGroups();
     const sourceGroup = groups.get(groupId);
     if (!sourceGroup) return null;
@@ -1889,9 +1923,9 @@ function cloneGroup(groupId, parentId, idMap) {
         for (const child of sourceGroup.children) {
             if (!child) continue;
             if (child.type === 'group') {
-                cloneGroup(child.id, newGroupId, idMap);
+                cloneGroup(child.id, newGroupId, idMap, ctx);
             } else if (child.type === 'object') {
-                cloneInstance(child.mesh, child.instanceId, newGroupId);
+                cloneInstance(child.mesh, child.instanceId, newGroupId, ctx);
             }
         }
     }
@@ -1899,7 +1933,7 @@ function cloneGroup(groupId, parentId, idMap) {
     return newGroupId;
 }
 
-function duplicateGroupsAndObjects(groupIds, objectEntries) {
+function duplicateGroupsAndObjects(groupIds, objectEntries, ctx) {
     const newSelection = { groups: new Set(), objects: new Map() };
     const idMap = new Map(); // OldGroupID -> NewGroupID
     const groups = getGroups();
@@ -1924,7 +1958,7 @@ function duplicateGroupsAndObjects(groupIds, objectEntries) {
             }
             
             if (!isParentSelected) {
-                const newGroupId = cloneGroup(groupId, group.parent, idMap);
+                const newGroupId = cloneGroup(groupId, group.parent, idMap, ctx);
                 if (newGroupId) newSelection.groups.add(newGroupId);
             }
         }
@@ -1955,7 +1989,7 @@ function duplicateGroupsAndObjects(groupIds, objectEntries) {
              if (!isAncestorSelected) {
                  // Clone this object
                  const targetGroup = parentGroupId; // Stay in same group
-                 const result = cloneInstance(mesh, instanceId, targetGroup);
+                 const result = cloneInstance(mesh, instanceId, targetGroup, ctx);
                  if (result && !result.isPending) {
                      if (!newSelection.objects.has(result.mesh)) {
                          newSelection.objects.set(result.mesh, new Set());
@@ -1972,6 +2006,8 @@ function duplicateGroupsAndObjects(groupIds, objectEntries) {
 function duplicateSelected() {
     if (!_hasAnySelection()) return;
 
+    const ctx = createDuplicationContext();
+
     _pendingHeadClones = []; // Reset pending queue
 
     const selectedGroupIds = currentSelection.groups;
@@ -1982,7 +2018,7 @@ function duplicateSelected() {
         }
     }
 
-    const newSel = duplicateGroupsAndObjects(selectedGroupIds, selectedObjects);
+    const newSel = duplicateGroupsAndObjects(selectedGroupIds, selectedObjects, ctx);
 
     // Flush pending bulk clones (Player Heads)
     const newHeads = flushPendingHeadClones();
@@ -2011,11 +2047,7 @@ function duplicateSelected() {
     }
 
     // Apply new selection
-    _revertEphemeralPivotUndoIfAny();
-    _clearSelectionState();
-    _clearGizmoAnchor();
-    _selectionAnchorMode = 'default';
-
+    _beginSelectionReplace({ anchorMode: 'default', detachTransform: false });
     currentSelection.groups = newSel.groups;
     currentSelection.objects = newSel.objects;
 
@@ -2678,13 +2710,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
                     if (obj.visible === false) return;
 
-                    let instanceCount = 0;
-                    if (obj.isInstancedMesh) {
-                        instanceCount = obj.count ?? 0;
-                    } else {
-                        const geomIds = obj.userData?.instanceGeometryIds;
-                        instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
-                    }
+                    const instanceCount = getInstanceCount(obj);
                     if (instanceCount <= 0) return;
 
                     for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
@@ -3058,13 +3084,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
                 if (obj.visible === false) return;
 
-                let instanceCount = 0;
-                if (obj.isInstancedMesh) {
-                    instanceCount = obj.count ?? 0;
-                } else {
-                    const geomIds = obj.userData?.instanceGeometryIds;
-                    instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
-                }
+                const instanceCount = getInstanceCount(obj);
                 if (instanceCount <= 0) return;
 
                 for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
