@@ -889,16 +889,10 @@ function _computeBlockbenchPivotFrameMatrixWorld(outMat4, outInvMat4, outMat3, p
     if (currentSpace === 'world') {
         outMat4.identity();
         outMat4.setPosition(pivotWorld);
-    } else {
-        const singleGroupId = _getSingleSelectedGroupId();
-        if (singleGroupId) {
-            // Match object behavior: use group rotation only (ignore scale/shear), anchored at the current pivot.
-            // This keeps Blockbench scale anchor/pivot shifting consistent between groups and objects.
-            const q = getGroupRotationQuaternion(singleGroupId, _TMP_QUAT_A);
-            outMat4.makeRotationFromQuaternion(q);
-            outMat4.setPosition(pivotWorld);
-        }
     }
+
+    // Note: We rely on selectionHelper.matrixWorld being up-to-date (orthonormalized visual frame).
+    // This ensures drag arithmetic matches the visual handles exactly.
 
     outInvMat4.copy(outMat4).invert();
     outMat3.setFromMatrix4(outMat4);
@@ -1567,27 +1561,40 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
                 dragInitialBoundingBox.makeEmpty();
 
-                const items = getSelectedItems();
-                if (items.length > 0) {
-                    selectionHelper.updateMatrixWorld();
-                    const pivotWorld = selectionHelper.position;
-                    _computeBlockbenchPivotFrameMatrixWorld(
-                        _BB_PIVOT_FRAME_MAT4,
-                        _BB_PIVOT_FRAME_MAT4_INV,
-                        _BB_PIVOT_FRAME_MAT3,
-                        pivotWorld
-                    );
-                    const tempMat = new THREE.Matrix4();
+                selectionHelper.updateMatrixWorld();
+                const pivotWorld = selectionHelper.position;
+                _computeBlockbenchPivotFrameMatrixWorld(
+                    _BB_PIVOT_FRAME_MAT4,
+                    _BB_PIVOT_FRAME_MAT4_INV,
+                    _BB_PIVOT_FRAME_MAT3,
+                    pivotWorld
+                );
 
-                    items.forEach(({mesh, instanceId}) => {
-                        const localBox = getInstanceLocalBox(mesh, instanceId);
-                        if (!localBox) return;
+                const singleGroupId = _getSingleSelectedGroupId();
+                if (singleGroupId) {
+                    // Group Selection: Use the Group's Bounding Box (matches the green overlay)
+                    const groupLocalBox = getGroupLocalBoundingBox(singleGroupId);
+                    if (!groupLocalBox.isEmpty()) {
+                        const groupWorldMat = getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
+                        // Transform: Group Local -> World -> Pivot Frame
+                        const combinedMat = _TMP_MAT4_B.copy(_BB_PIVOT_FRAME_MAT4_INV).multiply(groupWorldMat);
+                        unionTransformedBox3(dragInitialBoundingBox, groupLocalBox, combinedMat);
+                    }
+                } else {
+                    // Object / Multi Selection: Aggregate children boxes
+                    const items = getSelectedItems();
+                    if (items.length > 0) {
+                        const tempMat = new THREE.Matrix4();
+                        items.forEach(({mesh, instanceId}) => {
+                            const localBox = getInstanceLocalBox(mesh, instanceId);
+                            if (!localBox) return;
 
-                        getInstanceWorldMatrix(mesh, instanceId, tempMat);
+                            getInstanceWorldMatrix(mesh, instanceId, tempMat);
 
-                        const combinedMat = _TMP_MAT4_A.copy(_BB_PIVOT_FRAME_MAT4_INV).multiply(tempMat);
-                        unionTransformedBox3(dragInitialBoundingBox, localBox, combinedMat);
-                    });
+                            const combinedMat = _TMP_MAT4_A.copy(_BB_PIVOT_FRAME_MAT4_INV).multiply(tempMat);
+                            unionTransformedBox3(dragInitialBoundingBox, localBox, combinedMat);
+                        });
+                    }
                 }
 
                 const gizmoPos = selectionHelper.position.clone();
