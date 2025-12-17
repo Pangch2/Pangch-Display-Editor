@@ -1,5 +1,6 @@
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
+import { createEntityMaterial } from '../entityMaterial.js';
 
 // Small shared temporaries (avoid allocations in hot paths)
 const _TMP_MAT4_A = new THREE.Matrix4();
@@ -1529,6 +1530,504 @@ function deleteSelectedItems() {
     console.log('선택된 항목 제거됨');
 }
 
+// --- Duplication Logic ---
+
+let _pendingHeadClones = [];
+
+function flushPendingHeadClones() {
+    if (_pendingHeadClones.length === 0) return [];
+
+    const newSelectionItems = [];
+    const jobsBySource = new Map();
+
+    // Group by source mesh (to share geometry/material)
+    for (const job of _pendingHeadClones) {
+        if (!jobsBySource.has(job.sourceMesh)) {
+            jobsBySource.set(job.sourceMesh, []);
+        }
+        jobsBySource.get(job.sourceMesh).push(job);
+    }
+
+    _pendingHeadClones = []; // Clear global
+
+    for (const [sourceMesh, jobs] of jobsBySource) {
+        const count = jobs.length;
+        const sourceGeometry = sourceMesh.geometry;
+        const sourceMaterial = sourceMesh.material;
+        
+        // Clone geometry to attach new instanced attributes while sharing buffers
+        const newGeometry = sourceGeometry.clone(); 
+        
+        // Prepare new instanced attribute
+        const newUvOffsets = new Float32Array(count * 2);
+        
+        const newMesh = new THREE.InstancedMesh(newGeometry, sourceMaterial, count);
+        newMesh.userData.displayType = 'item_display';
+        newMesh.userData.hasHat = {};
+        newMesh.frustumCulled = false;
+
+        const dummy = new THREE.Matrix4();
+        const sourceMatrix = new THREE.Matrix4();
+        const sourceAttr = sourceGeometry.attributes.instancedUvOffset;
+        const parentInv = loadedObjectGroup.matrixWorld.clone().invert();
+
+        for (let i = 0; i < count; i++) {
+            const { sourceMesh: sm, sourceId, targetGroupId } = jobs[i];
+            
+            // Matrix: Source World -> Target Local
+            sm.getMatrixAt(sourceId, sourceMatrix);
+            sourceMatrix.premultiply(sm.matrixWorld);
+            const targetLocal = sourceMatrix.multiply(parentInv);
+            
+            newMesh.setMatrixAt(i, targetLocal);
+            
+            // UV Offset
+            if (sourceAttr) {
+                const u = sourceAttr.getX(sourceId);
+                const v = sourceAttr.getY(sourceId);
+                newUvOffsets[i * 2] = u;
+                newUvOffsets[i * 2 + 1] = v;
+            }
+            
+            // HasHat
+            if (sm.userData.hasHat && sm.userData.hasHat[sourceId] !== undefined) {
+                newMesh.userData.hasHat[i] = sm.userData.hasHat[sourceId];
+            }
+            
+            // Register Group
+            if (targetGroupId) {
+               const groups = getGroups();
+               const group = groups.get(targetGroupId);
+               if (group) {
+                   if (!Array.isArray(group.children)) group.children = [];
+                   group.children.push({ type: 'object', mesh: newMesh, instanceId: i });
+               }
+               const objectToGroup = getObjectToGroup();
+               const key = getGroupKey(newMesh, i);
+               objectToGroup.set(key, targetGroupId);
+            }
+            
+            newSelectionItems.push({ mesh: newMesh, instanceId: i, targetGroupId });
+        }
+        
+        newGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(newUvOffsets, 2));
+        newMesh.instanceMatrix.needsUpdate = true;
+        
+        // Add to scene
+        loadedObjectGroup.add(newMesh);
+    }
+    
+    return newSelectionItems;
+}
+
+const _WRITABLE_BATCH_SIZE = 512;
+const _WRITABLE_BATCH_MAX_VERTS = _WRITABLE_BATCH_SIZE * 512; 
+const _WRITABLE_BATCH_MAX_INDICES = _WRITABLE_BATCH_SIZE * 768; 
+
+function getOrCreateWritableBatch(targetGroupId, material, geometry) {
+    const groups = getGroups();
+    const group = targetGroupId ? groups.get(targetGroupId) : null;
+    
+    let candidateMesh = null;
+    
+    if (group && Array.isArray(group.children)) {
+        for (const child of group.children) {
+            if (child.type !== 'object' || !child.mesh || !child.mesh.isBatchedMesh) continue;
+            const m = child.mesh;
+            if (m.userData.isWritable && m.material === material) {
+                // BatchedMesh capacity check (simplified)
+                if (m._maxInstanceCount && m._instanceCount < m._maxInstanceCount) {
+                     candidateMesh = m;
+                     break;
+                }
+            }
+        }
+    } else if (!targetGroupId) {
+        // Search global scope for a writable batch if no target group is specified.
+        // This allows pooling batches for root objects.
+        for (const child of loadedObjectGroup.children) {
+            if (child.isBatchedMesh && child.userData.isWritable && child.material === material) {
+                 if (child._maxInstanceCount && child._instanceCount < child._maxInstanceCount) {
+                     candidateMesh = child;
+                     break;
+                }
+            }
+        }
+    }
+
+    if (candidateMesh) return candidateMesh;
+
+    // 2. Create new batch
+    const batch = new THREE.BatchedMesh(_WRITABLE_BATCH_SIZE, _WRITABLE_BATCH_MAX_VERTS, _WRITABLE_BATCH_MAX_INDICES, material);
+    batch.frustumCulled = false;
+    batch.userData.isWritable = true;
+    batch.userData.displayType = 'block_display';
+    batch.userData.displayTypes = new Map();
+    batch.userData.geometryBounds = new Map();
+    batch.userData.instanceGeometryIds = [];
+    batch.userData.itemIds = new Map();
+    batch.userData.localMatrices = new Map();
+    batch.userData.originalGeometries = new Map();
+    batch.userData.customPivots = new Map();
+
+    loadedObjectGroup.add(batch);
+    
+    return batch;
+}
+
+function cloneInstance(mesh, instanceId, targetGroupId) {
+    if (!mesh) return null;
+
+    // Detect Player Head (InstancedMesh with instancedUvOffset) for Bulk Cloning
+    if (mesh.isInstancedMesh && mesh.geometry && mesh.geometry.attributes.instancedUvOffset) {
+        _pendingHeadClones.push({ sourceMesh: mesh, sourceId: instanceId, targetGroupId });
+        return { isPending: true };
+    }
+
+    let geometry = null;
+    let material = mesh.material;
+    
+    // Extract Geometry
+    if (mesh.isBatchedMesh) {
+        const geomId = mesh.userData.instanceGeometryIds ? mesh.userData.instanceGeometryIds[instanceId] : null;
+        if (geomId !== null && mesh.userData.originalGeometries) {
+            geometry = mesh.userData.originalGeometries.get(geomId);
+        }
+    } else if (mesh.isInstancedMesh) {
+        geometry = mesh.geometry;
+
+        // Player Head: Bake UV offset from instanced attribute to geometry UVs
+        if (geometry && geometry.attributes.instancedUvOffset) {
+            const attr = geometry.attributes.instancedUvOffset;
+            const u = attr.getX(instanceId);
+            const v = attr.getY(instanceId);
+
+            // Always clone to separate from the shared instanced geometry and strip the attribute
+            geometry = geometry.clone();
+            const uv = geometry.attributes.uv;
+            if (uv) {
+                for (let i = 0; i < uv.count; i++) {
+                    uv.setXY(i, uv.getX(i) + u, uv.getY(i) + v);
+                }
+                uv.needsUpdate = true;
+            }
+            geometry.deleteAttribute('instancedUvOffset');
+
+            // Replace material with one that doesn't use instancedUvOffset
+            // (The original material expects the attribute, which we just deleted)
+            let sourceMat = mesh.material;
+            if (Array.isArray(sourceMat)) sourceMat = sourceMat[0];
+
+            if (sourceMat && sourceMat.map) {
+                if (!sourceMat.userData.bakedVariant) {
+                    const { material: newMat } = createEntityMaterial(sourceMat.map, 0xffffff, false);
+                    newMat.side = sourceMat.side;
+                    newMat.alphaTest = sourceMat.alphaTest;
+                    newMat.transparent = sourceMat.transparent;
+                    newMat.depthWrite = sourceMat.depthWrite;
+                    newMat.toneMapped = sourceMat.toneMapped;
+                    newMat.fog = sourceMat.fog;
+                    newMat.flatShading = sourceMat.flatShading;
+                    sourceMat.userData.bakedVariant = newMat;
+                }
+                material = sourceMat.userData.bakedVariant;
+            }
+        }
+    }
+
+    if (!geometry) {
+        console.warn('Cannot duplicate: Geometry not found');
+        return null;
+    }
+    
+    if (Array.isArray(material)) material = material[0];
+
+    // Find target batch
+    const targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry);
+    if (!targetBatch) {
+        console.error('Failed to create writable batch');
+        return null;
+    }
+
+    // Add Geometry (reuse if exists in target)
+    let targetGeomId = -1;
+    // Simple dedupe check in target batch
+    for (const [id, geo] of targetBatch.userData.originalGeometries) {
+        if (geo === geometry) {
+            targetGeomId = id;
+            break;
+        }
+    }
+
+    if (targetGeomId === -1) {
+        targetGeomId = targetBatch.addGeometry(geometry);
+        targetBatch.userData.originalGeometries.set(targetGeomId, geometry);
+        if (geometry.boundingBox) {
+             targetBatch.userData.geometryBounds.set(targetGeomId, geometry.boundingBox.clone());
+        }
+    }
+
+    // Add Instance
+    const newInstanceId = targetBatch.addInstance(targetGeomId);
+    targetBatch.userData.instanceGeometryIds[newInstanceId] = targetGeomId;
+
+    // Copy Transforms
+    // 1. World Matrix of source instance
+    const sourceMatrix = new THREE.Matrix4();
+    mesh.getMatrixAt(instanceId, sourceMatrix);
+    sourceMatrix.premultiply(mesh.matrixWorld); // World space
+
+    // 2. Target Local Matrix (Target Batch World Inverse * Source World)
+    const targetLocal = sourceMatrix.clone().premultiply(targetBatch.matrixWorld.clone().invert());
+    targetBatch.setMatrixAt(newInstanceId, targetLocal);
+
+    // Copy UserData
+    // Local Matrices (Blockstates)
+    if (mesh.isBatchedMesh && mesh.userData.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
+        targetBatch.userData.localMatrices.set(newInstanceId, mesh.userData.localMatrices.get(instanceId).clone());
+    }
+
+    // Color
+    if (mesh.getColorAt) {
+        // InstancedMesh.getColorAt throws if instanceColor is null
+        if (mesh.isInstancedMesh && !mesh.instanceColor) {
+            // No instance colors to copy
+        } else {
+            const color = new THREE.Color();
+            try {
+                mesh.getColorAt(instanceId, color);
+                targetBatch.setColorAt(newInstanceId, color);
+            } catch (e) {
+                // Ignore color copy errors
+            }
+        }
+    }
+
+    // Display Types
+    const displayType = getDisplayType(mesh, instanceId);
+    if (displayType) {
+        if (!targetBatch.userData.displayTypes) targetBatch.userData.displayTypes = new Map();
+        targetBatch.userData.displayTypes.set(newInstanceId, displayType);
+    }
+    
+    // Item IDs
+    if (mesh.userData.itemIds && mesh.userData.itemIds.has(instanceId)) {
+        targetBatch.userData.itemIds.set(newInstanceId, mesh.userData.itemIds.get(instanceId));
+    }
+    
+    // Has Hat (Player Head)
+    if (mesh.userData.hasHat && mesh.userData.hasHat[instanceId] !== undefined) {
+         if (!targetBatch.userData.hasHat) targetBatch.userData.hasHat = {}; 
+         targetBatch.userData.hasHat[newInstanceId] = mesh.userData.hasHat[instanceId];
+    }
+    
+    // Custom Pivot
+    if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
+         targetBatch.userData.customPivots.set(newInstanceId, mesh.userData.customPivots.get(instanceId).clone());
+    } else if (mesh.userData.customPivot) {
+         targetBatch.userData.customPivots.set(newInstanceId, mesh.userData.customPivot.clone());
+    }
+
+    // Register in LoadedObjectGroup hierarchy if group exists
+    if (targetGroupId) {
+        const groups = getGroups();
+        const group = groups.get(targetGroupId);
+        if (group) {
+            if (!Array.isArray(group.children)) group.children = [];
+            group.children.push({ type: 'object', mesh: targetBatch, instanceId: newInstanceId });
+        }
+        
+        const objectToGroup = getObjectToGroup();
+        const key = getGroupKey(targetBatch, newInstanceId);
+        objectToGroup.set(key, targetGroupId);
+    }
+
+    return { mesh: targetBatch, instanceId: newInstanceId };
+}
+
+function cloneGroup(groupId, parentId, idMap) {
+    const groups = getGroups();
+    const sourceGroup = groups.get(groupId);
+    if (!sourceGroup) return null;
+
+    const newGroupId = THREE.MathUtils.generateUUID();
+    idMap.set(groupId, newGroupId);
+
+    let newPivot = undefined;
+    if (sourceGroup.pivot) {
+        newPivot = normalizePivotToVector3(sourceGroup.pivot, new THREE.Vector3());
+    }
+
+    const newGroup = {
+        id: newGroupId,
+        isCollection: true,
+        children: [],
+        parent: parentId,
+        name: sourceGroup.name ? sourceGroup.name + " (Copy)" : "Group (Copy)",
+        position: sourceGroup.position ? sourceGroup.position.clone() : new THREE.Vector3(),
+        quaternion: sourceGroup.quaternion ? sourceGroup.quaternion.clone() : new THREE.Quaternion(),
+        scale: sourceGroup.scale ? sourceGroup.scale.clone() : new THREE.Vector3(1, 1, 1),
+        pivot: newPivot,
+        isCustomPivot: sourceGroup.isCustomPivot
+    };
+    
+    if (sourceGroup.matrix) newGroup.matrix = sourceGroup.matrix.clone();
+
+    groups.set(newGroupId, newGroup);
+
+    // Add to parent
+    if (parentId) {
+        const parentGroup = groups.get(parentId);
+        if (parentGroup) {
+            if (!Array.isArray(parentGroup.children)) parentGroup.children = [];
+            parentGroup.children.push({ type: 'group', id: newGroupId });
+        }
+    }
+
+    // Clone Children
+    if (Array.isArray(sourceGroup.children)) {
+        for (const child of sourceGroup.children) {
+            if (!child) continue;
+            if (child.type === 'group') {
+                cloneGroup(child.id, newGroupId, idMap);
+            } else if (child.type === 'object') {
+                cloneInstance(child.mesh, child.instanceId, newGroupId);
+            }
+        }
+    }
+    
+    return newGroupId;
+}
+
+function duplicateGroupsAndObjects(groupIds, objectEntries) {
+    const newSelection = { groups: new Set(), objects: new Map() };
+    const idMap = new Map(); // OldGroupID -> NewGroupID
+    const groups = getGroups();
+    
+    // 1. Duplicate Groups
+    if (groupIds) {
+        for (const groupId of groupIds) {
+            const group = groups.get(groupId);
+            if (!group) continue;
+            
+            // If parent is also selected, this group will be cloned recursively by the parent.
+            // We should only explicitly clone roots of the selection forest.
+            let isParentSelected = false;
+            let curr = group.parent;
+            while(curr) {
+                 if (groupIds.has(curr)) {
+                     isParentSelected = true;
+                     break;
+                 }
+                 const p = groups.get(curr);
+                 curr = p ? p.parent : null;
+            }
+            
+            if (!isParentSelected) {
+                const newGroupId = cloneGroup(groupId, group.parent, idMap);
+                if (newGroupId) newSelection.groups.add(newGroupId);
+            }
+        }
+    }
+    
+    // 2. Duplicate Objects
+    // If an object is inside a selected group, it's already cloned.
+    // We only clone objects not covered by selected groups.
+    if (objectEntries) {
+        const objectToGroup = getObjectToGroup();
+        
+        for (const { mesh, instanceId } of objectEntries) {
+             const key = getGroupKey(mesh, instanceId);
+             const parentGroupId = objectToGroup.get(key);
+             
+             // Check if parent group (or any ancestor) is selected
+             let isAncestorSelected = false;
+             let curr = parentGroupId;
+             while(curr) {
+                 if (groupIds && groupIds.has(curr)) {
+                     isAncestorSelected = true;
+                     break;
+                 }
+                 const p = groups.get(curr);
+                 curr = p ? p.parent : null;
+             }
+             
+             if (!isAncestorSelected) {
+                 // Clone this object
+                 const targetGroup = parentGroupId; // Stay in same group
+                 const result = cloneInstance(mesh, instanceId, targetGroup);
+                 if (result && !result.isPending) {
+                     if (!newSelection.objects.has(result.mesh)) {
+                         newSelection.objects.set(result.mesh, new Set());
+                     }
+                     newSelection.objects.get(result.mesh).add(result.instanceId);
+                 }
+             }
+        }
+    }
+    
+    return newSelection;
+}
+
+function duplicateSelected() {
+    if (!_hasAnySelection()) return;
+
+    _pendingHeadClones = []; // Reset pending queue
+
+    const selectedGroupIds = currentSelection.groups;
+    const selectedObjects = [];
+    if (currentSelection.objects) {
+        for (const [mesh, ids] of currentSelection.objects) {
+             for (const id of ids) selectedObjects.push({ mesh, instanceId: id });
+        }
+    }
+
+    const newSel = duplicateGroupsAndObjects(selectedGroupIds, selectedObjects);
+
+    // Flush pending bulk clones (Player Heads)
+    const newHeads = flushPendingHeadClones();
+    const groups = getGroups();
+
+    for (const { mesh, instanceId, targetGroupId } of newHeads) {
+        let isCovered = false;
+        if (targetGroupId) {
+            let curr = targetGroupId;
+            while (curr) {
+                if (newSel.groups.has(curr)) {
+                    isCovered = true;
+                    break;
+                }
+                const g = groups.get(curr);
+                curr = g ? g.parent : null;
+            }
+        }
+
+        if (!isCovered) {
+            if (!newSel.objects.has(mesh)) {
+                newSel.objects.set(mesh, new Set());
+            }
+            newSel.objects.get(mesh).add(instanceId);
+        }
+    }
+
+    // Apply new selection
+    _revertEphemeralPivotUndoIfAny();
+    _clearSelectionState();
+    _clearGizmoAnchor();
+    _selectionAnchorMode = 'default';
+
+    currentSelection.groups = newSel.groups;
+    currentSelection.objects = newSel.objects;
+
+    _setPrimaryToFirstAvailable();
+    invalidateSelectionCaches();
+    _recomputePivotStateForSelection();
+    updateHelperPosition();
+    updateSelectionOverlay();
+    
+    console.log('Duplication complete');
+}
+
 function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitControls, loadedObjectGroup: lg, setControls}) {
     scene = s; camera = cam; renderer = rend; controls = orbitControls; loadedObjectGroup = lg;
 
@@ -1986,6 +2485,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 transformControls.setMode('scale');
                 resetHelperRotationForWorldSpace();
                 break;
+            case 'd':
+                duplicateSelected();
+                break;
             case 'x': {
                 currentSpace = currentSpace === 'world' ? 'local' : 'world';
                 transformControls.setSpace(currentSpace);
@@ -2295,7 +2797,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
         if (isGizmoBusy) return;
         const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'v', 'b', 'g'];
+        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'v', 'b', 'g', 'd'];
         if (transformControls.dragging && keysToHandle.includes(key)) {
             isGizmoBusy = true;
             const attachedObject = transformControls.object;

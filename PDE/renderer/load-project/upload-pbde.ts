@@ -960,6 +960,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                         batch.userData.displayType = 'block_display'; 
                         batch.userData.displayTypes = new Map();
                         batch.userData.geometryBounds = new Map();
+                        batch.userData.originalGeometries = new Map();
                         batch.userData.instanceGeometryIds = [];
                         batch.userData.itemIds = new Map();
                         batch.userData.localMatrices = new Map();
@@ -971,6 +972,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                             // modelMatrix (blockstate rotation, display transform) will be applied to instance matrix
                             const batchGeomId = batch.addGeometry(geo);
                             geomIdMap.set(key, batchGeomId);
+                            batch.userData.originalGeometries.set(batchGeomId, geo);
 
                             if (!geo.boundingBox) geo.computeBoundingBox();
                             batch.userData.geometryBounds.set(batchGeomId, geo.boundingBox.clone());
