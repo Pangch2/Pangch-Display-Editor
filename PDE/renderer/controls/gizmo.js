@@ -1431,6 +1431,104 @@ function ungroupGroup(groupId) {
     console.log(`Group removed: ${groupId}`);
 }
 
+function deleteInstanceVisuals(mesh, instanceId) {
+    if (!mesh) return;
+    if (mesh.isBatchedMesh) {
+        if (typeof mesh.setVisibleAt === 'function') {
+            mesh.setVisibleAt(instanceId, false);
+        }
+    } else if (mesh.isInstancedMesh) {
+        const zero = new THREE.Matrix4().set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+        mesh.setMatrixAt(instanceId, zero);
+        if (mesh.instanceMatrix) mesh.instanceMatrix.needsUpdate = true;
+    }
+}
+
+function deleteSelectedItems() {
+    if (!_hasAnySelection()) return;
+
+    const groupsToRemove = new Set();
+    const objectsToRemove = [];
+
+    if (currentSelection.groups && currentSelection.groups.size > 0) {
+        for (const gid of currentSelection.groups) {
+            if (gid) groupsToRemove.add(gid);
+        }
+    }
+
+    if (currentSelection.objects && currentSelection.objects.size > 0) {
+        for (const [mesh, ids] of currentSelection.objects) {
+            if (!mesh || !ids) continue;
+            for (const id of ids) {
+                objectsToRemove.push({ mesh, instanceId: id });
+            }
+        }
+    }
+
+    if (groupsToRemove.size === 0 && objectsToRemove.length === 0) return;
+
+    const allGroupsToDelete = new Set();
+    for (const gid of groupsToRemove) {
+        allGroupsToDelete.add(gid);
+        const descendants = getAllDescendantGroups(gid);
+        for (const d of descendants) allGroupsToDelete.add(d);
+    }
+
+    const groups = getGroups();
+    const objectToGroup = getObjectToGroup();
+
+    for (const gid of groupsToRemove) {
+        const g = groups.get(gid);
+        if (g && g.parent) {
+            const parent = groups.get(g.parent);
+            if (parent && !allGroupsToDelete.has(g.parent)) {
+                if (Array.isArray(parent.children)) {
+                    parent.children = parent.children.filter(c => !(c && c.type === 'group' && c.id === gid));
+                }
+            }
+        }
+    }
+
+    for (const gid of allGroupsToDelete) {
+        const g = groups.get(gid);
+        if (!g) continue;
+
+        if (Array.isArray(g.children)) {
+            for (const child of g.children) {
+                if (child && child.type === 'object') {
+                    deleteInstanceVisuals(child.mesh, child.instanceId);
+                    const key = getGroupKey(child.mesh, child.instanceId);
+                    objectToGroup.delete(key);
+                }
+            }
+        }
+        groups.delete(gid);
+    }
+
+    for (const { mesh, instanceId } of objectsToRemove) {
+        const key = getGroupKey(mesh, instanceId);
+
+        if (objectToGroup.has(key)) {
+            const groupId = objectToGroup.get(key);
+            if (!groups.has(groupId)) {
+                objectToGroup.delete(key);
+            } else {
+                const g = groups.get(groupId);
+                if (g && Array.isArray(g.children)) {
+                    g.children = g.children.filter(c => !(c && c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
+                }
+                objectToGroup.delete(key);
+                deleteInstanceVisuals(mesh, instanceId);
+            }
+        } else {
+            deleteInstanceVisuals(mesh, instanceId);
+        }
+    }
+
+    resetSelectionAndDeselect();
+    console.log('선택된 항목 제거됨');
+}
+
 function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitControls, loadedObjectGroup: lg, setControls}) {
     scene = s; camera = cam; renderer = rend; controls = orbitControls; loadedObjectGroup = lg;
 
@@ -2051,6 +2149,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
     window.addEventListener('keydown', (event) => {
         if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+
+        if (event.key === 'Delete' || event.key === 'Backspace') {
+            event.preventDefault();
+            deleteSelectedItems();
+            return;
+        }
 
         // Ctrl+Shift+A: select all objects directly (ignore groups)
         if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'a') {
