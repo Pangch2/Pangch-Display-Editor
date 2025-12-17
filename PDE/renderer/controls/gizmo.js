@@ -2557,13 +2557,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 break;
             }
             case 'z': {
+                isCustomPivot = false; // 이게 여기 있어야 gizmo를 조작하지 않아도 커스텀 피벗 판정이 해제됨
                 if (pivotMode === 'center' && isCustomPivot) {   
                     pivotMode = 'center';
                 } else {
                     pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
 
                 }
-                isCustomPivot = false;
                 console.log('Pivot Mode:', pivotMode);
                 updateHelperPosition();
                 break;
