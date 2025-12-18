@@ -1168,7 +1168,7 @@ function extractLayer0Texture(resolved) {
 }
 
 // 요소가 없는 모델은 앞·뒤 두 장의 평면으로 단순 지오메트리를 구성한다.
-function buildGeneratedPlaneGeometry(texId) {
+function buildGeneratedPlaneGeometry(texId, tintHex = 0xffffff) {
     if (!texId) return [];
     const texPath = textureIdToAssetPath(texId);
 
@@ -1195,7 +1195,6 @@ function buildGeneratedPlaneGeometry(texId) {
         for (let i = 0; i < indices.length; i++) buffers.indices.push(base + indices[i]);
     }
 
-    const tintHex = 0xffffff;
     const buffer = { positions: [], normals: [], uvs: [], indices: [], texPath, tintHex };
     push(buffer, positionsFront, normalsFront, uvsFront);
     push(buffer, positionsBack, normalsBack, uvsBack);
@@ -1295,15 +1294,18 @@ function computeBoundaryMask(texPath, px) {
     return boundary;
 }
 
-async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
+async function buildBuiltinBorderBetweenPlanesGeometry(texId, tintHex = 0xffffff) {
     if (!texId) return [];
     const texPath = textureIdToAssetPath(texId);
-    if (builtinBorderGeometryCache.has(texPath)) return builtinBorderGeometryCache.get(texPath);
+    if (builtinBorderGeometryCache.has(texPath)) {
+        const data = builtinBorderGeometryCache.get(texPath);
+        return [{ ...data, texPath, tintHex }];
+    }
     try {
         const px = await loadTexturePixels(texPath);
-        if (!px) return buildGeneratedPlaneGeometry(texId);
+        if (!px) return buildGeneratedPlaneGeometry(texId, tintHex);
         const { w, h } = px;
-        if (!w || !h) return buildGeneratedPlaneGeometry(texId);
+        if (!w || !h) return buildGeneratedPlaneGeometry(texId, tintHex);
         const boundary = computeBoundaryMask(texPath, px);
         const data = px.data;
         const alphaAt = (x,y) => data[(y*w + x)*4 + 3];
@@ -1346,12 +1348,12 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId) {
                 }
             }
         }
-        const geom = [{ positions, normals, uvs, indices, texPath, tintHex: 0xffffff }];
-        builtinBorderGeometryCache.set(texPath, geom);
-        return geom;
+        const geomData = { positions, normals, uvs, indices };
+        builtinBorderGeometryCache.set(texPath, geomData);
+        return [{ ...geomData, texPath, tintHex }];
     } catch (e) {
         //try { console.warn('[ItemModel] builtin border geometry failed for', texPath, e); } catch {}
-        return buildGeneratedPlaneGeometry(texId);
+        return buildGeneratedPlaneGeometry(texId, tintHex);
     }
 }
 
@@ -1367,13 +1369,20 @@ async function buildItemModelGeometryData(resolved) {
     // generated 또는 builtin 계열은 단순 평면 지오메트리로 처리한다.
     const layer0 = extractLayer0Texture(resolved);
     if (!layer0) return null;
+
+    let tintHex = 0xffffff;
+    try {
+        const modelResLoc = (resolved && resolved.id) ? resolved.id.split(':').slice(1).join(':') : '';
+        tintHex = getTextureColor(modelResLoc, undefined, 0);
+    } catch (_) { tintHex = 0xffffff; }
+
     // builtin 모델이거나 generated/handheld 부모를 가진 경우 외곽 테두리 지오메트리를 사용한다.
     const useBorder = isBuiltinModel(resolved) || resolved.parentChain.some(p => /item\/(generated|handheld)/.test(p));
     if (useBorder) {
         //try { console.log('[ItemModel] using builtin border geometry for', resolved.id); } catch {}
-        return await buildBuiltinBorderBetweenPlanesGeometry(layer0);
+        return await buildBuiltinBorderBetweenPlanesGeometry(layer0, tintHex);
     }
-    return buildGeneratedPlaneGeometry(layer0);
+    return buildGeneratedPlaneGeometry(layer0, tintHex);
 }
 
 // item_display 노드를 분석해 모델 지오메트리와 display 변환을 계산한다.

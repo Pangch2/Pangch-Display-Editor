@@ -19,6 +19,20 @@ function getInstanceCount(mesh) {
     return 0;
 }
 
+function isInstanceValid(mesh, instanceId) {
+    if (!mesh) return false;
+    if (mesh.isBatchedMesh) {
+        if (mesh.userData?.instanceGeometryIds) {
+            return mesh.userData.instanceGeometryIds[instanceId] !== undefined;
+        }
+        return true;
+    }
+    if (mesh.isInstancedMesh) {
+        return instanceId < (mesh.count ?? 0);
+    }
+    return false;
+}
+
 function disposeThreeObjectTree(root) {
     if (!root) return;
     root.traverse(child => {
@@ -383,8 +397,23 @@ let _pivotEditUndoCapture = null;
 function _getSelectedObjectIdCount() {
     let count = 0;
     if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [, ids] of currentSelection.objects) {
-            if (ids) count += ids.size;
+        for (const [mesh, ids] of currentSelection.objects) {
+            if (!ids || ids.size === 0) continue;
+            
+            if (mesh.isBatchedMesh && mesh.userData.itemIds) {
+                const uniqueItems = new Set();
+                for (const id of ids) {
+                    const itemId = mesh.userData.itemIds.get(id);
+                    if (itemId !== undefined) {
+                        uniqueItems.add(itemId);
+                    } else {
+                        uniqueItems.add(`inst:${id}`);
+                    }
+                }
+                count += uniqueItems.size;
+            } else {
+                count += ids.size;
+            }
         }
     }
     return count;
@@ -798,8 +827,14 @@ function _selectAllObjectsVisibleInScene() {
         if (instanceCount <= 0) return;
 
         const ids = new Set();
-        for (let i = 0; i < instanceCount; i++) ids.add(i);
-        meshToIds.set(obj, ids);
+        for (let i = 0; i < instanceCount; i++) {
+            if (isInstanceValid(obj, i)) {
+                ids.add(i);
+            }
+        }
+        if (ids.size > 0) {
+            meshToIds.set(obj, ids);
+        }
     });
 
     return meshToIds;
@@ -1395,102 +1430,232 @@ function ungroupGroup(groupId) {
     console.log(`Group removed: ${groupId}`);
 }
 
-function deleteInstanceVisuals(mesh, instanceId) {
-    if (!mesh) return;
-    if (mesh.isBatchedMesh) {
-        if (typeof mesh.setVisibleAt === 'function') {
-            mesh.setVisibleAt(instanceId, false);
+function _deleteBatchedMeshInstances(mesh, instanceIds) {
+    if (!mesh || !mesh.isBatchedMesh) return;
+
+    // Process all deletions
+    for (const instanceId of instanceIds) {
+        // 1. Call real delete
+        if (typeof mesh.deleteInstance === 'function') {
+            mesh.deleteInstance(instanceId);
+        } else {
+            // Fallback if deleteInstance is missing (should not happen in modern Three.js)
+            if (typeof mesh.setVisibleAt === 'function') mesh.setVisibleAt(instanceId, false);
         }
-    } else if (mesh.isInstancedMesh) {
-        const zero = new THREE.Matrix4().set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
-        mesh.setMatrixAt(instanceId, zero);
-        if (mesh.instanceMatrix) mesh.instanceMatrix.needsUpdate = true;
+
+        // 2. Clean up UserData Maps/Arrays
+        if (mesh.userData) {
+            // instanceGeometryIds is an array, we mark it as null/undefined to preserve indices for other instances
+            if (Array.isArray(mesh.userData.instanceGeometryIds)) {
+                mesh.userData.instanceGeometryIds[instanceId] = undefined;
+            }
+            if (mesh.userData.localMatrices instanceof Map) {
+                mesh.userData.localMatrices.delete(instanceId);
+            }
+            if (mesh.userData.displayTypes instanceof Map) {
+                mesh.userData.displayTypes.delete(instanceId);
+            }
+            if (mesh.userData.itemIds instanceof Map) {
+                mesh.userData.itemIds.delete(instanceId);
+            }
+            if (mesh.userData.customPivots instanceof Map) {
+                mesh.userData.customPivots.delete(instanceId);
+            }
+        }
     }
+}
+
+function _updateGroupReferenceForMovedInstance(mesh, oldInstanceId, newInstanceId) {
+    const objectToGroup = getObjectToGroup();
+    const groups = getGroups();
+    
+    const oldKey = getGroupKey(mesh, oldInstanceId);
+    const newKey = getGroupKey(mesh, newInstanceId);
+    
+    const groupId = objectToGroup.get(oldKey);
+    
+    // Always clean up the old key
+    objectToGroup.delete(oldKey);
+
+    if (groupId) {
+        // Update map to new key
+        objectToGroup.set(newKey, groupId);
+
+        // Update parent group's children list
+        const group = groups.get(groupId);
+        if (group && Array.isArray(group.children)) {
+            const childEntry = group.children.find(c => c.type === 'object' && c.mesh === mesh && c.instanceId === oldInstanceId);
+            if (childEntry) {
+                childEntry.instanceId = newInstanceId;
+            }
+        }
+    }
+}
+
+function _deleteInstancedMeshInstances(mesh, instanceIdsSortedDescending) {
+    if (!mesh || !mesh.isInstancedMesh) return;
+
+    const instanceMatrix = mesh.instanceMatrix;
+    const uvAttr = mesh.geometry && mesh.geometry.attributes ? mesh.geometry.attributes.instancedUvOffset : null;
+    const hasHatArray = mesh.userData ? mesh.userData.hasHat : null; // Array
+
+    // Helper to swap data from srcIdx to dstIdx
+    const swapData = (srcIdx, dstIdx) => {
+        // Matrix
+        _TMP_MAT4_A.fromArray(instanceMatrix.array, srcIdx * 16);
+        _TMP_MAT4_A.toArray(instanceMatrix.array, dstIdx * 16);
+
+        // UV
+        if (uvAttr) {
+            const u = uvAttr.getX(srcIdx);
+            const v = uvAttr.getY(srcIdx);
+            uvAttr.setXY(dstIdx, u, v);
+        }
+
+        // Hat
+        if (Array.isArray(hasHatArray)) {
+            hasHatArray[dstIdx] = hasHatArray[srcIdx];
+        }
+    };
+
+    for (const deleteIdx of instanceIdsSortedDescending) {
+        const lastIdx = mesh.count - 1;
+        
+        // If the item to delete is NOT the last one, we swap the last one into this slot
+        if (deleteIdx < lastIdx) {
+            swapData(lastIdx, deleteIdx);
+            
+            // Critical: The instance that was at 'lastIdx' is now at 'deleteIdx'.
+            // We must update any group references pointing to 'lastIdx' to now point to 'deleteIdx'.
+            _updateGroupReferenceForMovedInstance(mesh, lastIdx, deleteIdx);
+        }
+        
+        // Decrease count
+        mesh.count--;
+    }
+
+    mesh.instanceMatrix.needsUpdate = true;
+    if (uvAttr) uvAttr.needsUpdate = true;
 }
 
 function deleteSelectedItems() {
     if (!_hasAnySelection()) return;
 
-    const groupsToRemove = new Set();
-    const objectsToRemove = [];
+    // 1. Identify all items to delete (deduplicated)
+    // Key: "meshUuid_instanceId" -> { mesh, instanceId }
+    const itemsToDelete = new Map();
 
+    // Helper to collect items
+    const collectItem = (mesh, instanceId) => {
+        if (!mesh) return;
+        const k = getGroupKey(mesh, instanceId);
+        if (!itemsToDelete.has(k)) {
+            itemsToDelete.set(k, { mesh, instanceId });
+        }
+    };
+
+    // Collect from selected Groups (and their descendants)
+    const allGroupsToDelete = new Set();
     if (currentSelection.groups && currentSelection.groups.size > 0) {
         for (const gid of currentSelection.groups) {
-            if (gid) groupsToRemove.add(gid);
-        }
-    }
-
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids) continue;
-            for (const id of ids) {
-                objectsToRemove.push({ mesh, instanceId: id });
+            if (gid) {
+                allGroupsToDelete.add(gid);
+                const descendants = getAllDescendantGroups(gid);
+                for (const d of descendants) allGroupsToDelete.add(d);
             }
         }
-    }
-
-    if (groupsToRemove.size === 0 && objectsToRemove.length === 0) return;
-
-    const allGroupsToDelete = new Set();
-    for (const gid of groupsToRemove) {
-        allGroupsToDelete.add(gid);
-        const descendants = getAllDescendantGroups(gid);
-        for (const d of descendants) allGroupsToDelete.add(d);
     }
 
     const groups = getGroups();
     const objectToGroup = getObjectToGroup();
 
-    for (const gid of groupsToRemove) {
+    // Remove groups from structure first (so we don't process them as valid parents later)
+    // But we need to look up their children first.
+    
+    // First, collect all children objects from these groups
+    for (const gid of allGroupsToDelete) {
         const g = groups.get(gid);
-        if (g && g.parent) {
-            const parent = groups.get(g.parent);
-            if (parent && !allGroupsToDelete.has(g.parent)) {
-                if (Array.isArray(parent.children)) {
-                    parent.children = parent.children.filter(c => !(c && c.type === 'group' && c.id === gid));
+        if (g && Array.isArray(g.children)) {
+            for (const child of g.children) {
+                if (child.type === 'object') {
+                    collectItem(child.mesh, child.instanceId);
                 }
             }
         }
     }
 
-    for (const gid of allGroupsToDelete) {
-        const g = groups.get(gid);
-        if (!g) continue;
-
-        if (Array.isArray(g.children)) {
-            for (const child of g.children) {
-                if (child && child.type === 'object') {
-                    deleteInstanceVisuals(child.mesh, child.instanceId);
-                    const key = getGroupKey(child.mesh, child.instanceId);
-                    objectToGroup.delete(key);
-                }
+    // Also collect explicitly selected objects
+    if (currentSelection.objects && currentSelection.objects.size > 0) {
+        for (const [mesh, ids] of currentSelection.objects) {
+            if (!mesh || !ids) continue;
+            for (const id of ids) {
+                collectItem(mesh, id);
             }
         }
+    }
+
+    if (itemsToDelete.size === 0 && allGroupsToDelete.size === 0) return;
+
+    // 2. Cleanup Group Structures
+    // Remove top-level deleted groups from their parents
+    for (const gid of currentSelection.groups) { // Iterate original selection roots
+         if(!gid) continue;
+         const g = groups.get(gid);
+         if (g && g.parent) {
+             const parent = groups.get(g.parent);
+             if (parent && !allGroupsToDelete.has(g.parent)) {
+                 if (Array.isArray(parent.children)) {
+                     parent.children = parent.children.filter(c => !(c && c.type === 'group' && c.id === gid));
+                 }
+             }
+         }
+    }
+
+    // Now delete all the groups from the map
+    for (const gid of allGroupsToDelete) {
         groups.delete(gid);
     }
 
-    for (const { mesh, instanceId } of objectsToRemove) {
-        const key = getGroupKey(mesh, instanceId);
+    // 3. Process Object Deletion
+    // We need to group by Mesh to handle InstancedMesh swap logic efficiently
+    const byMesh = new Map(); // mesh -> Set<instanceId>
 
+    for (const { mesh, instanceId } of itemsToDelete.values()) {
+        // Also cleanup objectToGroup for the deleted item itself
+        const key = getGroupKey(mesh, instanceId);
+        
+        // If the object was in a group that wasn't deleted, we need to remove it from that group's children
         if (objectToGroup.has(key)) {
-            const groupId = objectToGroup.get(key);
-            if (!groups.has(groupId)) {
-                objectToGroup.delete(key);
-            } else {
-                const g = groups.get(groupId);
-                if (g && Array.isArray(g.children)) {
-                    g.children = g.children.filter(c => !(c && c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
+            const parentGroupId = objectToGroup.get(key);
+            // If parent group still exists (was not in allGroupsToDelete), remove child ref
+            if (groups.has(parentGroupId)) {
+                const pg = groups.get(parentGroupId);
+                if (pg && Array.isArray(pg.children)) {
+                     pg.children = pg.children.filter(c => !(c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
                 }
-                objectToGroup.delete(key);
-                deleteInstanceVisuals(mesh, instanceId);
             }
-        } else {
-            deleteInstanceVisuals(mesh, instanceId);
+            objectToGroup.delete(key);
+        }
+
+        if (!byMesh.has(mesh)) byMesh.set(mesh, new Set());
+        byMesh.get(mesh).add(instanceId);
+    }
+
+    // Clear selection now, before modifying indices
+    resetSelectionAndDeselect();
+
+    // Execute Deletion
+    for (const [mesh, idSet] of byMesh) {
+        if (mesh.isBatchedMesh) {
+            _deleteBatchedMeshInstances(mesh, Array.from(idSet));
+        } else if (mesh.isInstancedMesh) {
+            // Sort Descending for Swap-Pop safety
+            const sortedIds = Array.from(idSet).sort((a, b) => b - a);
+            _deleteInstancedMeshInstances(mesh, sortedIds);
         }
     }
 
-    resetSelectionAndDeselect();
-    console.log('선택된 항목 제거됨');
+    console.log('선택된 항목 제거됨 (Real Delete)');
 }
 
 // --- Duplication Logic ---
@@ -2445,6 +2610,20 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         controls.enabled = !event.value;
         if (event.value) {
             draggingMode = transformControls.mode;
+            
+            // Pre-calculate mesh grouping for performance
+            const items = getSelectedItems();
+            _meshToInstanceIds.clear();
+            for (const { mesh, instanceId } of items) {
+                if (!mesh) continue;
+                let list = _meshToInstanceIds.get(mesh);
+                if (!list) {
+                    list = [];
+                    _meshToInstanceIds.set(mesh, list);
+                }
+                list.push(instanceId);
+            }
+
             if (transformControls.axis === 'XYZ') isUniformScale = true;
 
             dragInitialMatrix.copy(selectionHelper.matrix);
@@ -2988,6 +3167,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     if (instanceCount <= 0) return;
 
                     for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
+                        if (!isInstanceValid(obj, instanceId)) continue;
+
                         const key = getGroupKey(obj, instanceId);
                         const immediateGroupId = objectToGroup.get(key);
                         if (immediateGroupId) {
@@ -3362,6 +3543,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 if (instanceCount <= 0) return;
 
                 for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
+                    if (!isInstanceValid(obj, instanceId)) continue;
+
                     getInstanceWorldMatrixForOrigin(obj, instanceId, tmpMat);
                     const localY = isItemDisplayHatEnabled(obj, instanceId) ? 0.03125 : 0;
                     tmpWorld.set(0, localY, 0).applyMatrix4(tmpMat);
