@@ -638,8 +638,6 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
         
         // 이전 프로젝트의 아틀라스 텍스처 참조를 제거
         currentAtlasTexture = null;
-        // 이전 프로젝트의 아틀라스 텍스처 참조를 제거하여, 새 프로젝트 로드 실패 시 이전 아틀라스를 사용하는 것을 방지
-        currentAtlasTexture = null;
     }
     
     if (worker) {
