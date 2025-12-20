@@ -3025,13 +3025,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 break;
             }
             case 'z': {
-                isCustomPivot = false; // 이게 여기 있어야 gizmo를 조작하지 않아도 커스텀 피벗 판정이 해제됨
                 if (pivotMode === 'center' && isCustomPivot) {   
                     pivotMode = 'center';
                 } else {
                     pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
-
                 }
+                isCustomPivot = false;
                 console.log('Pivot Mode:', pivotMode);
                 updateHelperPosition();
                 break;
@@ -3162,7 +3161,24 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'a') {
             event.preventDefault();
             const all = _selectAllObjectsVisibleInScene();
-            _replaceSelectionWithObjectsMap(all, { anchorMode: 'center' });
+            
+            let totalCount = 0;
+            for (const [mesh, ids] of all) {
+                if (mesh.isBatchedMesh && mesh.userData.itemIds) {
+                    const uniqueItems = new Set();
+                    for (const id of ids) {
+                        const itemId = mesh.userData.itemIds.get(id);
+                        if (itemId !== undefined) uniqueItems.add(itemId);
+                        else uniqueItems.add(`inst:${id}`);
+                    }
+                    totalCount += uniqueItems.size;
+                } else {
+                    totalCount += ids.size;
+                }
+            }
+
+            const mode = (totalCount > 1) ? 'center' : 'default';
+            _replaceSelectionWithObjectsMap(all, { anchorMode: mode });
             return;
         }
 
@@ -3203,7 +3219,25 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 });
             }
 
-            _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'center' });
+            let objectCount = 0;
+            for (const [mesh, ids] of meshToIds) {
+                if (mesh.isBatchedMesh && mesh.userData.itemIds) {
+                    const uniqueItems = new Set();
+                    for (const id of ids) {
+                        const itemId = mesh.userData.itemIds.get(id);
+                        if (itemId !== undefined) uniqueItems.add(itemId);
+                        else uniqueItems.add(`inst:${id}`);
+                    }
+                    objectCount += uniqueItems.size;
+                } else {
+                    objectCount += ids.size;
+                }
+            }
+
+            const totalCount = groupIds.size + objectCount;
+            const mode = (totalCount > 1) ? 'center' : 'default';
+
+            _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: mode });
             return;
         }
 
