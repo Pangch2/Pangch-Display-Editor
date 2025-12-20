@@ -1671,7 +1671,8 @@ function createDuplicationContext() {
         tmpSourceWorld: new THREE.Matrix4(),
         tmpTargetLocal: new THREE.Matrix4(),
         tmpInv: new THREE.Matrix4(),
-        tmpColor: new THREE.Color()
+        tmpColor: new THREE.Color(),
+        itemIdMap: new Map() // Old ItemId -> New ItemId
     };
 }
 
@@ -2251,7 +2252,21 @@ function cloneInstance(mesh, instanceId, targetGroupId, ctx, coveredByGroup = fa
     
     // Item IDs
     if (mesh.userData.itemIds && mesh.userData.itemIds.has(instanceId)) {
-        targetBatch.userData.itemIds.set(newInstanceId, mesh.userData.itemIds.get(instanceId));
+        const oldItemId = mesh.userData.itemIds.get(instanceId);
+        let newItemId;
+        
+        if (ctx && ctx.itemIdMap) {
+            if (ctx.itemIdMap.has(oldItemId)) {
+                newItemId = ctx.itemIdMap.get(oldItemId);
+            } else {
+                newItemId = THREE.MathUtils.generateUUID();
+                ctx.itemIdMap.set(oldItemId, newItemId);
+            }
+        } else {
+            newItemId = THREE.MathUtils.generateUUID();
+        }
+
+        targetBatch.userData.itemIds.set(newInstanceId, newItemId);
     }
     
     // Has Hat (Player Head)
