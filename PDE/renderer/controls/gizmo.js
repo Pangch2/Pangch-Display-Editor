@@ -663,22 +663,38 @@ function getSelectedItems() {
 }
 
 function getSelectionBoundingBox() {
-    const items = getSelectedItems();
     const box = new THREE.Box3();
     const tempMat = new THREE.Matrix4();
     const tempBox = new THREE.Box3();
 
-    if (items.length === 0) return box;
+    // 1. Include Selected Groups
+    if (currentSelection.groups && currentSelection.groups.size > 0) {
+        for (const groupId of currentSelection.groups) {
+            if (!groupId) continue;
+            const localBox = getGroupLocalBoundingBox(groupId);
+            if (!localBox || localBox.isEmpty()) continue;
+            
+            getGroupWorldMatrixWithFallback(groupId, tempMat);
+            tempBox.copy(localBox).applyMatrix4(tempMat);
+            box.union(tempBox);
+        }
+    }
 
-    items.forEach(({ mesh, instanceId: id }) => {
-        if (!mesh) return;
-        const localBox = getInstanceLocalBox(mesh, id);
-        if (!localBox) return;
+    // 2. Include Selected Objects
+    if (currentSelection.objects && currentSelection.objects.size > 0) {
+        for (const [mesh, ids] of currentSelection.objects) {
+            if (!mesh || !ids || ids.size === 0) continue;
+            for (const id of ids) {
+                const localBox = getInstanceLocalBox(mesh, id);
+                if (!localBox) continue;
 
-        getInstanceWorldMatrix(mesh, id, tempMat);
-        tempBox.copy(localBox).applyMatrix4(tempMat);
-        box.union(tempBox);
-    });
+                getInstanceWorldMatrix(mesh, id, tempMat);
+                tempBox.copy(localBox).applyMatrix4(tempMat);
+                box.union(tempBox);
+            }
+        }
+    }
+
     return box;
 }
 
