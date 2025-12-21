@@ -805,6 +805,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
             
             // Grouping structure: GeometryId -> InstanceTransformString -> PartMeta[]
             const blocks = new Map<string, Map<string, any[]>>();
+            const partsToMerge = new Map<string, { type: 'opaque' | 'translucent', parts: any[] }>();
 
             ensureSharedPlaceholder();
             const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
@@ -830,22 +831,36 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                     instancedGeometries.set(geomKey, geometry);
                 }
 
-                const geomId = meta.geometryId;
-                // Use itemId as key to identify the instance uniquely
-                const instanceKey = String(meta.itemId);
-                
-                let geomGroup = blocks.get(geomId);
-                if (!geomGroup) {
-                    geomGroup = new Map();
-                    blocks.set(geomId, geomGroup);
+                let type: 'opaque' | 'translucent' | null = null;
+                if (currentAtlasTexture) {
+                    if (meta.texPath === '__ATLAS__') type = 'opaque';
+                    else if (meta.texPath === '__ATLAS_TRANSLUCENT__') type = 'translucent';
                 }
-                
-                let instanceParts = geomGroup.get(instanceKey);
-                if (!instanceParts) {
-                    instanceParts = [];
-                    geomGroup.set(instanceKey, instanceParts);
+
+                if (type) {
+                    const instanceKey = String(meta.itemId);
+                    const key = `${instanceKey}|${type}|${meta.tintHex ?? 0xffffff}`;
+                    if (!partsToMerge.has(key)) {
+                        partsToMerge.set(key, { type, parts: [] });
+                    }
+                    partsToMerge.get(key)!.parts.push(meta);
+                } else {
+                    const geomId = meta.geometryId;
+                    const instanceKey = String(meta.itemId);
+                    
+                    let geomGroup = blocks.get(geomId);
+                    if (!geomGroup) {
+                        geomGroup = new Map();
+                        blocks.set(geomId, geomGroup);
+                    }
+                    
+                    let instanceParts = geomGroup.get(instanceKey);
+                    if (!instanceParts) {
+                        instanceParts = [];
+                        geomGroup.set(instanceKey, instanceParts);
+                    }
+                    instanceParts.push(meta);
                 }
-                instanceParts.push(meta);
             }
 
             // --- BatchedMesh Logic for Atlas ---
@@ -854,43 +869,6 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                     opaque: { parts: [] as any[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() },
                     translucent: { parts: [] as any[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() }
                 };
-
-                // 1. Collect parts and calculate requirements
-                // blocks: Map<geomId, Map<instanceKey, PartMeta[]>>
-                // We iterate safely and remove parts that are moved to batch
-                
-                const partsToMerge = new Map<string, { type: 'opaque' | 'translucent', parts: any[] }>();
-
-                for (const [geomId, instancesMap] of blocks) {
-                    for (const [instanceKey, parts] of instancesMap) {
-                        const keepParts = [];
-                        for (const part of parts) {
-                            let type: 'opaque' | 'translucent' | null = null;
-                            if (part.texPath === '__ATLAS__') type = 'opaque';
-                            else if (part.texPath === '__ATLAS_TRANSLUCENT__') type = 'translucent';
-
-                            if (type) {
-                                // Group key: itemId + type + tint
-                                const key = `${instanceKey}|${type}|${part.tintHex ?? 0xffffff}`;
-                                if (!partsToMerge.has(key)) {
-                                    partsToMerge.set(key, { type, parts: [] });
-                                }
-                                partsToMerge.get(key)!.parts.push(part);
-                            } else {
-                                keepParts.push(part);
-                            }
-                        }
-                        
-                        if (keepParts.length > 0) {
-                            instancesMap.set(instanceKey, keepParts);
-                        } else {
-                            instancesMap.delete(instanceKey);
-                        }
-                    }
-                    if (instancesMap.size === 0) {
-                        blocks.delete(geomId);
-                    }
-                }
 
                 // Process merged parts and add to batchGroups
                 for (const [key, { type, parts }] of partsToMerge) {
