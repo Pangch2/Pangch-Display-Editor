@@ -442,7 +442,8 @@ function _revertEphemeralPivotUndoIfAny() {
 function _capturePivotUndoForCurrentSelection() {
     const undoFns = [];
 
-    // Only object custom pivots are written for multi-selection pivot edit.
+    // Legacy helper: captures per-object custom pivot writes so they can be reverted.
+    // Multi-selection pivot edit no longer writes per-object pivots, so this is normally unused.
     if (currentSelection.objects && currentSelection.objects.size > 0) {
         for (const [mesh, ids] of currentSelection.objects) {
             if (!mesh || !ids || ids.size === 0) continue;
@@ -2677,8 +2678,10 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                   dragStartPivotBaseWorld.copy(SelectionCenter('origin', false, _ZERO_VEC3));
                   dragStartAvgOrigin.copy(calculateAvgOrigin());
 
-                // Multi-selection custom pivot should be ephemeral: capture undo snapshot at start.
-                _pivotEditUndoCapture = _isMultiSelection() ? _capturePivotUndoForCurrentSelection() : null;
+                // Multi-selection custom pivot should behave like a temporary group:
+                // do NOT persist per-object custom pivots into mesh.userData.
+                // Selection-level pivot is handled via pivotOffset/isCustomPivot only.
+                _pivotEditUndoCapture = null;
             }
 
             if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
@@ -2754,6 +2757,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             isUniformScale = false;
 
             if (isPivotEditMode) {
+                const isMultiPivotEdit = _isMultiSelection();
                 const singleGroupId = _getSingleSelectedGroupId();
                 if (singleGroupId) {
                     const groups = getGroups();
@@ -2774,8 +2778,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         pivotOffset.subVectors(targetWorld, baseWorld);
                         isCustomPivot = true;
                     }
-                } else {
-                    // Persist per-mesh custom pivots only when objects are selected.
+                } else if (!isMultiPivotEdit) {
+                    // Single-object selection: persist per-mesh custom pivots.
                     if (currentSelection.objects && currentSelection.objects.size > 0) {
                         const pivotWorld = selectionHelper.position.clone();
                         const instanceMatrix = new THREE.Matrix4();
@@ -2801,6 +2805,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             mesh.userData.isCustomPivot = true;
                         }
                     }
+                } else {
+                    // Multi-selection pivot edit: do NOT write to per-object userData.
+                    // The edited pivot is represented by selection-level pivotOffset/isCustomPivot.
                 }
 
                 // Preserve the user's pivotMode (e.g. allow creating a custom pivot while in center mode).
@@ -2808,10 +2815,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     pivotMode = _pivotEditPreviousPivotMode;
                 }
 
-                // Arm the undo so that deselect (or selection replace) removes these pivots.
-                if (_pivotEditUndoCapture) {
-                    _ephemeralPivotUndo = _pivotEditUndoCapture;
-                }
+                // Multi-selection no longer writes per-object pivots, so no ephemeral undo is needed.
+                // Keep the hook for any future cases where we might snapshot state.
+                if (_pivotEditUndoCapture) _ephemeralPivotUndo = _pivotEditUndoCapture;
                 _pivotEditUndoCapture = null;
 
                 // Keep the gizmo anchor at the edited pivot location.
@@ -3299,6 +3305,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             if (event.key === 'Alt' || event.key === 'Control') {
                 event.preventDefault();
 
+                const isMultiReset = _isMultiSelection();
+
                 // Reset should also drop any ephemeral multi-selection pivot edits.
                 _revertEphemeralPivotUndoIfAny();
 
@@ -3319,13 +3327,16 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
                 // Clear object pivot overrides (for all selected ids)
                 if (currentSelection.objects && currentSelection.objects.size > 0) {
-                    for (const [mesh, ids] of currentSelection.objects) {
-                        if (!mesh) continue;
-                        if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
-                            for (const id of ids) mesh.userData.customPivots.delete(id);
+                    // Multi-selection behaves like a temporary group: do NOT mutate per-object pivots.
+                    if (!isMultiReset) {
+                        for (const [mesh, ids] of currentSelection.objects) {
+                            if (!mesh) continue;
+                            if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
+                                for (const id of ids) mesh.userData.customPivots.delete(id);
+                            }
+                            delete mesh.userData.customPivot;
+                            delete mesh.userData.isCustomPivot;
                         }
-                        delete mesh.userData.customPivot;
-                        delete mesh.userData.isCustomPivot;
                     }
                 }
 
