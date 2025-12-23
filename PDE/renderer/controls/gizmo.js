@@ -1764,6 +1764,7 @@ function _createWritableHeadMeshFromSource(sourceMesh, capacity) {
     const mesh = new THREE.InstancedMesh(geo, sourceMaterial, capacity);
     mesh.userData.displayType = 'item_display';
     mesh.userData.hasHat = {};
+    mesh.userData.customPivots = new Map();
     mesh.userData.isWritableHead = true;
     mesh.userData._pdeHeadCapacity = capacity;
     mesh.userData._pdeHeadSourceGeoUuid = sourceGeometry && sourceGeometry.uuid ? sourceGeometry.uuid : null;
@@ -1989,6 +1990,15 @@ function flushPendingHeadClones(ctx) {
             // HasHat
             if (sm.userData && sm.userData.hasHat && sm.userData.hasHat[sourceId] !== undefined) {
                 targetMesh.userData.hasHat[dstId] = sm.userData.hasHat[sourceId];
+            }
+
+            // Custom Pivot
+            if (sm.userData.customPivots && sm.userData.customPivots.has(sourceId)) {
+                if (!targetMesh.userData.customPivots) targetMesh.userData.customPivots = new Map();
+                targetMesh.userData.customPivots.set(dstId, sm.userData.customPivots.get(sourceId).clone());
+            } else if (sm.userData.customPivot) {
+                if (!targetMesh.userData.customPivots) targetMesh.userData.customPivots = new Map();
+                targetMesh.userData.customPivots.set(dstId, sm.userData.customPivot.clone());
             }
 
             // Register Group mapping
@@ -3041,14 +3051,18 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 break;
             }
             case 'z': {
-                if (pivotMode === 'center' && isCustomPivot) {   
-                    pivotMode = 'center';
+                if (pivotMode === 'center') {
+                    const prevPos = selectionHelper.position.clone();
+                    updateHelperPosition();
+                    if (prevPos.distanceTo(selectionHelper.position) < 0.001) {
+                        pivotMode = 'origin';
+                        updateHelperPosition();
+                    }
                 } else {
-                    pivotMode = pivotMode === 'origin' ? 'center' : 'origin';
+                    pivotMode = 'center';
+                    updateHelperPosition();
                 }
-                isCustomPivot = false;
                 console.log('Pivot Mode:', pivotMode);
-                updateHelperPosition();
                 break;
             }
             case 'v': {
