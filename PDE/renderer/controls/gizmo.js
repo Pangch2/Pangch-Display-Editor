@@ -51,11 +51,11 @@ function createOverlayLineMaterial(color) {
     });
 }
 
-function _beginSelectionReplace({ anchorMode = 'default', detachTransform = false } = {}) {
+function _beginSelectionReplace({ anchorMode = 'default', detachTransform = false, preserveAnchors = false } = {}) {
     _revertEphemeralPivotUndoIfAny();
     if (detachTransform && transformControls) transformControls.detach();
     _clearSelectionState();
-    _clearGizmoAnchor();
+    if (!preserveAnchors) _clearGizmoAnchor();
 
     _selectionAnchorMode = anchorMode;
 
@@ -991,7 +991,7 @@ function SelectionCenter(pivotMode, isCustomPivot, pivotOffset) {
              const mesh = firstItem.mesh;
              const displayType = getDisplayType(mesh, firstItem.instanceId);
 
-             const isBlockDisplayWithoutCustomPivot = displayType === 'block_display' && !isCustomPivot;
+             const isBlockDisplayWithoutCustomPivot = displayType === 'block_display' && !isCustomPivot; 
              if (isBlockDisplayWithoutCustomPivot) {
                  const localPivot = getInstanceLocalBoxMin(mesh, firstItem.instanceId, new THREE.Vector3(0, 0, 0));
                  if (localPivot) {
@@ -2503,6 +2503,10 @@ function duplicateGroupsAndObjects(groupIds, objectEntries, ctx) {
 function duplicateSelected() {
     if (!_hasAnySelection()) return;
 
+    // Preserve custom pivot state (multi-selection uses transient global state)
+    const savedIsCustomPivot = isCustomPivot;
+    const savedPivotOffset = pivotOffset.clone();
+
     const ctx = createDuplicationContext();
 
     _pendingHeadClones = []; // Reset pending queue
@@ -2528,13 +2532,24 @@ function duplicateSelected() {
     }
 
     // Apply new selection
-    _beginSelectionReplace({ anchorMode: 'default', detachTransform: false });
+    // When duplicating a multi-selection, keep the existing gizmo anchor so the gizmo position stays stable.
+    // Also preserve the current anchorMode (e.g. Ctrl+A / marquee uses 'center').
+    const preserveAnchors = _isMultiSelection();
+    const anchorMode = _selectionAnchorMode;
+    _beginSelectionReplace({ anchorMode, detachTransform: false, preserveAnchors });
     currentSelection.groups = newSel.groups;
     currentSelection.objects = newSel.objects;
 
     _setPrimaryToFirstAvailable();
     invalidateSelectionCaches();
     _recomputePivotStateForSelection();
+
+    // Restore custom pivot if it was active
+    if (savedIsCustomPivot) {
+        isCustomPivot = true;
+        pivotOffset.copy(savedPivotOffset);
+    }
+
     updateHelperPosition();
     updateSelectionOverlay();
     
@@ -3347,10 +3362,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     _multiSelectionOriginAnchorValid = false;
                     _multiSelectionOriginAnchorInitialValid = false;
                     _gizmoAnchorValid = false;
+                    _selectionAnchorMode = 'center';
                 } else {
                     // Not multi-selection: clear multi-selection caches.
                     _multiSelectionOriginAnchorValid = false;
                     _multiSelectionOriginAnchorInitialValid = false;
+                    _selectionAnchorMode = 'default';
                 }
 
                 updateHelperPosition();
