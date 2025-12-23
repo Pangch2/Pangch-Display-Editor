@@ -3342,19 +3342,11 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
                 _recomputePivotStateForSelection();
 
-                // Multi-selection: restore the initial temporary origin anchor.
+                // Multi-selection: clear the origin anchors so they recompute based on current positions.
                 if (_isMultiSelection()) {
-                    if (!_multiSelectionOriginAnchorInitialValid) {
-                        const initial = SelectionCenter('origin', false, _ZERO_VEC3);
-                        _multiSelectionOriginAnchorInitialPosition.copy(initial);
-                        _multiSelectionOriginAnchorInitialValid = true;
-                    }
-
-                    _multiSelectionOriginAnchorPosition.copy(_multiSelectionOriginAnchorInitialPosition);
-                    _multiSelectionOriginAnchorValid = true;
-
-                    _gizmoAnchorPosition.copy(_multiSelectionOriginAnchorInitialPosition);
-                    _gizmoAnchorValid = true;
+                    _multiSelectionOriginAnchorValid = false;
+                    _multiSelectionOriginAnchorInitialValid = false;
+                    _gizmoAnchorValid = false;
                 } else {
                     // Not multi-selection: clear multi-selection caches.
                     _multiSelectionOriginAnchorValid = false;
