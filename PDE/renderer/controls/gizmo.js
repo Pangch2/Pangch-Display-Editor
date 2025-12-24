@@ -3359,10 +3359,41 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
                 // Multi-selection: clear the origin anchors so they recompute based on current positions.
                 if (_isMultiSelection()) {
-                    _multiSelectionOriginAnchorValid = false;
-                    _multiSelectionOriginAnchorInitialValid = false;
-                    _gizmoAnchorValid = false;
-                    _selectionAnchorMode = 'center';
+                    let restoredToPrimary = false;
+
+                    // If we have an initial anchor flag (manual multi-select), try to reset to the CURRENT position of the primary object.
+                    if (_multiSelectionOriginAnchorInitialValid && currentSelection.primary) {
+                        const prim = currentSelection.primary;
+                        const targetPos = new THREE.Vector3();
+                        let found = false;
+
+                        if (prim.type === 'group') {
+                            getGroupOriginWorld(prim.id, targetPos);
+                            found = true;
+                        } else if (prim.type === 'object' && prim.mesh) {
+                            const tempMat = new THREE.Matrix4();
+                            getInstanceWorldMatrixForOrigin(prim.mesh, prim.instanceId, tempMat);
+                            const localY = isItemDisplayHatEnabled(prim.mesh, prim.instanceId) ? 0.03125 : 0;
+                            targetPos.set(0, localY, 0).applyMatrix4(tempMat);
+                            found = true;
+                        }
+
+                        if (found) {
+                            _multiSelectionOriginAnchorPosition.copy(targetPos);
+                            _multiSelectionOriginAnchorValid = true;
+                            _gizmoAnchorPosition.copy(targetPos);
+                            _gizmoAnchorValid = true;
+                            _selectionAnchorMode = 'default';
+                            restoredToPrimary = true;
+                        }
+                    }
+
+                    if (!restoredToPrimary) {
+                        _multiSelectionOriginAnchorValid = false;
+                        _multiSelectionOriginAnchorInitialValid = false;
+                        _gizmoAnchorValid = false;
+                        _selectionAnchorMode = 'center';
+                    }
                 } else {
                     // Not multi-selection: clear multi-selection caches.
                     _multiSelectionOriginAnchorValid = false;
