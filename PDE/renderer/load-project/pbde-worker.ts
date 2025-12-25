@@ -6,6 +6,62 @@ type TexturePixelData = {
     h: number;
     data: Uint8ClampedArray;
 };
+
+interface ResolvedModel {
+    id: string;
+    json: any;
+    textures: Record<string, string>;
+    elements: any[] | null;
+    parentChain: string[];
+    texture_size: number[] | null;
+    fromHardcoded: boolean;
+    ignoreDisplayIds?: string[] | Set<string>;
+}
+
+interface GeometryData {
+    positions: number[];
+    normals: number[];
+    uvs: number[];
+    indices: number[];
+    texPath: string;
+    tintHex: number;
+}
+
+interface ModelData {
+    modelMatrix: number[] | Float32Array;
+    geometries: GeometryData[];
+    geometryId: string;
+}
+
+interface RenderItem {
+    type: 'blockDisplay' | 'itemDisplay' | 'itemDisplayModel';
+    models?: ModelData[]; // For blockDisplay and itemDisplayModel
+    uuid?: string;
+    groupId?: string | null;
+    transform?: number[] | Float32Array;
+    name?: string;
+    nbt?: string;
+    options?: any;
+    brightness?: any;
+    displayType?: string;
+    textureUrl?: string;
+    tints?: number[];
+    originalName?: string;
+    [key: string]: any; // Allow for other dynamic properties for now
+}
+
+interface GroupData {
+    id: string;
+    isCollection: boolean;
+    children: { type: 'group' | 'object', id: string }[];
+    parent: string | null;
+    name: string;
+    position: { x: number, y: number, z: number };
+    quaternion: { x: number, y: number, z: number, w: number };
+    scale: { x: number, y: number, z: number };
+    pivot: number[];
+}
+
 // tintColor 모듈을 워커에서 직접 불러올 수 없으므로 여기에서 구현을 포함한다.
 // 아래 getTextureColor 함수는 메인 스레드와 동일하게 동작하도록 수동으로 삽입한다.
 
@@ -29,7 +85,7 @@ const blocksUsingDefaultFoliageColors = [
   'mangrove_leaves',
 ];
 
-function getTextureColor(modelResourceLocation, textureLayer, tintindex) {
+function getTextureColor(modelResourceLocation: string, textureLayer?: string | number, tintindex?: number) {
   try {
     const isBlockModel = modelResourceLocation.startsWith('block/');
     const modelName = modelResourceLocation.split('/').slice(1).join('/');
@@ -289,16 +345,16 @@ async function loadModelJson(assetPath) {
 }
 
 // 모델 ID를 기준으로 부모 체인과 텍스처 정보를 재귀적으로 해석한다.
-async function resolveModelTree(modelId, cache = new Map()) {
+async function resolveModelTree(modelId: string, cache = new Map<string, ResolvedModel | null>()): Promise<ResolvedModel | null> {
     if (typeof modelId !== 'string' || !modelId) {
         return null;
     }
-    if (cache.has(modelId)) return cache.get(modelId);
+    if (cache.has(modelId)) return cache.get(modelId) || null;
     // 특수 값인 builtin/generated 모델은 실제 파일이 아니므로 가짜 해석 결과를 반환한다.
     // 이렇게 하면 buildItemModelGeometryData 단계에서 일반 모델처럼 처리할 수 있다.
     if (modelId && (modelId.endsWith('builtin/generated'))) {
         const ignoreDisplayIds = collectIgnoreDisplayIdsForModelId('builtin/generated');
-        const resolved: any = {
+        const resolved: ResolvedModel = {
             id: modelId,
             json: { parent: 'item/generated' },
             textures: {},
@@ -408,7 +464,7 @@ async function resolveModelTree(modelId, cache = new Map()) {
 
     const ignoreDisplayIdsUnique = Array.from(new Set(ignoreDisplayIds.filter(Boolean)));
 
-    const resolved: any = { id: modelId, json, textures: mergedTextures, elements, parentChain, texture_size: textureSize, fromHardcoded };
+    const resolved: ResolvedModel = { id: modelId, json, textures: mergedTextures, elements, parentChain, texture_size: textureSize, fromHardcoded };
     if (ignoreDisplayIdsUnique.length) {
         resolved.ignoreDisplayIds = ignoreDisplayIdsUnique;
     }
@@ -546,7 +602,7 @@ function getFaceVertices(dir, from, to) {
 }
 
 // 블록 모델 요소를 순회하며 텍스처별 지오메트리 버퍼를 생성한다.
-async function buildBlockModelGeometryData(resolved, opts = undefined) {
+async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = undefined): Promise<GeometryData[] | null> {
     const elements = resolved.elements;
     if (!elements || elements.length === 0) return null;
 
@@ -556,12 +612,12 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
     //     return blockModelGeometryCache.get(cacheKey);
     // }
 
-    const buffers = new Map();
+    const buffers = new Map<string, GeometryData>();
     // 텍스처 경로와 틴트 조합마다 독립된 버퍼를 생성한다.
-    const addBuffer = (texPath, tintHex) => {
+    const addBuffer = (texPath: string, tintHex: number) => {
         const key = `${texPath}|${tintHex >>> 0}`;
         if (!buffers.has(key)) buffers.set(key, { positions: [], normals: [], uvs: [], indices: [], texPath, tintHex });
-        return buffers.get(key);
+        return buffers.get(key)!;
     };
 
     // 각 요소의 여섯 면을 순회하면서 지오메트리를 조합한다.
@@ -724,7 +780,7 @@ async function buildBlockModelGeometryData(resolved, opts = undefined) {
 }
 
 // block_display 엔티티 노드를 Minecraft 블록 모델 지오메트리로 변환한다.
-async function processBlockDisplay(item) {
+async function processBlockDisplay(item: any): Promise<RenderItem | null> {
     try {
         const { baseName, props } = blockNameToBaseAndProps(item.name);
         const { path } = nsAndPathFromId(baseName);
@@ -1386,7 +1442,7 @@ async function buildItemModelGeometryData(resolved) {
 }
 
 // item_display 노드를 분석해 모델 지오메트리와 display 변환을 계산한다.
-async function processItemModelDisplay(node) {
+async function processItemModelDisplay(node: any): Promise<RenderItem | null> {
     try {
         const { baseName, displayType } = parseItemName(node.name);
         if (!baseName) return null;
@@ -1524,10 +1580,10 @@ function generateUUID() {
     });
 }
 
-let groups = new Map();
+let groups = new Map<string, GroupData>();
 
 // 두 개의 4x4 행렬을 곱해 누적 변환을 계산한다.
-function apply_transforms(parent, child) {
+function apply_transforms(parent: Float32Array | number[], child: Float32Array | number[]) {
     const result = new Float32Array(16);
     for (let i = 0; i < 4; i++) {
         for (let j = 0; j < 4; j++) {
@@ -1543,7 +1599,7 @@ function apply_transforms(parent, child) {
 
 
 // 렌더링에 필요한 필드만 남기며 자식 노드를 얕게 복제한다.
-function split_children(children: any) {
+function split_children(children: any): any[] {
     if (!children) return [];
     return children.map((item: any) => {
         const newItem: any = {};
@@ -1583,9 +1639,9 @@ function split_children(children: any) {
 }
 
 // 씬 그래프 노드를 재귀적으로 순회하며 렌더 항목을 만든다.
-async function processNode(node, parentTransform, parentGroupId = null) {
+async function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null = null): Promise<RenderItem[]> {
     const worldTransform = apply_transforms(parentTransform, node.transforms);
-    let renderItems = [];
+    let renderItems: RenderItem[] = [];
 
     let currentGroupId = parentGroupId;
 
@@ -1660,7 +1716,7 @@ async function processNode(node, parentTransform, parentGroupId = null) {
                 }
             }
 
-            const itemData: any = {
+            const itemData: RenderItem = {
                 type: 'itemDisplay',
                 name: node.name,
                 transform: adjustedTransform,
@@ -1726,7 +1782,7 @@ async function processNode(node, parentTransform, parentGroupId = null) {
                 renderItems.push(modelDisplay);
             } else {
                 // 기존 큐브 대체 경로를 유지하기 위해 단순 itemDisplay 객체를 추가한다.
-                const itemData: any = {
+                const itemData: RenderItem = {
                     type: 'itemDisplay',
                     name: node.name,
                     transform: worldTransform,
@@ -1801,18 +1857,20 @@ self.onmessage = async (e) => {
 
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         // 루트 자식 노드를 병렬로 처리해 렌더 항목을 구성한다.
-        const promises = processedChildren.map(node => processNode(node, identityMatrix, null));
-        const renderList = (await Promise.all(promises)).flat();
+        const promises = processedChildren.map((node: any) => processNode(node, identityMatrix, null));
+        const renderList: RenderItem[] = (await Promise.all(promises)).flat();
 
         // --- Atlas Generation Start ---
         let atlasInfo = null;
         try {
-            const texturePaths = new Set();
+            const texturePaths = new Set<string>();
             for (const item of renderList) {
                 if (item.type === 'blockDisplay' || item.type === 'itemDisplayModel') {
-                    for (const model of item.models) {
-                        for (const geom of model.geometries) {
-                            if (geom.texPath) texturePaths.add(geom.texPath);
+                    if (item.models) {
+                        for (const model of item.models) {
+                            for (const geom of model.geometries) {
+                                if (geom.texPath) texturePaths.add(geom.texPath);
+                            }
                         }
                     }
                 }
@@ -1911,8 +1969,8 @@ self.onmessage = async (e) => {
         }
         // --- Atlas Generation End ---
 
-        const geometryItems = [];
-        const otherItems = [];
+        const geometryItems: RenderItem[] = [];
+        const otherItems: RenderItem[] = [];
         for (const item of renderList) {
             if (item.type === 'blockDisplay' || item.type === 'itemDisplayModel') {
                 geometryItems.push(item);
@@ -1930,13 +1988,15 @@ self.onmessage = async (e) => {
 
         // 전체 버퍼 크기를 미리 계산해 단일 ArrayBuffer에 데이터를 적재한다.
         for (const item of geometryItems) {
-            for (const model of item.models) {
-                for (const geomData of model.geometries) {
-                    totalPositions += geomData.positions.length;
-                    totalNormals += geomData.normals.length;
-                    totalUvs += geomData.uvs.length;
-                    totalIndices += geomData.indices.length;
-                    totalVertices += geomData.positions.length / 3;
+            if (item.models) {
+                for (const model of item.models) {
+                    for (const geomData of model.geometries) {
+                        totalPositions += geomData.positions.length;
+                        totalNormals += geomData.normals.length;
+                        totalUvs += geomData.uvs.length;
+                        totalIndices += geomData.indices.length;
+                        totalVertices += geomData.positions.length / 3;
+                    }
                 }
             }
         }
@@ -1972,12 +2032,13 @@ self.onmessage = async (e) => {
         // 개별 지오메트리 버퍼를 연속 메모리 공간에 복사한다.
         for (const item of geometryItems) {
             itemId++;
-            for (const model of item.models) {
-                const matrixArray = (Array.isArray(model.modelMatrix) || ArrayBuffer.isView(model.modelMatrix))
-                    ? model.modelMatrix
-                    : identityMatrix;
+            if (item.models) {
+                for (const model of item.models) {
+                    const matrixArray = (Array.isArray(model.modelMatrix) || ArrayBuffer.isView(model.modelMatrix))
+                        ? model.modelMatrix
+                        : identityMatrix;
 
-                model.geometries.forEach((geomData, geomIndex) => {
+                    model.geometries.forEach((geomData, geomIndex) => {
                     const { positions, normals, uvs, indices } = geomData;
 
                     const posStart = posCursor;
@@ -2020,6 +2081,7 @@ self.onmessage = async (e) => {
                 });
             }
         }
+    }
 
         const metadataPayload = {
             geometries: metadata,

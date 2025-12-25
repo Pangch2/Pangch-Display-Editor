@@ -5,6 +5,7 @@ import { createEntityMaterial } from '../entityMaterial.js';
 
 type AssetPayload = string | Uint8Array | ArrayBuffer | unknown;
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
+type TypedArrayConstructor = { new (length: number): { set(array: ArrayLike<number>, offset?: number): void; length: number; [index: number]: number } };
 
 interface HeadGeometrySet {
     base: THREE.BufferGeometry;
@@ -12,10 +13,67 @@ interface HeadGeometrySet {
     merged: THREE.BufferGeometry | null;
 }
 
+interface GeometryMeta {
+    itemId: number;
+    transform: Float32Array | number[];
+    modelMatrix: number[];
+    geometryId: string;
+    geometryIndex: number;
+    texPath: string;
+    tintHex?: number;
+    isItemDisplayModel: boolean;
+    posByteOffset: number;
+    posLen: number;
+    normByteOffset: number;
+    normLen: number;
+    uvByteOffset: number;
+    uvLen: number;
+    indicesByteOffset: number;
+    indicesLen: number;
+    uuid: string;
+    groupId: string | null;
+}
+
+interface OtherItem {
+    type: string;
+    uuid: string;
+    groupId: string | null;
+    textureUrl?: string;
+    transform: number[];
+    [key: string]: any; // Allow other properties
+}
+
+interface GroupChild {
+    type: 'group' | 'object';
+    id?: string; // object id or group id
+    mesh?: THREE.Object3D;
+    instanceId?: number;
+}
+
+interface GroupData {
+    id: string;
+    isCollection?: boolean;
+    children: GroupChild[];
+    parent: string | null;
+    name: string;
+    position: { x: number, y: number, z: number } | THREE.Vector3;
+    quaternion: { x: number, y: number, z: number, w: number } | THREE.Quaternion;
+    scale: { x: number, y: number, z: number } | THREE.Vector3;
+    pivot?: [number, number, number];
+}
+
+interface WorkerMetadata {
+    geometries: GeometryMeta[];
+    otherItems: OtherItem[];
+    useUint32Indices?: boolean;
+    atlas?: { width: number; height: number; data: Uint8ClampedArray };
+    groups?: Map<string, GroupData>;
+}
+
 // --- 메인 스레드용 에셋 공급자 ---
 
 function isNodeBufferLike(content: unknown): content is { type: 'Buffer'; data: number[] } {
-    return !!content && typeof content === 'object' && (content as any).type === 'Buffer' && Array.isArray((content as any).data);
+    return !!content && typeof content === 'object' && (content as Record<string, unknown>).type === 'Buffer' && Array.isArray((content as Record<string, unknown>).data);
 }
 
 function decodeIpcContentToString(content: unknown): string {
@@ -184,7 +242,7 @@ async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Tex
         const texResult = await window.ipcApi.getAssetContent(texPath);
         if (!texResult.success) throw new Error(`[Texture] Failed to load ${texPath}: ${texResult.error}`);
         const bytes = decodeIpcContentToUint8Array(texResult.content);
-        const blob = new Blob([bytes as any], { type: 'image/png' });
+        const blob = new Blob([bytes as unknown as BlobPart], { type: 'image/png' });
     // ImageBitmap 디코딩은 가능하면 메인 스레드 밖에서 더 빠르게 처리된다.
         try {
             const imageBitmap = await createImageBitmap(blob);
@@ -367,7 +425,7 @@ function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.Buffe
 
     let totalVertices = 0;
     const itemSizes: Record<string, number> = {};
-    const arrayTypes: Record<string, any> = {};
+    const arrayTypes: Record<string, TypedArrayConstructor> = {};
     for (const g of geometries) {
         const pos = g.getAttribute('position') as THREE.BufferAttribute;
         const count = pos.count;
@@ -375,7 +433,7 @@ function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.Buffe
         for (const name of attrNames) {
             const attr = g.getAttribute(name) as THREE.BufferAttribute;
             itemSizes[name] = attr.itemSize;
-            arrayTypes[name] = attr.array.constructor;
+            arrayTypes[name] = attr.array.constructor as TypedArrayConstructor;
         }
     }
 
@@ -685,7 +743,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                 console.error('[Debug] Invalid metadata payload from worker.');
                 return;
             }
-            const metadataPayload = metadata as { geometries: any[]; otherItems: any[]; useUint32Indices?: boolean; atlas?: any; groups?: Map<string, any> };
+            const metadataPayload = metadata as WorkerMetadata;
             if (!Array.isArray(metadataPayload.geometries) || !Array.isArray(metadataPayload.otherItems)) {
                 console.error('[Debug] Invalid metadata payload from worker.');
                 return;
@@ -699,12 +757,12 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
             const groupIdRemap = new Map<string, string>();
 
             // Keep existing group maps on merge; replace on fresh load.
-            if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map<string, any>();
+            if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map<string, GroupData>();
             if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map<string, string>();
 
-            const effectiveGroups: Map<string, any> = isMerge
-                ? (loadedObjectGroup.userData.groups as Map<string, any>)
-                : (incomingGroups ?? new Map<string, any>());
+            const effectiveGroups: Map<string, GroupData> = isMerge
+                ? (loadedObjectGroup.userData.groups as Map<string, GroupData>)
+                : (incomingGroups ?? new Map<string, GroupData>());
 
             const objectToGroup: Map<string, string> = isMerge
                 ? (loadedObjectGroup.userData.objectToGroup as Map<string, string>)
@@ -775,9 +833,9 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
 
                 const group = effectiveGroups.get(finalGroupId);
                 if (group && Array.isArray(group.children)) {
-                    const childIndex = group.children.findIndex((c: any) => c && c.type === 'object' && c.id === uuid);
+                    const childIndex = group.children.findIndex((c: GroupChild) => c && c.type === 'object' && c.id === uuid);
                     if (childIndex !== -1) {
-                        group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId };
+                        group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId, id: uuid };
                     }
                 }
             }
@@ -804,8 +862,8 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
             const materialPromises = new Map<string, Promise<THREE.Material>>();
             
             // Grouping structure: GeometryId -> InstanceTransformString -> PartMeta[]
-            const blocks = new Map<string, Map<string, any[]>>();
-            const partsToMerge = new Map<string, { type: 'opaque' | 'translucent', parts: any[] }>();
+            const blocks = new Map<string, Map<string, GeometryMeta[]>>();
+            const partsToMerge = new Map<string, { type: 'opaque' | 'translucent', parts: GeometryMeta[] }>();
 
             ensureSharedPlaceholder();
             const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
@@ -866,8 +924,8 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
             // --- BatchedMesh Logic for Atlas ---
             if (currentAtlasTexture) {
                 const batchGroups = {
-                    opaque: { parts: [] as any[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() },
-                    translucent: { parts: [] as any[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() }
+                    opaque: { parts: [] as GeometryMeta[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() },
+                    translucent: { parts: [] as GeometryMeta[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() }
                 };
 
                 // Process merged parts and add to batchGroups
@@ -1014,7 +1072,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
             // Process grouped blocks
             for (const [geomId, instancesMap] of blocks) {
                 // Group instances by Signature (combination of parts and materials)
-                const signatureGroups = new Map<string, { parts: any[], matrices: THREE.Matrix4[], instanceMetas: any[] }>();
+                const signatureGroups = new Map<string, { parts: GeometryMeta[], matrices: THREE.Matrix4[], instanceMetas: { uuid: string, groupId: string | null }[] }>();
 
                 for (const [matrixStr, parts] of instancesMap) {
                     // Sort parts by geometryIndex to ensure consistent order
@@ -1134,7 +1192,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                 }
             }
 
-            const playerHeadItems: Array<any> = [];
+            const playerHeadItems: Array<OtherItem> = [];
             otherItems.forEach((item) => {
                 if (item.type === 'itemDisplay' && item.textureUrl) {
                     playerHeadItems.push(item);
@@ -1324,15 +1382,15 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
 
             // After merge: select the newly added items as a multi-selection.
             if (isMerge) {
-                const selectGroupsObjectsFn = (loadedObjectGroup.userData as any)?.replaceSelectionWithGroupsAndObjects as
+                const selectGroupsObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithGroupsAndObjects as
                     | undefined
-                    | ((groupIds: Set<string>, meshToIds: Map<any, Set<number>>, opts?: any) => void);
-                const selectObjectsFn = (loadedObjectGroup.userData as any)?.replaceSelectionWithObjectsMap as
+                    | ((groupIds: Set<string>, meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
+                const selectObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithObjectsMap as
                     | undefined
-                    | ((meshToIds: Map<any, Set<number>>, opts?: any) => void);
+                    | ((meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
 
                 if (newlyAddedSelectableMeshes.size > 0) {
-                    const groupsMap = (loadedObjectGroup.userData.groups as Map<string, any>) ?? new Map<string, any>();
+                    const groupsMap = (loadedObjectGroup.userData.groups as Map<string, GroupData>) ?? new Map<string, GroupData>();
                     const objectToGroupMap = (loadedObjectGroup.userData.objectToGroup as Map<string, string>) ?? new Map<string, string>();
 
                     const resolveRootGroupId = (groupId: string | null | undefined): string | null => {
@@ -1352,20 +1410,25 @@ function _loadAndRenderPbde(file: File, isMerge: boolean): void {
                     const meshToIds = new Map<any, Set<number>>();
 
                     for (const mesh of newlyAddedSelectableMeshes) {
-                        if (!mesh || (!(mesh as any).isInstancedMesh && !(mesh as any).isBatchedMesh)) continue;
+                        if (!mesh) continue;
+                        const instancedMesh = mesh as THREE.InstancedMesh;
+                        const batchedMesh = mesh as THREE.BatchedMesh;
+
+                        if (!instancedMesh.isInstancedMesh && !batchedMesh.isBatchedMesh) continue;
 
                         let instanceCount = 0;
-                        if ((mesh as any).isInstancedMesh) {
-                            instanceCount = (mesh as any).count ?? 0;
+                        if (instancedMesh.isInstancedMesh) {
+                            instanceCount = instancedMesh.count ?? 0;
                         } else {
-                            const geomIds = (mesh as any).userData?.instanceGeometryIds;
+                            const geomIds = mesh.userData?.instanceGeometryIds;
                             instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
                         }
+
                         if (instanceCount <= 0) continue;
 
                         let ids: Set<number> | null = null;
                         for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                            const key = `${(mesh as any).uuid}_${instanceId}`;
+                            const key = `${mesh.uuid}_${instanceId}`;
                             const immediateGroupId = objectToGroupMap.get(key);
                             if (immediateGroupId) {
                                 const root = resolveRootGroupId(immediateGroupId) ?? immediateGroupId;
