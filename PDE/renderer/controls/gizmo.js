@@ -3144,7 +3144,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 console.log('Pivot Mode:', pivotMode);
                 break;
             }
-            case 'v': {
+            case 'q': {
                 const items = getSelectedItems();
                 if (items.length > 0) {
                     const targetPosition = selectionHelper.position.clone();
@@ -3466,7 +3466,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
         if (isGizmoBusy) return;
         const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'v', 'b', 'g', 'd'];
+        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'q', 'b', 'g', 'd'];
         if (transformControls.dragging && keysToHandle.includes(key)) {
             isGizmoBusy = true;
             const attachedObject = transformControls.object;
