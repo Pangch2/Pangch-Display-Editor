@@ -8,6 +8,28 @@ const _TMP_MAT4_B = new THREE.Matrix4();
 const _TMP_BOX3_A = new THREE.Box3();
 const _TMP_VEC3_A = new THREE.Vector3();
 const _TMP_VEC3_B = new THREE.Vector3();
+const _overlayUnitGeo = (() => {
+    const geo = new THREE.BufferGeometry();
+    const vertices = new Float32Array([
+        // Bottom 4 edges
+        -0.5, -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5, -0.5,
+         0.5, -0.5, -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,
+         0.5, -0.5,  0.5, -0.5, -0.5,  0.5,  0.5, -0.5,  0.5,
+        -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5, -0.5,  0.5,
+        // Top 4 edges
+        -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,  0.5, -0.5,
+         0.5,  0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5, -0.5,
+         0.5,  0.5,  0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5,
+        -0.5,  0.5,  0.5, -0.5,  0.5, -0.5, -0.5,  0.5,  0.5,
+        // Vertical 4 edges
+        -0.5, -0.5, -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5,
+         0.5, -0.5, -0.5,  0.5,  0.5, -0.5,  0.5, -0.5, -0.5,
+         0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5, -0.5,  0.5,
+        -0.5, -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,  0.5
+    ]);
+    geo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+    return geo;
+})();
 
 function getInstanceCount(mesh) {
     if (!mesh) return 0;
@@ -1036,7 +1058,14 @@ function calculateAvgOrigin() {
 function updateSelectionOverlay() {
     if (selectionOverlay) {
         scene.remove(selectionOverlay);
-        disposeThreeObjectTree(selectionOverlay);
+        if (selectionOverlay.isGroup) {
+            disposeThreeObjectTree(selectionOverlay);
+        } else {
+            if (selectionOverlay.geometry && selectionOverlay.geometry !== _overlayUnitGeo) {
+                selectionOverlay.geometry.dispose();
+            }
+            if (selectionOverlay.material) selectionOverlay.material.dispose();
+        }
         selectionOverlay = null;
     }
 
@@ -1049,11 +1078,10 @@ function updateSelectionOverlay() {
 
     if (!_hasAnySelection()) return;
 
-    selectionOverlay = new THREE.Group();
-    selectionOverlay.renderOrder = 1;
-    selectionOverlay.matrixAutoUpdate = false;
-    selectionOverlay.matrix.identity();
-
+    const itemsToRender = [];
+    const tempCenter = _TMP_VEC3_A;
+    const tempSize = _TMP_VEC3_B;
+    
     // Groups
     if (currentSelection.groups && currentSelection.groups.size > 0) {
         for (const groupId of currentSelection.groups) {
@@ -1061,21 +1089,23 @@ function updateSelectionOverlay() {
             const localBox = getGroupLocalBoundingBox(groupId);
             if (!localBox || localBox.isEmpty()) continue;
 
-            const edgesGeo = createEdgesGeometryFromBox3(localBox);
-            if (!edgesGeo) continue;
+            localBox.getSize(tempSize);
+            localBox.getCenter(tempCenter);
 
-            const overlayMaterial = createOverlayLineMaterial(0x6FA21C);
+            const groupWorld = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
+            
+            const instanceMat = new THREE.Matrix4();
+            instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+            instanceMat.scale(tempSize);
+            instanceMat.premultiply(groupWorld);
 
-            const line = new THREE.LineSegments(edgesGeo, overlayMaterial);
-            line.matrixAutoUpdate = false;
-            line.matrix.copy(getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4()));
-            selectionOverlay.add(line);
+            itemsToRender.push({ matrix: instanceMat, color: 0x6FA21C });
         }
     }
 
-    // Objects (can span multiple meshes)
+    // Objects
     if (currentSelection.objects && currentSelection.objects.size > 0) {
-        const tempMat = new THREE.Matrix4();
+        const objTempMat = new THREE.Matrix4();
         for (const [mesh, ids] of currentSelection.objects) {
             if (!mesh || !ids || ids.size === 0) continue;
 
@@ -1083,21 +1113,51 @@ function updateSelectionOverlay() {
                 const localBox = getInstanceLocalBox(mesh, id);
                 if (!localBox) continue;
 
-                const edgesGeo = createEdgesGeometryFromBox3(localBox);
-                if (!edgesGeo) continue;
+                localBox.getSize(tempSize);
+                localBox.getCenter(tempCenter);
+
+                getInstanceWorldMatrix(mesh, id, objTempMat);
+
+                const instanceMat = new THREE.Matrix4();
+                instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+                instanceMat.scale(tempSize);
+                instanceMat.premultiply(objTempMat);
 
                 const displayType = getDisplayType(mesh, id);
-                const overlayColor = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
+                const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
 
-                const overlayMaterial = createOverlayLineMaterial(overlayColor);
-
-                mesh.getMatrixAt(id, tempMat);
-                const line = new THREE.LineSegments(edgesGeo, overlayMaterial);
-                line.matrixAutoUpdate = false;
-                line.matrix.multiplyMatrices(mesh.matrixWorld, tempMat);
-                selectionOverlay.add(line);
+                itemsToRender.push({ matrix: instanceMat, color: color });
             }
         }
+    }
+
+    if (itemsToRender.length > 0) {
+        const material = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            depthTest: true,
+            depthWrite: false,
+            transparent: true,
+            opacity: 0.9,
+            wireframe: true
+        });
+
+        selectionOverlay = new THREE.InstancedMesh(_overlayUnitGeo, material, itemsToRender.length);
+        selectionOverlay.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        selectionOverlay.renderOrder = 1;
+        selectionOverlay.matrixAutoUpdate = false;
+        selectionOverlay.matrix.identity();
+
+        const colorObj = new THREE.Color();
+        itemsToRender.forEach((item, index) => {
+            selectionOverlay.setMatrixAt(index, item.matrix);
+            colorObj.setHex(item.color);
+            selectionOverlay.setColorAt(index, colorObj);
+        });
+
+        selectionOverlay.instanceMatrix.needsUpdate = true;
+        if (selectionOverlay.instanceColor) selectionOverlay.instanceColor.needsUpdate = true;
+
+        scene.add(selectionOverlay);
     }
 
     // Multi-selection: add a white world-aligned bounding box overlay (no rotation)
@@ -1113,9 +1173,7 @@ function updateSelectionOverlay() {
         }
     }
 
-    selectionOverlay.updateMatrixWorld(true);
-    scene.add(selectionOverlay);
-
+    if (selectionOverlay) selectionOverlay.updateMatrixWorld(true);
     if (multiSelectionOverlay) {
         multiSelectionOverlay.updateMatrixWorld(true);
         scene.add(multiSelectionOverlay);
