@@ -3213,24 +3213,26 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         }
                     }
 
-                    const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
-                    const offset = new THREE.Vector3().subVectors(targetPosition, currentCenter);
-                    
-                    const tempMat = new THREE.Matrix4();
-                    
-                    items.forEach(({mesh, instanceId}) => {
-                        const inverseMeshWorld = mesh.matrixWorld.clone().invert();
-                        mesh.getMatrixAt(instanceId, tempMat);
-                        tempMat.premultiply(mesh.matrixWorld);
+                    if (pivotMode === 'center') {
+                        const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
+                        const offset = new THREE.Vector3().subVectors(targetPosition, currentCenter);
                         
-                        tempMat.elements[12] += offset.x;
-                        tempMat.elements[13] += offset.y;
-                        tempMat.elements[14] += offset.z;
+                        const tempMat = new THREE.Matrix4();
                         
-                        tempMat.premultiply(inverseMeshWorld);
-                        mesh.setMatrixAt(instanceId, tempMat);
-                        if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
-                    });
+                        items.forEach(({mesh, instanceId}) => {
+                            const inverseMeshWorld = mesh.matrixWorld.clone().invert();
+                            mesh.getMatrixAt(instanceId, tempMat);
+                            tempMat.premultiply(mesh.matrixWorld);
+                            
+                            tempMat.elements[12] += offset.x;
+                            tempMat.elements[13] += offset.y;
+                            tempMat.elements[14] += offset.z;
+                            
+                            tempMat.premultiply(inverseMeshWorld);
+                            mesh.setMatrixAt(instanceId, tempMat);
+                            if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
+                        });
+                    }
 
                     updateHelperPosition();
                     updateSelectionOverlay();
