@@ -40,7 +40,8 @@ vite.config.js
 - 파일명은 소문자와 하이픈(-)을 사용하여 구분합니다
 
 # 중요 규칙
-- 명확하지 않은 것은 한국어로 질문해야 한다. 설명 추상화는 가급적 지양한다
+- 언어는 기본적으로 한국어를 사용해야 한다
+- 명확하지 않은 것은 한국어로 질문해야 한다.
 - three js r181이상을 사용중
 - three js의 webgpu를 사용해야해 즉 import * as THREE from 'three/webgpu'를 사용해야해
 - scene.add(transformControls)은 scene.add(transformControls.getHelper())로 변경해야하
