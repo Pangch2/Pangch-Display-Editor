@@ -3268,6 +3268,46 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     window.addEventListener('keydown', (event) => {
         if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
 
+        if (event.key.toLowerCase() === 'f') {
+            event.preventDefault();
+            
+            let targetPosition = new THREE.Vector3();
+            let distance = 5.2; // Default distance for origin (approx sqrt(27))
+
+            if (_hasAnySelection()) {
+                const box = getSelectionBoundingBox();
+                if (!box.isEmpty()) {
+                    box.getCenter(targetPosition);
+                    const size = new THREE.Vector3();
+                    box.getSize(size);
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    
+                    // Fit to view distance
+                    // Ensure we don't zoom in infinitely on 0-size objects
+                    const fitSize = Math.max(maxDim, 1.0);
+                    const fov = camera.fov * (Math.PI / 180);
+                    distance = Math.abs(fitSize / (2 * Math.tan(fov / 2)));
+                    distance *= 1.1; // Add some margin
+                } else {
+                     _getSelectionCenterWorld(targetPosition);
+                }
+            } else {
+                targetPosition.set(0, 0, 0);
+            }
+
+            const direction = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+            
+            // Fallback if camera is exactly at target
+            if (direction.lengthSq() < 1e-6) {
+                direction.set(1, 1, 1).normalize();
+            }
+
+            controls.target.copy(targetPosition);
+            camera.position.copy(targetPosition).add(direction.multiplyScalar(distance));
+            controls.update();
+            return;
+        }
+
         if (event.key === 'Delete' || event.key === 'Backspace') {
             event.preventDefault();
             deleteSelectedItems();
