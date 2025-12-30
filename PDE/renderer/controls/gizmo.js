@@ -786,6 +786,9 @@ let _multiSelectionOriginAnchorValid = false;
 const _multiSelectionOriginAnchorInitialPosition = new THREE.Vector3();
 let _multiSelectionOriginAnchorInitialValid = false;
 
+// Multi-selection Rotation Accumulator (for "No Basis" / Select All mode)
+const _multiSelectionAccumulatedRotation = new THREE.Quaternion();
+
 // When selection is created without a meaningful "first" target (Ctrl+A / marquee),
 // anchor the gizmo at the selection center.
 let _selectionAnchorMode = 'default'; // 'default' | 'center'
@@ -799,6 +802,8 @@ function _clearGizmoAnchor() {
 
     _multiSelectionOriginAnchorInitialValid = false;
     _multiSelectionOriginAnchorInitialPosition.set(0, 0, 0);
+    
+    _multiSelectionAccumulatedRotation.set(0, 0, 0, 1);
 }
 
 function _getSelectionCenterWorld(out = new THREE.Vector3()) {
@@ -1282,21 +1287,28 @@ function updateHelperPosition() {
         // Keep helper scale neutral so scale gizmo math is consistent with object selection.
         selectionHelper.scale.set(1, 1, 1);
     } else if (items.length > 0) {
-        const firstItem = items[0];
-        const instanceMatrix = new THREE.Matrix4();
-        firstItem.mesh.getMatrixAt(firstItem.instanceId, instanceMatrix);
-        const worldMatrix = instanceMatrix.premultiply(firstItem.mesh.matrixWorld);
-        
-        const quaternion = getRotationFromMatrix(worldMatrix);
-        
         if (currentSpace === 'world') {
             selectionHelper.quaternion.set(0, 0, 0, 1);
         } else {
-            selectionHelper.quaternion.copy(quaternion);
+            if (currentSelection.primary) {
+                // Use Primary Selection Rotation
+                if (currentSelection.primary.type === 'group') {
+                    getGroupRotationQuaternion(currentSelection.primary.id, selectionHelper.quaternion);
+                } else if (currentSelection.primary.type === 'object') {
+                    const { mesh, instanceId } = currentSelection.primary;
+                    if (mesh) {
+                        const instanceMatrix = _TMP_MAT4_A;
+                        mesh.getMatrixAt(instanceId, instanceMatrix);
+                        const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
+                        selectionHelper.quaternion.copy(getRotationFromMatrix(worldMatrix));
+                    }
+                }
+            } else {
+                // No Primary (e.g. Select All) -> Use Accumulated Rotation
+                selectionHelper.quaternion.copy(_multiSelectionAccumulatedRotation);
+            }
         }
-
         selectionHelper.scale.set(1, 1, 1);
-
     } else {
         selectionHelper.quaternion.set(0, 0, 0, 1);
         selectionHelper.scale.set(1, 1, 1);
@@ -2826,6 +2838,11 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
 
         } else {
+            // Capture accumulated rotation for multi-selection "No Basis" mode
+            if (draggingMode === 'rotate' && _isMultiSelection() && !currentSelection.primary) {
+                _multiSelectionAccumulatedRotation.copy(selectionHelper.quaternion);
+            }
+
             draggingMode = null;
             isUniformScale = false;
 
@@ -3096,36 +3113,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             case 'x': {
                 currentSpace = currentSpace === 'world' ? 'local' : 'world';
                 transformControls.setSpace(currentSpace);
-                
-                const items = getSelectedItems();
-                if (items.length > 0) {
-                    if (currentSpace === 'world') {
-                        selectionHelper.quaternion.set(0, 0, 0, 1);
-                    } else {
-                        const firstItem = items[0];
-                        const instanceMatrix = new THREE.Matrix4();
-                        firstItem.mesh.getMatrixAt(firstItem.instanceId, instanceMatrix);
-                        const worldMatrix = instanceMatrix.premultiply(firstItem.mesh.matrixWorld);
-                        
-                        const quaternion = getRotationFromMatrix(worldMatrix);
-                        selectionHelper.quaternion.copy(quaternion);
-                    }
-                    selectionHelper.updateMatrixWorld();
-                    previousHelperMatrix.copy(selectionHelper.matrixWorld);
-                }
-                
-                const singleGroupId = _getSingleSelectedGroupId();
-                if (singleGroupId && currentSpace !== 'world') {
-                    const groups = getGroups();
-                    const group = groups.get(singleGroupId);
-                    if (group) {
-                        // Groups may have shear in their matrix; derive a stable orthonormal rotation for local space.
-                        getGroupRotationQuaternion(singleGroupId, selectionHelper.quaternion);
-                        selectionHelper.updateMatrixWorld();
-                        previousHelperMatrix.copy(selectionHelper.matrixWorld);
-                    }
-                }
-
+                updateHelperPosition();
                 console.log('TransformControls Space:', currentSpace);
                 break;
             }
