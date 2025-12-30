@@ -678,824 +678,876 @@ function _clearSceneAndCaches(): void {
     THREE.Cache.clear();
 }
 
-function _loadAndRenderPbde(file: File, isMerge: boolean): void {
-    // 0. 새 프로젝트를 로드하기 전에 현재 선택 상태를 리셋합니다.
-    if (loadedObjectGroup.userData.resetSelection) {
-        loadedObjectGroup.userData.resetSelection();
-    }
+/**
+ * Newly added helper to perform selection on a set of meshes.
+ * Extracted from _loadAndRenderPbde to allow batch selection control.
+ */
+function performSelection(newlyAddedSelectableMeshes: Set<THREE.Object3D>) {
+    const selectGroupsObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithGroupsAndObjects as
+        | undefined
+        | ((groupIds: Set<string>, meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
+    const selectObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithObjectsMap as
+        | undefined
+        | ((meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
 
-    const myGen = ++currentLoadGen;
+    if (newlyAddedSelectableMeshes.size > 0) {
+        const groupsMap = (loadedObjectGroup.userData.groups as Map<string, GroupData>) ?? new Map<string, GroupData>();
+        const objectToGroupMap = (loadedObjectGroup.userData.objectToGroup as Map<string, string>) ?? new Map<string, string>();
 
-    if (!isMerge) {
-        _clearSceneAndCaches();
-    } else {
-        // 프로젝트 병합 시, 머티리얼 캐시를 초기화하여 새로운 아틀라스가 적용되도록 한다.
-        // 기존 객체들은 이미 생성된 머티리얼을 참조하고 있으므로 영향받지 않는다.
-        blockMaterialCache.clear();
-        blockMaterialPromiseCache.clear();
-        
-        // 이전 프로젝트의 아틀라스 텍스처 참조를 제거
-        currentAtlasTexture = null;
-    }
-    
-    if (worker) {
-        worker.terminate();
-    }
-    
-    worker = new PbdeWorker();
+        const resolveRootGroupId = (groupId: string | null | undefined): string | null => {
+            if (!groupId) return null;
+            let current = groupId;
+            for (let i = 0; i < 128; i++) {
+                const g = groupsMap.get(current);
+                if (!g) break;
+                const parent = g.parent;
+                if (!parent) break;
+                current = parent;
+            }
+            return current || null;
+        };
 
-    createHeadGeometries();
+        const groupIds = new Set<string>();
+        const meshToIds = new Map<any, Set<number>>();
 
-    worker.onmessage = async (e) => {
-        const msg = e.data;
+        for (const mesh of newlyAddedSelectableMeshes) {
+            if (!mesh) continue;
+            const instancedMesh = mesh as THREE.InstancedMesh;
+            const batchedMesh = mesh as THREE.BatchedMesh;
 
-        if (msg.type === 'requestAsset') {
-            mainThreadAssetProvider.getAsset(msg.path)
-                .then(content => {
-                    worker.postMessage({ 
-                        type: 'assetResponse', 
-                        requestId: msg.requestId, 
-                        path: msg.path, 
-                        content: content, 
-                        success: true 
-                    });
-                })
-                .catch(error => {
-                    worker.postMessage({ 
-                        type: 'assetResponse', 
-                        requestId: msg.requestId, 
-                        path: msg.path, 
-                        error: error.message, 
-                        success: false 
-                    });
-                });
-            return;
+            if (!instancedMesh.isInstancedMesh && !batchedMesh.isBatchedMesh) continue;
+
+            let instanceCount = 0;
+            if (instancedMesh.isInstancedMesh) {
+                instanceCount = instancedMesh.count ?? 0;
+            } else {
+                const geomIds = mesh.userData?.instanceGeometryIds;
+                instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
+            }
+
+            if (instanceCount <= 0) continue;
+
+            let ids: Set<number> | null = null;
+            for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
+                const key = `${mesh.uuid}_${instanceId}`;
+                const immediateGroupId = objectToGroupMap.get(key);
+                if (immediateGroupId) {
+                    const root = resolveRootGroupId(immediateGroupId) ?? immediateGroupId;
+                    if (root) groupIds.add(root);
+                    continue;
+                }
+
+                if (!ids) ids = new Set<number>();
+                ids.add(instanceId);
+            }
+
+            if (ids && ids.size > 0) {
+                meshToIds.set(mesh, ids);
+            }
         }
 
-        if (msg.success) {
-            const { metadata, geometryBuffer } = msg;
-            if (!(geometryBuffer instanceof SharedArrayBuffer)) {
-                console.error('[Debug] geometryBuffer is not a SharedArrayBuffer. Aborting render pipeline.');
-                return;
-            }
-            const sharedBuffer = geometryBuffer as SharedArrayBuffer;
-            if (!metadata || typeof metadata !== 'object') {
-                console.error('[Debug] Invalid metadata payload from worker.');
-                return;
-            }
-            const metadataPayload = metadata as WorkerMetadata;
-            if (!Array.isArray(metadataPayload.geometries) || !Array.isArray(metadataPayload.otherItems)) {
-                console.error('[Debug] Invalid metadata payload from worker.');
-                return;
-            }
-            const { geometries: geometryMetas, otherItems, useUint32Indices, atlas, groups } = metadataPayload;
+        // Group-priority selection: if an instance belongs to a group, select the (root) group instead.
+        if (typeof selectGroupsObjectsFn === 'function') {
+            selectGroupsObjectsFn(groupIds, meshToIds, { anchorMode: 'center' });
+        } else if (typeof selectObjectsFn === 'function') {
+            // Fallback: select raw objects if gizmo API is not available.
+            selectObjectsFn(meshToIds, { anchorMode: 'center' });
+        }
+    }
+}
 
-            const newlyAddedSelectableMeshes = new Set<THREE.Object3D>();
+function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number): Promise<Set<THREE.Object3D>> {
+    return new Promise((resolve, reject) => {
+        // 0. 새 프로젝트를 로드하기 전에 현재 선택 상태를 리셋합니다.
+        // Single file open case or first file of batch open.
+        if (!isMerge && loadedObjectGroup.userData.resetSelection) {
+            loadedObjectGroup.userData.resetSelection();
+        }
 
-            // Grouping Setup
-            const incomingGroups = groups;
-            const groupIdRemap = new Map<string, string>();
+        const myGen = overrideGen !== undefined ? overrideGen : ++currentLoadGen;
 
-            // Keep existing group maps on merge; replace on fresh load.
-            if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map<string, GroupData>();
-            if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map<string, string>();
-
-            const effectiveGroups: Map<string, GroupData> = isMerge
-                ? (loadedObjectGroup.userData.groups as Map<string, GroupData>)
-                : (incomingGroups ?? new Map<string, GroupData>());
-
-            const objectToGroup: Map<string, string> = isMerge
-                ? (loadedObjectGroup.userData.objectToGroup as Map<string, string>)
-                : new Map<string, string>();
-
-            loadedObjectGroup.userData.groups = effectiveGroups;
-            loadedObjectGroup.userData.objectToGroup = objectToGroup;
-
-            if (incomingGroups) {
-                // Precompute ID remaps (very unlikely, but safe on merge)
-                if (isMerge) {
-                    for (const [id] of incomingGroups) {
-                        if (effectiveGroups.has(id)) {
-                            groupIdRemap.set(id, THREE.MathUtils.generateUUID());
-                        }
-                    }
-                }
-
-                // Merge incoming groups into effectiveGroups
-                for (const [origId, group] of incomingGroups) {
-                    const newId = groupIdRemap.get(origId) ?? origId;
-                    if (newId !== origId) group.id = newId;
-
-                    if (group.parent && groupIdRemap.has(group.parent)) {
-                        group.parent = groupIdRemap.get(group.parent);
-                    }
-                    if (Array.isArray(group.children)) {
-                        for (const child of group.children) {
-                            if (child && child.type === 'group' && child.id && groupIdRemap.has(child.id)) {
-                                child.id = groupIdRemap.get(child.id);
-                            }
-                        }
-                    }
-
-                    // Restore THREE objects for group transforms
-                    if (group.quaternion) {
-                        const q = group.quaternion;
-                        if (!(q instanceof THREE.Quaternion)) {
-                            const x = q._x !== undefined ? q._x : q.x;
-                            const y = q._y !== undefined ? q._y : q.y;
-                            const z = q._z !== undefined ? q._z : q.z;
-                            const w = q._w !== undefined ? q._w : q.w;
-                            group.quaternion = new THREE.Quaternion(x, y, z, w);
-                        }
-                    }
-                    if (group.scale) {
-                        const s = group.scale;
-                        if (!(s instanceof THREE.Vector3)) {
-                            group.scale = new THREE.Vector3(s.x, s.y, s.z);
-                        }
-                    }
-                    if (group.position) {
-                        const p = group.position;
-                        if (!(p instanceof THREE.Vector3)) {
-                            group.position = new THREE.Vector3(p.x, p.y, p.z);
-                        }
-                    }
-
-                    effectiveGroups.set(newId, group);
-                }
-            }
-
-            function registerObject(mesh: THREE.Object3D, instanceId: number, uuid: string, groupId: string) {
-                if (!groupId || !incomingGroups) return;
-                const finalGroupId = groupIdRemap.get(groupId) ?? groupId;
-                const key = `${mesh.uuid}_${instanceId}`;
-                objectToGroup.set(key, finalGroupId);
-
-                const group = effectiveGroups.get(finalGroupId);
-                if (group && Array.isArray(group.children)) {
-                    const childIndex = group.children.findIndex((c: GroupChild) => c && c.type === 'object' && c.id === uuid);
-                    if (childIndex !== -1) {
-                        group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId, id: uuid };
-                    }
-                }
-            }
-
-            if (atlas) {
-                try {
-                    const imageData = new ImageData(new Uint8ClampedArray(atlas.data), atlas.width, atlas.height);
-                    const tex = new THREE.Texture(await createImageBitmap(imageData));
-                    tex.magFilter = THREE.NearestFilter;
-                    tex.minFilter = THREE.NearestFilter;
-                    tex.generateMipmaps = false;
-                    tex.colorSpace = THREE.SRGBColorSpace;
-                    tex.needsUpdate = true;
-                    currentAtlasTexture = tex;
-                } catch (e) {
-                    console.warn("Failed to create atlas texture", e);
-                }
-            }
-
-            console.log(`[Debug] Processing ${geometryMetas.length + otherItems.length} items from worker (binary).`);
-
-            const instancedGeometries = new Map<string, THREE.BufferGeometry>();
-            const instancedMaterials = new Map<string, THREE.Material>();
-            const materialPromises = new Map<string, Promise<THREE.Material>>();
+        if (!isMerge) {
+            _clearSceneAndCaches();
+        } else {
+            // 프로젝트 병합 시, 머티리얼 캐시를 초기화하여 새로운 아틀라스가 적용되도록 한다.
+            // 기존 객체들은 이미 생성된 머티리얼을 참조하고 있으므로 영향받지 않는다.
+            blockMaterialCache.clear();
+            blockMaterialPromiseCache.clear();
             
-            // Grouping structure: GeometryId -> InstanceTransformString -> PartMeta[]
-            const blocks = new Map<string, Map<string, GeometryMeta[]>>();
-            const partsToMerge = new Map<string, { type: 'opaque' | 'translucent', parts: GeometryMeta[] }>();
+            // 이전 프로젝트의 아틀라스 텍스처 참조를 제거
+            currentAtlasTexture = null;
+        }
+        
+        if (worker) {
+            worker.terminate();
+        }
+        
+        worker = new PbdeWorker();
 
-            ensureSharedPlaceholder();
-            const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
+        createHeadGeometries();
 
-            for (const meta of geometryMetas) {
-                const geomKey = `${meta.geometryId}|${meta.geometryIndex}`;
-                let geometry = instancedGeometries.get(geomKey);
+        worker.onmessage = async (e) => {
+            const msg = e.data;
 
-                if (!geometry) {
-                    geometry = new THREE.BufferGeometry();
-                    const positions = new Float32Array(sharedBuffer, meta.posByteOffset, meta.posLen);
-                    const normals = new Float32Array(sharedBuffer, meta.normByteOffset, meta.normLen);
-                    const uvs = new Float32Array(sharedBuffer, meta.uvByteOffset, meta.uvLen);
-                    const indices = useUint32Indices
-                        ? new Uint32Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen)
-                        : new Uint16Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen);
-
-                    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-                    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-                    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-                    geometry.computeBoundingSphere();
-                    instancedGeometries.set(geomKey, geometry);
-                }
-
-                let type: 'opaque' | 'translucent' | null = null;
-                if (currentAtlasTexture) {
-                    if (meta.texPath === '__ATLAS__') type = 'opaque';
-                    else if (meta.texPath === '__ATLAS_TRANSLUCENT__') type = 'translucent';
-                }
-
-                if (type) {
-                    const instanceKey = String(meta.itemId);
-                    const key = `${instanceKey}|${type}|${meta.tintHex ?? 0xffffff}`;
-                    if (!partsToMerge.has(key)) {
-                        partsToMerge.set(key, { type, parts: [] });
-                    }
-                    partsToMerge.get(key)!.parts.push(meta);
-                } else {
-                    const geomId = meta.geometryId;
-                    const instanceKey = String(meta.itemId);
-                    
-                    let geomGroup = blocks.get(geomId);
-                    if (!geomGroup) {
-                        geomGroup = new Map();
-                        blocks.set(geomId, geomGroup);
-                    }
-                    
-                    let instanceParts = geomGroup.get(instanceKey);
-                    if (!instanceParts) {
-                        instanceParts = [];
-                        geomGroup.set(instanceKey, instanceParts);
-                    }
-                    instanceParts.push(meta);
-                }
+            if (msg.type === 'requestAsset') {
+                mainThreadAssetProvider.getAsset(msg.path)
+                    .then(content => {
+                        worker?.postMessage({ 
+                            type: 'assetResponse', 
+                            requestId: msg.requestId, 
+                            path: msg.path, 
+                            content: content, 
+                            success: true 
+                        });
+                    })
+                    .catch(error => {
+                        worker?.postMessage({ 
+                            type: 'assetResponse', 
+                            requestId: msg.requestId, 
+                            path: msg.path, 
+                            error: error.message, 
+                            success: false 
+                        });
+                    });
+                return;
             }
 
-            // --- BatchedMesh Logic for Atlas ---
-            if (currentAtlasTexture) {
-                const batchGroups = {
-                    opaque: { parts: [] as GeometryMeta[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() },
-                    translucent: { parts: [] as GeometryMeta[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() }
-                };
-
-                // Process merged parts and add to batchGroups
-                for (const [key, { type, parts }] of partsToMerge) {
-                    const targetGroup = type === 'opaque' ? batchGroups.opaque : batchGroups.translucent;
-                    
-                    if (parts.length === 1) {
-                        // Single part, no merge needed
-                        const part = parts[0];
-                        targetGroup.parts.push(part);
-                        const geomKey = `${part.geometryId}|${part.geometryIndex}`;
-                        if (!targetGroup.geometries.has(geomKey)) {
-                            const geo = instancedGeometries.get(geomKey)!;
-                            targetGroup.geometries.set(geomKey, geo);
-                            targetGroup.maxVerts += geo.attributes.position.count;
-                            targetGroup.maxIndices += (geo.index ? geo.index.count : 0);
-                        }
-                    } else {
-                        // Merge needed
-                        const geometriesToMerge: THREE.BufferGeometry[] = [];
-                        for (const part of parts) {
-                            const geomKey = `${part.geometryId}|${part.geometryIndex}`;
-                            const geo = instancedGeometries.get(geomKey)!;
-                            const clone = geo.clone();
-                            if (part.modelMatrix) {
-                                const m = new THREE.Matrix4().fromArray(part.modelMatrix);
-                                clone.applyMatrix4(m);
-                            }
-                            geometriesToMerge.push(clone);
-                        }
-                        
-                        const mergedGeo = mergeIndexedGeometries(geometriesToMerge);
-                        if (mergedGeo) {
-                            const uniqueId = `merged|${key}`;
-                            const finalGeomKey = `${uniqueId}|0`;
-                            instancedGeometries.set(finalGeomKey, mergedGeo);
-                            
-                            const firstPart = parts[0];
-                            const newPart = {
-                                ...firstPart,
-                                geometryId: uniqueId,
-                                geometryIndex: 0,
-                                modelMatrix: null // Baked into geometry
-                            };
-                            
-                            targetGroup.parts.push(newPart);
-                            
-                            if (!targetGroup.geometries.has(finalGeomKey)) {
-                                targetGroup.geometries.set(finalGeomKey, mergedGeo);
-                                targetGroup.maxVerts += mergedGeo.attributes.position.count;
-                                targetGroup.maxIndices += (mergedGeo.index ? mergedGeo.index.count : 0);
-                            }
-                        }
-                    }
+            if (msg.success) {
+                const { metadata, geometryBuffer } = msg;
+                if (!(geometryBuffer instanceof SharedArrayBuffer)) {
+                    console.error('[Debug] geometryBuffer is not a SharedArrayBuffer. Aborting render pipeline.');
+                    worker?.terminate();
+                    worker = null;
+                    resolve(new Set());
+                    return;
                 }
-
-                // 2. Create BatchedMeshes
-                const createBatchedMesh = async (group: typeof batchGroups.opaque, texPath: string) => {
-                    if (group.parts.length === 0) return;
-
-                    try {
-                        const material = await getBlockMaterial(texPath, undefined, myGen);
-                        // BatchedMesh(maxInstanceCount, maxVertexCount, maxIndexCount, material)
-                        const batch = new THREE.BatchedMesh(group.parts.length, group.maxVerts, group.maxIndices, material);
-                        batch.frustumCulled = false;
-                        batch.userData.displayType = 'block_display'; 
-                        batch.userData.displayTypes = new Map();
-                        batch.userData.geometryBounds = new Map();
-                        batch.userData.originalGeometries = new Map();
-                        batch.userData.instanceGeometryIds = [];
-                        batch.userData.itemIds = new Map();
-                        batch.userData.localMatrices = new Map();
-
-                        // Register geometries
-                        const geomIdMap = new Map<string, number>();
-                        for (const [key, geo] of group.geometries) {
-                            // Use raw geometry without baking modelMatrix
-                            // modelMatrix (blockstate rotation, display transform) will be applied to instance matrix
-                            const batchGeomId = batch.addGeometry(geo);
-                            geomIdMap.set(key, batchGeomId);
-                            batch.userData.originalGeometries.set(batchGeomId, geo);
-
-                            if (!geo.boundingBox) geo.computeBoundingBox();
-                            batch.userData.geometryBounds.set(batchGeomId, geo.boundingBox.clone());
-                        }
-
-                        // Add instances
-                        const dummyMatrix = new THREE.Matrix4();
-                        const localMatrix = new THREE.Matrix4();
-                        const color = new THREE.Color();
-                        
-                        for (const part of group.parts) {
-                            const geomKey = `${part.geometryId}|${part.geometryIndex}`;
-                            const batchGeomId = geomIdMap.get(geomKey);
-                            if (batchGeomId === undefined) continue;
-
-                            const instanceId = batch.addInstance(batchGeomId);
-                            batch.userData.instanceGeometryIds[instanceId] = batchGeomId;
-                            
-                            // part.transform is the instance matrix (world transform, row-major from worker -> transpose)
-                            dummyMatrix.fromArray(part.transform).transpose();
-                            
-                            // part.modelMatrix is the local transform (blockstate, display settings, column-major)
-                            if (part.modelMatrix) {
-                                localMatrix.fromArray(part.modelMatrix);
-                                dummyMatrix.multiply(localMatrix);
-
-                                batch.userData.localMatrices.set(instanceId, localMatrix.clone());
-                            }
-
-                            batch.setMatrixAt(instanceId, dummyMatrix);
-
-                            const tint = part.tintHex ?? 0xffffff;
-                            color.setHex(tint);
-                            batch.setColorAt(instanceId, color);
-
-                            if (batch.userData.displayTypes) {
-                                batch.userData.displayTypes.set(instanceId, part.isItemDisplayModel ? 'item_display' : 'block_display');
-                            }
-                            if (batch.userData.itemIds && part.itemId !== undefined) {
-                                batch.userData.itemIds.set(instanceId, part.itemId);
-                            }
-
-                            registerObject(batch, instanceId, part.uuid, part.groupId);
-                        }
-
-                        loadedObjectGroup.add(batch);
-                        newlyAddedSelectableMeshes.add(batch);
-                        
-                        if (material.transparent) {
-                            batch.renderOrder = 1;
-                        }
-
-                    } catch (e) {
-                        console.error("Failed to create BatchedMesh", e);
-                    }
-                };
-
-                await createBatchedMesh(batchGroups.opaque, '__ATLAS__');
-                await createBatchedMesh(batchGroups.translucent, '__ATLAS_TRANSLUCENT__');
-            }
-            //--- BatchedMesh Logic for Atlas End ---
-
-            // Process grouped blocks
-            for (const [geomId, instancesMap] of blocks) {
-                // Group instances by Signature (combination of parts and materials)
-                const signatureGroups = new Map<string, { parts: GeometryMeta[], matrices: THREE.Matrix4[], instanceMetas: { uuid: string, groupId: string | null }[] }>();
-
-                for (const [matrixStr, parts] of instancesMap) {
-                    // Sort parts by geometryIndex to ensure consistent order
-                    parts.sort((a, b) => a.geometryIndex - b.geometryIndex);
-
-                    // Create Signature (modelMatrix 포함하여 facing 등 blockstate 정보 반영)
-                    const signature = parts.map(p => 
-                        `${p.geometryIndex}|${p.texPath}|${p.tintHex ?? 0xffffff}|${p.modelMatrix.join(',')}`
-                    ).join('||');
-
-                    let group = signatureGroups.get(signature);
-                    if (!group) {
-                        group = { parts: parts, matrices: [], instanceMetas: [] };
-                        signatureGroups.set(signature, group);
-                    }
-                    
-                    // Reconstruct instance matrix
-                    const matrix = new THREE.Matrix4().fromArray(parts[0].transform).transpose();
-                    group.matrices.push(matrix);
-                    group.instanceMetas.push({ uuid: parts[0].uuid, groupId: parts[0].groupId });
+                const sharedBuffer = geometryBuffer as SharedArrayBuffer;
+                if (!metadata || typeof metadata !== 'object') {
+                    console.error('[Debug] Invalid metadata payload from worker.');
+                    worker?.terminate();
+                    worker = null;
+                    resolve(new Set());
+                    return;
                 }
+                const metadataPayload = metadata as WorkerMetadata;
+                if (!Array.isArray(metadataPayload.geometries) || !Array.isArray(metadataPayload.otherItems)) {
+                    console.error('[Debug] Invalid metadata payload from worker.');
+                    worker?.terminate();
+                    worker = null;
+                    resolve(new Set());
+                    return;
+                }
+                const { geometries: geometryMetas, otherItems, useUint32Indices, atlas, groups } = metadataPayload;
 
-                // Create InstancedMesh for each signature group
-                for (const [sig, group] of signatureGroups) {
-                    const representativeParts = group.parts;
-                    const matrices = group.matrices;
-                    const instanceMetas = group.instanceMetas;
+                const newlyAddedSelectableMeshes = new Set<THREE.Object3D>();
 
-                    // Merge Geometries
-                    const geometriesToMerge: THREE.BufferGeometry[] = [];
-                    const materials: THREE.Material[] = [];
-                    const matPromisesForMesh: Promise<THREE.Material>[] = [];
+                // Grouping Setup
+                const incomingGroups = groups;
+                const groupIdRemap = new Map<string, string>();
 
-                    for (const part of representativeParts) {
-                        const geomKey = `${part.geometryId}|${part.geometryIndex}`;
-                        const baseGeo = instancedGeometries.get(geomKey)!;
-                        
-                        // Clone and apply local transform (modelMatrix)
-                        const clonedGeo = baseGeo.clone();
-                        const localMatrix = new THREE.Matrix4().fromArray(part.modelMatrix);
-                        clonedGeo.applyMatrix4(localMatrix);
-                        geometriesToMerge.push(clonedGeo);
+                // Keep existing group maps on merge; replace on fresh load.
+                if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map<string, GroupData>();
+                if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map<string, string>();
 
-                        // Prepare Material
-                        const matKey = `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}`;
-                        let material = instancedMaterials.get(matKey);
-                        
-                        if (!material) {
-                            // If not loaded, use placeholder and load it
-                            material = placeholderMaterial;
-                            if (!materialPromises.has(matKey)) {
-                                const p = getBlockMaterial(part.texPath, part.tintHex, myGen).then(m => {
-                                    if (myGen === currentLoadGen) {
-                                        instancedMaterials.set(matKey, m);
-                                    }
-                                    return m;
-                                });
-                                materialPromises.set(matKey, p);
+                const effectiveGroups: Map<string, GroupData> = isMerge
+                    ? (loadedObjectGroup.userData.groups as Map<string, GroupData>)
+                    : (incomingGroups ?? new Map<string, GroupData>());
+
+                const objectToGroup: Map<string, string> = isMerge
+                    ? (loadedObjectGroup.userData.objectToGroup as Map<string, string>)
+                    : new Map<string, string>();
+
+                loadedObjectGroup.userData.groups = effectiveGroups;
+                loadedObjectGroup.userData.objectToGroup = objectToGroup;
+
+                if (incomingGroups) {
+                    // Precompute ID remaps (very unlikely, but safe on merge)
+                    if (isMerge) {
+                        for (const [id] of incomingGroups) {
+                            if (effectiveGroups.has(id)) {
+                                groupIdRemap.set(id, THREE.MathUtils.generateUUID());
                             }
-                            matPromisesForMesh.push(materialPromises.get(matKey)!);
-                        } else {
-                            matPromisesForMesh.push(Promise.resolve(material));
                         }
-                        materials.push(material);
                     }
 
-                    const mergedGeo = mergeIndexedGeometries(geometriesToMerge);
-                    if (mergedGeo) {
-                        // Add groups for multi-material support
-                        let start = 0;
-                        for (let i = 0; i < geometriesToMerge.length; i++) {
-                            const count = geometriesToMerge[i].getIndex()!.count;
-                            mergedGeo.addGroup(start, count, i);
-                            start += count;
-                        }
+                    // Merge incoming groups into effectiveGroups
+                    for (const [origId, group] of incomingGroups) {
+                        const newId = groupIdRemap.get(origId) ?? origId;
+                        if (newId !== origId) group.id = newId;
 
-                        const instancedMesh = new THREE.InstancedMesh(mergedGeo, materials, matrices.length);
-                        
-                        // Use metadata from worker to determine display type
-                        if (representativeParts[0].isItemDisplayModel) {
-                            instancedMesh.userData.displayType = 'item_display';
-                        } else {
-                            instancedMesh.userData.displayType = 'block_display';
+                        if (group.parent && groupIdRemap.has(group.parent)) {
+                            group.parent = groupIdRemap.get(group.parent);
                         }
-                        
-                        instancedMesh.frustumCulled = false;
-
-                        for (let i = 0; i < matrices.length; i++) {
-                            instancedMesh.setMatrixAt(i, matrices[i]);
-                            const meta = instanceMetas[i];
-                            registerObject(instancedMesh, i, meta.uuid, meta.groupId);
-                        }
-                        instancedMesh.instanceMatrix.needsUpdate = true;
-                        instancedMesh.computeBoundingSphere();
-                        loadedObjectGroup.add(instancedMesh);
-                        newlyAddedSelectableMeshes.add(instancedMesh);
-
-                        // Handle async material loading
-                        if (matPromisesForMesh.length > 0) {
-                            Promise.all(matPromisesForMesh).then(loadedMats => {
-                                if (myGen === currentLoadGen) {
-                                    instancedMesh.material = loadedMats;
-                                    // Check transparency
-                                    if (loadedMats.some(m => m.transparent)) {
-                                        instancedMesh.renderOrder = 1;
-                                    }
+                        if (Array.isArray(group.children)) {
+                            for (const child of group.children) {
+                                if (child && child.type === 'group' && child.id && groupIdRemap.has(child.id)) {
+                                    child.id = groupIdRemap.get(child.id);
                                 }
-                            }).catch(e => {
-                                console.warn(`[Texture] Error loading materials for ${geomId}:`, e);
-                            });
-                        } else {
-                             if (materials.some(m => m.transparent)) {
-                                instancedMesh.renderOrder = 1;
                             }
+                        }
+
+                        // Restore THREE objects for group transforms
+                        if (group.quaternion) {
+                            const q = group.quaternion;
+                            if (!(q instanceof THREE.Quaternion)) {
+                                const x = q._x !== undefined ? q._x : q.x;
+                                const y = q._y !== undefined ? q._y : q.y;
+                                const z = q._z !== undefined ? q._z : q.z;
+                                const w = q._w !== undefined ? q._w : q.w;
+                                group.quaternion = new THREE.Quaternion(x, y, z, w);
+                            }
+                        }
+                        if (group.scale) {
+                            const s = group.scale;
+                            if (!(s instanceof THREE.Vector3)) {
+                                group.scale = new THREE.Vector3(s.x, s.y, s.z);
+                            }
+                        }
+                        if (group.position) {
+                            const p = group.position;
+                            if (!(p instanceof THREE.Vector3)) {
+                                group.position = new THREE.Vector3(p.x, p.y, p.z);
+                            }
+                        }
+
+                        effectiveGroups.set(newId, group);
+                    }
+                }
+
+                function registerObject(mesh: THREE.Object3D, instanceId: number, uuid: string, groupId: string) {
+                    if (!groupId || !incomingGroups) return;
+                    const finalGroupId = groupIdRemap.get(groupId) ?? groupId;
+                    const key = `${mesh.uuid}_${instanceId}`;
+                    objectToGroup.set(key, finalGroupId);
+
+                    const group = effectiveGroups.get(finalGroupId);
+                    if (group && Array.isArray(group.children)) {
+                        const childIndex = group.children.findIndex((c: GroupChild) => c && c.type === 'object' && c.id === uuid);
+                        if (childIndex !== -1) {
+                            group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId, id: uuid };
                         }
                     }
                 }
-            }
 
-            const playerHeadItems: Array<OtherItem> = [];
-            otherItems.forEach((item) => {
-                if (item.type === 'itemDisplay' && item.textureUrl) {
-                    playerHeadItems.push(item);
-                }
-            });
-
-            if (playerHeadItems.length > 0) {
-                const playerHeadPromise = (async () => {
+                if (atlas) {
                     try {
-                        if (!headGeometries || !headGeometries.merged) {
-                            console.error("Head geometries not available for instancing.");
-                            return;
-                        }
-
-                        const uniqueUrls = [...new Set(playerHeadItems.map(item => item.textureUrl))];
-                        
-                        const ATLAS_SIZE = 2048;
-                        const PART_SIZE = 8;
-                        const PART_BLOCK_WIDTH = PART_SIZE * 3;
-                        const PART_BLOCK_HEIGHT = PART_SIZE * 4;
-                        const BLOCKS_PER_ROW = Math.floor(ATLAS_SIZE / PART_BLOCK_WIDTH);
-
-                        const atlasCanvas = document.createElement('canvas');
-                        atlasCanvas.width = ATLAS_SIZE;
-                        atlasCanvas.height = ATLAS_SIZE;
-                        const atlasCtx = atlasCanvas.getContext('2d');
-                        if (!atlasCtx) return;
-                        atlasCtx.imageSmoothingEnabled = false;
-
-                        const skinLayouts = new Map<string, { x: number, y: number }>();
-                        const skinTransparency = new Map<string, boolean>(); // URL -> isLayerTransparent
-                        
-                        const faceParts = {
-                            right:  { s: [16, 8] }, left:   { s: [0, 8] },
-                            top:    { s: [8, 0] },  bottom: { s: [16, 0] },
-                            front:  { s: [24, 8] }, back:   { s: [8, 8] },
-                            layer_right:  { s: [48, 8] }, layer_left:   { s: [32, 8] },
-                            layer_top:    { s: [40, 0] }, layer_bottom: { s: [48, 0] },
-                            layer_front:  { s: [56, 8] }, layer_back:   { s: [40, 8] }
-                        };
-                        const partOrder = Object.keys(faceParts);
-
-                        const layerRegions = [
-                            [48, 8, 8, 8], [32, 8, 8, 8],
-                            [40, 0, 8, 8], [48, 0, 8, 8],
-                            [56, 8, 8, 8], [40, 8, 8, 8]
-                        ];
-
-                        const imagePromises = uniqueUrls.map((url, index) => {
-                            return new Promise<void>((resolve, reject) => {
-                                const img = new Image();
-                                img.crossOrigin = 'anonymous';
-                                img.onload = () => {
-                                    const blockX = (index % BLOCKS_PER_ROW) * PART_BLOCK_WIDTH;
-                                    const blockY = Math.floor(index / BLOCKS_PER_ROW) * PART_BLOCK_HEIGHT;
-                                    skinLayouts.set(url, { x: blockX, y: blockY });
-                                    
-                                    // Check transparency
-                                    const isTransparent = isLayerTransparent(img, layerRegions);
-                                    skinTransparency.set(url, isTransparent);
-
-                                    partOrder.forEach((key, i) => {
-                                        const part = faceParts[key as keyof typeof faceParts];
-                                        const dx = (i % 3) * PART_SIZE;
-                                        const dy = Math.floor(i / 3) * PART_SIZE;
-                                        atlasCtx.drawImage(img, part.s[0], part.s[1], 8, 8, blockX + dx, blockY + dy, 8, 8);
-                                    });
-                                    resolve();
-                                };
-                                img.onerror = (e) => reject(new Error(`Failed to load image: ${url}, error: ${e}`));
-                                img.src = url.replace('http://', 'https://');
-                            });
-                        });
-
-                        await Promise.all(imagePromises);
-
-                        const atlasTexture = new THREE.Texture(atlasCanvas);
-                        atlasTexture.needsUpdate = true;
-                        atlasTexture.magFilter = THREE.NearestFilter;
-                        atlasTexture.minFilter = THREE.NearestFilter;
-                        atlasTexture.colorSpace = THREE.SRGBColorSpace;
-                        
-                        const atlasMaterial = createEntityMaterial(atlasTexture, 0xffffff, true).material;
-                        atlasMaterial.toneMapped = false;
-                        atlasMaterial.fog = false;
-                        atlasMaterial.flatShading = true;
-                        atlasMaterial.side = THREE.DoubleSide;
-                        
-                        const sharedGeometry = (headGeometries.merged as THREE.BufferGeometry).clone();
-                        const newUvAttr = sharedGeometry.getAttribute('uv') as THREE.BufferAttribute;
-
-                        const baseFaceOrder = ['left', 'right', 'top', 'bottom', 'front', 'back']; // BoxGeometry order
-                        const allFaceKeys = [...baseFaceOrder, ...baseFaceOrder.map(k => `layer_${k}`)];
-
-                        for (let faceIdx = 0; faceIdx < 12; faceIdx++) {
-                            const partKey = allFaceKeys[faceIdx];
-                            const partIndex = partOrder.indexOf(partKey);
-
-                            if (partIndex === -1) continue;
-
-                            const dx = (partIndex % 3) * PART_SIZE;
-                            const dy = Math.floor(partIndex / 3) * PART_SIZE;
-                            
-                            const inset = 0;
-                            const u0 = (dx + inset) / ATLAS_SIZE;
-                            const u1 = (dx + PART_SIZE - inset) / ATLAS_SIZE;
-
-                            const v1 = (PART_BLOCK_HEIGHT - dy - inset) / ATLAS_SIZE;
-                            const v0 = (PART_BLOCK_HEIGHT - (dy + PART_SIZE) - inset) / ATLAS_SIZE;
-                            
-                            const baseFaceName = baseFaceOrder[faceIdx % 6];
-                            const uvWriteIndex = faceIdx * 4;
-                            
-                            if (baseFaceName === 'top') {
-                                newUvAttr.setXY(uvWriteIndex + 0, u1, v0);
-                                newUvAttr.setXY(uvWriteIndex + 1, u0, v0);
-                                newUvAttr.setXY(uvWriteIndex + 2, u1, v1);
-                                newUvAttr.setXY(uvWriteIndex + 3, u0, v1);
-                            } else if (baseFaceName === 'bottom') {
-                                newUvAttr.setXY(uvWriteIndex + 0, u1, v1);
-                                newUvAttr.setXY(uvWriteIndex + 1, u0, v1);
-                                newUvAttr.setXY(uvWriteIndex + 2, u1, v0);
-                                newUvAttr.setXY(uvWriteIndex + 3, u0, v0);
-                            } else {
-                                newUvAttr.setXY(uvWriteIndex + 0, u0, v1);
-                                newUvAttr.setXY(uvWriteIndex + 1, u1, v1);
-                                newUvAttr.setXY(uvWriteIndex + 2, u0, v0);
-                                newUvAttr.setXY(uvWriteIndex + 3, u1, v0);
-                            }
-                        }
-                        newUvAttr.needsUpdate = true;
-
-                        const totalInstances = playerHeadItems.length;
-                        const matrices = new Float32Array(totalInstances * 16);
-                        const uvOffsets = new Float32Array(totalInstances * 2);
-                        const hasHatArray = new Array(totalInstances).fill(false);
-
-                        let i = 0;
-                        for (const item of playerHeadItems) {
-                            const matrix = new THREE.Matrix4().fromArray(item.transform).transpose();
-                            const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
-                            matrix.multiply(scaleMatrix);
-                            matrix.toArray(matrices, i * 16);
-
-                            const skinBlockPos = skinLayouts.get(item.textureUrl);
-                            if (skinBlockPos) {
-                                const uOffset = skinBlockPos.x / ATLAS_SIZE;
-                                const vOffset = 1.0 - (skinBlockPos.y + PART_BLOCK_HEIGHT) / ATLAS_SIZE;
-                                
-                                uvOffsets[i * 2 + 0] = uOffset;
-                                uvOffsets[i * 2 + 1] = vOffset;
-                            }
-
-                            const isTransparent = skinTransparency.get(item.textureUrl);
-                            // If layer is NOT transparent, it has a hat.
-                            hasHatArray[i] = !isTransparent;
-
-                            i++;
-                        }
-                        
-                        sharedGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
-
-                        const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, totalInstances);
-                        instancedMesh.userData.displayType = 'item_display';
-                        instancedMesh.userData.hasHat = hasHatArray; // Store hat info for gizmo
-                        instancedMesh.instanceMatrix.needsUpdate = true;
-                        instancedMesh.frustumCulled = false;
-                        instancedMesh.instanceMatrix.array = matrices;
-                        instancedMesh.frustumCulled = false;
-                        instancedMesh.layers.enable(2);
-                        instancedMesh.computeBoundingSphere();
-
-                        playerHeadItems.forEach((item, idx) => {
-                            registerObject(instancedMesh, idx, item.uuid, item.groupId);
-                        });
-
-                        loadedObjectGroup.add(instancedMesh);
-                        newlyAddedSelectableMeshes.add(instancedMesh);
-
-                    } catch (err) {
-                        console.error('Player head instancing failed:', err);
+                        const imageData = new ImageData(new Uint8ClampedArray(atlas.data), atlas.width, atlas.height);
+                        const tex = new THREE.Texture(await createImageBitmap(imageData));
+                        tex.magFilter = THREE.NearestFilter;
+                        tex.minFilter = THREE.NearestFilter;
+                        tex.generateMipmaps = false;
+                        tex.colorSpace = THREE.SRGBColorSpace;
+                        tex.needsUpdate = true;
+                        currentAtlasTexture = tex;
+                    } catch (e) {
+                        console.warn("Failed to create atlas texture", e);
                     }
-                })();
+                }
 
-                try { await playerHeadPromise; } catch { /* ignore */ }
-            }
+                console.log(`[Debug] Processing ${geometryMetas.length + otherItems.length} items from worker (binary).`);
 
-            // After merge: select the newly added items as a multi-selection.
-            if (isMerge) {
-                const selectGroupsObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithGroupsAndObjects as
-                    | undefined
-                    | ((groupIds: Set<string>, meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
-                const selectObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithObjectsMap as
-                    | undefined
-                    | ((meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
+                const instancedGeometries = new Map<string, THREE.BufferGeometry>();
+                const instancedMaterials = new Map<string, THREE.Material>();
+                const materialPromises = new Map<string, Promise<THREE.Material>>();
+                
+                // Grouping structure: GeometryId -> InstanceTransformString -> PartMeta[]
+                const blocks = new Map<string, Map<string, GeometryMeta[]>>();
+                const partsToMerge = new Map<string, { type: 'opaque' | 'translucent', parts: GeometryMeta[] }>();
 
-                if (newlyAddedSelectableMeshes.size > 0) {
-                    const groupsMap = (loadedObjectGroup.userData.groups as Map<string, GroupData>) ?? new Map<string, GroupData>();
-                    const objectToGroupMap = (loadedObjectGroup.userData.objectToGroup as Map<string, string>) ?? new Map<string, string>();
+                ensureSharedPlaceholder();
+                const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
 
-                    const resolveRootGroupId = (groupId: string | null | undefined): string | null => {
-                        if (!groupId) return null;
-                        let current = groupId;
-                        for (let i = 0; i < 128; i++) {
-                            const g = groupsMap.get(current);
-                            if (!g) break;
-                            const parent = g.parent;
-                            if (!parent) break;
-                            current = parent;
+                for (const meta of geometryMetas) {
+                    const geomKey = `${meta.geometryId}|${meta.geometryIndex}`;
+                    let geometry = instancedGeometries.get(geomKey);
+
+                    if (!geometry) {
+                        geometry = new THREE.BufferGeometry();
+                        const positions = new Float32Array(sharedBuffer, meta.posByteOffset, meta.posLen);
+                        const normals = new Float32Array(sharedBuffer, meta.normByteOffset, meta.normLen);
+                        const uvs = new Float32Array(sharedBuffer, meta.uvByteOffset, meta.uvLen);
+                        const indices = useUint32Indices
+                            ? new Uint32Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen)
+                            : new Uint16Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen);
+
+                        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                        geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+                        geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+                        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+                        geometry.computeBoundingSphere();
+                        instancedGeometries.set(geomKey, geometry);
+                    }
+
+                    let type: 'opaque' | 'translucent' | null = null;
+                    if (currentAtlasTexture) {
+                        if (meta.texPath === '__ATLAS__') type = 'opaque';
+                        else if (meta.texPath === '__ATLAS_TRANSLUCENT__') type = 'translucent';
+                    }
+
+                    if (type) {
+                        const instanceKey = String(meta.itemId);
+                        const key = `${instanceKey}|${type}|${meta.tintHex ?? 0xffffff}`;
+                        if (!partsToMerge.has(key)) {
+                            partsToMerge.set(key, { type, parts: [] });
                         }
-                        return current || null;
+                        partsToMerge.get(key)!.parts.push(meta);
+                    } else {
+                        const geomId = meta.geometryId;
+                        const instanceKey = String(meta.itemId);
+                        
+                        let geomGroup = blocks.get(geomId);
+                        if (!geomGroup) {
+                            geomGroup = new Map();
+                            blocks.set(geomId, geomGroup);
+                        }
+                        
+                        let instanceParts = geomGroup.get(instanceKey);
+                        if (!instanceParts) {
+                            instanceParts = [];
+                            geomGroup.set(instanceKey, instanceParts);
+                        }
+                        instanceParts.push(meta);
+                    }
+                }
+
+                // --- BatchedMesh Logic for Atlas ---
+                if (currentAtlasTexture) {
+                    const batchGroups = {
+                        opaque: { parts: [] as GeometryMeta[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() },
+                        translucent: { parts: [] as GeometryMeta[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() }
                     };
 
-                    const groupIds = new Set<string>();
-                    const meshToIds = new Map<any, Set<number>>();
-
-                    for (const mesh of newlyAddedSelectableMeshes) {
-                        if (!mesh) continue;
-                        const instancedMesh = mesh as THREE.InstancedMesh;
-                        const batchedMesh = mesh as THREE.BatchedMesh;
-
-                        if (!instancedMesh.isInstancedMesh && !batchedMesh.isBatchedMesh) continue;
-
-                        let instanceCount = 0;
-                        if (instancedMesh.isInstancedMesh) {
-                            instanceCount = instancedMesh.count ?? 0;
+                    // Process merged parts and add to batchGroups
+                    for (const [key, { type, parts }] of partsToMerge) {
+                        const targetGroup = type === 'opaque' ? batchGroups.opaque : batchGroups.translucent;
+                        
+                        if (parts.length === 1) {
+                            // Single part, no merge needed
+                            const part = parts[0];
+                            targetGroup.parts.push(part);
+                            const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                            if (!targetGroup.geometries.has(geomKey)) {
+                                const geo = instancedGeometries.get(geomKey)!;
+                                targetGroup.geometries.set(geomKey, geo);
+                                targetGroup.maxVerts += geo.attributes.position.count;
+                                targetGroup.maxIndices += (geo.index ? geo.index.count : 0);
+                            }
                         } else {
-                            const geomIds = mesh.userData?.instanceGeometryIds;
-                            instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
+                            // Merge needed
+                            const geometriesToMerge: THREE.BufferGeometry[] = [];
+                            for (const part of parts) {
+                                const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                                const geo = instancedGeometries.get(geomKey)!;
+                                const clone = geo.clone();
+                                if (part.modelMatrix) {
+                                    const m = new THREE.Matrix4().fromArray(part.modelMatrix);
+                                    clone.applyMatrix4(m);
+                                }
+                                geometriesToMerge.push(clone);
+                            }
+                            
+                            const mergedGeo = mergeIndexedGeometries(geometriesToMerge);
+                            if (mergedGeo) {
+                                const uniqueId = `merged|${key}`;
+                                const finalGeomKey = `${uniqueId}|0`;
+                                instancedGeometries.set(finalGeomKey, mergedGeo);
+                                
+                                const firstPart = parts[0];
+                                const newPart = {
+                                    ...firstPart,
+                                    geometryId: uniqueId,
+                                    geometryIndex: 0,
+                                    modelMatrix: null // Baked into geometry
+                                };
+                                
+                                targetGroup.parts.push(newPart);
+                                
+                                if (!targetGroup.geometries.has(finalGeomKey)) {
+                                    targetGroup.geometries.set(finalGeomKey, mergedGeo);
+                                    targetGroup.maxVerts += mergedGeo.attributes.position.count;
+                                    targetGroup.maxIndices += (mergedGeo.index ? mergedGeo.index.count : 0);
+                                }
+                            }
                         }
+                    }
 
-                        if (instanceCount <= 0) continue;
+                    // 2. Create BatchedMeshes
+                    const createBatchedMesh = async (group: typeof batchGroups.opaque, texPath: string) => {
+                        if (group.parts.length === 0) return;
 
-                        let ids: Set<number> | null = null;
-                        for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                            const key = `${mesh.uuid}_${instanceId}`;
-                            const immediateGroupId = objectToGroupMap.get(key);
-                            if (immediateGroupId) {
-                                const root = resolveRootGroupId(immediateGroupId) ?? immediateGroupId;
-                                if (root) groupIds.add(root);
-                                continue;
+                        try {
+                            const material = await getBlockMaterial(texPath, undefined, myGen);
+                            // BatchedMesh(maxInstanceCount, maxVertexCount, maxIndexCount, material)
+                            const batch = new THREE.BatchedMesh(group.parts.length, group.maxVerts, group.maxIndices, material);
+                            batch.frustumCulled = false;
+                            batch.userData.displayType = 'block_display'; 
+                            batch.userData.displayTypes = new Map();
+                            batch.userData.geometryBounds = new Map();
+                            batch.userData.originalGeometries = new Map();
+                            batch.userData.instanceGeometryIds = [];
+                            batch.userData.itemIds = new Map();
+                            batch.userData.localMatrices = new Map();
+
+                            // Register geometries
+                            const geomIdMap = new Map<string, number>();
+                            for (const [key, geo] of group.geometries) {
+                                // Use raw geometry without baking modelMatrix
+                                // modelMatrix (blockstate rotation, display transform) will be applied to instance matrix
+                                const batchGeomId = batch.addGeometry(geo);
+                                geomIdMap.set(key, batchGeomId);
+                                batch.userData.originalGeometries.set(batchGeomId, geo);
+
+                                if (!geo.boundingBox) geo.computeBoundingBox();
+                                batch.userData.geometryBounds.set(batchGeomId, geo.boundingBox.clone());
                             }
 
-                            if (!ids) ids = new Set<number>();
-                            ids.add(instanceId);
-                        }
+                            // Add instances
+                            const dummyMatrix = new THREE.Matrix4();
+                            const localMatrix = new THREE.Matrix4();
+                            const color = new THREE.Color();
+                            
+                            for (const part of group.parts) {
+                                const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                                const batchGeomId = geomIdMap.get(geomKey);
+                                if (batchGeomId === undefined) continue;
 
-                        if (ids && ids.size > 0) {
-                            meshToIds.set(mesh, ids);
+                                const instanceId = batch.addInstance(batchGeomId);
+                                batch.userData.instanceGeometryIds[instanceId] = batchGeomId;
+                                
+                                // part.transform is the instance matrix (world transform, row-major from worker -> transpose)
+                                dummyMatrix.fromArray(part.transform).transpose();
+                                
+                                // part.modelMatrix is the local transform (blockstate, display settings, column-major)
+                                if (part.modelMatrix) {
+                                    localMatrix.fromArray(part.modelMatrix);
+                                    dummyMatrix.multiply(localMatrix);
+
+                                    batch.userData.localMatrices.set(instanceId, localMatrix.clone());
+                                }
+
+                                batch.setMatrixAt(instanceId, dummyMatrix);
+
+                                const tint = part.tintHex ?? 0xffffff;
+                                color.setHex(tint);
+                                batch.setColorAt(instanceId, color);
+
+                                if (batch.userData.displayTypes) {
+                                    batch.userData.displayTypes.set(instanceId, part.isItemDisplayModel ? 'item_display' : 'block_display');
+                                }
+                                if (batch.userData.itemIds && part.itemId !== undefined) {
+                                    batch.userData.itemIds.set(instanceId, part.itemId);
+                                }
+
+                                registerObject(batch, instanceId, part.uuid, part.groupId);
+                            }
+
+                            loadedObjectGroup.add(batch);
+                            newlyAddedSelectableMeshes.add(batch);
+                            
+                            if (material.transparent) {
+                                batch.renderOrder = 1;
+                            }
+
+                        } catch (e) {
+                            console.error("Failed to create BatchedMesh", e);
                         }
+                    };
+
+                    await createBatchedMesh(batchGroups.opaque, '__ATLAS__');
+                    await createBatchedMesh(batchGroups.translucent, '__ATLAS_TRANSLUCENT__');
+                }
+                //--- BatchedMesh Logic for Atlas End ---
+
+                // Process grouped blocks
+                for (const [geomId, instancesMap] of blocks) {
+                    // Group instances by Signature (combination of parts and materials)
+                    const signatureGroups = new Map<string, { parts: GeometryMeta[], matrices: THREE.Matrix4[], instanceMetas: { uuid: string, groupId: string | null }[] }>();
+
+                    for (const [matrixStr, parts] of instancesMap) {
+                        // Sort parts by geometryIndex to ensure consistent order
+                        parts.sort((a, b) => a.geometryIndex - b.geometryIndex);
+
+                        // Create Signature (modelMatrix 포함하여 facing 등 blockstate 정보 반영)
+                        const signature = parts.map(p => 
+                            `${p.geometryIndex}|${p.texPath}|${p.tintHex ?? 0xffffff}|${p.modelMatrix.join(',')}`
+                        ).join('||');
+
+                        let group = signatureGroups.get(signature);
+                        if (!group) {
+                            group = { parts: parts, matrices: [], instanceMetas: [] };
+                            signatureGroups.set(signature, group);
+                        }
+                        
+                        // Reconstruct instance matrix
+                        const matrix = new THREE.Matrix4().fromArray(parts[0].transform).transpose();
+                        group.matrices.push(matrix);
+                        group.instanceMetas.push({ uuid: parts[0].uuid, groupId: parts[0].groupId });
                     }
 
-                    // Group-priority selection: if an instance belongs to a group, select the (root) group instead.
-                    if (typeof selectGroupsObjectsFn === 'function') {
-                        selectGroupsObjectsFn(groupIds, meshToIds, { anchorMode: 'center' });
-                    } else if (typeof selectObjectsFn === 'function') {
-                        // Fallback: select raw objects if gizmo API is not available.
-                        selectObjectsFn(meshToIds, { anchorMode: 'center' });
+                    // Create InstancedMesh for each signature group
+                    for (const [sig, group] of signatureGroups) {
+                        const representativeParts = group.parts;
+                        const matrices = group.matrices;
+                        const instanceMetas = group.instanceMetas;
+
+                        // Merge Geometries
+                        const geometriesToMerge: THREE.BufferGeometry[] = [];
+                        const materials: THREE.Material[] = [];
+                        const matPromisesForMesh: Promise<THREE.Material>[] = [];
+
+                        for (const part of representativeParts) {
+                            const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                            const baseGeo = instancedGeometries.get(geomKey)!;
+                            
+                            // Clone and apply local transform (modelMatrix)
+                            const clonedGeo = baseGeo.clone();
+                            const localMatrix = new THREE.Matrix4().fromArray(part.modelMatrix);
+                            clonedGeo.applyMatrix4(localMatrix);
+                            geometriesToMerge.push(clonedGeo);
+
+                            // Prepare Material
+                            const matKey = `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}`;
+                            let material = instancedMaterials.get(matKey);
+                            
+                            if (!material) {
+                                // If not loaded, use placeholder and load it
+                                material = placeholderMaterial;
+                                if (!materialPromises.has(matKey)) {
+                                    const p = getBlockMaterial(part.texPath, part.tintHex, myGen).then(m => {
+                                        if (myGen === currentLoadGen) {
+                                            instancedMaterials.set(matKey, m);
+                                        }
+                                        return m;
+                                    });
+                                    materialPromises.set(matKey, p);
+                                }
+                                matPromisesForMesh.push(materialPromises.get(matKey)!);
+                            } else {
+                                matPromisesForMesh.push(Promise.resolve(material));
+                            }
+                            materials.push(material);
+                        }
+
+                        const mergedGeo = mergeIndexedGeometries(geometriesToMerge);
+                        if (mergedGeo) {
+                            // Add groups for multi-material support
+                            let start = 0;
+                            for (let i = 0; i < geometriesToMerge.length; i++) {
+                                const count = geometriesToMerge[i].getIndex()!.count;
+                                mergedGeo.addGroup(start, count, i);
+                                start += count;
+                            }
+
+                            const instancedMesh = new THREE.InstancedMesh(mergedGeo, materials, matrices.length);
+                            
+                            // Use metadata from worker to determine display type
+                            if (representativeParts[0].isItemDisplayModel) {
+                                instancedMesh.userData.displayType = 'item_display';
+                            } else {
+                                instancedMesh.userData.displayType = 'block_display';
+                            }
+                            
+                            instancedMesh.frustumCulled = false;
+
+                            for (let i = 0; i < matrices.length; i++) {
+                                instancedMesh.setMatrixAt(i, matrices[i]);
+                                const meta = instanceMetas[i];
+                                registerObject(instancedMesh, i, meta.uuid, meta.groupId);
+                            }
+                            instancedMesh.instanceMatrix.needsUpdate = true;
+                            instancedMesh.computeBoundingSphere();
+                            loadedObjectGroup.add(instancedMesh);
+                            newlyAddedSelectableMeshes.add(instancedMesh);
+
+                            // Handle async material loading
+                            if (matPromisesForMesh.length > 0) {
+                                Promise.all(matPromisesForMesh).then(loadedMats => {
+                                    if (myGen === currentLoadGen) {
+                                        instancedMesh.material = loadedMats;
+                                        // Check transparency
+                                        if (loadedMats.some(m => m.transparent)) {
+                                            instancedMesh.renderOrder = 1;
+                                        }
+                                    }
+                                }).catch(e => {
+                                    console.warn(`[Texture] Error loading materials for ${geomId}:`, e);
+                                });
+                            } else {
+                                    if (materials.some(m => m.transparent)) {
+                                    instancedMesh.renderOrder = 1;
+                                }
+                            }
+                        }
                     }
                 }
+
+                const playerHeadItems: Array<OtherItem> = [];
+                otherItems.forEach((item) => {
+                    if (item.type === 'itemDisplay' && item.textureUrl) {
+                        playerHeadItems.push(item);
+                    }
+                });
+
+                if (playerHeadItems.length > 0) {
+                    const playerHeadPromise = (async () => {
+                        try {
+                            if (!headGeometries || !headGeometries.merged) {
+                                console.error("Head geometries not available for instancing.");
+                                return;
+                            }
+
+                            const uniqueUrls = [...new Set(playerHeadItems.map(item => item.textureUrl))];
+                            
+                            const ATLAS_SIZE = 2048;
+                            const PART_SIZE = 8;
+                            const PART_BLOCK_WIDTH = PART_SIZE * 3;
+                            const PART_BLOCK_HEIGHT = PART_SIZE * 4;
+                            const BLOCKS_PER_ROW = Math.floor(ATLAS_SIZE / PART_BLOCK_WIDTH);
+
+                            const atlasCanvas = document.createElement('canvas');
+                            atlasCanvas.width = ATLAS_SIZE;
+                            atlasCanvas.height = ATLAS_SIZE;
+                            const atlasCtx = atlasCanvas.getContext('2d');
+                            if (!atlasCtx) return;
+                            atlasCtx.imageSmoothingEnabled = false;
+
+                            const skinLayouts = new Map<string, { x: number, y: number }>();
+                            const skinTransparency = new Map<string, boolean>(); // URL -> isLayerTransparent
+                            
+                            const faceParts = {
+                                right:  { s: [16, 8] }, left:   { s: [0, 8] },
+                                top:    { s: [8, 0] },  bottom: { s: [16, 0] },
+                                front:  { s: [24, 8] }, back:   { s: [8, 8] },
+                                layer_right:  { s: [48, 8] }, layer_left:   { s: [32, 8] },
+                                layer_top:    { s: [40, 0] }, layer_bottom: { s: [48, 0] },
+                                layer_front:  { s: [56, 8] }, layer_back:   { s: [40, 8] }
+                            };
+                            const partOrder = Object.keys(faceParts);
+
+                            const layerRegions = [
+                                [48, 8, 8, 8], [32, 8, 8, 8],
+                                [40, 0, 8, 8], [48, 0, 8, 8],
+                                [56, 8, 8, 8], [40, 8, 8, 8]
+                            ];
+
+                            const imagePromises = uniqueUrls.map((url, index) => {
+                                return new Promise<void>((resolve, reject) => {
+                                    const img = new Image();
+                                    img.crossOrigin = 'anonymous';
+                                    img.onload = () => {
+                                        const blockX = (index % BLOCKS_PER_ROW) * PART_BLOCK_WIDTH;
+                                        const blockY = Math.floor(index / BLOCKS_PER_ROW) * PART_BLOCK_HEIGHT;
+                                        skinLayouts.set(url, { x: blockX, y: blockY });
+                                        
+                                        // Check transparency
+                                        const isTransparent = isLayerTransparent(img, layerRegions);
+                                        skinTransparency.set(url, isTransparent);
+
+                                        partOrder.forEach((key, i) => {
+                                            const part = faceParts[key as keyof typeof faceParts];
+                                            const dx = (i % 3) * PART_SIZE;
+                                            const dy = Math.floor(i / 3) * PART_SIZE;
+                                            atlasCtx.drawImage(img, part.s[0], part.s[1], 8, 8, blockX + dx, blockY + dy, 8, 8);
+                                        });
+                                        resolve();
+                                    };
+                                    img.onerror = (e) => reject(new Error(`Failed to load image: ${url}, error: ${e}`));
+                                    img.src = url.replace('http://', 'https://');
+                                });
+                            });
+
+                            await Promise.all(imagePromises);
+
+                            const atlasTexture = new THREE.Texture(atlasCanvas);
+                            atlasTexture.needsUpdate = true;
+                            atlasTexture.magFilter = THREE.NearestFilter;
+                            atlasTexture.minFilter = THREE.NearestFilter;
+                            atlasTexture.colorSpace = THREE.SRGBColorSpace;
+                            
+                            const atlasMaterial = createEntityMaterial(atlasTexture, 0xffffff, true).material;
+                            atlasMaterial.toneMapped = false;
+                            atlasMaterial.fog = false;
+                            atlasMaterial.flatShading = true;
+                            atlasMaterial.side = THREE.DoubleSide;
+                            
+                            const sharedGeometry = (headGeometries.merged as THREE.BufferGeometry).clone();
+                            const newUvAttr = sharedGeometry.getAttribute('uv') as THREE.BufferAttribute;
+
+                            const baseFaceOrder = ['left', 'right', 'top', 'bottom', 'front', 'back']; // BoxGeometry order
+                            const allFaceKeys = [...baseFaceOrder, ...baseFaceOrder.map(k => `layer_${k}`)];
+
+                            for (let faceIdx = 0; faceIdx < 12; faceIdx++) {
+                                const partKey = allFaceKeys[faceIdx];
+                                const partIndex = partOrder.indexOf(partKey);
+
+                                if (partIndex === -1) continue;
+
+                                const dx = (partIndex % 3) * PART_SIZE;
+                                const dy = Math.floor(partIndex / 3) * PART_SIZE;
+                                
+                                const inset = 0;
+                                const u0 = (dx + inset) / ATLAS_SIZE;
+                                const u1 = (dx + PART_SIZE - inset) / ATLAS_SIZE;
+
+                                const v1 = (PART_BLOCK_HEIGHT - dy - inset) / ATLAS_SIZE;
+                                const v0 = (PART_BLOCK_HEIGHT - (dy + PART_SIZE) - inset) / ATLAS_SIZE;
+                                
+                                const baseFaceName = baseFaceOrder[faceIdx % 6];
+                                const uvWriteIndex = faceIdx * 4;
+                                
+                                if (baseFaceName === 'top') {
+                                    newUvAttr.setXY(uvWriteIndex + 0, u1, v0);
+                                    newUvAttr.setXY(uvWriteIndex + 1, u0, v0);
+                                    newUvAttr.setXY(uvWriteIndex + 2, u1, v1);
+                                    newUvAttr.setXY(uvWriteIndex + 3, u0, v1);
+                                } else if (baseFaceName === 'bottom') {
+                                    newUvAttr.setXY(uvWriteIndex + 0, u1, v1);
+                                    newUvAttr.setXY(uvWriteIndex + 1, u0, v1);
+                                    newUvAttr.setXY(uvWriteIndex + 2, u1, v0);
+                                    newUvAttr.setXY(uvWriteIndex + 3, u0, v0);
+                                } else {
+                                    newUvAttr.setXY(uvWriteIndex + 0, u0, v1);
+                                    newUvAttr.setXY(uvWriteIndex + 1, u1, v1);
+                                    newUvAttr.setXY(uvWriteIndex + 2, u0, v0);
+                                    newUvAttr.setXY(uvWriteIndex + 3, u1, v0);
+                                }
+                            }
+                            newUvAttr.needsUpdate = true;
+
+                            const totalInstances = playerHeadItems.length;
+                            const matrices = new Float32Array(totalInstances * 16);
+                            const uvOffsets = new Float32Array(totalInstances * 2);
+                            const hasHatArray = new Array(totalInstances).fill(false);
+
+                            let i = 0;
+                            for (const item of playerHeadItems) {
+                                const matrix = new THREE.Matrix4().fromArray(item.transform).transpose();
+                                const scaleMatrix = new THREE.Matrix4().makeScale(0.5, 0.5, 0.5);
+                                matrix.multiply(scaleMatrix);
+                                matrix.toArray(matrices, i * 16);
+
+                                const skinBlockPos = skinLayouts.get(item.textureUrl);
+                                if (skinBlockPos) {
+                                    const uOffset = skinBlockPos.x / ATLAS_SIZE;
+                                    const vOffset = 1.0 - (skinBlockPos.y + PART_BLOCK_HEIGHT) / ATLAS_SIZE;
+                                    
+                                    uvOffsets[i * 2 + 0] = uOffset;
+                                    uvOffsets[i * 2 + 1] = vOffset;
+                                }
+
+                                const isTransparent = skinTransparency.get(item.textureUrl);
+                                // If layer is NOT transparent, it has a hat.
+                                hasHatArray[i] = !isTransparent;
+
+                                i++;
+                            }
+                            
+                            sharedGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
+
+                            const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, totalInstances);
+                            instancedMesh.userData.displayType = 'item_display';
+                            instancedMesh.userData.hasHat = hasHatArray; // Store hat info for gizmo
+                            instancedMesh.instanceMatrix.needsUpdate = true;
+                            instancedMesh.frustumCulled = false;
+                            instancedMesh.instanceMatrix.array = matrices;
+                            instancedMesh.frustumCulled = false;
+                            instancedMesh.layers.enable(2);
+                            instancedMesh.computeBoundingSphere();
+
+                            playerHeadItems.forEach((item, idx) => {
+                                registerObject(instancedMesh, idx, item.uuid, item.groupId);
+                            });
+
+                            loadedObjectGroup.add(instancedMesh);
+                            newlyAddedSelectableMeshes.add(instancedMesh);
+
+                        } catch (err) {
+                            console.error('Player head instancing failed:', err);
+                        }
+                    })();
+
+                    try { await playerHeadPromise; } catch { /* ignore */ }
+                }
+
+                console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
+                worker?.terminate();
+                worker = null;
+                resolve(newlyAddedSelectableMeshes);
+            } else {
+                console.error("[Debug] Worker reported an error:", msg.error);
+                worker?.terminate();
+                worker = null;
+                reject(new Error(msg.error));
             }
+        };
 
-            console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
-        } else {
-            console.error("[Debug] Worker reported an error:", msg.error);
-        }
+        worker.onerror = (error) => {
+            console.error("Worker Error:", error);
+            worker?.terminate();
+            worker = null;
+            reject(error);
+        };
 
-        console.log("[Debug] Terminating worker.");
-        worker.terminate();
-        worker = null;
-    };
-
-    worker.onerror = (error) => {
-        console.error("Worker Error:", error);
-        worker.terminate();
-        worker = null;
-    };
-
-    const reader = new FileReader();
-    reader.onload = (event: ProgressEvent<FileReader>) => {
-        if (myGen !== currentLoadGen) {
-            return;
-        }
-        const result = event.target?.result;
-        if (typeof result === 'string' && worker) {
-            worker.postMessage(result);
-        }
-    };
-    reader.readAsText(file);
+        const reader = new FileReader();
+        reader.onload = (event: ProgressEvent<FileReader>) => {
+            if (myGen !== currentLoadGen) {
+                return;
+            }
+            const result = event.target?.result;
+            if (typeof result === 'string' && worker) {
+                worker.postMessage(result);
+            }
+        };
+        reader.readAsText(file);
+    });
 }
 
-function loadpbde(file: File): void {
-    _loadAndRenderPbde(file, false);
+async function loadpbde(files: File | File[]): Promise<void> {
+    const fileList = Array.isArray(files) ? files : [files];
+    if (fileList.length === 0) return;
+
+    // Use a single generation ID for the batch operation to ensure textures/materials are valid for all files.
+    const batchGen = ++currentLoadGen;
+
+    try {
+        // First file: clear scene (isMerge = false)
+        // Subsequent files: merge (isMerge = true)
+        for (let i = 0; i < fileList.length; i++) {
+            const isMerge = (i > 0); 
+            await _loadAndRenderPbde(fileList[i], isMerge, batchGen);
+        }
+        // Requirement: Do not perform multi-selection for "Open" (loadpbde) even with multiple files.
+    } catch (e) {
+        console.error("Error loading project files:", e);
+    }
 }
 
-function mergepbde(file: File): void {
-    _loadAndRenderPbde(file, true);
+async function mergepbde(files: File | File[]): Promise<void> {
+    const fileList = Array.isArray(files) ? files : [files];
+    if (fileList.length === 0) return;
+
+    const batchGen = ++currentLoadGen;
+    const allNewMeshes = new Set<THREE.Object3D>();
+
+    try {
+        for (const file of fileList) {
+            // Merge always appends (isMerge = true)
+            const newMeshes = await _loadAndRenderPbde(file, true, batchGen);
+            newMeshes.forEach(m => allNewMeshes.add(m));
+        }
+
+        // Requirement: Select all newly added objects after all files are loaded.
+        performSelection(allNewMeshes);
+
+    } catch (e) {
+        console.error("Error merging project files:", e);
+    }
 }
 
 
 // 파일 드래그 앤 드롭 처리 로직
 
-function createDropModal(file?: File) {
+function createDropModal(files?: File[]) {
     const existingModal = document.getElementById('drop-modal-overlay');
     if (existingModal) {
         existingModal.remove();
@@ -1555,8 +1607,8 @@ function createDropModal(file?: File) {
     const newProjectBtn = document.getElementById('new-project-btn') as HTMLButtonElement | null;
     if (newProjectBtn) {
         newProjectBtn.addEventListener('click', () => {
-            if (file) {
-                loadpbde(file);
+            if (files && files.length > 0) {
+                loadpbde(files);
             }
             closeDropModal();
         });
@@ -1565,8 +1617,8 @@ function createDropModal(file?: File) {
     const mergeProjectBtn = document.getElementById('merge-project-btn') as HTMLButtonElement | null;
     if (mergeProjectBtn) {
         mergeProjectBtn.addEventListener('click', () => {
-            if (file) {
-                mergepbde(file);
+            if (files && files.length > 0) {
+                mergepbde(files);
             }
             closeDropModal();
         });
@@ -1598,29 +1650,30 @@ window.addEventListener('dragover', (e) => {
 window.addEventListener('drop', (e) => {
     e.preventDefault();
     
-    let droppedFile = null;
+    const validFiles: File[] = [];
+    
     if (e.dataTransfer.items) {
         for (const item of e.dataTransfer.items) {
             if (item.kind === 'file') {
                 const file = item.getAsFile();
-                const extension = file.name.split('.').pop().toLowerCase();
-                if (extension === 'bdengine' || extension === 'pdengine') {
-                    droppedFile = file;
-                    break; 
+                if (file) {
+                    const extension = file.name.split('.').pop()?.toLowerCase();
+                    if (extension === 'bdengine' || extension === 'pdengine') {
+                        validFiles.push(file);
+                    }
                 }
             }
         }
     } else {
         for (const file of e.dataTransfer.files) {  
-            const extension = file.name.split('.').pop().toLowerCase();
+            const extension = file.name.split('.').pop()?.toLowerCase();
             if (extension === 'bdengine' || extension === 'pdengine') {
-                droppedFile = file;
-                break;
+                validFiles.push(file);
             }
         }
     }
 
-    if (droppedFile) {
-        createDropModal(droppedFile);
+    if (validFiles.length > 0) {
+        createDropModal(validFiles);
     }
 });

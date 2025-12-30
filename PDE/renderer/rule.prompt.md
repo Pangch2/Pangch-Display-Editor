@@ -42,7 +42,7 @@ vite.config.js
 # 중요 규칙
 - 언어는 기본적으로 한국어를 사용해야 한다
 - 명확하지 않은 것은 한국어로 질문해야 한다.
-- three js r181이상을 사용중
+- three js r182이상을 사용중
 - three js의 webgpu를 사용해야해 즉 import * as THREE from 'three/webgpu'를 사용해야해
 - scene.add(transformControls)은 scene.add(transformControls.getHelper())로 변경해야하
 - package.json에 있는 scripts, npm은 실행하지마
