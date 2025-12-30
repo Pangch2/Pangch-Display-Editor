@@ -3873,20 +3873,25 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             const groupChain = getGroupChain(immediateGroupId);
             let nextGroupIdToSelect = groupChain[0];
 
-            const primaryGroupId = currentSelection.primary && currentSelection.primary.type === 'group'
-                ? currentSelection.primary.id
-                : null;
-
-            if (primaryGroupId) {
-                const currentIndex = groupChain.indexOf(primaryGroupId);
-                if (currentIndex !== -1) {
-                    if (currentIndex < groupChain.length - 1) {
-                        nextGroupIdToSelect = groupChain[currentIndex + 1];
-                    } else {
-                        nextGroupIdToSelect = null;
+            // Drill-down logic:
+            // Find the deepest group in the current chain that is ALREADY selected.
+            // The target will be the child of that group (or the object itself if we reached the bottom).
+            let deepestSelectedIndex = -1;
+            if (currentSelection.groups && currentSelection.groups.size > 0) {
+                for (let i = groupChain.length - 1; i >= 0; i--) {
+                    if (currentSelection.groups.has(groupChain[i])) {
+                        deepestSelectedIndex = i;
+                        break;
                     }
+                }
+            }
+
+            if (deepestSelectedIndex !== -1) {
+                if (deepestSelectedIndex < groupChain.length - 1) {
+                    nextGroupIdToSelect = groupChain[deepestSelectedIndex + 1];
                 } else {
-                    nextGroupIdToSelect = groupChain[0];
+                    // We are at the bottom of the group chain, so select the object itself.
+                    nextGroupIdToSelect = null;
                 }
             }
 
@@ -3910,6 +3915,15 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     }
                 } else {
                     currentSelection.groups.add(gid);
+
+                    // Deselect ancestors to prevent double selection (parent + child)
+                    const chain = getGroupChain(gid);
+                    for (const ancestorId of chain) {
+                        if (ancestorId !== gid && currentSelection.groups.has(ancestorId)) {
+                            currentSelection.groups.delete(ancestorId);
+                        }
+                    }
+
                     // Preserve the original (first) primary when adding to an existing selection.
                     if (!hadAnyBefore || !currentSelection.primary) {
                         currentSelection.primary = { type: 'group', id: gid };
@@ -3937,7 +3951,22 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             if (allSelected) {
                 ids.forEach(id => set.delete(id));
             } else {
-                ids.forEach(id => set.add(id));
+                const objectToGroup = getObjectToGroup();
+                ids.forEach(id => {
+                    set.add(id);
+                    
+                    // Deselect ancestors (groups) that contain this object
+                    const key = getGroupKey(mesh, id);
+                    const immediateGroupId = objectToGroup.get(key);
+                    if (immediateGroupId) {
+                        const chain = getGroupChain(immediateGroupId);
+                        for (const ancestorId of chain) {
+                            if (currentSelection.groups.has(ancestorId)) {
+                                currentSelection.groups.delete(ancestorId);
+                            }
+                        }
+                    }
+                });
             }
 
             if (set.size === 0) {
