@@ -1236,6 +1236,76 @@ function updateHelperPosition() {
     // so we can return to it after temporarily switching pivotMode.
     const isMulti = _isMultiSelection();
 
+    // 1. If we have a Primary Selection (Basis) in Multi-Select Origin mode,
+    // explicitly calculate its current world position. This ensures the pivot
+    // tracks the object correctly if it moves/rotates/scales.
+    if (pivotMode === 'origin' && isMulti && currentSelection.primary) {
+        let primaryPivotWorld = null;
+        const prim = currentSelection.primary;
+
+        if (prim.type === 'group') {
+            const groups = getGroups();
+            const group = groups.get(prim.id);
+            if (group) {
+                if (shouldUseGroupPivot(group)) {
+                    const localPivot = normalizePivotToVector3(group.pivot, _TMP_VEC3_A);
+                    if (localPivot) {
+                        const groupMatrix = getGroupWorldMatrix(group, _TMP_MAT4_A);
+                        primaryPivotWorld = localPivot.applyMatrix4(groupMatrix);
+                    }
+                }
+                if (!primaryPivotWorld) {
+                     primaryPivotWorld = getGroupOriginWorld(prim.id, _TMP_VEC3_A);
+                }
+            }
+        } else if (prim.type === 'object') {
+             const { mesh, instanceId } = prim;
+             if (mesh) {
+                 // Check per-object custom pivot (userData.customPivot/customPivots)
+                 let custom = null;
+                 if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                     if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
+                         custom = mesh.userData.customPivots.get(instanceId);
+                     }
+                 } else {
+                     if (mesh.userData.customPivot) custom = mesh.userData.customPivot;
+                 }
+                 
+                 if (custom) {
+                     const tempMat = _TMP_MAT4_A;
+                     mesh.getMatrixAt(instanceId, tempMat);
+                     tempMat.premultiply(mesh.matrixWorld);
+                     primaryPivotWorld = custom.clone().applyMatrix4(tempMat);
+                 } else {
+                     // Default Origin
+                     const displayType = getDisplayType(mesh, instanceId);
+                     if (displayType === 'block_display') {
+                         const localPivot = getInstanceLocalBoxMin(mesh, instanceId, _TMP_VEC3_B);
+                         if (localPivot) {
+                             const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
+                             primaryPivotWorld = localPivot.applyMatrix4(worldMatrix);
+                         }
+                     }
+                     if (!primaryPivotWorld) {
+                          const tempMat = _TMP_MAT4_A;
+                          getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+                          const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
+                          primaryPivotWorld = _TMP_VEC3_B.set(0, localY, 0).applyMatrix4(tempMat);
+                     }
+                 }
+             }
+        }
+
+        if (primaryPivotWorld) {
+            _multiSelectionOriginAnchorPosition.copy(primaryPivotWorld);
+            _multiSelectionOriginAnchorValid = true;
+            if (!_multiSelectionOriginAnchorInitialValid) {
+                _multiSelectionOriginAnchorInitialPosition.copy(primaryPivotWorld);
+                _multiSelectionOriginAnchorInitialValid = true;
+            }
+        }
+    }
+
     // When a selection grows from single -> multi (Shift+Click add), we want Pivot Mode: origin
     // to keep the original gizmo position (first selected) instead of jumping to a newly
     // computed origin. Seed the multi-origin anchor from the existing gizmo anchor.
