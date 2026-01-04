@@ -2648,6 +2648,9 @@ function duplicateSelected() {
     const savedIsCustomPivot = isCustomPivot;
     const savedPivotOffset = pivotOffset.clone();
 
+    // Capture if we have a primary
+    const hadPrimary = !!currentSelection.primary;
+
     const ctx = createDuplicationContext();
 
     _pendingHeadClones = []; // Reset pending queue
@@ -2681,7 +2684,12 @@ function duplicateSelected() {
     currentSelection.groups = newSel.groups;
     currentSelection.objects = newSel.objects;
 
-    _setPrimaryToFirstAvailable();
+    if (hadPrimary || !_isMultiSelection()) {
+        _setPrimaryToFirstAvailable();
+    } else {
+        currentSelection.primary = null;
+    }
+    
     invalidateSelectionCaches();
     _recomputePivotStateForSelection();
 
