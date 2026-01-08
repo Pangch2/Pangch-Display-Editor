@@ -571,6 +571,7 @@ function _clearSelectionState() {
     currentSelection.groups.clear();
     currentSelection.objects.clear();
     currentSelection.primary = null;
+    clickedVertex = null;
 }
 
 function _recomputePivotStateForSelection() {
@@ -775,6 +776,8 @@ let currentSelection = {
     objects: new Map(), // Map<THREE.Object3D, Set<number>>
     primary: null // { type: 'group', id } | { type: 'object', mesh, instanceId }
 };
+
+let clickedVertex = null;
 
 let pivotMode = 'origin';
 let currentSpace = 'world';
@@ -1192,7 +1195,7 @@ function updateSelectionOverlay() {
         selectionPointsOverlay.renderOrder = 999;
         selectionPointsOverlay.matrixAutoUpdate = false;
         
-        const spriteMat = new THREE.SpriteMaterial({
+        const baseSpriteMat = new THREE.SpriteMaterial({
             color: 0x30333D,
             sizeAttenuation: false,
             depthTest: false,
@@ -1207,17 +1210,26 @@ function updateSelectionOverlay() {
         const scaleY = 10 / height;
 
         const v = new THREE.Vector3();
+        const existingPoints = new Set();
 
         for (const item of itemsToRender) {
             for (const corner of _unitCubeCorners) {
                 v.copy(corner).applyMatrix4(item.matrix);
                 
-                const sprite = new THREE.Sprite(spriteMat);
+                // Simple spatial hashing to prevent duplicate points at shared corners
+                const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
+                if (existingPoints.has(key)) continue;
+                existingPoints.add(key);
+
+                const sprite = new THREE.Sprite(baseSpriteMat.clone());
                 sprite.position.copy(v);
                 sprite.scale.set(scaleX, scaleY, 1);
                 selectionPointsOverlay.add(sprite);
             }
         }
+        
+        // Clean up base material as we cloned it for everyone
+        baseSpriteMat.dispose();
         
         scene.add(selectionPointsOverlay);
     }
@@ -3848,6 +3860,75 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     let mouseDownPos = null;
     const cameraMatrixOnPointerDown = new THREE.Matrix4();
 
+    // Vertex Interaction Helper
+    function getHoveredVertex(mouseNDC) {
+        if (!isVertexMode || !selectionPointsOverlay || selectionPointsOverlay.children.length === 0) return null;
+
+        const canvas = renderer.domElement;
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        
+        const mouseX = (mouseNDC.x * 0.5 + 0.5) * width;
+        const mouseY = (-mouseNDC.y * 0.5 + 0.5) * height;
+        
+        // Judgment: 2x wider than point (10px). Radius = 10px (diameter 20px).
+        const hitRadiusSq = 10 * 10; 
+        
+        let bestDistSq = Infinity;
+        let bestSprite = null;
+        
+        const tempVec = _TMP_VEC3_A;
+
+        for (const sprite of selectionPointsOverlay.children) {
+            tempVec.copy(sprite.position);
+            tempVec.project(camera);
+            
+            if (tempVec.z < -1 || tempVec.z > 1) continue;
+            
+            const sx = (tempVec.x * 0.5 + 0.5) * width;
+            const sy = (-tempVec.y * 0.5 + 0.5) * height;
+            
+            const dx = sx - mouseX;
+            const dy = sy - mouseY;
+            const distSq = dx*dx + dy*dy;
+            
+            if (distSq < hitRadiusSq && distSq < bestDistSq) {
+                bestDistSq = distSq;
+                bestSprite = sprite;
+            }
+        }
+        return bestSprite;
+    }
+    
+    // clickedVertex is now global
+
+    renderer.domElement.addEventListener('pointermove', (event) => {
+        if (transformControls.dragging || marqueeStart) return;
+        
+        if (isVertexMode) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const m = new THREE.Vector2(
+                ((event.clientX - rect.left) / rect.width) * 2 - 1,
+                -((event.clientY - rect.top) / rect.height) * 2 + 1
+            );
+            
+            const hovered = getHoveredVertex(m);
+            
+            if (selectionPointsOverlay) {
+                selectionPointsOverlay.children.forEach(sprite => {
+                    const isTarget = (sprite === hovered) || (sprite === clickedVertex);
+                    sprite.material.color.setHex(isTarget ? 0x437FD0 : 0x30333D);
+                });
+            }
+            
+            if (hovered) {
+                renderer.domElement.style.cursor = 'pointer';
+            } else if (isVertexMode) { // Only reset if in vertex mode, otherwise other logic handles cursor
+                renderer.domElement.style.cursor = '';
+            }
+        }
+    });
+
     // Ctrl+Drag marquee selection
     let marqueeActive = false;
     let marqueeCandidate = false;
@@ -3917,6 +3998,28 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     renderer.domElement.addEventListener('pointerdown', (event) => {
         if (isGizmoBusy) return;
         if (event.button !== 0) return;
+
+        if (isVertexMode) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const m = new THREE.Vector2(
+                ((event.clientX - rect.left) / rect.width) * 2 - 1,
+                -((event.clientY - rect.top) / rect.height) * 2 + 1
+            );
+            
+            const v = getHoveredVertex(m);
+            if (v) {
+                clickedVertex = v;
+                if (selectionPointsOverlay) {
+                     selectionPointsOverlay.children.forEach(sprite => {
+                         const isTarget = (sprite === clickedVertex);
+                         sprite.material.color.setHex(isTarget ? 0x437FD0 : 0x30333D);
+                     });
+                }
+                mouseDownPos = null; // Prevent object selection/marquee
+                return;
+            } 
+            // Removed automatic deselection on miss to allow camera controls
+        }
 
         // Ctrl+Drag: marquee selection (start only after the user actually drags)
         if ((event.ctrlKey || event.metaKey) && !transformControls.dragging) {
