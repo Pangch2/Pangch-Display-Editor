@@ -568,6 +568,7 @@ function _setPrimaryToFirstAvailable() {
 }
 
 function _clearSelectionState() {
+    vertexSelectionQueue = [];
     currentSelection.groups.clear();
     currentSelection.objects.clear();
     currentSelection.primary = null;
@@ -776,6 +777,8 @@ let currentSelection = {
     objects: new Map(), // Map<THREE.Object3D, Set<number>>
     primary: null // { type: 'group', id } | { type: 'object', mesh, instanceId }
 };
+
+let vertexSelectionQueue = []; // Queue for vertex mode selection (FIFO)
 
 let clickedVertex = null;
 
@@ -4348,6 +4351,84 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         }
 
         // Normal click: replace selection
+        if (isVertexMode) {
+            // Vertex Mode: Multi-selection with Queue (Max 2)
+            
+            // 1. Add to selection (don't clear)
+            if (target.type === 'group') {
+                if (!currentSelection.groups) currentSelection.groups = new Set();
+                currentSelection.groups.add(target.id);
+            } else {
+                const mesh = target.mesh;
+                const ids = target.ids;
+                if (mesh && ids && ids.length > 0) {
+                    if (!currentSelection.objects) currentSelection.objects = new Map();
+                    let set = currentSelection.objects.get(mesh);
+                    if (!set) {
+                        set = new Set();
+                        currentSelection.objects.set(mesh, set);
+                    }
+                    ids.forEach(id => set.add(id));
+                }
+            }
+
+            // 2. Queue Management
+            // If queue is empty but we have selection (e.g. switched mode or first click), rebuild
+            if (vertexSelectionQueue.length === 0 && _hasAnySelection()) {
+                if (currentSelection.groups) {
+                    for (const gid of currentSelection.groups) {
+                        vertexSelectionQueue.push({ type: 'group', id: gid });
+                    }
+                }
+                if (currentSelection.objects) {
+                    for (const [mesh, ids] of currentSelection.objects) {
+                        for (const id of ids) {
+                             vertexSelectionQueue.push({ type: 'object', mesh, instanceId: id });
+                        }
+                    }
+                }
+            }
+
+            // Add new target to queue (avoid exact duplicates in queue)
+            if (target.type === 'group') {
+                 const exists = vertexSelectionQueue.some(item => item.type === 'group' && item.id === target.id);
+                 if (!exists) vertexSelectionQueue.push({ type: 'group', id: target.id });
+            } else {
+                 const mesh = target.mesh;
+                 const ids = target.ids;
+                 ids.forEach(id => {
+                     const exists = vertexSelectionQueue.some(item => item.type === 'object' && item.mesh === mesh && item.instanceId === id);
+                     if (!exists) vertexSelectionQueue.push({ type: 'object', mesh, instanceId: id });
+                 });
+            }
+
+            // Enforce Queue Size (Max 2)
+            while (vertexSelectionQueue.length > 2) {
+                const removed = vertexSelectionQueue.shift();
+                if (removed.type === 'group') {
+                    if (currentSelection.groups) currentSelection.groups.delete(removed.id);
+                } else {
+                    if (currentSelection.objects) {
+                        const set = currentSelection.objects.get(removed.mesh);
+                        if (set) {
+                            set.delete(removed.instanceId);
+                            if (set.size === 0) currentSelection.objects.delete(removed.mesh);
+                        }
+                    }
+                }
+            }
+            
+            // Update primary to the latest selection
+             if (target.type === 'group') {
+                 currentSelection.primary = { type: 'group', id: target.id };
+             } else {
+                 currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+             }
+
+            _commitSelectionChange();
+            return;
+        }
+
         if (target.type === 'group') {
             applySelection(null, [], target.id);
             return;
