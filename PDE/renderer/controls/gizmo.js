@@ -31,6 +31,17 @@ const _overlayUnitGeo = (() => {
     return geo;
 })();
 
+const _unitCubeCorners = [
+    new THREE.Vector3(-0.5, -0.5, -0.5),
+    new THREE.Vector3( 0.5, -0.5, -0.5),
+    new THREE.Vector3( 0.5,  0.5, -0.5),
+    new THREE.Vector3(-0.5,  0.5, -0.5),
+    new THREE.Vector3(-0.5, -0.5,  0.5),
+    new THREE.Vector3( 0.5, -0.5,  0.5),
+    new THREE.Vector3( 0.5,  0.5,  0.5),
+    new THREE.Vector3(-0.5,  0.5,  0.5)
+];
+
 function getInstanceCount(mesh) {
     if (!mesh) return 0;
     if (mesh.isInstancedMesh) return mesh.count ?? 0;
@@ -768,6 +779,7 @@ let currentSelection = {
 let pivotMode = 'origin';
 let currentSpace = 'world';
 let selectionOverlay = null;
+let selectionPointsOverlay = null;
 let multiSelectionOverlay = null;
 let lastDirections = { X: null, Y: null, Z: null };
 
@@ -904,6 +916,7 @@ let blockbenchScaleMode = false;
 let dragAnchorDirections = { x: true, y: true, z: true };
 let previousGizmoMode = 'translate';
 let isPivotEditMode = false;
+let isVertexMode = false;
 let isUniformScale = false;
 let isCustomPivot = false;
 let pivotOffset = new THREE.Vector3(0, 0, 0);
@@ -1074,6 +1087,15 @@ function updateSelectionOverlay() {
         selectionOverlay = null;
     }
 
+    if (selectionPointsOverlay) {
+        scene.remove(selectionPointsOverlay);
+        // Specialized cleanup for Sprites: do NOT dispose geometry as it is shared globally.
+        selectionPointsOverlay.traverse(child => {
+            if (child.material) child.material.dispose();
+        });
+        selectionPointsOverlay = null;
+    }
+
     if (multiSelectionOverlay) {
         scene.remove(multiSelectionOverlay);
         if (multiSelectionOverlay.geometry) multiSelectionOverlay.geometry.dispose();
@@ -1165,6 +1187,41 @@ function updateSelectionOverlay() {
         scene.add(selectionOverlay);
     }
 
+    if (itemsToRender.length > 0 && isVertexMode) {
+        selectionPointsOverlay = new THREE.Group();
+        selectionPointsOverlay.renderOrder = 999;
+        selectionPointsOverlay.matrixAutoUpdate = false;
+        
+        const spriteMat = new THREE.SpriteMaterial({
+            color: 0x30333D,
+            sizeAttenuation: false,
+            depthTest: false,
+            depthWrite: false,
+            transparent: true
+        });
+
+        const canvas = renderer.domElement;
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        const scaleX = 10 / width;
+        const scaleY = 10 / height;
+
+        const v = new THREE.Vector3();
+
+        for (const item of itemsToRender) {
+            for (const corner of _unitCubeCorners) {
+                v.copy(corner).applyMatrix4(item.matrix);
+                
+                const sprite = new THREE.Sprite(spriteMat);
+                sprite.position.copy(v);
+                sprite.scale.set(scaleX, scaleY, 1);
+                selectionPointsOverlay.add(sprite);
+            }
+        }
+        
+        scene.add(selectionPointsOverlay);
+    }
+
     // Multi-selection: add a white world-aligned bounding box overlay (no rotation)
     if (_isMultiSelection()) {
         const worldBox = getSelectionBoundingBox();
@@ -1179,6 +1236,7 @@ function updateSelectionOverlay() {
     }
 
     if (selectionOverlay) selectionOverlay.updateMatrixWorld(true);
+    if (selectionPointsOverlay) selectionPointsOverlay.updateMatrixWorld(true);
     if (multiSelectionOverlay) {
         multiSelectionOverlay.updateMatrixWorld(true);
         scene.add(multiSelectionOverlay);
@@ -1386,7 +1444,11 @@ function updateHelperPosition() {
     }
 
     selectionHelper.updateMatrixWorld();
-    transformControls.attach(selectionHelper);
+    if (!isVertexMode) {
+        transformControls.attach(selectionHelper);
+    } else {
+        transformControls.detach();
+    }
     previousHelperMatrix.copy(selectionHelper.matrixWorld);
 }
 
@@ -3258,6 +3320,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         };
 
         switch (key) {
+            case 'v':
+                isVertexMode = !isVertexMode;
+                console.log(isVertexMode ? 'Vertex mode activated' : 'Vertex mode deactivated');
+                updateHelperPosition();
+                updateSelectionOverlay();
+                break;
             case 't':
                 transformControls.setMode('translate');
                 resetHelperRotationForWorldSpace();
@@ -3438,7 +3506,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     const fitSize = Math.max(maxDim, 1.0);
                     const fov = camera.fov * (Math.PI / 180);
                     distance = Math.abs(fitSize / (2 * Math.tan(fov / 2)));
-                    distance *= 1.1; // Add some margin
+                    distance *= 1.6; // Add some margin
                 } else {
                      _getSelectionCenterWorld(targetPosition);
                 }
@@ -3687,7 +3755,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
         if (isGizmoBusy) return;
         const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'q', 'b', 'g', 'd'];
+        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'q', 'b', 'g', 'd', 'v'];
         if (transformControls.dragging && keysToHandle.includes(key)) {
             isGizmoBusy = true;
             const attachedObject = transformControls.object;
@@ -4190,7 +4258,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         getTransformControls: () => transformControls,
         updateGizmo: () => {
             // gizmo axis positive/negative toggling
-            if (_hasAnySelection() && (transformControls.mode === 'translate' || transformControls.mode === 'scale')) {
+            if (_hasAnySelection() && transformControls.object && (transformControls.mode === 'translate' || transformControls.mode === 'scale')) {
                 const gizmoPos = transformControls.object.position;
                 const camPos = camera.position;
                 const direction = camPos.clone().sub(gizmoPos).normalize();
