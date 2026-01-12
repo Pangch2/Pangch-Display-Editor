@@ -91,6 +91,9 @@ function _beginSelectionReplace({ anchorMode = 'default', detachTransform = fals
     if (!preserveAnchors) _clearGizmoAnchor();
 
     _selectionAnchorMode = anchorMode;
+    
+    // Reset duplication tracking flag on any new selection replacement
+    _selectionCameFromDuplication = false;
 
     // New selection starts with no transient custom pivot.
     pivotOffset.set(0, 0, 0);
@@ -568,13 +571,12 @@ function _setPrimaryToFirstAvailable() {
 }
 
 function _clearSelectionState() {
-    if (_hasAnySelection()) {
-        _pushToVertexQueue();
-    }
+    vertexSelectionQueue = [];
     currentSelection.groups.clear();
     currentSelection.objects.clear();
     currentSelection.primary = null;
-    clickedVertex = null;
+    clickedVertices.clear();
+    hideVertexConnectionLine();
 }
 
 function _recomputePivotStateForSelection() {
@@ -780,35 +782,50 @@ let currentSelection = {
     primary: null // { type: 'group', id } | { type: 'object', mesh, instanceId }
 };
 
-let clickedVertex = null;
+let vertexSelectionQueue = []; // Queue for vertex mode selection (FIFO)
 
-const vertexQueue = [];
-let suppressVertexQueue = false;
+let clickedVertices = new Map();
 
-function _pushToVertexQueue() {
-    if (suppressVertexQueue) return;
-
-    const itemsToAdd = [];
-    if (currentSelection.groups.size > 0) {
-        for (const gid of currentSelection.groups) {
-            itemsToAdd.push({ type: 'group', id: gid });
+function _removeVertexSelection(item) {
+    if (!item) return;
+    if (item.type === 'group') {
+        const children = getAllGroupChildren(item.id);
+        children.forEach(child => {
+            const key = getGroupKey(child.mesh, child.instanceId);
+            clickedVertices.delete(key);
+        });
+    } else if (item.type === 'object') {
+        const ids = item.instanceIds || item.ids;
+        if (ids) {
+            ids.forEach(id => {
+                 const key = getGroupKey(item.mesh, id);
+                 clickedVertices.delete(key);
+            });
         }
     }
-    if (currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            for (const id of ids) {
-                itemsToAdd.push({ type: 'object', mesh, instanceId: id });
-            }
-        }
-    }
+}
 
-    for (const item of itemsToAdd) {
-        vertexQueue.push(item);
-    }
+let vertexConnectionLine = null;
 
-    while (vertexQueue.length > 1) {
-        vertexQueue.shift();
+function updateVertexConnectionLine(p1, p2) {
+    if (!vertexConnectionLine) {
+        const mat = new THREE.LineBasicMaterial({ color: 0x437FD0, depthTest: false, depthWrite: false });
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+        vertexConnectionLine = new THREE.Line(geo, mat);
+        vertexConnectionLine.renderOrder = 9999;
+        scene.add(vertexConnectionLine);
     }
+    
+    const pos = vertexConnectionLine.geometry.attributes.position;
+    pos.setXYZ(0, p1.x, p1.y, p1.z);
+    pos.setXYZ(1, p2.x, p2.y, p2.z);
+    pos.needsUpdate = true;
+    vertexConnectionLine.visible = true;
+}
+
+function hideVertexConnectionLine() {
+    if (vertexConnectionLine) vertexConnectionLine.visible = false;
 }
 
 let pivotMode = 'origin';
@@ -955,6 +972,11 @@ let isVertexMode = false;
 let isUniformScale = false;
 let isCustomPivot = false;
 let pivotOffset = new THREE.Vector3(0, 0, 0);
+
+// Global flag to track if the current selection state resulted from a duplication operation.
+// This is used by Vertex Mode to differentiate "user-selected set" from "auto-selected copies",
+// ensuring that clicking an object after duplication clears the "copied" selection instead of trying to merge it.
+let _selectionCameFromDuplication = false;
 
 // Reusable temporaries (avoid allocations during dragging)
 const _tmpPrevInvMatrix = new THREE.Matrix4();
@@ -1109,18 +1131,6 @@ function calculateAvgOrigin() {
 }
 
 function updateSelectionOverlay() {
-    let preserveIsCenter = false;
-    let preservePos = null;
-
-    if (clickedVertex && isVertexMode && selectionPointsOverlay) {
-        if (clickedVertex.userData && clickedVertex.userData.isCenter) {
-            preserveIsCenter = true;
-        } else {
-            preservePos = clickedVertex.position.clone();
-        }
-        clickedVertex = null;
-    }
-
     if (selectionOverlay) {
         scene.remove(selectionOverlay);
         if (selectionOverlay.isGroup) {
@@ -1150,7 +1160,7 @@ function updateSelectionOverlay() {
         multiSelectionOverlay = null;
     }
 
-    if (!_hasAnySelection() && vertexQueue.length === 0) return;
+    if (!_hasAnySelection()) return;
 
     const itemsToRender = [];
     const tempCenter = _TMP_VEC3_A;
@@ -1173,7 +1183,7 @@ function updateSelectionOverlay() {
             instanceMat.scale(tempSize);
             instanceMat.premultiply(groupWorld);
 
-            itemsToRender.push({ matrix: instanceMat, color: 0x6FA21C });
+            itemsToRender.push({ matrix: instanceMat, color: 0x6FA21C, key: groupId });
         }
     }
 
@@ -1199,68 +1209,14 @@ function updateSelectionOverlay() {
 
                 const displayType = getDisplayType(mesh, id);
                 const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
-
-                itemsToRender.push({ matrix: instanceMat, color: color });
+                
+                const key = getGroupKey(mesh, id);
+                itemsToRender.push({ matrix: instanceMat, color: color, key: key });
             }
         }
     }
 
-    const queueItemsToRender = [];
-    if (vertexQueue.length > 0) {
-        const groups = getGroups();
-        for (const item of vertexQueue) {
-            let isSelected = false;
-            if (item.type === 'group') {
-                if (currentSelection.groups.has(item.id)) isSelected = true;
-            } else {
-                if (currentSelection.objects.has(item.mesh) && currentSelection.objects.get(item.mesh).has(item.instanceId)) {
-                    isSelected = true;
-                }
-            }
-            if (isSelected) continue;
-
-            if (item.type === 'group') {
-                const groupId = item.id;
-                if (!groups.has(groupId)) continue;
-                const localBox = getGroupLocalBoundingBox(groupId);
-                if (!localBox || localBox.isEmpty()) continue;
-                
-                localBox.getSize(tempSize);
-                localBox.getCenter(tempCenter);
-                
-                const groupWorld = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
-                const instanceMat = new THREE.Matrix4();
-                instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                instanceMat.scale(tempSize);
-                instanceMat.premultiply(groupWorld);
-                queueItemsToRender.push({ matrix: instanceMat, color: 0x6FA21C });
-            } else if (item.type === 'object') {
-                const { mesh, instanceId } = item;
-                if (!mesh.parent || !isInstanceValid(mesh, instanceId)) continue;
-                
-                const localBox = getInstanceLocalBox(mesh, instanceId);
-                if (!localBox) continue;
-                
-                localBox.getSize(tempSize);
-                localBox.getCenter(tempCenter);
-                
-                const worldMat = getInstanceWorldMatrix(mesh, instanceId, new THREE.Matrix4());
-                const instanceMat = new THREE.Matrix4();
-                instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                instanceMat.scale(tempSize);
-                instanceMat.premultiply(worldMat);
-
-                const displayType = getDisplayType(mesh, instanceId);
-                const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
-
-                queueItemsToRender.push({ matrix: instanceMat, color: color });
-            }
-        }
-    }
-
-    const allOverlayItems = [...itemsToRender, ...queueItemsToRender];
-
-    if (allOverlayItems.length > 0) {
+    if (itemsToRender.length > 0) {
         const material = new THREE.MeshBasicMaterial({
             color: 0xffffff,
             depthTest: true,
@@ -1270,14 +1226,14 @@ function updateSelectionOverlay() {
             wireframe: true
         });
 
-        selectionOverlay = new THREE.InstancedMesh(_overlayUnitGeo, material, allOverlayItems.length);
+        selectionOverlay = new THREE.InstancedMesh(_overlayUnitGeo, material, itemsToRender.length);
         selectionOverlay.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         selectionOverlay.renderOrder = 1;
         selectionOverlay.matrixAutoUpdate = false;
         selectionOverlay.matrix.identity();
 
         const colorObj = new THREE.Color();
-        allOverlayItems.forEach((item, index) => {
+        itemsToRender.forEach((item, index) => {
             selectionOverlay.setMatrixAt(index, item.matrix);
             colorObj.setHex(item.color);
             selectionOverlay.setColorAt(index, colorObj);
@@ -1289,7 +1245,7 @@ function updateSelectionOverlay() {
         scene.add(selectionOverlay);
     }
 
-    if (allOverlayItems.length > 0 && isVertexMode) {
+    if (itemsToRender.length > 0 && isVertexMode) {
         selectionPointsOverlay = new THREE.Group();
         selectionPointsOverlay.renderOrder = 999;
         selectionPointsOverlay.matrixAutoUpdate = false;
@@ -1311,91 +1267,47 @@ function updateSelectionOverlay() {
         const v = new THREE.Vector3();
         const existingPoints = new Set();
 
-        for (const item of allOverlayItems) {
+        for (const item of itemsToRender) {
+            let cornerIndex = 0;
             for (const corner of _unitCubeCorners) {
                 v.copy(corner).applyMatrix4(item.matrix);
                 
                 // Simple spatial hashing to prevent duplicate points at shared corners
                 const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
-                if (existingPoints.has(key)) continue;
+                if (existingPoints.has(key)) {
+                    cornerIndex++;
+                    continue;
+                }
                 existingPoints.add(key);
 
                 const sprite = new THREE.Sprite(baseSpriteMat.clone());
                 sprite.position.copy(v);
+                sprite.scale.set(scaleX, scaleY, 1);
                 
-                if (preservePos && v.distanceToSquared(preservePos) < 1e-6) {
-                    clickedVertex = sprite;
-                    sprite.material.color.setHex(0x437FD0);
+                if (item.key) {
+                    sprite.userData.objectKey = item.key;
+                    sprite.userData.vertexIndex = cornerIndex;
+                    
+                    if (clickedVertices.has(item.key) && clickedVertices.get(item.key) === cornerIndex) {
+                        sprite.material.color.setHex(0x437FD0);
+                    }
                 }
 
-                sprite.scale.set(scaleX, scaleY, 1);
                 selectionPointsOverlay.add(sprite);
+                cornerIndex++;
             }
         }
 
-        // Add Gizmo visualization (Center point + Axis lines)
+        // Add Gizmo Pivot Point
         if (selectionHelper) {
-            const gizmoPos = selectionHelper.position;
-            const gizmoQuat = selectionHelper.quaternion;
-
-            // 1. Gizmo Center Point
-            const centerSprite = new THREE.Sprite(baseSpriteMat.clone());
-            centerSprite.position.copy(gizmoPos);
-            centerSprite.userData = { isCenter: true };
-            
-            if (preserveIsCenter || (preservePos && gizmoPos.distanceToSquared(preservePos) < 1e-6)) {
-                clickedVertex = centerSprite;
-                centerSprite.material.color.setHex(0x437FD0);
-            }
-
-            centerSprite.scale.set(scaleX, scaleY, 1);
-            centerSprite.renderOrder = 999;
-            selectionPointsOverlay.add(centerSprite);
-
-            // 2. Gizmo Axis Lines
-            const axisLength = 0.1;
-            const axesVerts = [];
-            const axesColors = [];
-            
-            const dirs = [
-                { v: new THREE.Vector3(1, 0, 0), c: 0xEF3751 },  // +X
-                { v: new THREE.Vector3(-1, 0, 0), c: 0xEF3751 }, // -X
-                { v: new THREE.Vector3(0, 1, 0), c: 0x6FA21C },  // +Y
-                { v: new THREE.Vector3(0, -1, 0), c: 0x6FA21C }, // -Y
-                { v: new THREE.Vector3(0, 0, 1), c: 0x437FD0 },  // +Z
-                { v: new THREE.Vector3(0, 0, -1), c: 0x437FD0 }  // -Z
-            ];
-            
-            const p1 = new THREE.Vector3();
-            const p2 = new THREE.Vector3();
-            const col = new THREE.Color();
-
-            for (const d of dirs) {
-                p1.copy(gizmoPos);
-                p2.copy(d.v).applyQuaternion(gizmoQuat).multiplyScalar(axisLength).add(gizmoPos);
-                
-                axesVerts.push(p1.x, p1.y, p1.z);
-                axesVerts.push(p2.x, p2.y, p2.z);
-                
-                col.setHex(d.c);
-                axesColors.push(col.r, col.g, col.b);
-                axesColors.push(col.r, col.g, col.b);
-            }
-
-            const axesGeo = new THREE.BufferGeometry();
-            axesGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(axesVerts), 3));
-            axesGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(axesColors), 3));
-
-            const axesMat = new THREE.LineBasicMaterial({
-                vertexColors: true,
-                depthTest: false,
-                depthWrite: false,
-                transparent: true
-            });
-
-            const axesLines = new THREE.LineSegments(axesGeo, axesMat);
-            axesLines.renderOrder = 100;
-            selectionPointsOverlay.add(axesLines);
+            const pivotSprite = new THREE.Sprite(baseSpriteMat.clone());
+            pivotSprite.position.copy(selectionHelper.position);
+            pivotSprite.scale.set(scaleX, scaleY, 1);
+            pivotSprite.userData.isPivot = true;
+            pivotSprite.userData.objectKey = '__PIVOT__';
+            pivotSprite.userData.vertexIndex = 0;
+            pivotSprite.material.color.setHex(0x30333D);
+            selectionPointsOverlay.add(pivotSprite);
         }
         
         // Clean up base material as we cloned it for everyone
@@ -1447,12 +1359,11 @@ function _updateMultiSelectionOverlayDuringDrag() {
 }
 
 function resetSelectionAndDeselect() {
-    if (_hasAnySelection() || vertexQueue.length > 0) {
+    if (_hasAnySelection()) {
         // If the user created a custom pivot during multi-selection, it should not persist after deselect.
         _revertEphemeralPivotUndoIfAny();
         transformControls.detach();
         _clearSelectionState();
-        vertexQueue.length = 0;
         _clearGizmoAnchor();
 
         // Clear any selection-derived pivot state so it can't leak into the next selection.
@@ -1677,14 +1588,8 @@ function _commitSelectionChange() {
 }
 
 function createGroup() {
-    suppressVertexQueue = true; // Prevent invalid IDs from entering queue during restructure
-    vertexQueue.length = 0; // Clear existing queue as IDs might shift
-
     const items = getSelectedItems();
-    if (items.length === 0 && !_hasAnySelection()) {
-        suppressVertexQueue = false;
-        return;
-    }
+    if (items.length === 0 && !_hasAnySelection()) return;
 
     const groups = getGroups();
     const objectToGroup = getObjectToGroup();
@@ -1785,30 +1690,17 @@ function createGroup() {
 
     groups.set(newGroupId, newGroup);
     invalidateSelectionCaches();
-    
-    // applySelection calls _beginSelectionReplace -> _clearSelectionState -> _pushToVertexQueue
-    // We keep suppressVertexQueue = true until selection is applied, then reset it.
-    // However, applySelection runs synchronously, so clearing it after is safer?
-    // Actually, _pushToVertexQueue happens INSIDE applySelection's cleanup phase of OLD selection.
-    // The OLD selection is the one we just grouped (and possibly invalidated).
-    // So suppression is correct.
-    
     applySelection(null, [], newGroupId);
-    suppressVertexQueue = false;
-
     console.log(`Group created: ${newGroupId}`);
     return newGroupId;
 }
 
 function ungroupGroup(groupId) {
-    suppressVertexQueue = true;
-    vertexQueue.length = 0;
-
-    if (!groupId) { suppressVertexQueue = false; return; }
+    if (!groupId) return;
     const groups = getGroups();
     const objectToGroup = getObjectToGroup();
     const group = groups.get(groupId);
-    if (!group) { suppressVertexQueue = false; return; }
+    if (!group) return;
 
     const parentId = group.parent || null;
     const parentGroup = parentId ? groups.get(parentId) : null;
@@ -1849,7 +1741,6 @@ function ungroupGroup(groupId) {
         resetSelectionAndDeselect();
     }
 
-    suppressVertexQueue = false;
     console.log(`Group removed: ${groupId}`);
 }
 
@@ -1962,16 +1853,9 @@ function _deleteInstancedMeshInstances(mesh, instanceIdsSortedDescending) {
 }
 
 function deleteSelectedItems() {
-    suppressVertexQueue = true;
-    vertexQueue.length = 0; // Clear queue to avoid stale ID references
-    
-    if (!_hasAnySelection()) {
-        suppressVertexQueue = false;
-        return;
-    }
+    if (!_hasAnySelection()) return;
 
-    try {
-        // 1. Identify all items to delete (deduplicated)
+    // 1. Identify all items to delete (deduplicated)
     // Key: "meshUuid_instanceId" -> { mesh, instanceId }
     const itemsToDelete = new Map();
 
@@ -2086,9 +1970,6 @@ function deleteSelectedItems() {
     }
 
     console.log('선택된 항목 제거됨 (Real Delete)');
-    } finally {
-        suppressVertexQueue = false;
-    }
 }
 
 // --- Duplication Logic ---
@@ -2609,49 +2490,24 @@ function cloneInstance(mesh, instanceId, targetGroupId, ctx, coveredByGroup = fa
     }
 
     // Add Geometry (reuse if exists in target) - O(1) via per-duplication cache
-    let targetGeomId = -1;
-    let attempts = 0;
-    while (true) {
-        attempts++;
-        try {
-            if (ctx) {
-                targetGeomId = _getOrCreateBatchGeometryId(targetBatch, geometry, ctx);
-            } else {
-                // Fallback (should be rare)
-                let id = -1;
-                if (targetBatch.userData && targetBatch.userData.originalGeometries) {
-                    for (const [gid, geo] of targetBatch.userData.originalGeometries) {
-                        if (geo === geometry) { id = gid; break; }
-                    }
-                }
-                if (id === -1) {
-                    id = targetBatch.addGeometry(geometry);
-                    if (!targetBatch.userData.originalGeometries) targetBatch.userData.originalGeometries = new Map();
-                    targetBatch.userData.originalGeometries.set(id, geometry);
-                    if (!targetBatch.userData.geometryBounds) targetBatch.userData.geometryBounds = new Map();
-                    if (!geometry.boundingBox) geometry.computeBoundingBox();
-                    if (geometry.boundingBox) targetBatch.userData.geometryBounds.set(id, geometry.boundingBox.clone());
-                }
-                targetGeomId = id;
+    const targetGeomId = ctx ? _getOrCreateBatchGeometryId(targetBatch, geometry, ctx) : (() => {
+        // Fallback (should be rare)
+        let id = -1;
+        if (targetBatch.userData && targetBatch.userData.originalGeometries) {
+            for (const [gid, geo] of targetBatch.userData.originalGeometries) {
+                if (geo === geometry) { id = gid; break; }
             }
-            break;
-        } catch (e) {
-            const msg = e ? (e.message || String(e)) : '';
-            if (ctx && attempts < 3 && msg && (msg.includes('Reserved space request exceeds') || msg.includes('maximum buffer size'))) {
-                const key = _batchPoolKey(material);
-                if (ctx.fullBatches) ctx.fullBatches.add(targetBatch);
-                if (ctx.batchPool && ctx.batchPool.get(key) === targetBatch) ctx.batchPool.delete(key);
-    
-                targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
-                if (!targetBatch) {
-                    console.error('Failed to create writable batch (geometry rollover)');
-                    return null;
-                }
-                continue;
-            }
-            throw e;
         }
-    }
+        if (id === -1) {
+            id = targetBatch.addGeometry(geometry);
+            if (!targetBatch.userData.originalGeometries) targetBatch.userData.originalGeometries = new Map();
+            targetBatch.userData.originalGeometries.set(id, geometry);
+            if (!targetBatch.userData.geometryBounds) targetBatch.userData.geometryBounds = new Map();
+            if (!geometry.boundingBox) geometry.computeBoundingBox();
+            if (geometry.boundingBox) targetBatch.userData.geometryBounds.set(id, geometry.boundingBox.clone());
+        }
+        return id;
+    })();
 
     // Add Instance (retry once on capacity error)
     let newInstanceId;
@@ -2942,10 +2798,7 @@ function duplicateGroupsAndObjects(groupIds, objectEntries, ctx) {
 }
 
 function duplicateSelected() {
-    suppressVertexQueue = true; // Prevent ghost selections during duplication
-    vertexQueue.length = 0;
-    try {
-        if (!_hasAnySelection()) return;
+    if (!_hasAnySelection()) return;
 
     // Preserve custom pivot state (multi-selection uses transient global state)
     const savedIsCustomPivot = isCustomPivot;
@@ -3005,10 +2858,11 @@ function duplicateSelected() {
     updateHelperPosition();
     updateSelectionOverlay();
     
+    // Flag this selection as "resulting from duplication" so subsequent interactions (like Vertex Mode clicks)
+    // can choose to clear it rather than treating it as a stable user-defined selection.
+    _selectionCameFromDuplication = true;
+    
     console.log('Duplication complete');
-    } finally {
-        suppressVertexQueue = false;
-    }
 }
 
 function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitControls, loadedObjectGroup: lg, setControls}) {
@@ -3567,6 +3421,41 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             case 'v':
                 isVertexMode = !isVertexMode;
                 console.log(isVertexMode ? 'Vertex mode activated' : 'Vertex mode deactivated');
+                
+                if (isVertexMode) {
+                    vertexSelectionQueue = [];
+                    // Sync queue from current selection
+                    if (currentSelection.groups) {
+                        for (const gid of currentSelection.groups) {
+                            vertexSelectionQueue.push({ type: 'group', id: gid });
+                        }
+                    }
+                    if (currentSelection.objects) {
+                        for (const [mesh, ids] of currentSelection.objects) {
+                            vertexSelectionQueue.push({ type: 'object', mesh, instanceIds: Array.from(ids) });
+                        }
+                    }
+
+                    // Enforce limit (max 2) immediately upon entering vertex mode
+                    let changed = false;
+                    while (vertexSelectionQueue.length > 2) {
+                        const removed = vertexSelectionQueue.shift();
+                        _removeVertexSelection(removed);
+                        if (removed.type === 'group') {
+                            if (currentSelection.groups) currentSelection.groups.delete(removed.id);
+                        } else {
+                            if (currentSelection.objects) {
+                                // Remove the whole object entry
+                                currentSelection.objects.delete(removed.mesh);
+                            }
+                        }
+                        changed = true;
+                    }
+                    if (changed) _commitSelectionChange();
+                } else {
+                    hideVertexConnectionLine();
+                }
+
                 updateHelperPosition();
                 updateSelectionOverlay();
                 break;
@@ -3589,7 +3478,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 currentSpace = currentSpace === 'world' ? 'local' : 'world';
                 transformControls.setSpace(currentSpace);
                 updateHelperPosition();
-                updateSelectionOverlay();
                 console.log('TransformControls Space:', currentSpace);
                 break;
             }
@@ -4114,8 +4002,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         const tempVec = _TMP_VEC3_A;
 
         for (const sprite of selectionPointsOverlay.children) {
-            if (!sprite.isSprite) continue;
-
             tempVec.copy(sprite.position);
             tempVec.project(camera);
             
@@ -4152,19 +4038,151 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             
             if (selectionPointsOverlay) {
                 selectionPointsOverlay.children.forEach(sprite => {
-                    if (!sprite.isSprite) return;
-                    const isTarget = (sprite === hovered) || (sprite === clickedVertex);
-                    sprite.material.color.setHex(isTarget ? 0x437FD0 : 0x30333D);
+                    let isSelected = false;
+                    if (sprite.userData && sprite.userData.objectKey) {
+                        if (clickedVertices.has(sprite.userData.objectKey)) {
+                            if (clickedVertices.get(sprite.userData.objectKey) === sprite.userData.vertexIndex) {
+                                isSelected = true;
+                            }
+                        }
+                    }
+                    const isTarget = (sprite === hovered) || isSelected;
+                    const defaultColor = 0x30333D;
+                    sprite.material.color.setHex(isTarget ? 0x437FD0 : defaultColor);
                 });
             }
+
+            // Connection Line Logic
+            let showLine = false;
+            if (clickedVertices.size === 1 && hovered) {
+                // Find the sprite for the currently selected vertex
+                let selectedSprite = null;
+                const [selKey, selIndex] = clickedVertices.entries().next().value;
+                
+                if (selectionPointsOverlay) {
+                    for (const s of selectionPointsOverlay.children) {
+                        if (s.userData && s.userData.objectKey === selKey && s.userData.vertexIndex === selIndex) {
+                            selectedSprite = s;
+                            break;
+                        }
+                    }
+                }
+
+                if (selectedSprite && selectedSprite !== hovered) {
+                    const selectedKey = selectedSprite.userData.objectKey;
+                    const hoveredKey = hovered.userData.objectKey;
+                    if (selectedKey && hoveredKey && selectedKey !== hoveredKey) {
+                        updateVertexConnectionLine(selectedSprite.position, hovered.position);
+                        showLine = true;
+                    }
+                }
+            }
+            if (!showLine) hideVertexConnectionLine();
             
             if (hovered) {
                 renderer.domElement.style.cursor = 'pointer';
             } else if (isVertexMode) { // Only reset if in vertex mode, otherwise other logic handles cursor
                 renderer.domElement.style.cursor = '';
             }
+        } else {
+             hideVertexConnectionLine();
         }
     });
+
+    function moveObjectByVertexSnap(p1, p2, sourceKey) {
+        const [meshUuid, instanceIdStr] = sourceKey.split('_');
+        const instanceId = parseInt(instanceIdStr, 10);
+        
+        const groups = getGroups();
+        const objectToGroup = getObjectToGroup();
+        
+        let targetEntity = null;
+        let bestMatch = null;
+        
+        // Find the entity in selection queue that owns the source vertex
+        for (const item of vertexSelectionQueue) {
+            if (item.type === 'object') {
+                if (item.mesh.uuid === meshUuid) {
+                     // Check if instanceId is selected
+                     const ids = item.instanceIds; // Set or Array
+                     const hasId = (ids instanceof Set) ? ids.has(instanceId) : ids.includes(instanceId);
+                     if (hasId) {
+                         bestMatch = item;
+                         break;
+                     }
+                }
+            } else if (item.type === 'group') {
+                const key = sourceKey;
+                const directGroupId = objectToGroup.get(key);
+                if (directGroupId) {
+                    let curr = directGroupId;
+                    while (curr) {
+                        if (curr === item.id) {
+                            bestMatch = item;
+                            break;
+                        }
+                        const g = groups.get(curr);
+                        curr = g ? g.parent : null;
+                    }
+                }
+                if (bestMatch) break;
+            }
+        }
+        
+        targetEntity = bestMatch;
+        if (!targetEntity) return;
+    
+        const delta = new THREE.Vector3().subVectors(p2, p1);
+        
+        if (targetEntity.type === 'group') {
+            const group = groups.get(targetEntity.id);
+            if (group) {
+                if (group.parent) {
+                    const parentWorld = getGroupWorldMatrixWithFallback(group.parent, _TMP_MAT4_A);
+                    const parentInverse = parentWorld.invert();
+                    
+                    const currentWorldPos = getGroupWorldMatrixWithFallback(targetEntity.id, _TMP_MAT4_B);
+                    const currentPos = new THREE.Vector3().setFromMatrixPosition(currentWorldPos);
+                    const newWorldPos = currentPos.add(delta);
+                    
+                    const newLocalPos = newWorldPos.applyMatrix4(parentInverse);
+                    group.position.copy(newLocalPos);
+                } else {
+                    if (!group.position) group.position = new THREE.Vector3();
+                    group.position.add(delta);
+                }
+                if (group.matrix) delete group.matrix;
+            }
+        } else {
+            const mesh = targetEntity.mesh;
+            const instanceIds = targetEntity.instanceIds;
+            const meshWorldInv = mesh.matrixWorld.clone().invert();
+            
+            const tempMat = _TMP_MAT4_A;
+
+            for (const id of instanceIds) {
+                 mesh.getMatrixAt(id, tempMat);
+                 
+                 const instanceWorldMat = tempMat.clone().premultiply(mesh.matrixWorld);
+                 const instanceWorldPos = new THREE.Vector3().setFromMatrixPosition(instanceWorldMat);
+                 
+                 const targetWorldPos = instanceWorldPos.add(delta);
+                 const targetLocalPos = targetWorldPos.applyMatrix4(meshWorldInv);
+                 
+                 // Restore matrix with new position (assuming pure position update in local space is desired result of world snap)
+                 // Re-reading matrix to be safe
+                 mesh.getMatrixAt(id, tempMat);
+                 tempMat.setPosition(targetLocalPos);
+                 mesh.setMatrixAt(id, tempMat);
+            }
+            
+            if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
+        }
+        
+        updateHelperPosition();
+        updateSelectionOverlay();
+        console.log('Vertex Snap 이동 완료');
+    }
 
     // Ctrl+Drag marquee selection
     let marqueeActive = false;
@@ -4245,12 +4263,249 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             
             const v = getHoveredVertex(m);
             if (v) {
-                clickedVertex = v;
+                if (clickedVertices.size === 1 && transformControls.mode === 'translate') {
+                    const [sourceKey, sourceIndex] = clickedVertices.entries().next().value;
+                    if (v.userData && v.userData.objectKey && (sourceKey !== v.userData.objectKey || sourceIndex !== v.userData.vertexIndex)) {
+                        let sourceSprite = null;
+                        if (selectionPointsOverlay) {
+                            selectionPointsOverlay.children.forEach(child => {
+                                if (child.userData.objectKey === sourceKey && child.userData.vertexIndex === sourceIndex) {
+                                    sourceSprite = child;
+                                }
+                            });
+                        }
+
+                        if (sourceSprite) {
+                            const sourcePos = sourceSprite.position;
+                            const targetPos = v.position;
+
+                            // [Custom Pivot Logic] Gizmo(Source) -> Object(Target)
+                            // Activate custom pivot and move it to the target vertex position.
+                            if (sourceKey === '__PIVOT__' && v.userData.objectKey !== '__PIVOT__') {
+                                isCustomPivot = true;
+                                pivotMode = 'origin';
+
+                                const singleGroupId = _getSingleSelectedGroupId();
+                                const baseWorld = _TMP_VEC3_B;
+                                
+                                if (singleGroupId) {
+                                    getGroupOriginWorld(singleGroupId, baseWorld);
+
+                                    // Persist to Group Data
+                                    const groups = getGroups();
+                                    const group = groups.get(singleGroupId);
+                                    if (group) {
+                                        const groupMatrix = getGroupWorldMatrix(group, _TMP_MAT4_A);
+                                        const invGroupMatrix = groupMatrix.clone().invert();
+                                        group.pivot = targetPos.clone().applyMatrix4(invGroupMatrix);
+                                        group.isCustomPivot = true;
+                                    }
+                                } else {
+                                    // For objects (single or multi), baseline is Average Origin.
+                                    baseWorld.copy(calculateAvgOrigin());
+
+                                    // Persist to Single Object Data (if applicable)
+                                    const singleMeshEntry = _getSingleSelectedMeshEntry();
+                                    if (singleMeshEntry) {
+                                        const { mesh, ids } = singleMeshEntry;
+                                        if (ids.size > 0) {
+                                            const firstId = Array.from(ids)[0];
+                                            const instanceMatrix = _TMP_MAT4_A;
+                                            mesh.getMatrixAt(firstId, instanceMatrix);
+                                            const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
+                                            const invWorldMatrix = worldMatrix.clone().invert();
+                                            const localPivot = targetPos.clone().applyMatrix4(invWorldMatrix);
+
+                                            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
+                                                mesh.userData.customPivots.set(firstId, localPivot);
+                                            } else {
+                                                mesh.userData.customPivot = localPivot;
+                                            }
+                                            mesh.userData.isCustomPivot = true;
+                                        }
+                                    }
+                                }
+
+                                pivotOffset.subVectors(targetPos, baseWorld);
+
+                                // Update Multi-selection anchors
+                                if (_isMultiSelection()) {
+                                    _multiSelectionOriginAnchorPosition.copy(targetPos);
+                                    _multiSelectionOriginAnchorValid = true;
+                                    if (!_multiSelectionOriginAnchorInitialValid) {
+                                        _multiSelectionOriginAnchorInitialPosition.copy(targetPos);
+                                        _multiSelectionOriginAnchorInitialValid = true;
+                                    }
+                                }
+
+                                updateHelperPosition();
+                                updateSelectionOverlay();
+                                clickedVertices.clear();
+                                hideVertexConnectionLine();
+                                return;
+                            }
+
+                            const delta = _TMP_VEC3_A.subVectors(targetPos, sourcePos);
+                            
+                            let isValidSource = false;
+                            
+                            // Check if source is a selected Group
+                            if (currentSelection.groups && currentSelection.groups.has(sourceKey)) {
+                                isValidSource = true;
+                            } else if (sourceKey === '__PIVOT__') {
+                                isValidSource = true;
+                            }
+                            // Check if source is a selected Object (or part of one)
+                            else {
+                                const [uuid] = sourceKey.split('_');
+                                const items = getSelectedItems();
+                                for (const item of items) {
+                                    if (item.mesh && item.mesh.uuid === uuid) {
+                                        isValidSource = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (isValidSource) {
+                                // Calculate global delta
+                                const deltaMatrix = _TMP_MAT4_A.makeTranslation(delta.x, delta.y, delta.z);
+                                const targetKey = v.userData.objectKey;
+
+                                // Prepare filtering info
+                                const groups = getGroups();
+                                const objectToGroup = getObjectToGroup();
+                                const isTargetGroup = groups.has(targetKey);
+                                
+                                // 1. Move all selected instances (Objects & Group children)
+                                const items = getSelectedItems();
+                                _meshToInstanceIds.clear();
+                                for (const { mesh, instanceId } of items) {
+                                    if (!mesh) continue;
+                                    
+                                    // Exclude Target
+                                    if (sourceKey !== targetKey) {
+                                        const itemKey = getGroupKey(mesh, instanceId);
+                                        if (itemKey === targetKey) continue; // Direct object match
+                                        
+                                        if (isTargetGroup) {
+                                            let gid = objectToGroup.get(itemKey);
+                                            let isChild = false;
+                                            while(gid) {
+                                                if (gid === targetKey) {
+                                                    isChild = true;
+                                                    break;
+                                                }
+                                                const g = groups.get(gid);
+                                                gid = g ? g.parent : null;
+                                            }
+                                            if (isChild) continue;
+                                        }
+                                    }
+
+                                    let list = _meshToInstanceIds.get(mesh);
+                                    if (!list) {
+                                        list = [];
+                                        _meshToInstanceIds.set(mesh, list);
+                                    }
+                                    list.push(instanceId);
+                                }
+
+                                for (const [mesh, instanceIds] of _meshToInstanceIds) {
+                                    const meshInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
+                                    _tmpLocalDelta.multiplyMatrices(meshInv, deltaMatrix).multiply(mesh.matrixWorld);
+
+                                    for (const instanceId of instanceIds) {
+                                        mesh.getMatrixAt(instanceId, _tmpInstanceMatrix);
+                                        _tmpInstanceMatrix.premultiply(_tmpLocalDelta);
+                                        mesh.setMatrixAt(instanceId, _tmpInstanceMatrix);
+                                    }
+                                    
+                                    if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
+                                }
+
+                                // 2. Move Group Logic
+                                if (currentSelection.groups && currentSelection.groups.size > 0) {
+                                    const toUpdate = new Set();
+
+                                    for (const rootId of currentSelection.groups) {
+                                        if (!rootId) continue;
+                                        toUpdate.add(rootId);
+                                        const descendants = getAllDescendantGroups(rootId);
+                                        for (const subId of descendants) toUpdate.add(subId);
+                                    }
+
+                                    for (const id of toUpdate) {
+                                        // Filter out target group and its descendants from logical update
+                                        if (sourceKey !== targetKey) {
+                                            if (id === targetKey) continue;
+                                            
+                                            if (isTargetGroup) {
+                                                let gid = id;
+                                                let isDescendant = false;
+                                                let curr = groups.get(id);
+                                                let parent = curr ? curr.parent : null;
+                                                while(parent) {
+                                                    if (parent === targetKey) {
+                                                        isDescendant = true;
+                                                        break;
+                                                    }
+                                                    const g = groups.get(parent);
+                                                    parent = g ? g.parent : null;
+                                                }
+                                                if (isDescendant) continue;
+                                            }
+                                        }
+
+                                        const g = groups.get(id);
+                                        if (!g) continue;
+                                        if (!g.matrix) {
+                                            const gPos = g.position || new THREE.Vector3();
+                                            const gQuat = g.quaternion || new THREE.Quaternion();
+                                            const gScale = g.scale || new THREE.Vector3(1, 1, 1);
+                                            g.matrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
+                                        }
+                                        g.matrix.premultiply(deltaMatrix);
+                                        if (!g.position) g.position = new THREE.Vector3();
+                                        if (!g.quaternion) g.quaternion = new THREE.Quaternion();
+                                        if (!g.scale) g.scale = new THREE.Vector3(1, 1, 1);
+                                        g.matrix.decompose(g.position, g.quaternion, g.scale);
+                                    }
+                                }
+                                
+                                updateHelperPosition();
+                                updateSelectionOverlay();
+                                
+                                clickedVertices.clear();
+                                hideVertexConnectionLine();
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                if (v.userData && v.userData.objectKey) {
+                    clickedVertices.set(v.userData.objectKey, v.userData.vertexIndex);
+                }
+
+                // If 2 points are selected, clear selection
+                if (clickedVertices.size >= 2) {
+                    clickedVertices.clear();
+                    hideVertexConnectionLine();
+                }
+
                 if (selectionPointsOverlay) {
                      selectionPointsOverlay.children.forEach(sprite => {
-                         if (!sprite.isSprite) return;
-                         const isTarget = (sprite === clickedVertex);
-                         sprite.material.color.setHex(isTarget ? 0x437FD0 : 0x30333D);
+                         let isSelected = false;
+                         if (sprite.userData && sprite.userData.objectKey) {
+                             if (clickedVertices.has(sprite.userData.objectKey)) {
+                                 if (clickedVertices.get(sprite.userData.objectKey) === sprite.userData.vertexIndex) {
+                                     isSelected = true;
+                                 }
+                             }
+                         }
+                         sprite.material.color.setHex(isSelected ? 0x437FD0 : 0x30333D);
                      });
                 }
                 mouseDownPos = null; // Prevent object selection/marquee
@@ -4586,6 +4841,148 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         }
 
         // Normal click: replace selection
+        if (isVertexMode) {
+            // Vertex Mode: Multi-selection with Queue (Max 2)
+
+            // If the current selection came from Object Copying (Duplication), 
+            // valid Vertex Mode interaction requires clearing that "bulk" selection state
+            // to start a fresh connection/selection sequence.
+            // (Queue is usually cleared by duplicateSelected, but we enforce this to be safe and signal intent).
+            if (_selectionCameFromDuplication) {
+                vertexSelectionQueue = [];
+                _selectionCameFromDuplication = false;
+            }
+
+            // Remove selections that are not currently in vertexSelectionQueue (e.g. from Normal mode)
+            const queueGroups = new Set();
+            const queueObjects = new Map();
+            vertexSelectionQueue.forEach(item => {
+                if (item.type === 'group') queueGroups.add(item.id);
+                else {
+                    if (!queueObjects.has(item.mesh)) queueObjects.set(item.mesh, new Set());
+                    const s = queueObjects.get(item.mesh);
+                    item.instanceIds.forEach(id => s.add(id));
+                }
+            });
+
+            if (currentSelection.groups) {
+                Array.from(currentSelection.groups).forEach(gid => {
+                    if (!queueGroups.has(gid)) currentSelection.groups.delete(gid);
+                });
+            }
+            if (currentSelection.objects) {
+                Array.from(currentSelection.objects.keys()).forEach(mesh => {
+                    const ids = currentSelection.objects.get(mesh);
+                    const queueIds = queueObjects.get(mesh);
+                    Array.from(ids).forEach(id => {
+                        if (!queueIds || !queueIds.has(id)) ids.delete(id);
+                    });
+                    if (ids.size === 0) currentSelection.objects.delete(mesh);
+                });
+            }
+            
+            // 1. Add to selection (don't clear)
+            if (target.type === 'group') {
+                if (!currentSelection.groups) currentSelection.groups = new Set();
+                currentSelection.groups.add(target.id);
+            } else {
+                const mesh = target.mesh;
+                const ids = target.ids;
+                if (mesh && ids && ids.length > 0) {
+                    if (!currentSelection.objects) currentSelection.objects = new Map();
+                    let set = currentSelection.objects.get(mesh);
+                    if (!set) {
+                        set = new Set();
+                        currentSelection.objects.set(mesh, set);
+                    }
+                    ids.forEach(id => set.add(id));
+                }
+            }
+
+            // 2. Queue Management
+            // Treat the whole 'target' (which might contain multiple IDs for one logical item) as ONE queue entry.
+            const queueItem = target.type === 'group' 
+                ? { type: 'group', id: target.id }
+                : { type: 'object', mesh: target.mesh, instanceIds: target.ids };
+
+            // Check if any ancestor group is currently in the queue; if so, remove it (Child supersedes Parent in Vertex Mode)
+            const groups = getGroups();
+            const objectToGroup = getObjectToGroup();
+            let currGroupId = null;
+
+            if (target.type === 'object') {
+                // Use first instance ID to find group (assuming all instances in target belong to same group)
+                if (target.ids && target.ids.length > 0) {
+                    const key = getGroupKey(target.mesh, target.ids[0]);
+                    currGroupId = objectToGroup.get(key);
+                }
+            } else if (target.type === 'group') {
+                const g = groups.get(target.id);
+                currGroupId = g ? g.parent : null;
+            }
+
+            const ancestors = new Set();
+            while (currGroupId) {
+                ancestors.add(currGroupId);
+                const g = groups.get(currGroupId);
+                currGroupId = g ? g.parent : null;
+            }
+
+            if (ancestors.size > 0) {
+                for (let i = vertexSelectionQueue.length - 1; i >= 0; i--) {
+                    const item = vertexSelectionQueue[i];
+                    if (item.type === 'group' && ancestors.has(item.id)) {
+                        const removed = vertexSelectionQueue.splice(i, 1)[0];
+                        _removeVertexSelection(removed);
+                        if (currentSelection.groups) currentSelection.groups.delete(removed.id);
+                    }
+                }
+            }
+
+            // Remove if same logical item is already in queue (to move to end, or prevent duplicate logic)
+            const existingIdx = vertexSelectionQueue.findIndex(item => {
+                if (item.type !== queueItem.type) return false;
+                if (item.type === 'group') return item.id === queueItem.id;
+                // For objects, check mesh and at least one overlapping ID or equality
+                if (item.mesh !== queueItem.mesh) return false;
+                if (item.instanceIds.length !== queueItem.instanceIds.length) return false;
+                return item.instanceIds[0] === queueItem.instanceIds[0];
+            });
+            
+            if (existingIdx !== -1) {
+                vertexSelectionQueue.splice(existingIdx, 1);
+            }
+            
+            vertexSelectionQueue.push(queueItem);
+
+            // Enforce Queue Size (Max 2 logical items)
+            while (vertexSelectionQueue.length > 2) {
+                const removed = vertexSelectionQueue.shift();
+                _removeVertexSelection(removed);
+                if (removed.type === 'group') {
+                    if (currentSelection.groups) currentSelection.groups.delete(removed.id);
+                } else {
+                    if (currentSelection.objects) {
+                        const set = currentSelection.objects.get(removed.mesh);
+                        if (set) {
+                            removed.instanceIds.forEach(id => set.delete(id));
+                            if (set.size === 0) currentSelection.objects.delete(removed.mesh);
+                        }
+                    }
+                }
+            }
+            
+            // Update primary
+             if (target.type === 'group') {
+                 currentSelection.primary = { type: 'group', id: target.id };
+             } else {
+                 currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+             }
+
+            _commitSelectionChange();
+            return;
+        }
+
         if (target.type === 'group') {
             applySelection(null, [], target.id);
             return;
