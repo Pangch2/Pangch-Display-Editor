@@ -1179,11 +1179,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
                 // Preserve the user's pivotMode (e.g. allow creating a custom pivot while in center mode).
                 if (_pivotEditPreviousPivotMode) {
-                    if (isCustomPivot) {
-                        pivotMode = 'origin';
-                    } else {
-                        pivotMode = _pivotEditPreviousPivotMode;
-                    }
+                    pivotMode = _pivotEditPreviousPivotMode;
                 }
 
                 // Multi-selection no longer writes per-object pivots, so no ephemeral undo is needed.
@@ -1601,29 +1597,33 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 event.preventDefault();
 
                 const isMultiReset = _isMultiSelection();
+                const wasCustomPivot = isCustomPivot;
 
                 // Reset should also drop any ephemeral multi-selection pivot edits.
                 _revertEphemeralPivotUndoIfAny();
 
                 pivotOffset.set(0, 0, 0);
                 isCustomPivot = false;
-                pivotMode = 'origin';
 
-                // Clear group pivot overrides
-                if (currentSelection.groups && currentSelection.groups.size > 0) {
-                    const groups = getGroups();
-                    for (const groupId of currentSelection.groups) {
-                        const group = groups.get(groupId);
-                        if (!group) continue;
-                        group.pivot = _DEFAULT_GROUP_PIVOT.clone();
-                        delete group.isCustomPivot;
-                    }
+                let shouldClearAll = true;
+                if (isMultiReset && wasCustomPivot) {
+                    shouldClearAll = false;
                 }
 
-                // Clear object pivot overrides (for all selected ids)
-                if (currentSelection.objects && currentSelection.objects.size > 0) {
-                    // Multi-selection behaves like a temporary group: do NOT mutate per-object pivots.
-                    if (!isMultiReset) {
+                if (shouldClearAll) {
+                    // Clear ALL group pivots
+                    if (currentSelection.groups && currentSelection.groups.size > 0) {
+                        const groups = getGroups();
+                        for (const groupId of currentSelection.groups) {
+                            const group = groups.get(groupId);
+                            if (!group) continue;
+                            group.pivot = _DEFAULT_GROUP_PIVOT.clone();
+                            delete group.isCustomPivot;
+                        }
+                    }
+
+                    // Clear ALL object pivots
+                    if (currentSelection.objects && currentSelection.objects.size > 0) {
                         for (const [mesh, ids] of currentSelection.objects) {
                             if (!mesh) continue;
                             if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
@@ -1632,27 +1632,27 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             delete mesh.userData.customPivot;
                             delete mesh.userData.isCustomPivot;
                         }
-                    } else if (currentSelection.primary && currentSelection.primary.type === 'object') {
-                        // In Multi-selection, explicitly clear ONLY the primary's pivot on Reset
-                        const { mesh, instanceId } = currentSelection.primary;
-                        if (mesh) {
-                            if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
-                                mesh.userData.customPivots.delete(instanceId);
-                            }
-                            delete mesh.userData.customPivot;
-                            // Do not delete isCustomPivot blindly if other instances need it, but for single-instance it's fine.
-                            // Better: just ensure recompute won't find a pivot.
-                        }
                     }
-                }
-                
-                // Also clear primary group pivot in multi-select
-                if (isMultiReset && currentSelection.primary && currentSelection.primary.type === 'group') {
-                    const groups = getGroups();
-                    const group = groups.get(currentSelection.primary.id);
-                    if (group) {
-                         group.pivot = _DEFAULT_GROUP_PIVOT.clone();
-                         delete group.isCustomPivot;
+                } else {
+                    // Clear ONLY Primary pivot (acts as selection pivot)
+                    if (currentSelection.primary) {
+                        if (currentSelection.primary.type === 'group') {
+                            const groups = getGroups();
+                            const group = groups.get(currentSelection.primary.id);
+                            if (group) {
+                                group.pivot = _DEFAULT_GROUP_PIVOT.clone();
+                                delete group.isCustomPivot;
+                            }
+                        } else if (currentSelection.primary.type === 'object') {
+                            const { mesh, instanceId } = currentSelection.primary;
+                            if (mesh) {
+                                if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
+                                    mesh.userData.customPivots.delete(instanceId);
+                                }
+                                delete mesh.userData.customPivot;
+                                delete mesh.userData.isCustomPivot;
+                            }
+                        }
                     }
                 }
 

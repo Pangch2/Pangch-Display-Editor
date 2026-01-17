@@ -304,11 +304,8 @@ export function processVertexSnap(
         } else {
             // Move only the picked logical entity
             if (src.type === 'group') {
-                // Move rootmost group if implicit
-                let rootId = src.id;
-                const chain = GroupUtils.getGroupChain(loadedObjectGroup, rootId);
-                if (chain.length > 0) rootId = chain[0];
-                addGroup(rootId);
+                // Move the specific group clicked
+                addGroup(src.id);
             } else {
                 const { mesh, instanceId } = src;
                 // Check if it belongs to a group
@@ -317,10 +314,8 @@ export function processVertexSnap(
                 const groupId = objectToGroup ? objectToGroup.get(key) : null;
                 
                 if (groupId) {
-                    // It's in a group -> Move Root Group
-                    const chain = GroupUtils.getGroupChain(loadedObjectGroup, groupId);
-                    const rootId = chain.length > 0 ? chain[0] : groupId;
-                    addGroup(rootId);
+                    // It's in a group -> Move that specific group
+                    addGroup(groupId);
                 } else {
                     // Loose object -> Move it + peers
                     addInstance(mesh, instanceId);
