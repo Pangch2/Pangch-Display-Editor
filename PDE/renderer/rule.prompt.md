@@ -11,29 +11,47 @@
 - 주석은 필요한 경우에만 작성하며, 코드의 의도를 명확히 설명해야 합니다.
 
 # 파일 구조
+
+```
 hardcoded/ - 하드코딩 블럭, 아이템 모음
-├ blockstates/
-└ models/
-    ├ block/
-    └ item/
+├── blockstates/
+└── models/
+    ├── block/
+    └── item/
+
 main.js
 package.json
 preload.js
+
 renderer/
-├ asset-manager.js - 마인크래프트 에셋 관리
-├ entityMaterial.js - 모델에 넣을 셰이더
-├ global.d.ts
-├ index.html - 메인 화면
-├ load-project/ - 프로젝트 불러오기 관련 폴더(block_display, item_display, player_head, group 처리)
-│   ├ pbde-worker.ts - upload-pbde.ts전용 web-worker, .bdengine .pdengine파일 파싱
-│   └ upload-pbde.ts - pbde-worker.ts의 데이터를 받는 메인쓰레드
-├ controls/
-│   └ gizmo.js - gizmo 컨트롤러
-├ renderer.js - 메인 씬 렌더러
-└ ui-open-close.js - UI 열기/닫기 애니메이션
-resources/ - 웹,빌드 이미지 모음
+├── asset-manager.js - 마인크래프트 에셋 관리
+├── entityMaterial.js - 모델에 넣을 셰이더
+├── global.d.ts
+├── index.html - 메인 화면
+├── load-project/ - 프로젝트 불러오기 관련 폴더 (block_display, item_display, player_head, group 처리)
+│   ├── pbde-worker.ts - upload-pbde.ts 전용 web-worker, .bdengine .pdengine 파일 파싱
+│   └── upload-pbde.ts - pbde-worker.ts의 데이터를 받는 메인 쓰레드
+├── controls/
+│   ├── blockbench-scale.js - Blockbench scale mode 함수 모음집 (computeBlockbenchPivotFrame, computeBlockbenchScaleShift 등)
+│   ├── camera.js - 카메라 포커싱 및 이동 로직
+│   ├── custom-pivot.js - 커스텀 피벗 로직 및 Undo/Redo 처리
+│   ├── delete.js - 오브젝트 삭제 관련 로직
+│   ├── drag.js - Ctrl+Drag Marquee 선택 로직
+│   ├── duplicate.js - 오브젝트 복제 관련 로직
+│   ├── group.js - 그룹 관련 로직 함수 모음집 (getGroups, createGroupStructure, cloneGroupStructure 등)
+│   ├── gizmo.js - gizmo 메인 컨트롤러
+│   ├── overlay.js - 오버레이 및 선택 관련 함수 모음집
+│   ├── select.js - 오브젝트 선택 및 선택 상태 관리 로직
+│   ├── shear-remove.js - Shear(기울기) 제거 및 정규화 로직
+│   └── vertex-translate.js - 버텍스 스냅 및 이동 로직
+├── renderer.js - 메인 씬 렌더러
+└── ui-open-close.js - UI 열기/닫기 애니메이션
+
+resources/ - 웹, 빌드 이미지 모음
+
 tsconfig.json
 vite.config.js
+```
 
 # 네이밍
 - 변수명, 함수명, 클래스명은 카멜케이스(camelCase)를 사용합니다.

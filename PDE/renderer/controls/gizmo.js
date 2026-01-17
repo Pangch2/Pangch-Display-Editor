@@ -1,6 +1,44 @@
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
-import { createEntityMaterial } from '../entityMaterial.js';
+import { 
+    blockbenchScaleMode, 
+    toggleBlockbenchScaleMode, 
+    computeBlockbenchPivotFrame, 
+    transformBoxToPivotFrame, 
+    detectBlockbenchScaleAxes, 
+    computeBlockbenchScaleShift 
+} from './blockbench-scale.js';
+import * as GroupUtils from './group.js';
+import * as Overlay from './overlay.js';
+import * as CustomPivot from './custom-pivot.js';
+import * as Duplicate from './duplicate.js';
+import * as Delete from './delete.js';
+import { removeShearFromSelection } from './shear-remove.js';
+import { focusCameraOnSelection } from './camera.js';
+import { initDrag } from './drag.js';
+
+import { processVertexSnap } from './vertex-translate.js';
+import * as Select from './select.js';
+
+// Aliases for moved/exported functions
+const disposeThreeObjectTree = Overlay.disposeThreeObjectTree;
+const getInstanceCount = Overlay.getInstanceCount;
+const isInstanceValid = Overlay.isInstanceValid;
+const getDisplayType = Overlay.getDisplayType;
+const isItemDisplayHatEnabled = Overlay.isItemDisplayHatEnabled;
+const getInstanceLocalBoxMin = Overlay.getInstanceLocalBoxMin;
+const getInstanceWorldMatrixForOrigin = Overlay.getInstanceWorldMatrixForOrigin;
+const calculateAvgOriginForChildren = Overlay.calculateAvgOriginForChildren;
+const getGroupWorldMatrixWithFallback = Overlay.getGroupWorldMatrixWithFallback;
+const createEdgesGeometryFromBox3 = Overlay.createEdgesGeometryFromBox3;
+const unionTransformedBox3 = Overlay.unionTransformedBox3;
+const getInstanceLocalBox = Overlay.getInstanceLocalBox;
+const getInstanceWorldMatrix = Overlay.getInstanceWorldMatrix;
+const getGroupLocalBoundingBox = Overlay.getGroupLocalBoundingBox;
+const getRotationFromMatrix = Overlay.getRotationFromMatrix;
+const getSelectionBoundingBox = () => Overlay.getSelectionBoundingBox(currentSelection);
+const createOverlayLineMaterial = Overlay.createOverlayLineMaterial;
+
 
 // Small shared temporaries (avoid allocations in hot paths)
 const _TMP_MAT4_A = new THREE.Matrix4();
@@ -8,354 +46,52 @@ const _TMP_MAT4_B = new THREE.Matrix4();
 const _TMP_BOX3_A = new THREE.Box3();
 const _TMP_VEC3_A = new THREE.Vector3();
 const _TMP_VEC3_B = new THREE.Vector3();
-const _overlayUnitGeo = (() => {
-    const geo = new THREE.BufferGeometry();
-    const vertices = new Float32Array([
-        // Bottom 4 edges
-        -0.5, -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5, -0.5,
-         0.5, -0.5, -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,
-         0.5, -0.5,  0.5, -0.5, -0.5,  0.5,  0.5, -0.5,  0.5,
-        -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5, -0.5,  0.5,
-        // Top 4 edges
-        -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,  0.5, -0.5,
-         0.5,  0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5, -0.5,
-         0.5,  0.5,  0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5,
-        -0.5,  0.5,  0.5, -0.5,  0.5, -0.5, -0.5,  0.5,  0.5,
-        // Vertical 4 edges
-        -0.5, -0.5, -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5,
-         0.5, -0.5, -0.5,  0.5,  0.5, -0.5,  0.5, -0.5, -0.5,
-         0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5, -0.5,  0.5,
-        -0.5, -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,  0.5
-    ]);
-    geo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-    return geo;
-})();
 
-const _unitCubeCorners = [
-    new THREE.Vector3(-0.5, -0.5, -0.5),
-    new THREE.Vector3( 0.5, -0.5, -0.5),
-    new THREE.Vector3( 0.5,  0.5, -0.5),
-    new THREE.Vector3(-0.5,  0.5, -0.5),
-    new THREE.Vector3(-0.5, -0.5,  0.5),
-    new THREE.Vector3( 0.5, -0.5,  0.5),
-    new THREE.Vector3( 0.5,  0.5,  0.5),
-    new THREE.Vector3(-0.5,  0.5,  0.5)
-];
-
-function getInstanceCount(mesh) {
-    if (!mesh) return 0;
-    if (mesh.isInstancedMesh) return mesh.count ?? 0;
-    if (mesh.isBatchedMesh) {
-        const geomIds = mesh.userData?.instanceGeometryIds;
-        return Array.isArray(geomIds) ? geomIds.length : 0;
-    }
-    return 0;
-}
-
-function isInstanceValid(mesh, instanceId) {
-    if (!mesh) return false;
-    if (mesh.isBatchedMesh) {
-        if (mesh.userData?.instanceGeometryIds) {
-            return mesh.userData.instanceGeometryIds[instanceId] !== undefined;
+// Selection logic moved to select.js
+function _beginSelectionReplace(options) {
+    Select.beginSelectionReplace({
+        revertEphemeralPivotUndoIfAny: _revertEphemeralPivotUndoIfAny,
+        detachTransformControls: () => { if (transformControls) transformControls.detach(); },
+        pushToVertexQueue: _pushToVertexQueue,
+        clearGizmoAnchor: _clearGizmoAnchor,
+        setSelectionAnchorMode: (mode) => { _selectionAnchorMode = mode; },
+        resetPivotState: () => { 
+            pivotOffset.set(0, 0, 0); 
+            isCustomPivot = false; 
+            currentSelection.primary = null; 
         }
-        return true;
-    }
-    if (mesh.isInstancedMesh) {
-        return instanceId < (mesh.count ?? 0);
-    }
-    return false;
+    }, options);
 }
 
-function disposeThreeObjectTree(root) {
-    if (!root) return;
-    root.traverse(child => {
-        if (child.geometry) child.geometry.dispose();
-        if (child.material) child.material.dispose();
-    });
-}
-
-function createOverlayLineMaterial(color) {
-    return new THREE.LineBasicMaterial({
-        color,
-        depthTest: true,
-        depthWrite: false,
-        transparent: true,
-        opacity: 0.9
-    });
-}
-
-function _beginSelectionReplace({ anchorMode = 'default', detachTransform = false, preserveAnchors = false } = {}) {
-    _revertEphemeralPivotUndoIfAny();
-    if (detachTransform && transformControls) transformControls.detach();
-    _clearSelectionState();
-    if (!preserveAnchors) _clearGizmoAnchor();
-
-    _selectionAnchorMode = anchorMode;
-
-    // New selection starts with no transient custom pivot.
-    pivotOffset.set(0, 0, 0);
-    isCustomPivot = false;
-
-    currentSelection.primary = null;
-    invalidateSelectionCaches();
-}
-
-function getDisplayType(mesh, instanceId) {
-    if (!mesh) return undefined;
-    if (mesh.isBatchedMesh && mesh.userData?.displayTypes) {
-        return mesh.userData.displayTypes.get(instanceId);
-    }
-    return mesh.userData?.displayType;
-}
-
-function isItemDisplayHatEnabled(mesh, instanceId) {
-    return !!(getDisplayType(mesh, instanceId) === 'item_display' && mesh?.userData?.hasHat && mesh.userData.hasHat[instanceId]);
-}
-
-function getInstanceLocalBoxMin(mesh, instanceId, out = new THREE.Vector3()) {
-    const box = getInstanceLocalBox(mesh, instanceId);
-    if (!box) return null;
-    return out.copy(box.min);
-}
-
-// Used for origin/center computations where BatchedMesh localMatrices should be removed.
-function getInstanceWorldMatrixForOrigin(mesh, instanceId, outMatrix) {
-    outMatrix.identity();
-    if (!mesh) return outMatrix;
-
-    mesh.getMatrixAt(instanceId, outMatrix);
-    if (mesh.isBatchedMesh && mesh.userData?.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
-        _TMP_MAT4_B.copy(mesh.userData.localMatrices.get(instanceId)).invert();
-        outMatrix.multiply(_TMP_MAT4_B);
-    }
-    outMatrix.premultiply(mesh.matrixWorld);
-    return outMatrix;
-}
-
-function calculateAvgOriginForChildren(children, out = new THREE.Vector3()) {
-    out.set(0, 0, 0);
-    if (!Array.isArray(children) || children.length === 0) return out;
-
-    const tempPos = _TMP_VEC3_A;
-    const tempMat = _TMP_MAT4_A;
-
-    children.forEach(child => {
-        const m = child.mesh;
-        const id = child.instanceId;
-        if (!m && m !== 0) return;
-
-        getInstanceWorldMatrixForOrigin(m, id, tempMat);
-        const localY = isItemDisplayHatEnabled(m, id) ? 0.03125 : 0;
-        tempPos.set(0, localY, 0).applyMatrix4(tempMat);
-        out.add(tempPos);
-    });
-
-    out.divideScalar(children.length);
-    return out;
-}
-
-function getGroupWorldMatrixWithFallback(groupId, out = new THREE.Matrix4()) {
-    out.identity();
-    const groups = getGroups();
-    const group = groups.get(groupId);
-    if (!group) return out;
-    if (group.matrix) return out.copy(group.matrix);
-
-    let gPos = group.position;
-    if (!gPos) {
-        const children = getAllGroupChildren(groupId);
-        gPos = calculateAvgOriginForChildren(children, _TMP_VEC3_B);
-    }
-    if (!group.quaternion) group.quaternion = new THREE.Quaternion();
-    if (!group.scale) group.scale = new THREE.Vector3(1, 1, 1);
-    return out.compose(gPos, group.quaternion, group.scale);
-}
-
-function createEdgesGeometryFromBox3(box) {
-    if (!box || box.isEmpty()) return null;
-    const size = new THREE.Vector3();
-    const center = new THREE.Vector3();
-    box.getSize(size);
-    box.getCenter(center);
-    const boxGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
-    boxGeo.translate(center.x, center.y, center.z);
-    return new THREE.EdgesGeometry(boxGeo);
-}
-
-function unionTransformedBox3(targetBox, localBox, matrix, tempBox = _TMP_BOX3_A) {
-    if (!targetBox || !localBox) return;
-    tempBox.copy(localBox).applyMatrix4(matrix);
-    targetBox.union(tempBox);
-}
-
-function getInstanceLocalBox(mesh, instanceId) {
-    if (!mesh) return null;
-
-    if (mesh.isBatchedMesh) {
-        const geomIds = mesh.userData?.instanceGeometryIds;
-        const bounds = mesh.userData?.geometryBounds;
-        if (!geomIds || !bounds) return null;
-        const geomId = geomIds[instanceId];
-        if (geomId === undefined || geomId === null) return null;
-        const box = bounds.get(geomId);
-        return box ? box.clone() : null;
-    }
-
-    if (!mesh.geometry) return null;
-    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-    if (!mesh.geometry.boundingBox) return null;
-
-    let box = mesh.geometry.boundingBox.clone();
-
-    // Player Head: when hat is disabled, treat as 1x1x1 around center (matches existing selection bounding logic)
-    if (getDisplayType(mesh, instanceId) === 'item_display' && mesh.userData?.hasHat && !mesh.userData.hasHat[instanceId]) {
-        const center = new THREE.Vector3();
-        box.getCenter(center);
-        box = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(1, 1, 1));
-    }
-
-    return box;
-}
-
-function getInstanceWorldMatrix(mesh, instanceId, outMatrix) {
-    outMatrix.identity();
-    if (!mesh) return outMatrix;
-    mesh.getMatrixAt(instanceId, outMatrix);
-    outMatrix.premultiply(mesh.matrixWorld);
-    return outMatrix;
-}
-
-function pickInstanceByOverlayBox(raycaster, rootGroup) {
-    const rayWorld = raycaster.ray.clone();
-    const best = { mesh: null, instanceId: undefined, distance: Infinity };
-    const tmpWorldMatrix = new THREE.Matrix4();
-    const tmpInvWorldMatrix = new THREE.Matrix4();
-    const tmpLocalRay = new THREE.Ray();
-    const tmpHitLocal = new THREE.Vector3();
-    const tmpHitWorld = new THREE.Vector3();
-
-    rootGroup.traverse((obj) => {
-        if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
-        if (!raycaster.layers.test(obj.layers)) return;
-
-        const mesh = obj;
-
-        const instanceCount = getInstanceCount(mesh);
-
-        if (instanceCount <= 0) return;
-
-        for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-            const localBox = getInstanceLocalBox(mesh, instanceId);
-            if (!localBox) continue;
-
-            getInstanceWorldMatrix(mesh, instanceId, tmpWorldMatrix);
-            tmpInvWorldMatrix.copy(tmpWorldMatrix).invert();
-
-            tmpLocalRay.copy(rayWorld).applyMatrix4(tmpInvWorldMatrix);
-            const hit = tmpLocalRay.intersectBox(localBox, tmpHitLocal);
-            if (!hit) continue;
-
-            tmpHitWorld.copy(tmpHitLocal).applyMatrix4(tmpWorldMatrix);
-            const dist = rayWorld.origin.distanceTo(tmpHitWorld);
-            if (dist < best.distance) {
-                best.mesh = mesh;
-                best.instanceId = instanceId;
-                best.distance = dist;
-            }
-        }
-    });
-
-    if (!best.mesh || best.instanceId === undefined) return null;
-    return { mesh: best.mesh, instanceId: best.instanceId };
-}
+const pickInstanceByOverlayBox = Select.pickInstanceByOverlayBox;
 
 // Group Data Structures
 function getGroups() {
-    if (!loadedObjectGroup.userData.groups) {
-        loadedObjectGroup.userData.groups = new Map();
-    }
-    return loadedObjectGroup.userData.groups;
+    return GroupUtils.getGroups(loadedObjectGroup);
 }
 
 function getObjectToGroup() {
-    if (!loadedObjectGroup.userData.objectToGroup) {
-        loadedObjectGroup.userData.objectToGroup = new Map();
-    }
-    return loadedObjectGroup.userData.objectToGroup;
+    return GroupUtils.getObjectToGroup(loadedObjectGroup);
 }
 
 function getGroupKey(mesh, instanceId) {
-    return `${mesh.uuid}_${instanceId}`;
+    return GroupUtils.getGroupKey(mesh, instanceId);
 }
 
 function getGroupChain(startGroupId) {
-    const groups = getGroups();
-    const chain = [];
-    let currentId = startGroupId;
-    while (currentId) {
-        const group = groups.get(currentId);
-        if (!group) break;
-        chain.unshift(currentId); // [Root, ..., Parent]
-        currentId = group.parent;
-    }
-    return chain;
+    return GroupUtils.getGroupChain(loadedObjectGroup, startGroupId);
 }
 
 function getAllGroupChildren(groupId) {
-    const groups = getGroups();
-    const group = groups.get(groupId);
-    if (!group) return [];
-
-    const out = [];
-    const stack = Array.isArray(group.children) ? group.children.slice().reverse() : [];
-    while (stack.length > 0) {
-        const child = stack.pop();
-        if (!child) continue;
-
-        if (child.type === 'group') {
-            const sub = groups.get(child.id);
-            if (sub && Array.isArray(sub.children) && sub.children.length > 0) {
-                for (let i = sub.children.length - 1; i >= 0; i--) {
-                    stack.push(sub.children[i]);
-                }
-            }
-        } else {
-            out.push(child);
-        }
-    }
-    return out;
+    return GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId);
 }
 
 function getAllDescendantGroups(groupId) {
-    const groups = getGroups();
-    const group = groups.get(groupId);
-    if (!group) return [];
-
-    const out = [];
-    const stack = [];
-    if (Array.isArray(group.children)) {
-        for (let i = group.children.length - 1; i >= 0; i--) {
-            const child = group.children[i];
-            if (child && child.type === 'group') stack.push(child.id);
-        }
-    }
-
-    while (stack.length > 0) {
-        const id = stack.pop();
-        if (!id) continue;
-        out.push(id);
-        const sub = groups.get(id);
-        if (!sub || !Array.isArray(sub.children)) continue;
-        for (let i = sub.children.length - 1; i >= 0; i--) {
-            const child = sub.children[i];
-            if (child && child.type === 'group') stack.push(child.id);
-        }
-    }
-    return out;
+    return GroupUtils.getAllDescendantGroups(loadedObjectGroup, groupId);
 }
 
 // Group Pivot Helpers
-const _DEFAULT_GROUP_PIVOT = new THREE.Vector3(0.5, 0.5, 0.5);
+const _DEFAULT_GROUP_PIVOT = GroupUtils.DEFAULT_GROUP_PIVOT;
 const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
 
 function _nearlyEqual(a, b, eps = 1e-6) {
@@ -363,41 +99,21 @@ function _nearlyEqual(a, b, eps = 1e-6) {
 }
 
 function normalizePivotToVector3(pivot, out = new THREE.Vector3()) {
-    if (!pivot) return null;
-    if (pivot.isVector3) return out.copy(pivot);
-    if (Array.isArray(pivot) && pivot.length >= 3) return out.set(pivot[0], pivot[1], pivot[2]);
-    if (typeof pivot === 'object' && pivot.x !== undefined && pivot.y !== undefined && pivot.z !== undefined) {
-        return out.set(pivot.x, pivot.y, pivot.z);
-    }
-    return null;
+    return GroupUtils.normalizePivotToVector3(pivot, out);
 }
 
 function isCustomGroupPivot(pivot) {
-    const v = normalizePivotToVector3(pivot, new THREE.Vector3());
-    if (!v) return false;
-    return !(
-        _nearlyEqual(v.x, _DEFAULT_GROUP_PIVOT.x) &&
-        _nearlyEqual(v.y, _DEFAULT_GROUP_PIVOT.y) &&
-        _nearlyEqual(v.z, _DEFAULT_GROUP_PIVOT.z)
-    );
+    return GroupUtils.isCustomGroupPivot(pivot);
 }
 
 function getGroupWorldMatrix(group, out = new THREE.Matrix4()) {
-    out.identity();
-    if (!group) return out;
-    if (group.matrix) return out.copy(group.matrix);
-
-    const gPos = group.position || new THREE.Vector3();
-    const gQuat = group.quaternion || new THREE.Quaternion();
-    const gScale = group.scale || new THREE.Vector3(1, 1, 1);
-    return out.compose(gPos, gQuat, gScale);
+    return GroupUtils.getGroupWorldMatrix(group, out);
 }
 
 function shouldUseGroupPivot(group) {
-    if (!group) return false;
-    if (group.isCustomPivot) return true;
-    return isCustomGroupPivot(group.pivot);
+    return GroupUtils.shouldUseGroupPivot(group);
 }
+
 
 // Baseline origin used by SelectionCenter for groups in pivotMode === 'origin' (without pivotOffset).
 function getGroupOriginWorld(groupId, out = new THREE.Vector3()) {
@@ -427,346 +143,51 @@ let _selectedItemsCache = null;
 let _ephemeralPivotUndo = null;
 let _pivotEditUndoCapture = null;
 
-function _getSelectedObjectIdCount() {
-    let count = 0;
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!ids || ids.size === 0) continue;
-            
-            if (mesh.isBatchedMesh && mesh.userData.itemIds) {
-                const uniqueItems = new Set();
-                for (const id of ids) {
-                    const itemId = mesh.userData.itemIds.get(id);
-                    if (itemId !== undefined) {
-                        uniqueItems.add(itemId);
-                    } else {
-                        uniqueItems.add(`inst:${id}`);
-                    }
-                }
-                count += uniqueItems.size;
-            } else {
-                count += ids.size;
-            }
-        }
-    }
-    return count;
-}
-
-function _isMultiSelection() {
-    const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
-    const objectIdCount = _getSelectedObjectIdCount();
-    return (groupCount + objectIdCount) > 1;
-}
+const _isMultiSelection = Select.isMultiSelection;
 
 function _clearEphemeralPivotUndo() {
-    _ephemeralPivotUndo = null;
-    _pivotEditUndoCapture = null;
+    CustomPivot.clearEphemeralPivotUndo();
 }
 
 function _revertEphemeralPivotUndoIfAny() {
-    if (!_ephemeralPivotUndo) return;
-    try {
-        _ephemeralPivotUndo();
-    } finally {
-        _clearEphemeralPivotUndo();
-    }
+    CustomPivot.revertEphemeralPivotUndoIfAny();
 }
 
 function _capturePivotUndoForCurrentSelection() {
-    const undoFns = [];
-
-    // Legacy helper: captures per-object custom pivot writes so they can be reverted.
-    // Multi-selection pivot edit no longer writes per-object pivots, so this is normally unused.
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids || ids.size === 0) continue;
-
-            const hadIsCustomPivot = Object.prototype.hasOwnProperty.call(mesh.userData, 'isCustomPivot');
-            const prevIsCustomPivot = mesh.userData.isCustomPivot;
-            undoFns.push(() => {
-                if (!mesh.userData) return;
-                if (hadIsCustomPivot) mesh.userData.isCustomPivot = prevIsCustomPivot;
-                else delete mesh.userData.isCustomPivot;
-            });
-
-            const isInstancedLike = !!(mesh.isBatchedMesh || mesh.isInstancedMesh);
-            if (isInstancedLike) {
-                const hadMap = Object.prototype.hasOwnProperty.call(mesh.userData, 'customPivots') && mesh.userData.customPivots;
-                const prevById = new Map();
-                for (const id of ids) {
-                    const prev = hadMap ? mesh.userData.customPivots.get(id) : undefined;
-                    prevById.set(id, prev ? prev.clone() : undefined);
-                }
-                undoFns.push(() => {
-                    if (!mesh.userData) return;
-                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
-                    for (const [id, prev] of prevById) {
-                        if (prev === undefined) mesh.userData.customPivots.delete(id);
-                        else mesh.userData.customPivots.set(id, prev.clone());
-                    }
-                    if (!hadMap && mesh.userData.customPivots.size === 0) {
-                        delete mesh.userData.customPivots;
-                    }
-                });
-            } else {
-                const hadCustomPivot = Object.prototype.hasOwnProperty.call(mesh.userData, 'customPivot');
-                const prevCustomPivot = mesh.userData.customPivot ? mesh.userData.customPivot.clone() : undefined;
-                undoFns.push(() => {
-                    if (!mesh.userData) return;
-                    if (hadCustomPivot) mesh.userData.customPivot = prevCustomPivot ? prevCustomPivot.clone() : undefined;
-                    else delete mesh.userData.customPivot;
-                });
-            }
-        }
-    }
-
-    if (undoFns.length === 0) return null;
-    return () => {
-        for (let i = undoFns.length - 1; i >= 0; i--) {
-            try {
-                undoFns[i]();
-            } catch {
-            }
-        }
-    };
+    return CustomPivot.capturePivotUndoForCurrentSelection(currentSelection);
 }
 
-function _hasAnySelection() {
-    return (currentSelection.groups && currentSelection.groups.size > 0) || (currentSelection.objects && currentSelection.objects.size > 0);
-}
+const _hasAnySelection = Select.hasAnySelection;
+const _getSingleSelectedGroupId = Select.getSingleSelectedGroupId;
+const _getSingleSelectedMeshEntry = Select.getSingleSelectedMeshEntry;
 
-function _getSingleSelectedGroupId() {
-    if (!currentSelection.groups || currentSelection.groups.size !== 1) return null;
-    if (currentSelection.objects && currentSelection.objects.size > 0) return null;
-    return Array.from(currentSelection.groups)[0] || null;
-}
-
-function _getSingleSelectedMeshEntry() {
-    if (currentSelection.groups && currentSelection.groups.size > 0) return null;
-    if (!currentSelection.objects || currentSelection.objects.size !== 1) return null;
-    const [mesh, ids] = currentSelection.objects.entries().next().value;
-    return mesh && ids ? { mesh, ids } : null;
-}
-
-function _setPrimaryToFirstAvailable() {
-    // Prefer a group primary if any group is selected, otherwise first object.
-    if (currentSelection.groups && currentSelection.groups.size > 0) {
-        const id = Array.from(currentSelection.groups)[0];
-        currentSelection.primary = id ? { type: 'group', id } : null;
-        return;
-    }
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            const firstId = ids && ids.size > 0 ? Array.from(ids)[0] : undefined;
-            if (mesh && firstId !== undefined) {
-                currentSelection.primary = { type: 'object', mesh, instanceId: firstId };
-                return;
-            }
-        }
-    }
-    currentSelection.primary = null;
-}
+const _setPrimaryToFirstAvailable = Select.setPrimaryToFirstAvailable;
 
 function _clearSelectionState() {
-    if (_hasAnySelection()) {
-        _pushToVertexQueue();
-    }
-    currentSelection.groups.clear();
-    currentSelection.objects.clear();
-    currentSelection.primary = null;
-    clickedVertex = null;
+    Select.clearSelectionState({
+        pushToVertexQueue: _pushToVertexQueue
+    });
 }
 
 function _recomputePivotStateForSelection() {
-    const preserveMultiCustomPivot = pivotMode === 'origin' && _isMultiSelection() && isCustomPivot;
-    if (!preserveMultiCustomPivot) {
-        pivotOffset.set(0, 0, 0);
-        isCustomPivot = false;
-    }
-
-    const singleGroupId = _getSingleSelectedGroupId();
-    if (singleGroupId) {
-        // Single selection should always recompute pivot state.
-        pivotOffset.set(0, 0, 0);
-        isCustomPivot = false;
-        const groups = getGroups();
-        const group = groups.get(singleGroupId);
-        if (group && shouldUseGroupPivot(group)) {
-            const localPivot = normalizePivotToVector3(group.pivot, new THREE.Vector3());
-            if (localPivot) {
-                const groupMatrix = getGroupWorldMatrix(group, new THREE.Matrix4());
-                const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
-                const baseWorld = getGroupOriginWorld(singleGroupId, new THREE.Vector3());
-                pivotOffset.subVectors(targetWorld, baseWorld);
-                isCustomPivot = true;
-            }
+    isCustomPivot = CustomPivot.recomputePivotStateForSelection(
+        pivotMode, 
+        _isMultiSelection(), 
+        isCustomPivot, 
+        pivotOffset, 
+        currentSelection,
+        loadedObjectGroup,
+        { 
+            getSelectedItems: Select.getSelectedItems, 
+            getSingleSelectedGroupId: Select.getSingleSelectedGroupId, 
+            getSingleSelectedMeshEntry: Select.getSingleSelectedMeshEntry 
         }
-        return;
-    }
-
-    const singleMeshEntry = _getSingleSelectedMeshEntry();
-    if (!singleMeshEntry) return;
-
-    // Single selection should always recompute pivot state.
-    pivotOffset.set(0, 0, 0);
-    isCustomPivot = false;
-
-    const mesh = singleMeshEntry.mesh;
-    const idsArr = Array.from(singleMeshEntry.ids);
-    if (!mesh || idsArr.length === 0) return;
-
-    let customPivot = null;
-    if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots && idsArr.length > 0) {
-        if (mesh.userData.customPivots.has(idsArr[0])) {
-            customPivot = mesh.userData.customPivots.get(idsArr[0]);
-        }
-    } else if (mesh.userData.customPivot) {
-        customPivot = mesh.userData.customPivot;
-    }
-
-    if (!customPivot) return;
-
-    isCustomPivot = true;
-    const center = calculateAvgOrigin();
-    const firstId = idsArr[0];
-    const tempMat = new THREE.Matrix4();
-    mesh.getMatrixAt(firstId, tempMat);
-    const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
-    const targetWorld = customPivot.clone().applyMatrix4(worldMatrix);
-    pivotOffset.subVectors(targetWorld, center);
+    );
 }
 
-function _getSelectionCacheKey() {
-    if (!_hasAnySelection()) return 'none';
+const invalidateSelectionCaches = Select.invalidateSelectionCaches;
 
-    const g = currentSelection.groups && currentSelection.groups.size > 0
-        ? Array.from(currentSelection.groups).slice().sort().join('|')
-        : '';
-
-    const oParts = [];
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids || ids.size === 0) continue;
-            const idsStr = Array.from(ids).slice().sort((a, b) => a - b).join(',');
-            oParts.push(`${mesh.uuid}:${idsStr}`);
-        }
-    }
-    oParts.sort();
-
-    return `g:${g};o:${oParts.join('|')}`;
-}
-
-function invalidateSelectionCaches() {
-    _selectedItemsCacheKey = null;
-    _selectedItemsCache = null;
-}
-
-// Unified helper to get flat list of selected targets
-function getSelectedItems() {
-    const key = _getSelectionCacheKey();
-    if (_selectedItemsCacheKey === key && _selectedItemsCache) return _selectedItemsCache;
-
-    const items = [];
-    const seen = new Set();
-
-    if (currentSelection.groups && currentSelection.groups.size > 0) {
-        for (const groupId of currentSelection.groups) {
-            if (!groupId) continue;
-            const children = getAllGroupChildren(groupId);
-            for (const child of children) {
-                if (!child || !child.mesh) continue;
-                const k = getGroupKey(child.mesh, child.instanceId);
-                if (seen.has(k)) continue;
-                seen.add(k);
-                items.push({ mesh: child.mesh, instanceId: child.instanceId });
-            }
-        }
-    }
-
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids || ids.size === 0) continue;
-            for (const id of ids) {
-                const k = getGroupKey(mesh, id);
-                if (seen.has(k)) continue;
-                seen.add(k);
-                items.push({ mesh, instanceId: id });
-            }
-        }
-    }
-
-    _selectedItemsCacheKey = key;
-    _selectedItemsCache = items;
-    return items;
-}
-
-function getSelectionBoundingBox() {
-    const box = new THREE.Box3();
-    const tempMat = new THREE.Matrix4();
-    const tempBox = new THREE.Box3();
-
-    // 1. Include Selected Groups
-    if (currentSelection.groups && currentSelection.groups.size > 0) {
-        for (const groupId of currentSelection.groups) {
-            if (!groupId) continue;
-            const localBox = getGroupLocalBoundingBox(groupId);
-            if (!localBox || localBox.isEmpty()) continue;
-            
-            getGroupWorldMatrixWithFallback(groupId, tempMat);
-            tempBox.copy(localBox).applyMatrix4(tempMat);
-            box.union(tempBox);
-        }
-    }
-
-    // 2. Include Selected Objects
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids || ids.size === 0) continue;
-            for (const id of ids) {
-                const localBox = getInstanceLocalBox(mesh, id);
-                if (!localBox) continue;
-
-                getInstanceWorldMatrix(mesh, id, tempMat);
-                tempBox.copy(localBox).applyMatrix4(tempMat);
-                box.union(tempBox);
-            }
-        }
-    }
-
-    return box;
-}
-
-function getGroupLocalBoundingBox(groupId) {
-    const groups = getGroups();
-    const group = groups.get(groupId);
-    if (!group) return new THREE.Box3();
-
-    const groupMatrix = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
-    const groupInverse = groupMatrix.clone().invert();
-
-    const children = getAllGroupChildren(groupId);
-    const box = new THREE.Box3();
-    const tempMat = new THREE.Matrix4();
-    const tempBox = new THREE.Box3();
-
-    if (children.length === 0) return box;
-
-    children.forEach(child => {
-        const mesh = child.mesh;
-        const id = child.instanceId;
-
-        if (!mesh) return;
-
-        const localBox = getInstanceLocalBox(mesh, id);
-        if (!localBox) return;
-
-        getInstanceWorldMatrix(mesh, id, tempMat);
-        tempMat.premultiply(groupInverse);
-        tempBox.copy(localBox).applyMatrix4(tempMat);
-        box.union(tempBox);
-    });
-    return box;
-}
+const getSelectedItems = Select.getSelectedItems;
 
 let scene, camera, renderer, controls, loadedObjectGroup;
 let transformControls = null;
@@ -774,19 +195,41 @@ let selectionHelper = null;
 let previousHelperMatrix = new THREE.Matrix4();
 
 // Selection State
-let currentSelection = {
-    groups: new Set(),
-    objects: new Map(), // Map<THREE.Object3D, Set<number>>
-    primary: null // { type: 'group', id } | { type: 'object', mesh, instanceId }
-};
+const currentSelection = Select.currentSelection;
 
-let clickedVertex = null;
+const selectedVertexKeys = new Set(); // Stores vertex position keys
 
 const vertexQueue = [];
 let suppressVertexQueue = false;
 
+// Increase history to allow selecting vertices on multiple previously selected objects
+const VERTEX_QUEUE_MAX_SIZE = 1;
+
 function _pushToVertexQueue() {
-    if (suppressVertexQueue) return;
+    if (suppressVertexQueue || !isVertexMode) return;
+
+    let currentGizmoPos = null;
+    let currentGizmoQuat = null;
+    if ((currentSelection.groups.size > 0 || currentSelection.objects.size > 0)) {
+        currentGizmoPos = new THREE.Vector3();
+        currentGizmoQuat = new THREE.Quaternion();
+        if (selectionHelper) {
+             currentGizmoPos.copy(selectionHelper.position);
+             currentGizmoQuat.copy(selectionHelper.quaternion);
+        } else {
+             _getSelectionCenterWorld(currentGizmoPos);
+             // Default to identity or some sensible rotation if no helper
+             currentGizmoQuat.identity();
+        }
+    }
+
+    // Maintain selection status of the gizmo point
+    const centerKey = currentGizmoPos ? `CENTER_${currentGizmoPos.x.toFixed(4)}_${currentGizmoPos.y.toFixed(4)}_${currentGizmoPos.z.toFixed(4)}` : null;
+    const isCenterSelected = centerKey && selectedVertexKeys.has(centerKey);
+
+    if (isCenterSelected) {
+        selectedVertexKeys.delete(centerKey);
+    }
 
     const itemsToAdd = [];
     if (currentSelection.groups.size > 0) {
@@ -802,20 +245,44 @@ function _pushToVertexQueue() {
         }
     }
 
+    const tempMat = _TMP_MAT4_A;
+    const tempInv = _TMP_MAT4_B;
+
     for (const item of itemsToAdd) {
-        vertexQueue.push(item);
+        let localPos = null;
+        let localQuat = null;
+
+        if (currentGizmoPos) {
+            if (item.type === 'group') {
+                getGroupWorldMatrixWithFallback(item.id, tempMat);
+            } else {
+                getInstanceWorldMatrix(item.mesh, item.instanceId, tempMat);
+            }
+            
+            tempInv.copy(tempMat).invert();
+            localPos = currentGizmoPos.clone().applyMatrix4(tempInv);
+
+            if (currentGizmoQuat) {
+                 const objQuat = getRotationFromMatrix(tempMat);
+                 localQuat = objQuat.invert().multiply(currentGizmoQuat);
+            }
+        }
+
+        vertexQueue.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat });
+
+        if (isCenterSelected && localPos) {
+            const qKey = `QUEUE_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
+            selectedVertexKeys.add(qKey);
+        }
     }
 
-    while (vertexQueue.length > 1) {
-        vertexQueue.shift();
+    while (vertexQueue.length > VERTEX_QUEUE_MAX_SIZE) {
+        vertexQueue.shift(); 
     }
 }
 
 let pivotMode = 'origin';
 let currentSpace = 'world';
-let selectionOverlay = null;
-let selectionPointsOverlay = null;
-let multiSelectionOverlay = null;
 let lastDirections = { X: null, Y: null, Z: null };
 
 // Gizmo position lock: keep the initial selection gizmo position while multi-selecting.
@@ -861,74 +328,40 @@ function _getSelectionCenterWorld(out = new THREE.Vector3()) {
     return out.copy(calculateAvgOrigin());
 }
 
-function _replaceSelectionWithObjectsMap(meshToIds, { anchorMode = 'default' } = {}) {
-    if (!meshToIds || meshToIds.size === 0) {
-        resetSelectionAndDeselect();
-        return;
-    }
-
-    _beginSelectionReplace({ anchorMode, detachTransform: true });
-
-    for (const [mesh, ids] of meshToIds) {
-        if (!mesh || !ids || ids.size === 0) continue;
-        currentSelection.objects.set(mesh, ids);
-    }
-
-    _recomputePivotStateForSelection();
-    updateHelperPosition();
-    updateSelectionOverlay();
+function getSelectionCallbacks() {
+    return {
+        revertEphemeralPivotUndoIfAny: () => _revertEphemeralPivotUndoIfAny(),
+        detachTransformControls: () => transformControls.detach(),
+        clearGizmoAnchor: () => _clearGizmoAnchor(),
+        setSelectionAnchorMode: (mode) => { _selectionAnchorMode = mode; },
+        resetPivotState: () => {
+            pivotOffset.set(0, 0, 0);
+            isCustomPivot = false;
+        },
+        updateHelperPosition: () => updateHelperPosition(),
+        updateSelectionOverlay: () => updateSelectionOverlay(),
+        pushToVertexQueue: () => {
+            // Note: Select.js seems to call this in clearSelectionState?
+            // If the intention is to clear the vertex queue, we should probably do:
+            vertexQueue.length = 0;
+            selectedVertexKeys.clear();
+        },
+        hasVertexQueue: () => vertexQueue.length > 0,
+        // Any other needed callbacks
+        getLoadedObjectGroup: () => loadedObjectGroup
+    };
 }
 
-function _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode = 'default' } = {}) {
-    const hasGroups = groupIds && groupIds.size > 0;
-    const hasObjects = meshToIds && meshToIds.size > 0;
-    if (!hasGroups && !hasObjects) {
-        resetSelectionAndDeselect();
-        return;
-    }
+function _replaceSelectionWithObjectsMap(meshToIds, options) {
+    Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
+}
 
-    _beginSelectionReplace({ anchorMode, detachTransform: true });
-
-    if (hasGroups) {
-        for (const gid of groupIds) {
-            if (gid) currentSelection.groups.add(gid);
-        }
-    }
-    if (hasObjects) {
-        for (const [mesh, ids] of meshToIds) {
-            if (!mesh || !ids || ids.size === 0) continue;
-            currentSelection.objects.set(mesh, ids);
-        }
-    }
-
-    _recomputePivotStateForSelection();
-    updateHelperPosition();
-    updateSelectionOverlay();
+function _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, options) {
+    Select.replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, getSelectionCallbacks(), options);
 }
 
 function _selectAllObjectsVisibleInScene() {
-    const meshToIds = new Map();
-    if (!loadedObjectGroup) return meshToIds;
-
-    loadedObjectGroup.traverse((obj) => {
-        if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
-        if (obj.visible === false) return;
-
-        const instanceCount = getInstanceCount(obj);
-        if (instanceCount <= 0) return;
-
-        const ids = new Set();
-        for (let i = 0; i < instanceCount; i++) {
-            if (isInstanceValid(obj, i)) {
-                ids.add(i);
-            }
-        }
-        if (ids.size > 0) {
-            meshToIds.set(obj, ids);
-        }
-    });
-
-    return meshToIds;
+    return Select.selectAllObjectsVisibleInScene(loadedObjectGroup);
 }
 
 let gizmoLines = {
@@ -947,7 +380,7 @@ const dragStartAvgOrigin = new THREE.Vector3();
 const dragStartPivotBaseWorld = new THREE.Vector3();
 let draggingMode = null;
 let isGizmoBusy = false;
-let blockbenchScaleMode = false;
+// blockbenchScaleMode imported
 let dragAnchorDirections = { x: true, y: true, z: true };
 let previousGizmoMode = 'translate';
 let isPivotEditMode = false;
@@ -965,50 +398,9 @@ const _tmpLocalDelta = new THREE.Matrix4();
 const _meshToInstanceIds = new Map();
 
 // Helpers
-function getRotationFromMatrix(matrix) {
-    // Robust rotation extraction even when matrix contains shear.
-    // Use Gram-Schmidt orthogonalization to preserve the primary axis (X) direction.
-    // This ensures that if an object is sheared along X (Y tilted), the X axis remains stable.
-    // (Previously used Polar Decomposition which caused wobbling/tilting for sheared objects)
-    
-    const R = new THREE.Matrix4();
-    const x = _TMP_VEC3_A.setFromMatrixColumn(matrix, 0);
-    const y = _TMP_VEC3_B.setFromMatrixColumn(matrix, 1);
-    const z = new THREE.Vector3().setFromMatrixColumn(matrix, 2);
-
-    x.normalize();
-    const yDotX = y.dot(x);
-    y.sub(x.clone().multiplyScalar(yDotX)).normalize();
-    z.crossVectors(x, y).normalize();
-    R.makeBasis(x, y, z);
-    
-    const quaternion = new THREE.Quaternion();
-    quaternion.setFromRotationMatrix(R);
-    return quaternion;
-}
-
 // Blockbench scale mode needs a stable "pivot frame" transform.
 // For groups, this must include shear from the group's world matrix, but be anchored at the current gizmo pivot position.
-const _BB_PIVOT_FRAME_MAT4 = new THREE.Matrix4();
-const _BB_PIVOT_FRAME_MAT4_INV = new THREE.Matrix4();
-const _BB_PIVOT_FRAME_MAT3 = new THREE.Matrix3();
-
-function _computeBlockbenchPivotFrameMatrixWorld(outMat4, outInvMat4, outMat3, pivotWorld) {
-    // Default: use the current selectionHelper world matrix (no shear support).
-    outMat4.copy(selectionHelper.matrixWorld);
-
-    // In world space mode, Blockbench anchor should behave like world axes.
-    if (currentSpace === 'world') {
-        outMat4.identity();
-        outMat4.setPosition(pivotWorld);
-    }
-
-    // Note: We rely on selectionHelper.matrixWorld being up-to-date (orthonormalized visual frame).
-    // This ensures drag arithmetic matches the visual handles exactly.
-
-    outInvMat4.copy(outMat4).invert();
-    outMat3.setFromMatrix4(outMat4);
-}
+// Logic moved to blockbench-scale.js
 
 function getGroupRotationQuaternion(groupId, out = new THREE.Quaternion()) {
     if (!groupId) return out.set(0, 0, 0, 1);
@@ -1018,74 +410,19 @@ function getGroupRotationQuaternion(groupId, out = new THREE.Quaternion()) {
 }
 
 function SelectionCenter(pivotMode, isCustomPivot, pivotOffset) {
-    const center = new THREE.Vector3();
-    const items = getSelectedItems();
-    
-    if (items.length === 0) return center;
-
-    if (pivotMode === 'center') {
-        // For a single group selection, use the group's *local* bounding box center (OBB center),
-        // then transform by the group matrix. Using a world AABB center would shift when rotated.
-        const singleGroupId = _getSingleSelectedGroupId();
-        if (singleGroupId) {
-            const groups = getGroups();
-            const group = groups.get(singleGroupId);
-            const box = getGroupLocalBoundingBox(singleGroupId);
-            if (!box.isEmpty()) {
-                const groupMatrix = getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
-                box.getCenter(center);
-                center.applyMatrix4(groupMatrix);
-            } else if (group && group.position) {
-                center.copy(group.position);
-            } else {
-                center.copy(calculateAvgOrigin());
-            }
-        } else {
-            const box = getSelectionBoundingBox();
-            if (box && !box.isEmpty()) box.getCenter(center);
-            else center.copy(calculateAvgOrigin());
+    return CustomPivot.SelectionCenter(
+        pivotMode,
+        isCustomPivot,
+        pivotOffset,
+        currentSelection,
+        loadedObjectGroup,
+        {
+            getSelectedItems,
+            getSelectionBoundingBox,
+            getSingleSelectedGroupId: _getSingleSelectedGroupId,
+            calculateAvgOrigin
         }
-    } else {
-        // Origin (Average Position)
-        const singleGroupId = _getSingleSelectedGroupId();
-        if (singleGroupId) {
-            const groups = getGroups();
-            const group = groups.get(singleGroupId);
-
-            const box = getGroupLocalBoundingBox(singleGroupId);
-            if (!box.isEmpty()) {
-                const groupMatrix = getGroupWorldMatrixWithFallback(singleGroupId, new THREE.Matrix4());
-                center.copy(box.min).applyMatrix4(groupMatrix);
-            } else if (group && group.position) {
-                center.copy(group.position);
-            } else {
-                center.copy(calculateAvgOrigin());
-            }
-        } else {
-             const firstItem = items[0];
-             const mesh = firstItem.mesh;
-             const displayType = getDisplayType(mesh, firstItem.instanceId);
-
-             const isBlockDisplayWithoutCustomPivot = displayType === 'block_display' && !isCustomPivot; 
-             if (isBlockDisplayWithoutCustomPivot) {
-                 const localPivot = getInstanceLocalBoxMin(mesh, firstItem.instanceId, new THREE.Vector3(0, 0, 0));
-                 if (localPivot) {
-                     const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, firstItem.instanceId, new THREE.Matrix4());
-                     center.copy(localPivot.applyMatrix4(worldMatrix));
-                 } else {
-                     center.copy(calculateAvgOrigin());
-                 }
-             } else {
-                 center.copy(calculateAvgOrigin());
-             }
-        }
-    }
-
-    if (pivotMode === 'origin') {
-        center.add(pivotOffset);
-    }
-
-    return center;
+    );
 }
 
 function calculateAvgOrigin() {
@@ -1109,341 +446,11 @@ function calculateAvgOrigin() {
 }
 
 function updateSelectionOverlay() {
-    let preserveIsCenter = false;
-    let preservePos = null;
-
-    if (clickedVertex && isVertexMode && selectionPointsOverlay) {
-        if (clickedVertex.userData && clickedVertex.userData.isCenter) {
-            preserveIsCenter = true;
-        } else {
-            preservePos = clickedVertex.position.clone();
-        }
-        clickedVertex = null;
-    }
-
-    if (selectionOverlay) {
-        scene.remove(selectionOverlay);
-        if (selectionOverlay.isGroup) {
-            disposeThreeObjectTree(selectionOverlay);
-        } else {
-            if (selectionOverlay.geometry && selectionOverlay.geometry !== _overlayUnitGeo) {
-                selectionOverlay.geometry.dispose();
-            }
-            if (selectionOverlay.material) selectionOverlay.material.dispose();
-        }
-        selectionOverlay = null;
-    }
-
-    if (selectionPointsOverlay) {
-        scene.remove(selectionPointsOverlay);
-        // Specialized cleanup for Sprites: do NOT dispose geometry as it is shared globally.
-        selectionPointsOverlay.traverse(child => {
-            if (child.material) child.material.dispose();
-        });
-        selectionPointsOverlay = null;
-    }
-
-    if (multiSelectionOverlay) {
-        scene.remove(multiSelectionOverlay);
-        if (multiSelectionOverlay.geometry) multiSelectionOverlay.geometry.dispose();
-        if (multiSelectionOverlay.material) multiSelectionOverlay.material.dispose();
-        multiSelectionOverlay = null;
-    }
-
-    if (!_hasAnySelection() && vertexQueue.length === 0) return;
-
-    const itemsToRender = [];
-    const tempCenter = _TMP_VEC3_A;
-    const tempSize = _TMP_VEC3_B;
-    
-    // Groups
-    if (currentSelection.groups && currentSelection.groups.size > 0) {
-        for (const groupId of currentSelection.groups) {
-            if (!groupId) continue;
-            const localBox = getGroupLocalBoundingBox(groupId);
-            if (!localBox || localBox.isEmpty()) continue;
-
-            localBox.getSize(tempSize);
-            localBox.getCenter(tempCenter);
-
-            const groupWorld = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
-            
-            const instanceMat = new THREE.Matrix4();
-            instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-            instanceMat.scale(tempSize);
-            instanceMat.premultiply(groupWorld);
-
-            itemsToRender.push({ matrix: instanceMat, color: 0x6FA21C });
-        }
-    }
-
-    // Objects
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        const objTempMat = new THREE.Matrix4();
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids || ids.size === 0) continue;
-
-            for (const id of ids) {
-                const localBox = getInstanceLocalBox(mesh, id);
-                if (!localBox) continue;
-
-                localBox.getSize(tempSize);
-                localBox.getCenter(tempCenter);
-
-                getInstanceWorldMatrix(mesh, id, objTempMat);
-
-                const instanceMat = new THREE.Matrix4();
-                instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                instanceMat.scale(tempSize);
-                instanceMat.premultiply(objTempMat);
-
-                const displayType = getDisplayType(mesh, id);
-                const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
-
-                itemsToRender.push({ matrix: instanceMat, color: color });
-            }
-        }
-    }
-
-    const queueItemsToRender = [];
-    if (vertexQueue.length > 0) {
-        const groups = getGroups();
-        for (const item of vertexQueue) {
-            let isSelected = false;
-            if (item.type === 'group') {
-                if (currentSelection.groups.has(item.id)) isSelected = true;
-            } else {
-                if (currentSelection.objects.has(item.mesh) && currentSelection.objects.get(item.mesh).has(item.instanceId)) {
-                    isSelected = true;
-                }
-            }
-            if (isSelected) continue;
-
-            if (item.type === 'group') {
-                const groupId = item.id;
-                if (!groups.has(groupId)) continue;
-                const localBox = getGroupLocalBoundingBox(groupId);
-                if (!localBox || localBox.isEmpty()) continue;
-                
-                localBox.getSize(tempSize);
-                localBox.getCenter(tempCenter);
-                
-                const groupWorld = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
-                const instanceMat = new THREE.Matrix4();
-                instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                instanceMat.scale(tempSize);
-                instanceMat.premultiply(groupWorld);
-                queueItemsToRender.push({ matrix: instanceMat, color: 0x6FA21C });
-            } else if (item.type === 'object') {
-                const { mesh, instanceId } = item;
-                if (!mesh.parent || !isInstanceValid(mesh, instanceId)) continue;
-                
-                const localBox = getInstanceLocalBox(mesh, instanceId);
-                if (!localBox) continue;
-                
-                localBox.getSize(tempSize);
-                localBox.getCenter(tempCenter);
-                
-                const worldMat = getInstanceWorldMatrix(mesh, instanceId, new THREE.Matrix4());
-                const instanceMat = new THREE.Matrix4();
-                instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                instanceMat.scale(tempSize);
-                instanceMat.premultiply(worldMat);
-
-                const displayType = getDisplayType(mesh, instanceId);
-                const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
-
-                queueItemsToRender.push({ matrix: instanceMat, color: color });
-            }
-        }
-    }
-
-    const allOverlayItems = [...itemsToRender, ...queueItemsToRender];
-
-    if (allOverlayItems.length > 0) {
-        const material = new THREE.MeshBasicMaterial({
-            color: 0xffffff,
-            depthTest: true,
-            depthWrite: false,
-            transparent: true,
-            opacity: 0.9,
-            wireframe: true
-        });
-
-        selectionOverlay = new THREE.InstancedMesh(_overlayUnitGeo, material, allOverlayItems.length);
-        selectionOverlay.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        selectionOverlay.renderOrder = 1;
-        selectionOverlay.matrixAutoUpdate = false;
-        selectionOverlay.matrix.identity();
-
-        const colorObj = new THREE.Color();
-        allOverlayItems.forEach((item, index) => {
-            selectionOverlay.setMatrixAt(index, item.matrix);
-            colorObj.setHex(item.color);
-            selectionOverlay.setColorAt(index, colorObj);
-        });
-
-        selectionOverlay.instanceMatrix.needsUpdate = true;
-        if (selectionOverlay.instanceColor) selectionOverlay.instanceColor.needsUpdate = true;
-
-        scene.add(selectionOverlay);
-    }
-
-    if (allOverlayItems.length > 0 && isVertexMode) {
-        selectionPointsOverlay = new THREE.Group();
-        selectionPointsOverlay.renderOrder = 999;
-        selectionPointsOverlay.matrixAutoUpdate = false;
-        
-        const baseSpriteMat = new THREE.SpriteMaterial({
-            color: 0x30333D,
-            sizeAttenuation: false,
-            depthTest: false,
-            depthWrite: false,
-            transparent: true
-        });
-
-        const canvas = renderer.domElement;
-        const width = canvas.clientWidth;
-        const height = canvas.clientHeight;
-        const scaleX = 10 / width;
-        const scaleY = 10 / height;
-
-        const v = new THREE.Vector3();
-        const existingPoints = new Set();
-
-        for (const item of allOverlayItems) {
-            for (const corner of _unitCubeCorners) {
-                v.copy(corner).applyMatrix4(item.matrix);
-                
-                // Simple spatial hashing to prevent duplicate points at shared corners
-                const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
-                if (existingPoints.has(key)) continue;
-                existingPoints.add(key);
-
-                const sprite = new THREE.Sprite(baseSpriteMat.clone());
-                sprite.position.copy(v);
-                
-                if (preservePos && v.distanceToSquared(preservePos) < 1e-6) {
-                    clickedVertex = sprite;
-                    sprite.material.color.setHex(0x437FD0);
-                }
-
-                sprite.scale.set(scaleX, scaleY, 1);
-                selectionPointsOverlay.add(sprite);
-            }
-        }
-
-        // Add Gizmo visualization (Center point + Axis lines)
-        if (selectionHelper) {
-            const gizmoPos = selectionHelper.position;
-            const gizmoQuat = selectionHelper.quaternion;
-
-            // 1. Gizmo Center Point
-            const centerSprite = new THREE.Sprite(baseSpriteMat.clone());
-            centerSprite.position.copy(gizmoPos);
-            centerSprite.userData = { isCenter: true };
-            
-            if (preserveIsCenter || (preservePos && gizmoPos.distanceToSquared(preservePos) < 1e-6)) {
-                clickedVertex = centerSprite;
-                centerSprite.material.color.setHex(0x437FD0);
-            }
-
-            centerSprite.scale.set(scaleX, scaleY, 1);
-            centerSprite.renderOrder = 999;
-            selectionPointsOverlay.add(centerSprite);
-
-            // 2. Gizmo Axis Lines
-            const axisLength = 0.1;
-            const axesVerts = [];
-            const axesColors = [];
-            
-            const dirs = [
-                { v: new THREE.Vector3(1, 0, 0), c: 0xEF3751 },  // +X
-                { v: new THREE.Vector3(-1, 0, 0), c: 0xEF3751 }, // -X
-                { v: new THREE.Vector3(0, 1, 0), c: 0x6FA21C },  // +Y
-                { v: new THREE.Vector3(0, -1, 0), c: 0x6FA21C }, // -Y
-                { v: new THREE.Vector3(0, 0, 1), c: 0x437FD0 },  // +Z
-                { v: new THREE.Vector3(0, 0, -1), c: 0x437FD0 }  // -Z
-            ];
-            
-            const p1 = new THREE.Vector3();
-            const p2 = new THREE.Vector3();
-            const col = new THREE.Color();
-
-            for (const d of dirs) {
-                p1.copy(gizmoPos);
-                p2.copy(d.v).applyQuaternion(gizmoQuat).multiplyScalar(axisLength).add(gizmoPos);
-                
-                axesVerts.push(p1.x, p1.y, p1.z);
-                axesVerts.push(p2.x, p2.y, p2.z);
-                
-                col.setHex(d.c);
-                axesColors.push(col.r, col.g, col.b);
-                axesColors.push(col.r, col.g, col.b);
-            }
-
-            const axesGeo = new THREE.BufferGeometry();
-            axesGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(axesVerts), 3));
-            axesGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(axesColors), 3));
-
-            const axesMat = new THREE.LineBasicMaterial({
-                vertexColors: true,
-                depthTest: false,
-                depthWrite: false,
-                transparent: true
-            });
-
-            const axesLines = new THREE.LineSegments(axesGeo, axesMat);
-            axesLines.renderOrder = 100;
-            selectionPointsOverlay.add(axesLines);
-        }
-        
-        // Clean up base material as we cloned it for everyone
-        baseSpriteMat.dispose();
-        
-        scene.add(selectionPointsOverlay);
-    }
-
-    // Multi-selection: add a white world-aligned bounding box overlay (no rotation)
-    if (_isMultiSelection()) {
-        const worldBox = getSelectionBoundingBox();
-        const edgesGeo = createEdgesGeometryFromBox3(worldBox);
-        if (edgesGeo) {
-            const overlayMaterial = createOverlayLineMaterial(0xFFFFFF);
-            multiSelectionOverlay = new THREE.LineSegments(edgesGeo, overlayMaterial);
-            multiSelectionOverlay.renderOrder = 1;
-            multiSelectionOverlay.matrixAutoUpdate = false;
-            multiSelectionOverlay.matrix.identity();
-        }
-    }
-
-    if (selectionOverlay) selectionOverlay.updateMatrixWorld(true);
-    if (selectionPointsOverlay) selectionPointsOverlay.updateMatrixWorld(true);
-    if (multiSelectionOverlay) {
-        multiSelectionOverlay.updateMatrixWorld(true);
-        scene.add(multiSelectionOverlay);
-    }
+    Overlay.updateSelectionOverlay(scene, renderer, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys);
 }
 
 function _updateMultiSelectionOverlayDuringDrag() {
-    if (!multiSelectionOverlay) return;
-
-    if (!_isMultiSelection()) {
-        scene.remove(multiSelectionOverlay);
-        if (multiSelectionOverlay.geometry) multiSelectionOverlay.geometry.dispose();
-        if (multiSelectionOverlay.material) multiSelectionOverlay.material.dispose();
-        multiSelectionOverlay = null;
-        return;
-    }
-
-    const worldBox = getSelectionBoundingBox();
-    const edgesGeo = createEdgesGeometryFromBox3(worldBox);
-    if (!edgesGeo) return;
-
-    if (multiSelectionOverlay.geometry) multiSelectionOverlay.geometry.dispose();
-    multiSelectionOverlay.geometry = edgesGeo;
-    multiSelectionOverlay.matrix.identity();
-    multiSelectionOverlay.updateMatrixWorld(true);
+    Overlay.updateMultiSelectionOverlayDuringDrag(currentSelection, scene);
 }
 
 function resetSelectionAndDeselect() {
@@ -1453,6 +460,7 @@ function resetSelectionAndDeselect() {
         transformControls.detach();
         _clearSelectionState();
         vertexQueue.length = 0;
+        selectedVertexKeys.clear();
         _clearGizmoAnchor();
 
         // Clear any selection-derived pivot state so it can't leak into the next selection.
@@ -1583,6 +591,32 @@ function updateHelperPosition() {
             }
         }
     }
+
+    // Restore vertex selection state from Queue if this gizmo position was previously in the queue
+    const gizmoPos = selectionHelper.position;
+    
+    let localPos = null;
+    if (currentSelection.primary) {
+        const prim = currentSelection.primary;
+        const tempMat = _TMP_MAT4_A;
+        if (prim.type === 'group') {
+            getGroupWorldMatrixWithFallback(prim.id, tempMat);
+        } else {
+             getInstanceWorldMatrix(prim.mesh, prim.instanceId, tempMat); 
+        }
+        
+        const inv = _TMP_MAT4_B.copy(tempMat).invert();
+        localPos = gizmoPos.clone().applyMatrix4(inv);
+    }
+
+    if (localPos) {
+        const queueKey = `QUEUE_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
+        if (selectedVertexKeys.has(queueKey)) {
+            selectedVertexKeys.delete(queueKey);
+            const centerKey = `CENTER_${gizmoPos.x.toFixed(4)}_${gizmoPos.y.toFixed(4)}_${gizmoPos.z.toFixed(4)}`;
+            selectedVertexKeys.add(centerKey);
+        }
+    }
     
     const singleGroupId = _getSingleSelectedGroupId();
     if (singleGroupId) {
@@ -1687,7 +721,18 @@ function createGroup() {
     }
 
     const groups = getGroups();
-    const objectToGroup = getObjectToGroup();
+    
+    // Preparation: Get initial position (Gizmo specific logic)
+    let initialPosition = new THREE.Vector3();
+    // Keep old behavior for single selected group; otherwise use average.
+    const singleGroupId = _getSingleSelectedGroupId();
+    if (singleGroupId) {
+        const existingGroup = groups.get(singleGroupId);
+        if (existingGroup && existingGroup.position) initialPosition.copy(existingGroup.position);
+        else initialPosition = calculateAvgOrigin();
+    } else {
+        initialPosition = calculateAvgOrigin();
+    }
 
     const selectedGroupIds = currentSelection.groups ? Array.from(currentSelection.groups).filter(Boolean) : [];
     const selectedObjects = [];
@@ -1700,98 +745,10 @@ function createGroup() {
         }
     }
 
-    let initialPosition = new THREE.Vector3();
-    // Keep old behavior for single selected group; otherwise use average.
-    const singleGroupId = _getSingleSelectedGroupId();
-    if (singleGroupId) {
-        const existingGroup = groups.get(singleGroupId);
-        if (existingGroup && existingGroup.position) initialPosition.copy(existingGroup.position);
-        else initialPosition = calculateAvgOrigin();
-    } else {
-        initialPosition = calculateAvgOrigin();
-    }
+    // Heavy lifting moved to group.js
+    const newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition);
 
-    const newGroupId = THREE.MathUtils.generateUUID();
-    const newGroup = {
-        id: newGroupId,
-        isCollection: true,
-        children: [],
-        parent: null,
-        name: 'Group',
-        position: initialPosition,
-        quaternion: new THREE.Quaternion(),
-        scale: new THREE.Vector3(1, 1, 1)
-    };
-
-    // Determine common parent group for all selected roots (groups + objects)
-    let commonParentId = undefined;
-    const considerParentId = (gid) => {
-        if (commonParentId === undefined) commonParentId = gid;
-        else if (commonParentId !== gid) commonParentId = null;
-    };
-
-    for (const gid of selectedGroupIds) {
-        const g = groups.get(gid);
-        considerParentId(g ? g.parent : undefined);
-        if (commonParentId === null) break;
-    }
-    if (commonParentId !== null) {
-        for (const { mesh, instanceId } of selectedObjects) {
-            const key = getGroupKey(mesh, instanceId);
-            considerParentId(objectToGroup.get(key));
-            if (commonParentId === null) break;
-        }
-    }
-
-    if (commonParentId) {
-        newGroup.parent = commonParentId;
-        const parentGroup = groups.get(commonParentId);
-        if (parentGroup) {
-            if (!Array.isArray(parentGroup.children)) parentGroup.children = [];
-            parentGroup.children.push({ type: 'group', id: newGroupId });
-        }
-    }
-
-    // Attach selected groups
-    for (const childGroupId of selectedGroupIds) {
-        const childGroup = groups.get(childGroupId);
-        if (!childGroup) continue;
-
-        if (childGroup.parent) {
-            const oldParent = groups.get(childGroup.parent);
-            if (oldParent && Array.isArray(oldParent.children)) {
-                oldParent.children = oldParent.children.filter(c => !(c && c.type === 'group' && c.id === childGroupId));
-            }
-        }
-
-        childGroup.parent = newGroupId;
-        newGroup.children.push({ type: 'group', id: childGroupId });
-    }
-
-    // Attach selected objects
-    for (const { mesh, instanceId } of selectedObjects) {
-        if (!mesh && mesh !== 0) continue;
-        const key = getGroupKey(mesh, instanceId);
-        const oldGroupId = objectToGroup.get(key);
-        if (oldGroupId) {
-            const oldGroup = groups.get(oldGroupId);
-            if (oldGroup && Array.isArray(oldGroup.children)) {
-                oldGroup.children = oldGroup.children.filter(c => !(c && c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
-            }
-        }
-        newGroup.children.push({ type: 'object', mesh, instanceId });
-        objectToGroup.set(key, newGroupId);
-    }
-
-    groups.set(newGroupId, newGroup);
     invalidateSelectionCaches();
-    
-    // applySelection calls _beginSelectionReplace -> _clearSelectionState -> _pushToVertexQueue
-    // We keep suppressVertexQueue = true until selection is applied, then reset it.
-    // However, applySelection runs synchronously, so clearing it after is safer?
-    // Actually, _pushToVertexQueue happens INSIDE applySelection's cleanup phase of OLD selection.
-    // The OLD selection is the one we just grouped (and possibly invalidated).
-    // So suppression is correct.
     
     applySelection(null, [], newGroupId);
     suppressVertexQueue = false;
@@ -1805,45 +762,16 @@ function ungroupGroup(groupId) {
     vertexQueue.length = 0;
 
     if (!groupId) { suppressVertexQueue = false; return; }
-    const groups = getGroups();
-    const objectToGroup = getObjectToGroup();
-    const group = groups.get(groupId);
-    if (!group) { suppressVertexQueue = false; return; }
+    
+    const result = GroupUtils.ungroupGroupStructure(loadedObjectGroup, groupId);
+    if (!result) { suppressVertexQueue = false; return; }
 
-    const parentId = group.parent || null;
-    const parentGroup = parentId ? groups.get(parentId) : null;
+    const { parentId } = result;
 
-    const children = Array.isArray(group.children) ? group.children.slice() : [];
-
-    // Re-parent children to the parent group (or to root when no parent)
-    for (const child of children) {
-        if (!child) continue;
-        if (child.type === 'group') {
-            const sub = groups.get(child.id);
-            if (sub) sub.parent = parentId;
-        } else if (child.type === 'object') {
-            const key = getGroupKey(child.mesh, child.instanceId);
-            if (parentId) objectToGroup.set(key, parentId);
-            else objectToGroup.delete(key);
-        }
-    }
-
-    // Replace this group in parent's children list, or just drop it if it's root.
-    if (parentGroup) {
-        if (!Array.isArray(parentGroup.children)) parentGroup.children = [];
-        const idx = parentGroup.children.findIndex(c => c && c.type === 'group' && c.id === groupId);
-        if (idx !== -1) {
-            parentGroup.children.splice(idx, 1, ...children);
-        } else {
-            parentGroup.children.push(...children);
-        }
-    }
-
-    groups.delete(groupId);
     invalidateSelectionCaches();
 
     // After ungrouping, select the parent group if it exists, otherwise deselect.
-    if (parentId && groups.has(parentId)) {
+    if (parentId && getGroups().has(parentId)) {
         applySelection(null, [], parentId);
     } else {
         resetSelectionAndDeselect();
@@ -1851,114 +779,6 @@ function ungroupGroup(groupId) {
 
     suppressVertexQueue = false;
     console.log(`Group removed: ${groupId}`);
-}
-
-function _deleteBatchedMeshInstances(mesh, instanceIds) {
-    if (!mesh || !mesh.isBatchedMesh) return;
-
-    // Process all deletions
-    for (const instanceId of instanceIds) {
-        // 1. Call real delete
-        if (typeof mesh.deleteInstance === 'function') {
-            mesh.deleteInstance(instanceId);
-        } else {
-            // Fallback if deleteInstance is missing (should not happen in modern Three.js)
-            if (typeof mesh.setVisibleAt === 'function') mesh.setVisibleAt(instanceId, false);
-        }
-
-        // 2. Clean up UserData Maps/Arrays
-        if (mesh.userData) {
-            // instanceGeometryIds is an array, we mark it as null/undefined to preserve indices for other instances
-            if (Array.isArray(mesh.userData.instanceGeometryIds)) {
-                mesh.userData.instanceGeometryIds[instanceId] = undefined;
-            }
-            if (mesh.userData.localMatrices instanceof Map) {
-                mesh.userData.localMatrices.delete(instanceId);
-            }
-            if (mesh.userData.displayTypes instanceof Map) {
-                mesh.userData.displayTypes.delete(instanceId);
-            }
-            if (mesh.userData.itemIds instanceof Map) {
-                mesh.userData.itemIds.delete(instanceId);
-            }
-            if (mesh.userData.customPivots instanceof Map) {
-                mesh.userData.customPivots.delete(instanceId);
-            }
-        }
-    }
-}
-
-function _updateGroupReferenceForMovedInstance(mesh, oldInstanceId, newInstanceId) {
-    const objectToGroup = getObjectToGroup();
-    const groups = getGroups();
-    
-    const oldKey = getGroupKey(mesh, oldInstanceId);
-    const newKey = getGroupKey(mesh, newInstanceId);
-    
-    const groupId = objectToGroup.get(oldKey);
-    
-    // Always clean up the old key
-    objectToGroup.delete(oldKey);
-
-    if (groupId) {
-        // Update map to new key
-        objectToGroup.set(newKey, groupId);
-
-        // Update parent group's children list
-        const group = groups.get(groupId);
-        if (group && Array.isArray(group.children)) {
-            const childEntry = group.children.find(c => c.type === 'object' && c.mesh === mesh && c.instanceId === oldInstanceId);
-            if (childEntry) {
-                childEntry.instanceId = newInstanceId;
-            }
-        }
-    }
-}
-
-function _deleteInstancedMeshInstances(mesh, instanceIdsSortedDescending) {
-    if (!mesh || !mesh.isInstancedMesh) return;
-
-    const instanceMatrix = mesh.instanceMatrix;
-    const uvAttr = mesh.geometry && mesh.geometry.attributes ? mesh.geometry.attributes.instancedUvOffset : null;
-    const hasHatArray = mesh.userData ? mesh.userData.hasHat : null; // Array
-
-    // Helper to swap data from srcIdx to dstIdx
-    const swapData = (srcIdx, dstIdx) => {
-        // Matrix
-        _TMP_MAT4_A.fromArray(instanceMatrix.array, srcIdx * 16);
-        _TMP_MAT4_A.toArray(instanceMatrix.array, dstIdx * 16);
-
-        // UV
-        if (uvAttr) {
-            const u = uvAttr.getX(srcIdx);
-            const v = uvAttr.getY(srcIdx);
-            uvAttr.setXY(dstIdx, u, v);
-        }
-
-        // Hat
-        if (Array.isArray(hasHatArray)) {
-            hasHatArray[dstIdx] = hasHatArray[srcIdx];
-        }
-    };
-
-    for (const deleteIdx of instanceIdsSortedDescending) {
-        const lastIdx = mesh.count - 1;
-        
-        // If the item to delete is NOT the last one, we swap the last one into this slot
-        if (deleteIdx < lastIdx) {
-            swapData(lastIdx, deleteIdx);
-            
-            // Critical: The instance that was at 'lastIdx' is now at 'deleteIdx'.
-            // We must update any group references pointing to 'lastIdx' to now point to 'deleteIdx'.
-            _updateGroupReferenceForMovedInstance(mesh, lastIdx, deleteIdx);
-        }
-        
-        // Decrease count
-        mesh.count--;
-    }
-
-    mesh.instanceMatrix.needsUpdate = true;
-    if (uvAttr) uvAttr.needsUpdate = true;
 }
 
 function deleteSelectedItems() {
@@ -1971,974 +791,10 @@ function deleteSelectedItems() {
     }
 
     try {
-        // 1. Identify all items to delete (deduplicated)
-    // Key: "meshUuid_instanceId" -> { mesh, instanceId }
-    const itemsToDelete = new Map();
-
-    // Helper to collect items
-    const collectItem = (mesh, instanceId) => {
-        if (!mesh) return;
-        const k = getGroupKey(mesh, instanceId);
-        if (!itemsToDelete.has(k)) {
-            itemsToDelete.set(k, { mesh, instanceId });
-        }
-    };
-
-    // Collect from selected Groups (and their descendants)
-    const allGroupsToDelete = new Set();
-    if (currentSelection.groups && currentSelection.groups.size > 0) {
-        for (const gid of currentSelection.groups) {
-            if (gid) {
-                allGroupsToDelete.add(gid);
-                const descendants = getAllDescendantGroups(gid);
-                for (const d of descendants) allGroupsToDelete.add(d);
-            }
-        }
-    }
-
-    const groups = getGroups();
-    const objectToGroup = getObjectToGroup();
-
-    // Remove groups from structure first (so we don't process them as valid parents later)
-    // But we need to look up their children first.
-    
-    // First, collect all children objects from these groups
-    for (const gid of allGroupsToDelete) {
-        const g = groups.get(gid);
-        if (g && Array.isArray(g.children)) {
-            for (const child of g.children) {
-                if (child.type === 'object') {
-                    collectItem(child.mesh, child.instanceId);
-                }
-            }
-        }
-    }
-
-    // Also collect explicitly selected objects
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids) continue;
-            for (const id of ids) {
-                collectItem(mesh, id);
-            }
-        }
-    }
-
-    if (itemsToDelete.size === 0 && allGroupsToDelete.size === 0) return;
-
-    // 2. Cleanup Group Structures
-    // Remove top-level deleted groups from their parents
-    for (const gid of currentSelection.groups) { // Iterate original selection roots
-         if(!gid) continue;
-         const g = groups.get(gid);
-         if (g && g.parent) {
-             const parent = groups.get(g.parent);
-             if (parent && !allGroupsToDelete.has(g.parent)) {
-                 if (Array.isArray(parent.children)) {
-                     parent.children = parent.children.filter(c => !(c && c.type === 'group' && c.id === gid));
-                 }
-             }
-         }
-    }
-
-    // Now delete all the groups from the map
-    for (const gid of allGroupsToDelete) {
-        groups.delete(gid);
-    }
-
-    // 3. Process Object Deletion
-    // We need to group by Mesh to handle InstancedMesh swap logic efficiently
-    const byMesh = new Map(); // mesh -> Set<instanceId>
-
-    for (const { mesh, instanceId } of itemsToDelete.values()) {
-        // Also cleanup objectToGroup for the deleted item itself
-        const key = getGroupKey(mesh, instanceId);
-        
-        // If the object was in a group that wasn't deleted, we need to remove it from that group's children
-        if (objectToGroup.has(key)) {
-            const parentGroupId = objectToGroup.get(key);
-            // If parent group still exists (was not in allGroupsToDelete), remove child ref
-            if (groups.has(parentGroupId)) {
-                const pg = groups.get(parentGroupId);
-                if (pg && Array.isArray(pg.children)) {
-                     pg.children = pg.children.filter(c => !(c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
-                }
-            }
-            objectToGroup.delete(key);
-        }
-
-        if (!byMesh.has(mesh)) byMesh.set(mesh, new Set());
-        byMesh.get(mesh).add(instanceId);
-    }
-
-    // Clear selection now, before modifying indices
-    resetSelectionAndDeselect();
-
-    // Execute Deletion
-    for (const [mesh, idSet] of byMesh) {
-        if (mesh.isBatchedMesh) {
-            _deleteBatchedMeshInstances(mesh, Array.from(idSet));
-        } else if (mesh.isInstancedMesh) {
-            // Sort Descending for Swap-Pop safety
-            const sortedIds = Array.from(idSet).sort((a, b) => b - a);
-            _deleteInstancedMeshInstances(mesh, sortedIds);
-        }
-    }
-
-    console.log('선택된 항목 제거됨 (Real Delete)');
+        Delete.deleteSelectedItems(loadedObjectGroup, currentSelection, { resetSelectionAndDeselect });
     } finally {
         suppressVertexQueue = false;
     }
-}
-
-// --- Duplication Logic ---
-
-function createDuplicationContext() {
-    return {
-        batchPool: new Map(), // key -> BatchedMesh
-        batchWorldInv: new WeakMap(), // BatchedMesh -> Matrix4
-        batchGeometryToId: new WeakMap(), // BatchedMesh -> Map<BufferGeometry, number>
-        batchPlans: new Map(), // key -> { instanceCount, maxVerts, maxIndices, geometries:Set<BufferGeometry> }
-        fullBatches: new WeakSet(), // BatchedMesh that hit max during this duplication pass
-        headPool: new Map(), // key -> InstancedMesh (player_head)
-        tmpSourceWorld: new THREE.Matrix4(),
-        tmpTargetLocal: new THREE.Matrix4(),
-        tmpInv: new THREE.Matrix4(),
-        tmpColor: new THREE.Color(),
-        itemIdMap: new Map() // Old ItemId -> New ItemId
-    };
-}
-
-function _nextPow2(v) {
-    let x = v | 0;
-    if (x <= 1) return 1;
-    x--;
-    x |= x >> 1;
-    x |= x >> 2;
-    x |= x >> 4;
-    x |= x >> 8;
-    x |= x >> 16;
-    return x + 1;
-}
-
-function _headPoolKey(sourceMesh) {
-    if (!sourceMesh) return 'head|null';
-    let material = sourceMesh.material;
-    if (Array.isArray(material)) material = material[0];
-    const matKey = material && material.uuid ? material.uuid : String(material);
-    return `head|${matKey}`;
-}
-
-function _isPlayerHeadMesh(obj) {
-    return !!(obj && obj.isInstancedMesh && obj.geometry && obj.geometry.attributes && obj.geometry.attributes.instancedUvOffset && obj.userData && obj.userData.displayType === 'item_display');
-}
-
-function _getHeadCapacity(mesh) {
-    if (!mesh) return 0;
-    const max = mesh.instanceMatrix && mesh.instanceMatrix.count ? mesh.instanceMatrix.count : 0;
-    return mesh.userData && typeof mesh.userData._pdeHeadCapacity === 'number' ? mesh.userData._pdeHeadCapacity : max;
-}
-
-function _getHeadUsed(mesh) {
-    if (!mesh) return 0;
-    if (mesh.userData && typeof mesh.userData._pdeHeadUsed === 'number') return mesh.userData._pdeHeadUsed;
-    // Prefer render count if set.
-    if (typeof mesh.count === 'number') return mesh.count;
-    return 0;
-}
-
-function _setHeadUsed(mesh, used) {
-    if (!mesh.userData) mesh.userData = {};
-    mesh.userData._pdeHeadUsed = used;
-    mesh.count = used;
-}
-
-function _createWritableHeadMeshFromSource(sourceMesh, capacity) {
-    const sourceGeometry = sourceMesh.geometry;
-    const sourceMaterial = sourceMesh.material;
-
-    const geo = new THREE.BufferGeometry();
-    if (sourceGeometry.index) geo.setIndex(sourceGeometry.index);
-    if (sourceGeometry.attributes) {
-        for (const name in sourceGeometry.attributes) {
-            if (name === 'instancedUvOffset') continue;
-            geo.setAttribute(name, sourceGeometry.attributes[name]);
-        }
-    }
-    if (Array.isArray(sourceGeometry.groups) && sourceGeometry.groups.length) {
-        geo.groups = sourceGeometry.groups.slice();
-    }
-    if (sourceGeometry.drawRange) {
-        geo.drawRange.start = sourceGeometry.drawRange.start;
-        geo.drawRange.count = sourceGeometry.drawRange.count;
-    }
-    if (sourceGeometry.boundingBox) geo.boundingBox = sourceGeometry.boundingBox;
-    if (sourceGeometry.boundingSphere) geo.boundingSphere = sourceGeometry.boundingSphere;
-
-    const uvOffsets = new Float32Array(capacity * 2);
-    geo.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
-
-    const mesh = new THREE.InstancedMesh(geo, sourceMaterial, capacity);
-    mesh.userData.displayType = 'item_display';
-    mesh.userData.hasHat = {};
-    mesh.userData.customPivots = new Map();
-    mesh.userData.isWritableHead = true;
-    mesh.userData._pdeHeadCapacity = capacity;
-    mesh.userData._pdeHeadSourceGeoUuid = sourceGeometry && sourceGeometry.uuid ? sourceGeometry.uuid : null;
-    mesh.frustumCulled = false;
-    _setHeadUsed(mesh, 0);
-    return mesh;
-}
-
-function _getOrCreateWritableHeadMesh(sourceMesh, additionalCount, ctx) {
-    if (!sourceMesh || !ctx) return null;
-
-    const key = _headPoolKey(sourceMesh);
-    const cached = ctx.headPool.get(key);
-    if (cached && _isPlayerHeadMesh(cached)) {
-        const used = _getHeadUsed(cached);
-        const cap = _getHeadCapacity(cached);
-        if (used + additionalCount <= cap) return cached;
-    }
-
-    // Search existing scene for a reusable writable head mesh
-    for (const child of loadedObjectGroup.children) {
-        if (!_isPlayerHeadMesh(child)) continue;
-        if (!child.userData || !child.userData.isWritableHead) continue;
-
-        let matA = child.material;
-        let matB = sourceMesh.material;
-        if (Array.isArray(matA)) matA = matA[0];
-        if (Array.isArray(matB)) matB = matB[0];
-        if (matA !== matB) continue;
-
-        // We intentionally pool by material only to keep draw calls low.
-
-        const used = _getHeadUsed(child);
-        const cap = _getHeadCapacity(child);
-        if (used + additionalCount <= cap) {
-            ctx.headPool.set(key, child);
-            return child;
-        }
-    }
-
-    // Create a new pooled mesh with slack capacity
-    const base = Math.max(256, additionalCount);
-    const capacity = Math.max(2048, _nextPow2(base));
-    const mesh = _createWritableHeadMeshFromSource(sourceMesh, capacity);
-    loadedObjectGroup.add(mesh);
-    ctx.headPool.set(key, mesh);
-    return mesh;
-}
-
-function _getBatchMaxInstances(batch) {
-    if (!batch) return null;
-    if (batch.userData && typeof batch.userData._pdeMaxInstances === 'number') return batch.userData._pdeMaxInstances;
-    // Prefer public property if present, otherwise fall back to three internal fields.
-    const publicMax = batch.maxInstanceCount;
-    if (typeof publicMax === 'number') {
-        if (!batch.userData) batch.userData = {};
-        batch.userData._pdeMaxInstances = publicMax;
-        return publicMax;
-    }
-    const internalMax = batch._maxInstanceCount;
-    if (typeof internalMax === 'number') {
-        if (!batch.userData) batch.userData = {};
-        batch.userData._pdeMaxInstances = internalMax;
-        return internalMax;
-    }
-    return null;
-}
-
-function _getBatchCurrentInstances(batch) {
-    if (!batch) return 0;
-    if (batch.userData && Array.isArray(batch.userData.instanceGeometryIds)) return batch.userData.instanceGeometryIds.length;
-    const internalCount = batch._instanceCount;
-    if (typeof internalCount === 'number') return internalCount;
-    return 0;
-}
-
-function _batchHasSpace(batch) {
-    const max = _getBatchMaxInstances(batch);
-    if (!max) return true; // Unknown: allow and rely on retry path
-    return _getBatchCurrentInstances(batch) < max;
-}
-
-function _planWritableBatchFor(mesh, instanceId, targetGroupId, ctx) {
-    if (!ctx || !mesh) return;
-
-    // Player heads are handled by a dedicated bulk path (InstancedMesh with instancedUvOffset)
-    if (mesh.isInstancedMesh && mesh.geometry && mesh.geometry.attributes && mesh.geometry.attributes.instancedUvOffset) {
-        return;
-    }
-
-    let geometry = null;
-    let material = mesh.material;
-    if (Array.isArray(material)) material = material[0];
-
-    if (mesh.isBatchedMesh) {
-        const geomId = mesh.userData && mesh.userData.instanceGeometryIds ? mesh.userData.instanceGeometryIds[instanceId] : null;
-        if (geomId !== null && mesh.userData && mesh.userData.originalGeometries) {
-            geometry = mesh.userData.originalGeometries.get(geomId);
-        }
-    } else if (mesh.isInstancedMesh) {
-        geometry = mesh.geometry;
-    }
-
-    if (!geometry || !material) return;
-
-    // Pool writable batches globally by material (not by group) to keep draw calls low,
-    // matching how the loader batches blocks while storing group membership separately.
-    const key = _batchPoolKey(material);
-    let plan = ctx.batchPlans.get(key);
-    if (!plan) {
-        plan = { instanceCount: 0, maxVerts: 0, maxIndices: 0, geometries: new Set() };
-        ctx.batchPlans.set(key, plan);
-    }
-
-    plan.instanceCount++;
-
-    if (!plan.geometries.has(geometry)) {
-        plan.geometries.add(geometry);
-        const pos = geometry.attributes && geometry.attributes.position;
-        const idx = geometry.index;
-        plan.maxVerts += pos ? pos.count : 0;
-        plan.maxIndices += idx ? idx.count : 0;
-    }
-}
-
-function _batchPoolKey(material) {
-    const matKey = material && material.uuid ? material.uuid : String(material);
-    return `${matKey}`;
-}
-
-function _getBatchWorldInverse(batch, ctx) {
-    const cached = ctx.batchWorldInv.get(batch);
-    if (cached) return cached;
-    const inv = new THREE.Matrix4().copy(batch.matrixWorld).invert();
-    ctx.batchWorldInv.set(batch, inv);
-    return inv;
-}
-
-function _getOrCreateBatchGeometryId(batch, geometry, ctx) {
-    if (!batch || !geometry) return -1;
-
-    let map = ctx.batchGeometryToId.get(batch);
-    if (!map) {
-        map = new Map();
-        // Seed from existing geometries once (avoids scanning originalGeometries per clone)
-        if (batch.userData && batch.userData.originalGeometries) {
-            for (const [id, geo] of batch.userData.originalGeometries) {
-                if (geo) map.set(geo, id);
-            }
-        }
-        ctx.batchGeometryToId.set(batch, map);
-    }
-
-    const existing = map.get(geometry);
-    if (existing !== undefined) return existing;
-
-    const newId = batch.addGeometry(geometry);
-    if (!batch.userData.originalGeometries) batch.userData.originalGeometries = new Map();
-    batch.userData.originalGeometries.set(newId, geometry);
-
-    if (!batch.userData.geometryBounds) batch.userData.geometryBounds = new Map();
-    if (!geometry.boundingBox) geometry.computeBoundingBox();
-    if (geometry.boundingBox) batch.userData.geometryBounds.set(newId, geometry.boundingBox.clone());
-
-    map.set(geometry, newId);
-    return newId;
-}
-
-let _pendingHeadClones = [];
-
-function flushPendingHeadClones(ctx) {
-    if (_pendingHeadClones.length === 0) return [];
-
-    const newSelectionItems = [];
-    const jobsByKey = new Map();
-
-    // Group by pooling key (material) so we reuse a single InstancedMesh across repeated duplicates
-    for (const job of _pendingHeadClones) {
-        const key = _headPoolKey(job.sourceMesh);
-        let entry = jobsByKey.get(key);
-        if (!entry) {
-            entry = { sourceMesh: job.sourceMesh, jobs: [] };
-            jobsByKey.set(key, entry);
-        }
-        entry.jobs.push(job);
-    }
-
-    _pendingHeadClones = []; // Clear global
-
-    const parentInv = loadedObjectGroup.matrixWorld.clone().invert();
-    const sourceMatrix = new THREE.Matrix4();
-
-    for (const { sourceMesh, jobs } of jobsByKey.values()) {
-        const count = jobs.length;
-        const targetMesh = _getOrCreateWritableHeadMesh(sourceMesh, count, ctx);
-        if (!targetMesh) continue;
-
-        const start = _getHeadUsed(targetMesh);
-        const uvAttr = targetMesh.geometry && targetMesh.geometry.attributes ? targetMesh.geometry.attributes.instancedUvOffset : null;
-        if (!uvAttr) continue;
-        const uvArray = uvAttr.array;
-
-        for (let i = 0; i < count; i++) {
-            const { sourceMesh: sm, sourceId, targetGroupId, coveredByGroup } = jobs[i];
-            const dstId = start + i;
-
-            // Matrix: Source World -> Target Local
-            sm.getMatrixAt(sourceId, sourceMatrix);
-            sourceMatrix.premultiply(sm.matrixWorld);
-            const targetLocal = sourceMatrix.multiply(parentInv);
-            targetMesh.setMatrixAt(dstId, targetLocal);
-
-            // UV Offset
-            const sourceAttr = sm.geometry && sm.geometry.attributes ? sm.geometry.attributes.instancedUvOffset : null;
-            if (sourceAttr) {
-                const u = sourceAttr.getX(sourceId);
-                const v = sourceAttr.getY(sourceId);
-                const o = dstId * 2;
-                uvArray[o] = u;
-                uvArray[o + 1] = v;
-            }
-
-            // HasHat
-            if (sm.userData && sm.userData.hasHat && sm.userData.hasHat[sourceId] !== undefined) {
-                targetMesh.userData.hasHat[dstId] = sm.userData.hasHat[sourceId];
-            }
-
-            // Custom Pivot
-            if (sm.userData.customPivots && sm.userData.customPivots.has(sourceId)) {
-                if (!targetMesh.userData.customPivots) targetMesh.userData.customPivots = new Map();
-                targetMesh.userData.customPivots.set(dstId, sm.userData.customPivots.get(sourceId).clone());
-            } else if (sm.userData.customPivot) {
-                if (!targetMesh.userData.customPivots) targetMesh.userData.customPivots = new Map();
-                targetMesh.userData.customPivots.set(dstId, sm.userData.customPivot.clone());
-            }
-
-            // Register Group mapping
-            if (targetGroupId) {
-                const groups = getGroups();
-                const group = groups.get(targetGroupId);
-                if (group) {
-                    if (!Array.isArray(group.children)) group.children = [];
-                    group.children.push({ type: 'object', mesh: targetMesh, instanceId: dstId });
-                }
-                const objectToGroup = getObjectToGroup();
-                const key = getGroupKey(targetMesh, dstId);
-                objectToGroup.set(key, targetGroupId);
-            }
-
-            newSelectionItems.push({ mesh: targetMesh, instanceId: dstId, targetGroupId, coveredByGroup });
-        }
-
-        _setHeadUsed(targetMesh, start + count);
-        targetMesh.instanceMatrix.needsUpdate = true;
-        uvAttr.needsUpdate = true;
-    }
-    
-    return newSelectionItems;
-}
-
-const _WRITABLE_BATCH_SIZE = 512;
-const _WRITABLE_BATCH_MAX_VERTS = _WRITABLE_BATCH_SIZE * 512; 
-const _WRITABLE_BATCH_MAX_INDICES = _WRITABLE_BATCH_SIZE * 768; 
-
-function getOrCreateWritableBatch(targetGroupId, material, geometry, ctx) {
-    if (ctx) {
-        const key = _batchPoolKey(material);
-        const cached = ctx.batchPool.get(key);
-        if (cached) {
-            if (ctx.fullBatches && ctx.fullBatches.has(cached)) {
-                ctx.batchPool.delete(key);
-            } else if (!_batchHasSpace(cached)) {
-                ctx.fullBatches && ctx.fullBatches.add(cached);
-                ctx.batchPool.delete(key);
-            } else {
-                return cached;
-            }
-        }
-    }
-    
-    let candidateMesh = null;
-
-    // Always search globally for a reusable writable batch.
-    // Group membership is tracked in the custom group maps, not in the Three.js scene graph.
-    for (const child of loadedObjectGroup.children) {
-        if (!child || !child.isBatchedMesh) continue;
-        if (!child.userData || !child.userData.isWritable) continue;
-        if (child.material !== material) continue;
-        if (ctx && ctx.fullBatches && ctx.fullBatches.has(child)) continue;
-        const maxInstances = _getBatchMaxInstances(child);
-        const currentInstances = _getBatchCurrentInstances(child);
-        if (!maxInstances || currentInstances < maxInstances) {
-            candidateMesh = child;
-            break;
-        }
-    }
-
-    if (candidateMesh) {
-        if (ctx) ctx.batchPool.set(_batchPoolKey(material), candidateMesh);
-        return candidateMesh;
-    }
-
-    // 2. Create new batch (size from plan when available to avoid reallocation / overflow)
-    const planKey = ctx ? _batchPoolKey(material) : null;
-    const plan = (ctx && planKey) ? ctx.batchPlans.get(planKey) : null;
-
-    let maxInstances = _WRITABLE_BATCH_SIZE;
-    let maxVerts = _WRITABLE_BATCH_MAX_VERTS;
-    let maxIndices = _WRITABLE_BATCH_MAX_INDICES;
-
-    if (plan) {
-        // Small slack to prevent edge overflow while still being tight.
-        const inst = Math.max(1, plan.instanceCount);
-        const verts = Math.max(64, plan.maxVerts);
-        const indices = Math.max(64, plan.maxIndices);
-
-        maxInstances = Math.ceil(inst * 1.1) + 8;
-        maxVerts = Math.ceil(verts * 1.1) + 64;
-        maxIndices = Math.ceil(indices * 1.1) + 64;
-    }
-
-    const batch = new THREE.BatchedMesh(maxInstances, maxVerts, maxIndices, material);
-    batch.frustumCulled = false;
-    batch.userData.isWritable = true;
-    batch.userData._pdeMaxInstances = maxInstances;
-    batch.userData.displayType = 'block_display';
-    batch.userData.displayTypes = new Map();
-    batch.userData.geometryBounds = new Map();
-    batch.userData.instanceGeometryIds = [];
-    batch.userData.itemIds = new Map();
-    batch.userData.localMatrices = new Map();
-    batch.userData.originalGeometries = new Map();
-    batch.userData.customPivots = new Map();
-
-    loadedObjectGroup.add(batch);
-
-    if (ctx) ctx.batchPool.set(_batchPoolKey(material), batch);
-    return batch;
-}
-
-function cloneInstance(mesh, instanceId, targetGroupId, ctx, coveredByGroup = false) {
-    if (!mesh) return null;
-
-    // Detect Player Head (InstancedMesh with instancedUvOffset) for Bulk Cloning
-    if (mesh.isInstancedMesh && mesh.geometry && mesh.geometry.attributes.instancedUvOffset) {
-        _pendingHeadClones.push({ sourceMesh: mesh, sourceId: instanceId, targetGroupId, coveredByGroup });
-        return { isPending: true };
-    }
-
-    let geometry = null;
-    let material = mesh.material;
-    
-    // Extract Geometry
-    if (mesh.isBatchedMesh) {
-        const geomId = mesh.userData.instanceGeometryIds ? mesh.userData.instanceGeometryIds[instanceId] : null;
-        if (geomId !== null && mesh.userData.originalGeometries) {
-            geometry = mesh.userData.originalGeometries.get(geomId);
-        }
-    } else if (mesh.isInstancedMesh) {
-        geometry = mesh.geometry;
-
-        // Player Head: Bake UV offset from instanced attribute to geometry UVs
-        if (geometry && geometry.attributes.instancedUvOffset) {
-            const attr = geometry.attributes.instancedUvOffset;
-            const u = attr.getX(instanceId);
-            const v = attr.getY(instanceId);
-
-            // Always clone to separate from the shared instanced geometry and strip the attribute
-            geometry = geometry.clone();
-            const uv = geometry.attributes.uv;
-            if (uv) {
-                for (let i = 0; i < uv.count; i++) {
-                    uv.setXY(i, uv.getX(i) + u, uv.getY(i) + v);
-                }
-                uv.needsUpdate = true;
-            }
-            geometry.deleteAttribute('instancedUvOffset');
-
-            // Replace material with one that doesn't use instancedUvOffset
-            // (The original material expects the attribute, which we just deleted)
-            let sourceMat = mesh.material;
-            if (Array.isArray(sourceMat)) sourceMat = sourceMat[0];
-
-            if (sourceMat && sourceMat.map) {
-                if (!sourceMat.userData.bakedVariant) {
-                    const { material: newMat } = createEntityMaterial(sourceMat.map, 0xffffff, false);
-                    newMat.side = sourceMat.side;
-                    newMat.alphaTest = sourceMat.alphaTest;
-                    newMat.transparent = sourceMat.transparent;
-                    newMat.depthWrite = sourceMat.depthWrite;
-                    newMat.toneMapped = sourceMat.toneMapped;
-                    newMat.fog = sourceMat.fog;
-                    newMat.flatShading = sourceMat.flatShading;
-                    sourceMat.userData.bakedVariant = newMat;
-                }
-                material = sourceMat.userData.bakedVariant;
-            }
-        }
-    }
-
-    if (!geometry) {
-        console.warn('Cannot duplicate: Geometry not found');
-        return null;
-    }
-    
-    if (Array.isArray(material)) material = material[0];
-
-    // Find target batch
-    let targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
-    if (!targetBatch) {
-        console.error('Failed to create writable batch');
-        return null;
-    }
-
-    // If the cached/candidate batch is already full, force rollover before adding.
-    if (ctx && !_batchHasSpace(targetBatch)) {
-        const key = _batchPoolKey(material);
-        ctx.fullBatches && ctx.fullBatches.add(targetBatch);
-        ctx.batchPool && ctx.batchPool.delete(key);
-        targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
-        if (!targetBatch) {
-            console.error('Failed to create writable batch (rollover)');
-            return null;
-        }
-    }
-
-    // Add Geometry (reuse if exists in target) - O(1) via per-duplication cache
-    let targetGeomId = -1;
-    let attempts = 0;
-    while (true) {
-        attempts++;
-        try {
-            if (ctx) {
-                targetGeomId = _getOrCreateBatchGeometryId(targetBatch, geometry, ctx);
-            } else {
-                // Fallback (should be rare)
-                let id = -1;
-                if (targetBatch.userData && targetBatch.userData.originalGeometries) {
-                    for (const [gid, geo] of targetBatch.userData.originalGeometries) {
-                        if (geo === geometry) { id = gid; break; }
-                    }
-                }
-                if (id === -1) {
-                    id = targetBatch.addGeometry(geometry);
-                    if (!targetBatch.userData.originalGeometries) targetBatch.userData.originalGeometries = new Map();
-                    targetBatch.userData.originalGeometries.set(id, geometry);
-                    if (!targetBatch.userData.geometryBounds) targetBatch.userData.geometryBounds = new Map();
-                    if (!geometry.boundingBox) geometry.computeBoundingBox();
-                    if (geometry.boundingBox) targetBatch.userData.geometryBounds.set(id, geometry.boundingBox.clone());
-                }
-                targetGeomId = id;
-            }
-            break;
-        } catch (e) {
-            const msg = e ? (e.message || String(e)) : '';
-            if (ctx && attempts < 3 && msg && (msg.includes('Reserved space request exceeds') || msg.includes('maximum buffer size'))) {
-                const key = _batchPoolKey(material);
-                if (ctx.fullBatches) ctx.fullBatches.add(targetBatch);
-                if (ctx.batchPool && ctx.batchPool.get(key) === targetBatch) ctx.batchPool.delete(key);
-    
-                targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
-                if (!targetBatch) {
-                    console.error('Failed to create writable batch (geometry rollover)');
-                    return null;
-                }
-                continue;
-            }
-            throw e;
-        }
-    }
-
-    // Add Instance (retry once on capacity error)
-    let newInstanceId;
-    let usedGeomId = targetGeomId;
-    try {
-        newInstanceId = targetBatch.addInstance(targetGeomId);
-    } catch (e) {
-        const msg = (e && e.message) ? String(e.message) : '';
-        if (ctx && msg.includes('Maximum item count reached')) {
-            const key = _batchPoolKey(material);
-            ctx.fullBatches && ctx.fullBatches.add(targetBatch);
-            ctx.batchPool && ctx.batchPool.delete(key);
-
-            // Create/resolve a new batch and retry once
-            targetBatch = getOrCreateWritableBatch(targetGroupId, material, geometry, ctx);
-            const retryGeomId = ctx ? _getOrCreateBatchGeometryId(targetBatch, geometry, ctx) : targetGeomId;
-            usedGeomId = retryGeomId;
-            newInstanceId = targetBatch.addInstance(retryGeomId);
-        } else {
-            throw e;
-        }
-    }
-    targetBatch.userData.instanceGeometryIds[newInstanceId] = usedGeomId;
-
-    // Copy Transforms
-    // 1. World Matrix of source instance
-    // 1. World Matrix of source instance
-    const sourceWorld = ctx ? ctx.tmpSourceWorld : new THREE.Matrix4();
-    mesh.getMatrixAt(instanceId, sourceWorld);
-    sourceWorld.premultiply(mesh.matrixWorld); // World space
-
-    // 2. Target Local Matrix (Target Batch World Inverse * Source World)
-    const targetLocal = ctx ? ctx.tmpTargetLocal : new THREE.Matrix4();
-    const invTargetWorld = ctx ? _getBatchWorldInverse(targetBatch, ctx) : targetBatch.matrixWorld.clone().invert();
-    targetLocal.copy(sourceWorld).premultiply(invTargetWorld);
-    targetBatch.setMatrixAt(newInstanceId, targetLocal);
-
-    // Copy UserData
-    // Local Matrices (Blockstates)
-    if (mesh.isBatchedMesh && mesh.userData.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
-        targetBatch.userData.localMatrices.set(newInstanceId, mesh.userData.localMatrices.get(instanceId).clone());
-    }
-
-    // Color
-    if (mesh.getColorAt) {
-        // InstancedMesh.getColorAt throws if instanceColor is null
-        if (mesh.isInstancedMesh && !mesh.instanceColor) {
-            // No instance colors to copy
-        } else {
-            try {
-                const c = ctx ? ctx.tmpColor : new THREE.Color();
-                mesh.getColorAt(instanceId, c);
-                targetBatch.setColorAt(newInstanceId, c);
-            } catch (e) {
-                // Ignore color copy errors
-            }
-        }
-    }
-
-    // Display Types
-    const displayType = getDisplayType(mesh, instanceId);
-    if (displayType) {
-        if (!targetBatch.userData.displayTypes) targetBatch.userData.displayTypes = new Map();
-        targetBatch.userData.displayTypes.set(newInstanceId, displayType);
-    }
-    
-    // Item IDs
-    if (mesh.userData.itemIds && mesh.userData.itemIds.has(instanceId)) {
-        const oldItemId = mesh.userData.itemIds.get(instanceId);
-        let newItemId;
-        
-        if (ctx && ctx.itemIdMap) {
-            if (ctx.itemIdMap.has(oldItemId)) {
-                newItemId = ctx.itemIdMap.get(oldItemId);
-            } else {
-                newItemId = THREE.MathUtils.generateUUID();
-                ctx.itemIdMap.set(oldItemId, newItemId);
-            }
-        } else {
-            newItemId = THREE.MathUtils.generateUUID();
-        }
-
-        targetBatch.userData.itemIds.set(newInstanceId, newItemId);
-    }
-    
-    // Has Hat (Player Head)
-    if (mesh.userData.hasHat && mesh.userData.hasHat[instanceId] !== undefined) {
-         if (!targetBatch.userData.hasHat) targetBatch.userData.hasHat = {}; 
-         targetBatch.userData.hasHat[newInstanceId] = mesh.userData.hasHat[instanceId];
-    }
-    
-    // Custom Pivot
-    if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
-         targetBatch.userData.customPivots.set(newInstanceId, mesh.userData.customPivots.get(instanceId).clone());
-    } else if (mesh.userData.customPivot) {
-         targetBatch.userData.customPivots.set(newInstanceId, mesh.userData.customPivot.clone());
-    }
-
-    // Register in LoadedObjectGroup hierarchy if group exists
-    if (targetGroupId) {
-        const groups = getGroups();
-        const group = groups.get(targetGroupId);
-        if (group) {
-            if (!Array.isArray(group.children)) group.children = [];
-            group.children.push({ type: 'object', mesh: targetBatch, instanceId: newInstanceId });
-        }
-        
-        const objectToGroup = getObjectToGroup();
-        const key = getGroupKey(targetBatch, newInstanceId);
-        objectToGroup.set(key, targetGroupId);
-    }
-
-    return { mesh: targetBatch, instanceId: newInstanceId };
-}
-
-function cloneGroup(groupId, parentId, idMap, ctx) {
-    const groups = getGroups();
-    const sourceGroup = groups.get(groupId);
-    if (!sourceGroup) return null;
-
-    const newGroupId = THREE.MathUtils.generateUUID();
-    idMap.set(groupId, newGroupId);
-
-    let newPivot = undefined;
-    if (sourceGroup.pivot) {
-        newPivot = normalizePivotToVector3(sourceGroup.pivot, new THREE.Vector3());
-    }
-
-    const newGroup = {
-        id: newGroupId,
-        isCollection: true,
-        children: [],
-        parent: parentId,
-        name: sourceGroup.name ? sourceGroup.name + " (Copy)" : "Group (Copy)",
-        position: sourceGroup.position ? sourceGroup.position.clone() : new THREE.Vector3(),
-        quaternion: sourceGroup.quaternion ? sourceGroup.quaternion.clone() : new THREE.Quaternion(),
-        scale: sourceGroup.scale ? sourceGroup.scale.clone() : new THREE.Vector3(1, 1, 1),
-        pivot: newPivot,
-        isCustomPivot: sourceGroup.isCustomPivot
-    };
-    
-    if (sourceGroup.matrix) newGroup.matrix = sourceGroup.matrix.clone();
-
-    groups.set(newGroupId, newGroup);
-
-    // Add to parent
-    if (parentId) {
-        const parentGroup = groups.get(parentId);
-        if (parentGroup) {
-            if (!Array.isArray(parentGroup.children)) parentGroup.children = [];
-            parentGroup.children.push({ type: 'group', id: newGroupId });
-        }
-    }
-
-    // Clone Children (structure only) + plan/collect object clone jobs for a second pass
-    if (Array.isArray(sourceGroup.children)) {
-        for (const child of sourceGroup.children) {
-            if (!child) continue;
-            if (child.type === 'group') {
-                cloneGroup(child.id, newGroupId, idMap, ctx);
-            }
-        }
-    }
-    
-    return newGroupId;
-}
-
-function _collectCloneJobsFromGroup(groupId, newGroupId, ctx, outJobs) {
-    const groups = getGroups();
-    const sourceGroup = groups.get(groupId);
-    if (!sourceGroup || !Array.isArray(sourceGroup.children)) return;
-
-    for (const child of sourceGroup.children) {
-        if (!child) continue;
-        if (child.type === 'object') {
-            _planWritableBatchFor(child.mesh, child.instanceId, newGroupId, ctx);
-            outJobs.push({ mesh: child.mesh, instanceId: child.instanceId, targetGroupId: newGroupId, coveredByGroup: true });
-        } else if (child.type === 'group') {
-            const mappedChildId = ctx && ctx._groupIdMap ? ctx._groupIdMap.get(child.id) : null;
-            // If called with a mapping, descend using mapped group id; otherwise just recurse with same newGroupId.
-            _collectCloneJobsFromGroup(child.id, mappedChildId || newGroupId, ctx, outJobs);
-        }
-    }
-}
-
-function duplicateGroupsAndObjects(groupIds, objectEntries, ctx) {
-    const newSelection = { groups: new Set(), objects: new Map() };
-    const idMap = new Map(); // OldGroupID -> NewGroupID
-    const groups = getGroups();
-    const jobs = [];
-    if (ctx) ctx._groupIdMap = idMap;
-    
-    // 1. Duplicate Groups
-    if (groupIds) {
-        for (const groupId of groupIds) {
-            const group = groups.get(groupId);
-            if (!group) continue;
-            
-            // If parent is also selected, this group will be cloned recursively by the parent.
-            // We should only explicitly clone roots of the selection forest.
-            let isParentSelected = false;
-            let curr = group.parent;
-            while(curr) {
-                 if (groupIds.has(curr)) {
-                     isParentSelected = true;
-                     break;
-                 }
-                 const p = groups.get(curr);
-                 curr = p ? p.parent : null;
-            }
-            
-            if (!isParentSelected) {
-                const newGroupId = cloneGroup(groupId, group.parent, idMap, ctx);
-                if (newGroupId) newSelection.groups.add(newGroupId);
-            }
-        }
-    }
-
-    // Collect clone jobs for all objects inside newly-created group trees
-    if (groupIds) {
-        for (const groupId of groupIds) {
-            // Only roots were added to selection; collect from roots only.
-            const newGroupId = idMap.get(groupId);
-            if (!newGroupId) continue;
-
-            // If parent is selected, it wasn't mapped at root-level here; skip non-roots.
-            const group = groups.get(groupId);
-            if (!group) continue;
-            let isParentSelected = false;
-            let curr = group.parent;
-            while (curr) {
-                if (groupIds.has(curr)) {
-                    isParentSelected = true;
-                    break;
-                }
-                const p = groups.get(curr);
-                curr = p ? p.parent : null;
-            }
-            if (isParentSelected) continue;
-
-            _collectCloneJobsFromGroup(groupId, newGroupId, ctx, jobs);
-        }
-    }
-    
-    // 2. Duplicate Objects
-    // If an object is inside a selected group, it's already cloned.
-    // We only clone objects not covered by selected groups.
-    if (objectEntries) {
-        const objectToGroup = getObjectToGroup();
-        
-        for (const { mesh, instanceId } of objectEntries) {
-             const key = getGroupKey(mesh, instanceId);
-             const parentGroupId = objectToGroup.get(key);
-             
-             // Check if parent group (or any ancestor) is selected
-             let isAncestorSelected = false;
-             let curr = parentGroupId;
-             while(curr) {
-                 if (groupIds && groupIds.has(curr)) {
-                     isAncestorSelected = true;
-                     break;
-                 }
-                 const p = groups.get(curr);
-                 curr = p ? p.parent : null;
-             }
-             
-             if (!isAncestorSelected) {
-                 // Plan + clone in a second pass
-                 const targetGroup = parentGroupId; // Stay in same group
-                 _planWritableBatchFor(mesh, instanceId, targetGroup, ctx);
-                 jobs.push({ mesh, instanceId, targetGroupId: targetGroup, coveredByGroup: false });
-             }
-        }
-    }
-
-    // Execute clone jobs
-    for (const job of jobs) {
-        const result = cloneInstance(job.mesh, job.instanceId, job.targetGroupId, ctx, job.coveredByGroup);
-        if (result && !result.isPending && !job.coveredByGroup) {
-            if (!newSelection.objects.has(result.mesh)) {
-                newSelection.objects.set(result.mesh, new Set());
-            }
-            newSelection.objects.get(result.mesh).add(result.instanceId);
-        }
-    }
-    
-    return newSelection;
 }
 
 function duplicateSelected() {
@@ -2954,10 +810,6 @@ function duplicateSelected() {
     // Capture if we have a primary
     const hadPrimary = !!currentSelection.primary;
 
-    const ctx = createDuplicationContext();
-
-    _pendingHeadClones = []; // Reset pending queue
-
     const selectedGroupIds = currentSelection.groups;
     const selectedObjects = [];
     if (currentSelection.objects) {
@@ -2966,17 +818,7 @@ function duplicateSelected() {
         }
     }
 
-    const newSel = duplicateGroupsAndObjects(selectedGroupIds, selectedObjects, ctx);
-
-    // Flush pending bulk clones (Player Heads)
-    const newHeads = flushPendingHeadClones(ctx);
-    for (const { mesh, instanceId, coveredByGroup } of newHeads) {
-        if (coveredByGroup) continue;
-        if (!newSel.objects.has(mesh)) {
-            newSel.objects.set(mesh, new Set());
-        }
-        newSel.objects.get(mesh).add(instanceId);
-    }
+    const newSel = Duplicate.duplicateGroupsAndObjects(loadedObjectGroup, selectedGroupIds, selectedObjects);
 
     // Apply new selection
     // When duplicating a multi-selection, keep the existing gizmo anchor so the gizmo position stays stable.
@@ -3013,6 +855,8 @@ function duplicateSelected() {
 
 function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitControls, loadedObjectGroup: lg, setControls}) {
     scene = s; camera = cam; renderer = rend; controls = orbitControls; loadedObjectGroup = lg;
+    Overlay.setLoadedObjectGroup(lg);
+    Select.setLoadedObjectGroup(lg);
 
     if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map();
     if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map();
@@ -3158,13 +1002,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 dragInitialBoundingBox.makeEmpty();
 
                 selectionHelper.updateMatrixWorld();
-                const pivotWorld = selectionHelper.position;
-                _computeBlockbenchPivotFrameMatrixWorld(
-                    _BB_PIVOT_FRAME_MAT4,
-                    _BB_PIVOT_FRAME_MAT4_INV,
-                    _BB_PIVOT_FRAME_MAT3,
-                    pivotWorld
-                );
+                computeBlockbenchPivotFrame(selectionHelper, currentSpace);
 
                 const singleGroupId = _getSingleSelectedGroupId();
                 if (singleGroupId) {
@@ -3173,7 +1011,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     if (!groupLocalBox.isEmpty()) {
                         const groupWorldMat = getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
                         // Transform: Group Local -> World -> Pivot Frame
-                        const combinedMat = _TMP_MAT4_B.copy(_BB_PIVOT_FRAME_MAT4_INV).multiply(groupWorldMat);
+                        const combinedMat = transformBoxToPivotFrame(groupWorldMat, _TMP_MAT4_B);
                         unionTransformedBox3(dragInitialBoundingBox, groupLocalBox, combinedMat);
                     }
                 } else {
@@ -3187,39 +1025,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
                             getInstanceWorldMatrix(mesh, instanceId, tempMat);
 
-                            const combinedMat = _TMP_MAT4_A.copy(_BB_PIVOT_FRAME_MAT4_INV).multiply(tempMat);
+                            const combinedMat = transformBoxToPivotFrame(tempMat, _TMP_MAT4_A);
                             unionTransformedBox3(dragInitialBoundingBox, localBox, combinedMat);
                         });
                     }
                 }
 
-                const gizmoPos = selectionHelper.position.clone();
-                const gizmoNDC = gizmoPos.clone().project(camera);
-                gizmoNDC.z = 0;
-
-                const checkAxis = (x, y, z) => {
-                    const axisVec = new THREE.Vector3(x, y, z);
-                    if (currentSpace === 'local') {
-                        axisVec.applyQuaternion(selectionHelper.quaternion);
-                    }
-                    
-                    const origin = selectionHelper.position.clone();
-                    const target = origin.clone().add(axisVec);
-                    
-                    origin.project(camera);
-                    target.project(camera);
-                    
-                    const dir = new THREE.Vector2(target.x - origin.x, target.y - origin.y);
-                    const mouse = new THREE.Vector2(mouseInput.x - origin.x, mouseInput.y - origin.y);
-                    
-                    return mouse.dot(dir) > 0;
-                };
-
-                dragAnchorDirections = {
-                    x: detectedAnchorDirections.x !== null ? detectedAnchorDirections.x : checkAxis(1, 0, 0),
-                    y: detectedAnchorDirections.y !== null ? detectedAnchorDirections.y : checkAxis(0, 1, 0),
-                    z: detectedAnchorDirections.z !== null ? detectedAnchorDirections.z : checkAxis(0, 0, 1)
-                };
+                dragAnchorDirections = detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper, currentSpace, detectedAnchorDirections);
             }
 
         } else {
@@ -3424,6 +1236,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         if (transformControls.dragging && _hasAnySelection()) {
             
             if (isPivotEditMode && transformControls.mode === 'translate') {
+                // Snapping Logic
+                // Snapping Logic
+                const snapTarget = Overlay.findClosestVertexForSnapping(selectionHelper.position, camera, renderer);
+                if (snapTarget) {
+                    selectionHelper.position.copy(snapTarget);
+                }
+
                 // Keep pivotOffset consistent with SelectionCenter(origin) baseline (group uses box.min, block_display uses min when not custom).
                 pivotOffset.subVectors(selectionHelper.position, dragStartPivotBaseWorld);
                 isCustomPivot = true;
@@ -3438,39 +1257,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             }
 
             if (blockbenchScaleMode && transformControls.mode === 'scale' && !isUniformScale) {
-                 if (!dragInitialBoundingBox.isEmpty()) {
-                    const deltaScale = selectionHelper.scale; 
-                    const shift = new THREE.Vector3();
-                    
-                    if (Math.abs(deltaScale.x - dragInitialScale.x) > 0.0001) {
-                        const isPositive = dragAnchorDirections.x;
-                        const fixedVal = isPositive ? dragInitialBoundingBox.min.x : dragInitialBoundingBox.max.x;
-                        if (Math.abs(dragInitialScale.x) > 1e-6) {
-                            shift.x = (fixedVal * (dragInitialScale.x - deltaScale.x)) / dragInitialScale.x;
-                        }
-                    }
-                    if (Math.abs(deltaScale.y - dragInitialScale.y) > 0.0001) {
-                        const isPositive = dragAnchorDirections.y;
-                        const fixedVal = isPositive ? dragInitialBoundingBox.min.y : dragInitialBoundingBox.max.y;
-                        if (Math.abs(dragInitialScale.y) > 1e-6) {
-                            shift.y = (fixedVal * (dragInitialScale.y - deltaScale.y)) / dragInitialScale.y;
-                        }
-                    }
-                    if (Math.abs(deltaScale.z - dragInitialScale.z) > 0.0001) {
-                        const isPositive = dragAnchorDirections.z;
-                        const fixedVal = isPositive ? dragInitialBoundingBox.min.z : dragInitialBoundingBox.max.z;
-                        if (Math.abs(dragInitialScale.z) > 1e-6) {
-                            shift.z = (fixedVal * (dragInitialScale.z - deltaScale.z)) / dragInitialScale.z;
-                        }
-                    }
-                    
-                    // Convert from pivot-frame local shift to world.
-                    // When the selected target is a group that contains shear, the pivot frame includes that shear
-                    // so the anchor/overlay space stays consistent.
-                    const shiftWorld = shift.clone();
-                    if (currentSpace === 'local') {
-                        shiftWorld.applyMatrix3(_BB_PIVOT_FRAME_MAT3);
-                    }
+                const shiftWorld = computeBlockbenchScaleShift(selectionHelper, dragInitialScale, dragInitialPosition, dragInitialBoundingBox, dragAnchorDirections, currentSpace);
+
+                if (shiftWorld) {
                     selectionHelper.position.copy(dragInitialPosition).add(shiftWorld);
                     selectionHelper.updateMatrixWorld();
                 }
@@ -3542,10 +1331,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             previousHelperMatrix.copy(selectionHelper.matrixWorld);
 
             // Keep overlay in sync without rebuilding geometry
-            if (selectionOverlay) {
-                selectionOverlay.matrix.premultiply(_tmpDeltaMatrix);
-                selectionOverlay.updateMatrixWorld(true);
-            }
+            Overlay.syncSelectionOverlay(_tmpDeltaMatrix);
 
             // White multi-selection overlay must stay world-aligned (no rotation).
             _updateMultiSelectionOverlayDuringDrag();
@@ -3567,6 +1353,27 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             case 'v':
                 isVertexMode = !isVertexMode;
                 console.log(isVertexMode ? 'Vertex mode activated' : 'Vertex mode deactivated');
+
+                if (!isVertexMode) {
+                    for (let i = vertexQueue.length - 1; i >= 0; i--) {
+                        const item = vertexQueue[i];
+                        let isSelected = false;
+
+                        if (item.type === 'group') {
+                            if (currentSelection.groups.has(item.id)) isSelected = true;
+                        } else {
+                            const ids = currentSelection.objects.get(item.mesh);
+                            if (ids && ids.has(item.instanceId)) {
+                                isSelected = true;
+                            }
+                        }
+
+                        if (!isSelected) {
+                            vertexQueue.splice(i, 1);
+                        }
+                    }
+                }
+
                 updateHelperPosition();
                 updateSelectionOverlay();
                 break;
@@ -3594,6 +1401,15 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 break;
             }
             case 'z': {
+                // Attempt to preserve "Gizmo Center" selection across pivot mode changes.
+                // The Gizmo Center moves when pivot mode changes, invalidating its selection Key.
+                // We capture the old key, and if selected, migrate it to the new key after update.
+                const oldPos = selectionHelper.position.clone();
+                const oldKey = `CENTER_${oldPos.x.toFixed(4)}_${oldPos.y.toFixed(4)}_${oldPos.z.toFixed(4)}`;
+                const wasCenterSelected = selectedVertexKeys.has(oldKey);
+
+                // If non-center vertices are selected, we keep them (they don't move).
+                
                 if (pivotMode === 'center') {
                     const prevPos = selectionHelper.position.clone();
                     updateHelperPosition();
@@ -3605,6 +1421,14 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     pivotMode = 'center';
                     updateHelperPosition();
                 }
+
+                if (wasCenterSelected) {
+                    selectedVertexKeys.delete(oldKey);
+                    const newPos = selectionHelper.position;
+                    const newKey = `CENTER_${newPos.x.toFixed(4)}_${newPos.y.toFixed(4)}_${newPos.z.toFixed(4)}`;
+                    selectedVertexKeys.add(newKey);
+                }
+
                 updateSelectionOverlay();
                 console.log('Pivot Mode:', pivotMode);
                 break;
@@ -3612,102 +1436,21 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             case 'q': {
                 const items = getSelectedItems();
                 if (items.length > 0) {
-                    const targetPosition = selectionHelper.position.clone();
-                    
-                    // Shear removal - Optimized to single pass using Gram-Schmidt Orthogonalization.
-                    // This method mathematically guarantees 0 shear in one step, so no iteration is needed.
-                    items.forEach(({mesh, instanceId}) => {
-                        const matrix = new THREE.Matrix4();
-                        mesh.getMatrixAt(instanceId, matrix);
-                        
-                        const position = new THREE.Vector3().setFromMatrixPosition(matrix);
-                        
-                        // Extract basis vectors
-                        const x = new THREE.Vector3().setFromMatrixColumn(matrix, 0);
-                        const y = new THREE.Vector3().setFromMatrixColumn(matrix, 1);
-                        const z = new THREE.Vector3().setFromMatrixColumn(matrix, 2);
-                        
-                        // Preserve Scale
-                        const sx = x.length();
-                        const sy = y.length();
-                        const sz = z.length();
-                        
-                        // Normalize for orthogonalization
-                        x.normalize();
-                        y.normalize();
-                        z.normalize();
-                        
-                        // Gram-Schmidt Orthogonalization (X is reference)
-                        // Make Y orthogonal to X
-                        y.sub(x.clone().multiplyScalar(y.dot(x))).normalize();
-                        // Make Z orthogonal to X and Y
-                        z.sub(x.clone().multiplyScalar(z.dot(x)))
-                         .sub(y.clone().multiplyScalar(z.dot(y)))
-                         .normalize();
-                        
-                        // Re-apply Scale
-                        x.multiplyScalar(sx);
-                        y.multiplyScalar(sy);
-                        z.multiplyScalar(sz);
-                        
-                        // Reconstruct Matrix
-                        matrix.makeBasis(x, y, z);
-                        matrix.setPosition(position);
-                        
-                        mesh.setMatrixAt(instanceId, matrix);
-                    });
-                    
-                    items.forEach(({mesh}) => {
-                         if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
-                    });
-
-                    // For group selections, drop shear-carrying cached matrices BEFORE computing SelectionCenter.
-                    // This ensures the center used for offset matches what updateHelperPosition() will use next.
-                    if (currentSelection.groups && currentSelection.groups.size > 0) {
-                        const groups = getGroups();
-                        const toClear = new Set();
-                        for (const rootId of currentSelection.groups) {
-                            if (!rootId) continue;
-                            toClear.add(rootId);
-                            const descendants = getAllDescendantGroups(rootId);
-                            for (const subId of descendants) toClear.add(subId);
-                        }
-                        for (const id of toClear) {
-                            const g = groups.get(id);
-                            if (g && g.matrix) delete g.matrix;
-                        }
-                    }
-
-                    if (pivotMode === 'center') {
-                        const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
-                        const offset = new THREE.Vector3().subVectors(targetPosition, currentCenter);
-                        
-                        const tempMat = new THREE.Matrix4();
-                        
-                        items.forEach(({mesh, instanceId}) => {
-                            const inverseMeshWorld = mesh.matrixWorld.clone().invert();
-                            mesh.getMatrixAt(instanceId, tempMat);
-                            tempMat.premultiply(mesh.matrixWorld);
-                            
-                            tempMat.elements[12] += offset.x;
-                            tempMat.elements[13] += offset.y;
-                            tempMat.elements[14] += offset.z;
-                            
-                            tempMat.premultiply(inverseMeshWorld);
-                            mesh.setMatrixAt(instanceId, tempMat);
-                            if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
-                        });
-                    }
-
-                    updateHelperPosition();
-                    updateSelectionOverlay();
-                    console.log('스케일 정규화 및 위치 보정 (Shear 제거)');
+                    removeShearFromSelection(
+                        items,
+                        selectionHelper,
+                        currentSelection,
+                        loadedObjectGroup,
+                        pivotMode,
+                        isCustomPivot,
+                        pivotOffset,
+                        { SelectionCenter, updateHelperPosition, updateSelectionOverlay }
+                    );
                 }
                 break;
             }
             case 'b': {
-                blockbenchScaleMode = !blockbenchScaleMode;
-                console.log(`blockbench scale모드 ${blockbenchScaleMode ? '켜짐' : '꺼짐'}`);
+                toggleBlockbenchScaleMode();
                 break;
             }
             case 'g': {
@@ -3735,41 +1478,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
         if (event.key.toLowerCase() === 'f') {
             event.preventDefault();
-            
-            let targetPosition = new THREE.Vector3();
-            let distance = 5.2; // Default distance for origin (approx sqrt(27))
-
-            if (_hasAnySelection()) {
-                const box = getSelectionBoundingBox();
-                if (!box.isEmpty()) {
-                    box.getCenter(targetPosition);
-                    const size = new THREE.Vector3();
-                    box.getSize(size);
-                    const maxDim = Math.max(size.x, size.y, size.z);
-                    
-                    // Fit to view distance
-                    // Ensure we don't zoom in infinitely on 0-size objects
-                    const fitSize = Math.max(maxDim, 1.0);
-                    const fov = camera.fov * (Math.PI / 180);
-                    distance = Math.abs(fitSize / (2 * Math.tan(fov / 2)));
-                    distance *= 1.6; // Add some margin
-                } else {
-                     _getSelectionCenterWorld(targetPosition);
-                }
-            } else {
-                targetPosition.set(0, 0, 0);
-            }
-
-            const direction = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
-            
-            // Fallback if camera is exactly at target
-            if (direction.lengthSq() < 1e-6) {
-                direction.set(1, 1, 1).normalize();
-            }
-
-            controls.target.copy(targetPosition);
-            camera.position.copy(targetPosition).add(direction.multiplyScalar(distance));
-            controls.update();
+            focusCameraOnSelection(camera, controls, _hasAnySelection(), getSelectionBoundingBox, _getSelectionCenterWorld);
             return;
         }
 
@@ -4096,50 +1805,23 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
     // Vertex Interaction Helper
     function getHoveredVertex(mouseNDC) {
-        if (!isVertexMode || !selectionPointsOverlay || selectionPointsOverlay.children.length === 0) return null;
-
-        const canvas = renderer.domElement;
-        const width = canvas.clientWidth;
-        const height = canvas.clientHeight;
-        
-        const mouseX = (mouseNDC.x * 0.5 + 0.5) * width;
-        const mouseY = (-mouseNDC.y * 0.5 + 0.5) * height;
-        
-        // Judgment: 2x wider than point (10px). Radius = 10px (diameter 20px).
-        const hitRadiusSq = 10 * 10; 
-        
-        let bestDistSq = Infinity;
-        let bestSprite = null;
-        
-        const tempVec = _TMP_VEC3_A;
-
-        for (const sprite of selectionPointsOverlay.children) {
-            if (!sprite.isSprite) continue;
-
-            tempVec.copy(sprite.position);
-            tempVec.project(camera);
-            
-            if (tempVec.z < -1 || tempVec.z > 1) continue;
-            
-            const sx = (tempVec.x * 0.5 + 0.5) * width;
-            const sy = (-tempVec.y * 0.5 + 0.5) * height;
-            
-            const dx = sx - mouseX;
-            const dy = sy - mouseY;
-            const distSq = dx*dx + dy*dy;
-            
-            if (distSq < hitRadiusSq && distSq < bestDistSq) {
-                bestDistSq = distSq;
-                bestSprite = sprite;
-            }
-        }
-        return bestSprite;
+        if (!isVertexMode) return null;
+        return Overlay.getHoveredVertex(mouseNDC, camera, renderer);
     }
     
-    // clickedVertex is now global
+    // Vertex Selection State is managed by selectedVertexKeys
+
+    const dragControls = initDrag({
+        renderer,
+        camera,
+        getControls: () => controls,
+        transformControls,
+        loadedObjectGroup,
+        getSelectionCallbacks: () => getSelectionCallbacks()
+    });
 
     renderer.domElement.addEventListener('pointermove', (event) => {
-        if (transformControls.dragging || marqueeStart) return;
+        if (transformControls.dragging || dragControls.isMarqueeActiveOrCandidate()) return;
         
         if (isVertexMode) {
             const rect = renderer.domElement.getBoundingClientRect();
@@ -4150,78 +1832,15 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             
             const hovered = getHoveredVertex(m);
             
-            if (selectionPointsOverlay) {
-                selectionPointsOverlay.children.forEach(sprite => {
-                    if (!sprite.isSprite) return;
-                    const isTarget = (sprite === hovered) || (sprite === clickedVertex);
-                    sprite.material.color.setHex(isTarget ? 0x437FD0 : 0x30333D);
-                });
-            }
+            Overlay.updateVertexHoverHighlight(hovered, selectedVertexKeys);
             
             if (hovered) {
                 renderer.domElement.style.cursor = 'pointer';
-            } else if (isVertexMode) { // Only reset if in vertex mode, otherwise other logic handles cursor
+            } else if (isVertexMode) { 
                 renderer.domElement.style.cursor = '';
             }
         }
     });
-
-    // Ctrl+Drag marquee selection
-    let marqueeActive = false;
-    let marqueeCandidate = false;
-    let marqueeIgnoreGroups = false;
-    let marqueeStart = null;
-    let marqueeDiv = null;
-    let marqueePrevControlsEnabled = true;
-
-    // Used when marquee attempt is pre-empted by another interaction (e.g. TransformControls drag).
-    // Do NOT touch OrbitControls.enabled here; TransformControls owns that while dragging.
-    const abortMarqueeNoControls = () => {
-        marqueeActive = false;
-        marqueeCandidate = false;
-        marqueeIgnoreGroups = false;
-        marqueeStart = null;
-        if (marqueeDiv && marqueeDiv.parentElement) marqueeDiv.parentElement.removeChild(marqueeDiv);
-        marqueeDiv = null;
-    };
-
-    const ensureMarqueeDiv = () => {
-        if (marqueeDiv) return marqueeDiv;
-        marqueeDiv = document.createElement('div');
-        marqueeDiv.style.position = 'fixed';
-        marqueeDiv.style.pointerEvents = 'none';
-        marqueeDiv.style.border = '1px dashed rgba(160,160,160,0.95)';
-        marqueeDiv.style.background = 'rgba(160,160,160,0.12)';
-        marqueeDiv.style.zIndex = '9999';
-        marqueeDiv.style.left = '0px';
-        marqueeDiv.style.top = '0px';
-        marqueeDiv.style.width = '0px';
-        marqueeDiv.style.height = '0px';
-        document.body.appendChild(marqueeDiv);
-        return marqueeDiv;
-    };
-
-    const updateMarqueeDiv = (x1, y1, x2, y2) => {
-        const left = Math.min(x1, x2);
-        const top = Math.min(y1, y2);
-        const width = Math.abs(x2 - x1);
-        const height = Math.abs(y2 - y1);
-        const div = ensureMarqueeDiv();
-        div.style.left = `${left}px`;
-        div.style.top = `${top}px`;
-        div.style.width = `${width}px`;
-        div.style.height = `${height}px`;
-    };
-
-    const stopMarquee = () => {
-        marqueeActive = false;
-        marqueeCandidate = false;
-        marqueeIgnoreGroups = false;
-        marqueeStart = null;
-        if (marqueeDiv && marqueeDiv.parentElement) marqueeDiv.parentElement.removeChild(marqueeDiv);
-        marqueeDiv = null;
-        controls.enabled = marqueePrevControlsEnabled;
-    };
 
     loadedObjectGroup.userData.resetSelection = resetSelectionAndDeselect;
     // Programmatic selection helpers (used by project merge workflow)
@@ -4244,39 +1863,57 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             );
             
             const v = getHoveredVertex(m);
-            if (v) {
-                clickedVertex = v;
-                if (selectionPointsOverlay) {
-                     selectionPointsOverlay.children.forEach(sprite => {
-                         if (!sprite.isSprite) return;
-                         const isTarget = (sprite === clickedVertex);
-                         sprite.material.color.setHex(isTarget ? 0x437FD0 : 0x30333D);
-                     });
+            if (v && v.userData && v.userData.key) {
+                const key = v.userData.key;
+                
+                // Toggle selection logic
+                if (selectedVertexKeys.has(key)) {
+                    selectedVertexKeys.delete(key);
+                } else {
+                    selectedVertexKeys.add(key);
+
+                    if (transformControls.mode === 'translate' && selectedVertexKeys.size === 2) {
+                        const getGizmoState = () => ({
+                            pivotMode, isCustomPivot, pivotOffset,
+                            _gizmoAnchorValid, _gizmoAnchorPosition,
+                            _multiSelectionOriginAnchorValid, _multiSelectionOriginAnchorPosition,
+                            _multiSelectionOriginAnchorInitialValid, _multiSelectionOriginAnchorInitialPosition
+                        });
+                        const setGizmoState = (updates) => {
+                            if (updates.pivotMode !== undefined) pivotMode = updates.pivotMode;
+                            if (updates.isCustomPivot !== undefined) isCustomPivot = updates.isCustomPivot;
+                            if (updates.pivotOffset !== undefined) pivotOffset.copy(updates.pivotOffset);
+                            if (updates._gizmoAnchorValid !== undefined) _gizmoAnchorValid = updates._gizmoAnchorValid;
+                            if (updates._gizmoAnchorPosition !== undefined) _gizmoAnchorPosition.copy(updates._gizmoAnchorPosition);
+                            if (updates._multiSelectionOriginAnchorValid !== undefined) _multiSelectionOriginAnchorValid = updates._multiSelectionOriginAnchorValid;
+                            if (updates._multiSelectionOriginAnchorPosition !== undefined) _multiSelectionOriginAnchorPosition.copy(updates._multiSelectionOriginAnchorPosition);
+                            if (updates._multiSelectionOriginAnchorInitialValid !== undefined) _multiSelectionOriginAnchorInitialValid = updates._multiSelectionOriginAnchorInitialValid;
+                            if (updates._multiSelectionOriginAnchorInitialPosition !== undefined) _multiSelectionOriginAnchorInitialPosition.copy(updates._multiSelectionOriginAnchorInitialPosition);
+                        };
+
+                        processVertexSnap(selectedVertexKeys, {
+                            isVertexMode,
+                            gizmoMode: transformControls.mode,
+                            currentSelection, loadedObjectGroup, selectionHelper,
+                            getGizmoState, setGizmoState,
+                            getGroups, getGroupWorldMatrixWithFallback, getGroupWorldMatrix,
+                            updateHelperPosition, updateSelectionOverlay,
+                            _isMultiSelection, _getSingleSelectedGroupId, SelectionCenter
+                        });
+                    }
                 }
+                
+                Overlay.refreshSelectionPointColors(selectedVertexKeys);
                 mouseDownPos = null; // Prevent object selection/marquee
                 return;
             } 
             // Removed automatic deselection on miss to allow camera controls
         }
 
-        // Ctrl+Drag: marquee selection (start only after the user actually drags)
-        if ((event.ctrlKey || event.metaKey) && !transformControls.dragging) {
-            // NOTE:
-            // We intentionally do NOT raycast against TransformControls here.
-            // The helper contains large/hidden picker meshes, which can cause
-            // intersectObject(...) to always hit and permanently disable marquee.
-            // Instead, we allow marquee to begin as a candidate and cancel it
-            // if TransformControls actually starts dragging.
-
-            marqueeCandidate = true;
-            marqueeIgnoreGroups = !!event.shiftKey;
-            marqueeStart = { x: event.clientX, y: event.clientY };
-            marqueePrevControlsEnabled = controls.enabled;
-            // Prevent OrbitControls from starting a drag (tiny camera nudge) while Ctrl+Drag / Ctrl+Click is intended.
-            controls.enabled = false;
-            mouseDownPos = { x: event.clientX, y: event.clientY };
-            cameraMatrixOnPointerDown.copy(camera.matrixWorld);
-            return;
+        if (dragControls.onPointerDown(event)) {
+             mouseDownPos = { x: event.clientX, y: event.clientY };
+             cameraMatrixOnPointerDown.copy(camera.matrixWorld);
+             return;
         }
 
         mouseDownPos = { x: event.clientX, y: event.clientY };
@@ -4284,131 +1921,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     }, true);
 
     renderer.domElement.addEventListener('pointermove', (event) => {
-        if (!marqueeStart) return;
-
-        // If another interaction takes over (e.g. user grabbed the gizmo), abort marquee.
-        if (transformControls.dragging) {
-            abortMarqueeNoControls();
-            return;
-        }
-
-        if (marqueeCandidate && !marqueeActive) {
-            const dx = event.clientX - marqueeStart.x;
-            const dy = event.clientY - marqueeStart.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            const threshold = 6;
-            if (dist >= threshold) {
-                marqueeActive = true;
-                marqueeCandidate = false;
-                controls.enabled = false;
-                ensureMarqueeDiv();
-            }
-        }
-
-        if (!marqueeActive) return;
-        updateMarqueeDiv(marqueeStart.x, marqueeStart.y, event.clientX, event.clientY);
+        dragControls.onPointerMove(event);
     });
 
     renderer.domElement.addEventListener('pointerup', (event) => {
-        // If TransformControls is handling a drag, marquee should not run.
-        if (marqueeStart && transformControls.dragging) {
-            abortMarqueeNoControls();
+        if (dragControls.onPointerUp(event)) {
             mouseDownPos = null;
             return;
-        }
-
-        if (marqueeActive && marqueeStart) {
-            event.preventDefault();
-
-            const ignoreGroups = marqueeIgnoreGroups;
-
-            const canvasRect = renderer.domElement.getBoundingClientRect();
-            const x1 = marqueeStart.x;
-            const y1 = marqueeStart.y;
-            const x2 = event.clientX;
-            const y2 = event.clientY;
-
-            const left = Math.max(canvasRect.left, Math.min(x1, x2));
-            const right = Math.min(canvasRect.right, Math.max(x1, x2));
-            const top = Math.max(canvasRect.top, Math.min(y1, y2));
-            const bottom = Math.min(canvasRect.bottom, Math.max(y1, y2));
-
-            stopMarquee();
-
-            const minSize = 6;
-            if ((right - left) < minSize || (bottom - top) < minSize) {
-                return;
-            }
-
-            const minX = left - canvasRect.left;
-            const maxX = right - canvasRect.left;
-            const minY = top - canvasRect.top;
-            const maxY = bottom - canvasRect.top;
-
-            const groupIds = ignoreGroups ? null : new Set();
-            const meshToIds = new Map();
-            const tmpMat = _TMP_MAT4_A;
-            const tmpWorld = _TMP_VEC3_A;
-            const tmpNdc = _TMP_VEC3_B;
-
-            const objectToGroup = ignoreGroups ? null : getObjectToGroup();
-
-            loadedObjectGroup.traverse((obj) => {
-                if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
-                if (obj.visible === false) return;
-
-                const instanceCount = getInstanceCount(obj);
-                if (instanceCount <= 0) return;
-
-                for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                    if (!isInstanceValid(obj, instanceId)) continue;
-
-                    getInstanceWorldMatrixForOrigin(obj, instanceId, tmpMat);
-                    const localY = isItemDisplayHatEnabled(obj, instanceId) ? 0.03125 : 0;
-                    tmpWorld.set(0, localY, 0).applyMatrix4(tmpMat);
-
-                    tmpNdc.copy(tmpWorld).project(camera);
-                    if (tmpNdc.z < -1 || tmpNdc.z > 1) continue;
-
-                    const sx = (tmpNdc.x * 0.5 + 0.5) * canvasRect.width;
-                    const sy = (-tmpNdc.y * 0.5 + 0.5) * canvasRect.height;
-
-                    if (sx < minX || sx > maxX || sy < minY || sy > maxY) continue;
-
-                    if (!ignoreGroups && objectToGroup) {
-                        const key = getGroupKey(obj, instanceId);
-                        const immediateGroupId = objectToGroup.get(key);
-                        if (immediateGroupId) {
-                            const chain = getGroupChain(immediateGroupId);
-                            const root = chain && chain.length > 0 ? chain[0] : immediateGroupId;
-                            if (root) groupIds.add(root);
-                            continue;
-                        }
-                    }
-
-                    let set = meshToIds.get(obj);
-                    if (!set) {
-                        set = new Set();
-                        meshToIds.set(obj, set);
-                    }
-                    set.add(instanceId);
-                }
-            });
-
-            if (ignoreGroups) {
-                _replaceSelectionWithObjectsMap(meshToIds, { anchorMode: 'center' });
-            } else {
-                _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'center' });
-            }
-            return;
-        }
-
-        // Ctrl+Click should still work (group bypass) when no marquee actually started.
-        if (marqueeCandidate) {
-            marqueeCandidate = false;
-            marqueeIgnoreGroups = false;
-            marqueeStart = null;
-            controls.enabled = marqueePrevControlsEnabled;
         }
 
         if (!mouseDownPos) return;
@@ -4427,172 +1946,22 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
         mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(mouse, camera);
 
-        // Pick using the same oriented bounding boxes as the selection overlay
-        const picked = pickInstanceByOverlayBox(raycaster, loadedObjectGroup);
-        if (!picked) {
-            if (!event.shiftKey) resetSelectionAndDeselect();
-            return;
-        }
-
-        const object = picked.mesh;
-        const instanceId = picked.instanceId;
-        let idsToSelect = [instanceId];
-
-        // Group selection by itemId for BatchedMesh
-        if (object.isBatchedMesh && object.userData.itemIds) {
-            const targetItemId = object.userData.itemIds.get(instanceId);
-            if (targetItemId !== undefined) {
-                idsToSelect = [];
-                for (const [id, itemId] of object.userData.itemIds) {
-                    if (itemId === targetItemId) idsToSelect.push(id);
-                }
+        Select.handleSelectionClick(raycaster, event, loadedObjectGroup, {
+            onDeselect: resetSelectionAndDeselect,
+            recomputePivotState: _recomputePivotStateForSelection,
+            updateHelperPosition: updateHelperPosition,
+            updateSelectionOverlay: updateSelectionOverlay,
+            pushToVertexQueue: _pushToVertexQueue,
+            hasVertexQueue: () => vertexQueue.length > 0,
+            revertEphemeralPivotUndoIfAny: _revertEphemeralPivotUndoIfAny,
+            detachTransformControls: () => { if (transformControls) transformControls.detach(); },
+            clearGizmoAnchor: _clearGizmoAnchor,
+            setSelectionAnchorMode: (mode) => { _selectionAnchorMode = mode; },
+            resetPivotState: () => { 
+                pivotOffset.set(0, 0, 0); 
+                isCustomPivot = false; 
             }
-        }
-
-        // Check for Group Membership (use first instanceId)
-        const key = getGroupKey(object, idsToSelect[0]);
-        const objectToGroup = getObjectToGroup();
-        const immediateGroupId = objectToGroup.get(key);
-
-        // Modifier clicks:
-        // - Ctrl/Meta+Click: ignore groups, directly select object
-        // - Shift+Click: multi-select/toggle (groups and objects). Still follows normal click behavior
-        //   for grouped objects unless Ctrl/Meta is also held.
-        const bypassGroupSelection = !!(event.ctrlKey || event.metaKey);
-
-        // Determine click target (group vs object)
-        let target = { type: 'object', mesh: object, ids: idsToSelect };
-
-        if (!bypassGroupSelection && immediateGroupId) {
-            const groupChain = getGroupChain(immediateGroupId);
-            let nextGroupIdToSelect = groupChain[0];
-
-            // Drill-down logic:
-            // Find the deepest group in the current chain that is ALREADY selected.
-            // The target will be the child of that group (or the object itself if we reached the bottom).
-            let deepestSelectedIndex = -1;
-            if (currentSelection.groups && currentSelection.groups.size > 0) {
-                for (let i = groupChain.length - 1; i >= 0; i--) {
-                    if (currentSelection.groups.has(groupChain[i])) {
-                        deepestSelectedIndex = i;
-                        break;
-                    }
-                }
-            }
-
-            if (deepestSelectedIndex !== -1) {
-                if (deepestSelectedIndex < groupChain.length - 1) {
-                    nextGroupIdToSelect = groupChain[deepestSelectedIndex + 1];
-                } else {
-                    // We are at the bottom of the group chain, so select the object itself.
-                    nextGroupIdToSelect = null;
-                }
-            }
-
-            if (nextGroupIdToSelect) {
-                target = { type: 'group', id: nextGroupIdToSelect };
-            }
-        }
-
-        // Shift+Click: toggle selection (groups and objects)
-        if (event.shiftKey) {
-            const hadAnyBefore = _hasAnySelection();
-            if (target.type === 'group') {
-                const gid = target.id;
-                if (!gid) return;
-
-                if (!currentSelection.groups) currentSelection.groups = new Set();
-                if (currentSelection.groups.has(gid)) {
-                    currentSelection.groups.delete(gid);
-                    if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === gid) {
-                        currentSelection.primary = null;
-                    }
-                } else {
-                    currentSelection.groups.add(gid);
-
-                    // Deselect ancestors to prevent double selection (parent + child)
-                    let ancestorWasPrimary = false;
-                    const chain = getGroupChain(gid);
-                    for (const ancestorId of chain) {
-                        if (ancestorId !== gid && currentSelection.groups.has(ancestorId)) {
-                            currentSelection.groups.delete(ancestorId);
-                            if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === ancestorId) {
-                                ancestorWasPrimary = true;
-                            }
-                        }
-                    }
-
-                    // If an ancestor (which was primary) was removed during drill-down, 
-                    // or if no primary exists yet, set the current group as primary.
-                    if (!hadAnyBefore || !currentSelection.primary || ancestorWasPrimary) {
-                        currentSelection.primary = { type: 'group', id: gid };
-                        if (ancestorWasPrimary) _clearGizmoAnchor();
-                    }
-                }
-
-                if (!_hasAnySelection()) resetSelectionAndDeselect();
-                else _commitSelectionChange();
-                return;
-            }
-
-            // object toggle
-            const mesh = target.mesh;
-            const ids = target.ids || [];
-            if (!mesh || ids.length === 0) return;
-
-            if (!currentSelection.objects) currentSelection.objects = new Map();
-            let set = currentSelection.objects.get(mesh);
-            if (!set) {
-                set = new Set();
-                currentSelection.objects.set(mesh, set);
-            }
-
-            const allSelected = ids.every(id => set.has(id));
-            if (allSelected) {
-                ids.forEach(id => set.delete(id));
-            } else {
-                const objectToGroup = getObjectToGroup();
-                let ancestorWasPrimary = false;
-
-                ids.forEach(id => {
-                    set.add(id);
-                    
-                    // Deselect ancestors (groups) that contain this object
-                    const key = getGroupKey(mesh, id);
-                    const immediateGroupId = objectToGroup.get(key);
-                    if (immediateGroupId) {
-                        const chain = getGroupChain(immediateGroupId);
-                        for (const ancestorId of chain) {
-                            if (currentSelection.groups.has(ancestorId)) {
-                                currentSelection.groups.delete(ancestorId);
-                                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === ancestorId) {
-                                    ancestorWasPrimary = true;
-                                }
-                            }
-                        }
-                    }
-                });
-
-                // If an ancestor (which was primary) was removed during drill-down,
-                // or if no primary exists yet, set the current object as primary.
-                if (!hadAnyBefore || !currentSelection.primary || ancestorWasPrimary) {
-                    currentSelection.primary = { type: 'object', mesh, instanceId: ids[0] };
-                    if (ancestorWasPrimary) _clearGizmoAnchor();
-                }
-            }
-            if (!_hasAnySelection()) resetSelectionAndDeselect();
-            else _commitSelectionChange();
-            return;
-        }
-
-        // Normal click: replace selection
-        if (target.type === 'group') {
-            applySelection(null, [], target.id);
-            return;
-        }
-
-        // object replace
-        applySelection(target.mesh, target.ids);
+        });
     });
 
     return {
