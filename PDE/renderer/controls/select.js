@@ -426,8 +426,10 @@ export function handleSelectionClick(
                 }
             } else {
                 currentSelection.groups.add(gid);
-                // Make freshly selected item primary
-                currentSelection.primary = { type: 'group', id: gid };
+                // Make freshly selected item primary ONLY if we don't have one (preserve anchor)
+                if (!currentSelection.primary) {
+                    currentSelection.primary = { type: 'group', id: gid };
+                }
             }
         } else {
             // Object toggle
@@ -455,7 +457,9 @@ export function handleSelectionClick(
             } else {
                 // Select these IDs
                 for (const id of target.ids) existingSet.add(id);
-                currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: firstId };
+                if (!currentSelection.primary) {
+                    currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: firstId };
+                }
             }
         }
     } else {

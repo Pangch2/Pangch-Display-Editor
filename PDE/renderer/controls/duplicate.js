@@ -549,7 +549,7 @@ function cloneInstance(loadedObjectGroup, mesh, instanceId, targetGroupId, ctx, 
             break;
         } catch (e) {
             const msg = e ? (e.message || String(e)) : '';
-            if (ctx && attempts < 3 && msg && (msg.includes('Reserved space request exceeds') || msg.includes('maximum buffer size'))) {
+            if (ctx && attempts < 100 && msg && (msg.includes('Reserved space request exceeds') || msg.includes('maximum buffer size'))) {
                 const key = _batchPoolKey(material);
                 if (ctx.fullBatches) ctx.fullBatches.add(targetBatch);
                 if (ctx.batchPool && ctx.batchPool.get(key) === targetBatch) ctx.batchPool.delete(key);
