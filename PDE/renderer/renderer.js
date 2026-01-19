@@ -1,6 +1,17 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { initGizmo } from './controls/gizmo.js';
-import * as THREE from 'three/webgpu';
+import {
+    Group,
+    BufferGeometry,
+    LineBasicMaterial,
+    Line,
+    Vector3,
+    Scene,
+    Color,
+    PerspectiveCamera,
+    WebGPURenderer,
+    GridHelper
+} from 'three/webgpu';
 import { initAssets } from './asset-manager.js';
 import { loadedObjectGroup } from './load-project/upload-pbde.ts';
 import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
@@ -47,43 +58,43 @@ async function startApp() {
 
 // XYZ 축을 양/음 방향으로 모두 표시하는 헬퍼
 function createFullAxesHelper(size = 50) {
-    const axesGroup = new THREE.Group();
+    const axesGroup = new Group();
 
     const createAxisLine = (start, end, color) => {
-        const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-        const material = new THREE.LineBasicMaterial({ color: color });
-        return new THREE.Line(geometry, material);
+        const geometry = new BufferGeometry().setFromPoints([start, end]);
+        const material = new LineBasicMaterial({ color: color });
+        return new Line(geometry, material);
     };
 
     // === X축 (빨강)
     axesGroup.add(createAxisLine(
-        new THREE.Vector3(-size / 2, 0, 0),
-        new THREE.Vector3(size / 2, 0, 0),
+        new Vector3(-size / 2, 0, 0),
+        new Vector3(size / 2, 0, 0),
         0xEF3751
     ));
 
     // === Y축 (초록)
     axesGroup.add(createAxisLine(
-        new THREE.Vector3(0, -size / 2, 0),
-        new THREE.Vector3(0, size / 2, 0),
+        new Vector3(0, -size / 2, 0),
+        new Vector3(0, size / 2, 0),
         0x6FA21C
     ));
 
     // === Z축 (파랑)
     axesGroup.add(createAxisLine(
-        new THREE.Vector3(0, 0, -size / 2),
-        new THREE.Vector3(0, 0, size / 2),
+        new Vector3(0, 0, -size / 2),
+        new Vector3(0, 0, size / 2),
         0x437FD0
     ));
     return axesGroup;
 }
 
 // 'Z>' 모양을 XZ 평면(바닥) 위에 그리는 헬퍼
-function createZGreaterSymbol(position = new THREE.Vector3(0.5, 0, 0.5), size = 0.5, color = 0x515151) {
-    const group = new THREE.Group();
+function createZGreaterSymbol(position = new Vector3(0.5, 0, 0.5), size = 0.5, color = 0x515151) {
+    const group = new Group();
     group.position.copy(position);
 
-    const material = new THREE.LineBasicMaterial({ color });
+    const material = new LineBasicMaterial({ color });
 
     const s = size;
     const half = s / 2;
@@ -94,11 +105,11 @@ function createZGreaterSymbol(position = new THREE.Vector3(0.5, 0, 0.5), size = 
     const lines = [];
 
     const addLine = (ax, az, bx, bz) => {
-        const geometry = new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(ax, 0, az),
-            new THREE.Vector3(bx, 0, bz)
+        const geometry = new BufferGeometry().setFromPoints([
+            new Vector3(ax, 0, az),
+            new Vector3(bx, 0, bz)
         ]);
-        const line = new THREE.Line(geometry, material);
+        const line = new Line(geometry, material);
         group.add(line);
         lines.push(line);
     };
@@ -131,13 +142,13 @@ function createZGreaterSymbol(position = new THREE.Vector3(0.5, 0, 0.5), size = 
 
 async function initScene() {
     // 1. 장면(Scene)
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1F1F1F); // 어두운 회색 배경
+    scene = new Scene();
+    scene.background = new Color(0x1F1F1F); // 어두운 회색 배경
     scene.add(loadedObjectGroup); // 로드된 객체 그룹을 씬에 추가
 
     // 2. 카메라(Camera)
     const mainContent = document.getElementById('main-content');
-    camera = new THREE.PerspectiveCamera(
+    camera = new PerspectiveCamera(
         80,
         mainContent.clientWidth / mainContent.clientHeight,
         0.05,
@@ -147,7 +158,7 @@ async function initScene() {
     camera.lookAt(0, 0, 0);
 
     // 3. 렌더러(Renderer)
-    renderer = new THREE.WebGPURenderer({
+    renderer = new WebGPURenderer({
         canvas: document.querySelector('#renderCanvas'),
         logarithmicDepthBuffer: true
     });
@@ -171,11 +182,11 @@ async function initScene() {
     axes.renderOrder = 1;
     scene.add(axes);
 
-    const detailGrid = new THREE.GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
+    const detailGrid = new GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
     detailGrid.renderOrder = -2; 
     scene.add(detailGrid);
 
-    const Grid = new THREE.GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
+    const Grid = new GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
     Grid.renderOrder = -1; 
     scene.add(Grid);
     
@@ -186,7 +197,7 @@ async function initScene() {
         materials.forEach(m => { m.depthWrite = false; });
     });
 
-    const zSymbol = createZGreaterSymbol(new THREE.Vector3(0.5, 0, -0.25), 0.125, 0x515151);
+    const zSymbol = createZGreaterSymbol(new Vector3(0.5, 0, -0.25), 0.125, 0x515151);
     zSymbol.renderOrder = 10;
     scene.add(zSymbol);
 }
