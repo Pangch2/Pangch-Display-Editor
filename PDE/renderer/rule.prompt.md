@@ -40,6 +40,7 @@ renderer/
 │   ├── duplicate.js - 오브젝트 복제 관련 로직
 │   ├── group.js - 그룹 관련 로직 함수 모음집 (getGroups, createGroupStructure, cloneGroupStructure 등)
 │   ├── gizmo.js - gizmo 메인 컨트롤러
+│   ├── gizmo-setup.js - gizmo 초기화 및 시각적 설정 분리
 │   ├── overlay.js - 오버레이 및 선택 관련 함수 모음집
 │   ├── select.js - 오브젝트 선택 및 선택 상태 관리 로직
 │   ├── shear-remove.js - Shear(기울기) 제거 및 정규화 로직
