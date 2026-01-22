@@ -1838,7 +1838,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             getGizmoState, setGizmoState,
                             getGroups, getGroupWorldMatrixWithFallback, getGroupWorldMatrix,
                             updateHelperPosition, updateSelectionOverlay,
-                            _isMultiSelection, _getSingleSelectedGroupId, SelectionCenter
+                            _isMultiSelection, _getSingleSelectedGroupId, SelectionCenter,
+                            vertexQueue
                         });
                     }
                 }

@@ -28,7 +28,8 @@ export function processVertexSnap(
         updateSelectionOverlay,
         _isMultiSelection,
         _getSingleSelectedGroupId,
-        SelectionCenter
+        SelectionCenter,
+        vertexQueue
     }
 ) {
     if (!isVertexMode || gizmoMode !== 'translate') return false;
@@ -47,6 +48,19 @@ export function processVertexSnap(
     sprite2 = foundSprites[k2];
 
     const state = getGizmoState();
+    
+    // Helper to update gizmoLocalPosition in vertexQueue
+    const updateQueueItemPivot = (sourceItem, newPivot) => {
+        if (!vertexQueue) return;
+        const target = vertexQueue.find(item => {
+            if (item.type !== sourceItem.type) return false;
+            if (item.type === 'group') return item.id === sourceItem.id;
+            return item.mesh === sourceItem.mesh && item.instanceId === sourceItem.instanceId;
+        });
+        if (target) {
+            target.gizmoLocalPosition = newPivot;
+        }
+    };
 
     // Check for Gizmo Snap or Object Snap based on selection order
     // sprite1 = First Clicked, sprite2 = Second Clicked
@@ -77,10 +91,28 @@ export function processVertexSnap(
                 if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
                     if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
                     mesh.userData.customPivots.set(instanceId, localPivot);
+
+                    // Propagate to peers if composite object
+                    if (mesh.userData.itemIds) {
+                        const myItemId = mesh.userData.itemIds.get(instanceId);
+                        if (myItemId !== undefined) {
+                            for (const [peerId, peerItemId] of mesh.userData.itemIds) {
+                                if (peerItemId === myItemId && peerId !== instanceId) {
+                                     // Re-calculate local pivot for peer (World Space Pivot -> Peer Local Space)
+                                     mesh.getMatrixAt(peerId, _TMP_MAT4_B);
+                                     _TMP_MAT4_B.premultiply(mesh.matrixWorld);
+                                     _TMP_MAT4_B.invert();
+                                     const peerPivot = targetPos.clone().applyMatrix4(_TMP_MAT4_B);
+                                     mesh.userData.customPivots.set(peerId, peerPivot);
+                                }
+                            }
+                        }
+                    }
                 } else {
                     mesh.userData.customPivot = localPivot;
                 }
                 mesh.userData.isCustomPivot = true;
+                updateQueueItemPivot(src, localPivot);
                 console.log(`Cloned Gizmo: Custom pivot updated for object ${mesh.uuid} instance ${instanceId}`);
             } else if (src.type === 'group') {
                 const groups = getGroups();
@@ -90,6 +122,7 @@ export function processVertexSnap(
                      const inv = groupMatrix.clone().invert();
                      group.pivot = targetPos.clone().applyMatrix4(inv);
                      group.isCustomPivot = true;
+                     updateQueueItemPivot(src, group.pivot);
                      console.log(`Cloned Gizmo: Custom pivot updated for group ${src.id}`);
                 }
             }
@@ -146,51 +179,66 @@ export function processVertexSnap(
                         _multiSelectionOriginAnchorInitialValid: true
                     });
                 }
-                
-                // Also update primary if possible (best effort persistence)
-                if (currentSelection.primary && currentSelection.primary.type === 'group') {
-                        const groups = getGroups();
-                        const group = groups.get(currentSelection.primary.id);
-                        if (group) {
-                            const groupMatrix = getGroupWorldMatrix(group, _TMP_MAT4_A);
-                            const inv = groupMatrix.clone().invert();
-                            group.pivot = targetPos.clone().applyMatrix4(inv);
-                            group.isCustomPivot = true;
-                        }
-                }
-            } else {
-                // Single selection persistence
-                const singleGroupId = _getSingleSelectedGroupId();
-                if (singleGroupId) {
-                    const groups = getGroups();
-                    const group = groups.get(singleGroupId);
-                    if (group) {
-                            const groupMatrix = getGroupWorldMatrix(group, _TMP_MAT4_A);
-                            const inv = groupMatrix.clone().invert();
-                            group.pivot = targetPos.clone().applyMatrix4(inv);
-                            group.isCustomPivot = true;
-                    }
-                } else if (currentSelection.objects && currentSelection.objects.size > 0) {
-                    for (const [mesh, ids] of currentSelection.objects) {
-                        if (!mesh || !ids) continue;
-                        // Compute local pivot for the mesh
-                        // Ideally we want the pivot to be at the same world location for all selected objects
-                        // So we compute local pivot per object.
-                        for (const id of ids) {
-                            const instanceMatrix = _TMP_MAT4_A;
-                            mesh.getMatrixAt(id, instanceMatrix);
-                            const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
-                            const inv = worldMatrix.clone().invert();
-                            const localPivot = targetPos.clone().applyMatrix4(inv);
+            }
+
+            // Always persist to Groups (Single or Multi)
+            if (currentSelection.groups && currentSelection.groups.size > 0) {
+                 const groups = getGroups();
+                 for (const groupId of currentSelection.groups) {
+                     const group = groups.get(groupId);
+                     if (group) {
+                         const groupMatrix = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
+                         const inv = groupMatrix.clone().invert();
+                         group.pivot = targetPos.clone().applyMatrix4(inv);
+                         group.isCustomPivot = true;
+                         updateQueueItemPivot({ type: 'group', id: groupId }, group.pivot);
+                     }
+                 }
+            }
+
+            // Always persist to Objects (Single or Multi)
+            if (currentSelection.objects && currentSelection.objects.size > 0) {
+                for (const [mesh, ids] of currentSelection.objects) {
+                    if (!mesh || !ids) continue;
+                    
+                    for (const id of ids) {
+                        const instanceMatrix = _TMP_MAT4_A;
+                        mesh.getMatrixAt(id, instanceMatrix);
+                        const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
+                        const inv = worldMatrix.clone().invert();
+                        const localPivot = targetPos.clone().applyMatrix4(inv);
+                        
+                        if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                            if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
+                            mesh.userData.customPivots.set(id, localPivot);
                             
-                            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
-                                mesh.userData.customPivots.set(id, localPivot);
-                            } else {
-                                mesh.userData.customPivot = localPivot;
+                             // Propagate to peers if composite object
+                            if (mesh.userData.itemIds) {
+                                let myItemId = mesh.userData.itemIds.get(id);
+                                if (myItemId === undefined) {
+                                    const key = (typeof id === 'number') ? String(id) : Number(id);
+                                    myItemId = mesh.userData.itemIds.get(key);
+                                }
+                                
+                                if (myItemId !== undefined) {
+                                    for (const [peerKey, peerItemId] of mesh.userData.itemIds) {
+                                        const peerId = Number(peerKey);
+                                        const currentId = Number(id);
+                                        if (peerItemId === myItemId && peerId !== currentId) {
+                                             mesh.getMatrixAt(peerId, _TMP_MAT4_B);
+                                             _TMP_MAT4_B.premultiply(mesh.matrixWorld);
+                                             _TMP_MAT4_B.invert();
+                                             const peerPivot = targetPos.clone().applyMatrix4(_TMP_MAT4_B);
+                                             mesh.userData.customPivots.set(peerId, peerPivot);
+                                        }
+                                    }
+                                }
                             }
+                        } else {
+                            mesh.userData.customPivot = localPivot;
                         }
                         mesh.userData.isCustomPivot = true;
+                        updateQueueItemPivot({ type: 'object', mesh, instanceId: id }, localPivot);
                     }
                 }
             }
