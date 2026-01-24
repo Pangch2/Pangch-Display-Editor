@@ -47,6 +47,36 @@ const _overlayUnitGeo = (() => {
     return geo;
 })();
 
+const _axisUnitGeo = (() => {
+    const geo = new THREE.BufferGeometry();
+    const verts = [];
+    const colors = [];
+    const addLine = (v, colorHex) => {
+        verts.push(0, 0, 0);
+        verts.push(v.x, v.y, v.z);
+        const c = new THREE.Color(colorHex);
+        colors.push(c.r, c.g, c.b);
+        colors.push(c.r, c.g, c.b);
+    };
+    addLine(new THREE.Vector3(0.3, 0, 0), 0xEF3751);
+    addLine(new THREE.Vector3(-0.3, 0, 0), 0xEF3751);
+    addLine(new THREE.Vector3(0, 0.3, 0), 0x6FA21C);
+    addLine(new THREE.Vector3(0, -0.3, 0), 0x6FA21C);
+    addLine(new THREE.Vector3(0, 0, 0.3), 0x437FD0);
+    addLine(new THREE.Vector3(0, 0, -0.3), 0x437FD0);
+    
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3));
+    return geo;
+})();
+
+const _axisMat = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true
+});
+
 const _unitCubeCorners = [
     new THREE.Vector3(-0.5, -0.5, -0.5),
     new THREE.Vector3( 0.5, -0.5, -0.5),
@@ -605,20 +635,24 @@ export function updateSelectionOverlay(scene, renderer, currentSelection, vertex
             selectionPointsOverlay.add(centerSprite);
 
             // Shared setup for axis lines (Queue + Main)
-            const axisLength = 0.1;
-            const axesVerts = [];
-            const axesColors = [];
-            const dirs = [
-                { v: new THREE.Vector3(1, 0, 0), c: 0xEF3751 },  // +X
-                { v: new THREE.Vector3(-1, 0, 0), c: 0xEF3751 }, // -X
-                { v: new THREE.Vector3(0, 1, 0), c: 0x6FA21C },  // +Y
-                { v: new THREE.Vector3(0, -1, 0), c: 0x6FA21C }, // -Y
-                { v: new THREE.Vector3(0, 0, 1), c: 0x437FD0 },  // +Z
-                { v: new THREE.Vector3(0, 0, -1), c: 0x437FD0 }  // -Z
-            ];
-            const p1 = new THREE.Vector3();
-            const p2 = new THREE.Vector3();
-            const col = new THREE.Color();
+            const createAxisHelper = (pos, quat) => {
+                const axes = new THREE.LineSegments(_axisUnitGeo, _axisMat);
+                axes.position.copy(pos);
+                axes.quaternion.copy(quat);
+                axes.renderOrder = 100;
+                axes.matrixAutoUpdate = true;
+                
+                axes.onBeforeRender = function(renderer, scene, camera) {
+                    const worldPos = _TMP_VEC3_A;
+                    this.getWorldPosition(worldPos);
+                    const distance = worldPos.distanceTo(camera.position);
+                    // Fixed screen size factor (approx matching original 0.1 at close range)
+                    const scale = distance * 0.15; 
+                    this.scale.set(scale, scale, scale);
+                    this.updateMatrix();
+                };
+                return axes;
+            };
 
             // 1.5 Queue Gizmo Points
             for (const item of queueItemsToRender) {
@@ -640,48 +674,15 @@ export function updateSelectionOverlay(scene, renderer, currentSelection, vertex
 
                     // Add axis lines for queue item
                     if (item.gizmoQuaternion) {
-                        for (const d of dirs) {
-                            p1.copy(item.gizmoPosition);
-                            p2.copy(d.v).applyQuaternion(item.gizmoQuaternion).multiplyScalar(axisLength).add(item.gizmoPosition);
-                            
-                            axesVerts.push(p1.x, p1.y, p1.z);
-                            axesVerts.push(p2.x, p2.y, p2.z);
-                            
-                            col.setHex(d.c);
-                            axesColors.push(col.r, col.g, col.b);
-                            axesColors.push(col.r, col.g, col.b);
-                        }
+                        const axis = createAxisHelper(item.gizmoPosition, item.gizmoQuaternion);
+                        selectionPointsOverlay.add(axis);
                     }
                 }
             }
 
             // 2. Gizmo Axis Lines (Main)
-            for (const d of dirs) {
-                p1.copy(gizmoPos);
-                p2.copy(d.v).applyQuaternion(gizmoQuat).multiplyScalar(axisLength).add(gizmoPos);
-                
-                axesVerts.push(p1.x, p1.y, p1.z);
-                axesVerts.push(p2.x, p2.y, p2.z);
-                
-                col.setHex(d.c);
-                axesColors.push(col.r, col.g, col.b);
-                axesColors.push(col.r, col.g, col.b);
-            }
-
-            const axesGeo = new THREE.BufferGeometry();
-            axesGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(axesVerts), 3));
-            axesGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(axesColors), 3));
-
-            const axesMat = new THREE.LineBasicMaterial({
-                vertexColors: true,
-                depthTest: false,
-                depthWrite: false,
-                transparent: true
-            });
-
-            const axesLines = new THREE.LineSegments(axesGeo, axesMat);
-            axesLines.renderOrder = 100;
-            selectionPointsOverlay.add(axesLines);
+            const mainAxis = createAxisHelper(gizmoPos, gizmoQuat);
+            selectionPointsOverlay.add(mainAxis);
         }
         
         // Clean up base material as we cloned it for everyone
