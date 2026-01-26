@@ -346,21 +346,7 @@ function _getSelectedObjectCount(currentSelection) {
     if (currentSelection.objects && currentSelection.objects.size > 0) {
         for (const [mesh, ids] of currentSelection.objects) {
             if (!ids || ids.size === 0) continue;
-            
-            if (mesh.isBatchedMesh && mesh.userData && mesh.userData.itemIds) {
-                const uniqueItems = new Set();
-                for (const id of ids) {
-                    const itemId = mesh.userData.itemIds.get(id);
-                    if (itemId !== undefined) {
-                        uniqueItems.add(itemId);
-                    } else {
-                        uniqueItems.add(`inst:${id}`);
-                    }
-                }
-                count += uniqueItems.size;
-            } else {
-                count += ids.size;
-            }
+            count += ids.size;
         }
     }
     return count;
@@ -376,7 +362,7 @@ export function getSelectionPointsOverlay() {
     return selectionPointsOverlay;
 }
 
-export function updateSelectionOverlay(scene, renderer, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys) {
+export function updateSelectionOverlay(scene, renderer, camera, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys) {
     // Preserve selection logic adjusted for multi-vertex
 
     if (selectionOverlay) {
@@ -642,6 +628,14 @@ export function updateSelectionOverlay(scene, renderer, currentSelection, vertex
                 axes.renderOrder = 100;
                 axes.matrixAutoUpdate = true;
                 
+                // Initial scale to prevent "pop"
+                if (camera) {
+                    const distance = pos.distanceTo(camera.position);
+                    const initialScale = distance * 0.15;
+                    axes.scale.set(initialScale, initialScale, initialScale);
+                    axes.updateMatrix();
+                }
+
                 axes.onBeforeRender = function(renderer, scene, camera) {
                     const worldPos = _TMP_VEC3_A;
                     this.getWorldPosition(worldPos);

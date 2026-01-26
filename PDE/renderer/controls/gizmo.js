@@ -446,7 +446,7 @@ function calculateAvgOrigin() {
 }
 
 function updateSelectionOverlay() {
-    Overlay.updateSelectionOverlay(scene, renderer, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys);
+    Overlay.updateSelectionOverlay(scene, renderer, camera, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys);
 }
 
 function _updateMultiSelectionOverlayDuringDrag() {
@@ -1431,17 +1431,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             
             let totalCount = 0;
             for (const [mesh, ids] of all) {
-                if (mesh.isBatchedMesh && mesh.userData.itemIds) {
-                    const uniqueItems = new Set();
-                    for (const id of ids) {
-                        const itemId = mesh.userData.itemIds.get(id);
-                        if (itemId !== undefined) uniqueItems.add(itemId);
-                        else uniqueItems.add(`inst:${id}`);
-                    }
-                    totalCount += uniqueItems.size;
-                } else {
-                    totalCount += ids.size;
-                }
+                totalCount += ids.size;
             }
 
             const mode = (totalCount > 1) ? 'center' : 'default';
@@ -1488,17 +1478,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
 
             let objectCount = 0;
             for (const [mesh, ids] of meshToIds) {
-                if (mesh.isBatchedMesh && mesh.userData.itemIds) {
-                    const uniqueItems = new Set();
-                    for (const id of ids) {
-                        const itemId = mesh.userData.itemIds.get(id);
-                        if (itemId !== undefined) uniqueItems.add(itemId);
-                        else uniqueItems.add(`inst:${id}`);
-                    }
-                    objectCount += uniqueItems.size;
-                } else {
-                    objectCount += ids.size;
-                }
+                objectCount += ids.size;
             }
 
             const totalCount = groupIds.size + objectCount;

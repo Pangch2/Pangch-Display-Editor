@@ -22,8 +22,7 @@ function createDuplicationContext() {
         tmpSourceWorld: new THREE.Matrix4(),
         tmpTargetLocal: new THREE.Matrix4(),
         tmpInv: new THREE.Matrix4(),
-        tmpColor: new THREE.Color(),
-        itemIdMap: new Map() // Old ItemId -> New ItemId
+        tmpColor: new THREE.Color()
     };
 }
 
@@ -423,7 +422,6 @@ function getOrCreateWritableBatch(loadedObjectGroup, targetGroupId, material, ge
     batch.userData.displayTypes = new Map();
     batch.userData.geometryBounds = new Map();
     batch.userData.instanceGeometryIds = [];
-    batch.userData.itemIds = new Map();
     batch.userData.localMatrices = new Map();
     batch.userData.originalGeometries = new Map();
     batch.userData.customPivots = new Map();
@@ -627,25 +625,6 @@ function cloneInstance(loadedObjectGroup, mesh, instanceId, targetGroupId, ctx, 
     if (displayType) {
         if (!targetBatch.userData.displayTypes) targetBatch.userData.displayTypes = new Map();
         targetBatch.userData.displayTypes.set(newInstanceId, displayType);
-    }
-    
-    // Item IDs
-    if (mesh.userData.itemIds && mesh.userData.itemIds.has(instanceId)) {
-        const oldItemId = mesh.userData.itemIds.get(instanceId);
-        let newItemId;
-        
-        if (ctx && ctx.itemIdMap) {
-            if (ctx.itemIdMap.has(oldItemId)) {
-                newItemId = ctx.itemIdMap.get(oldItemId);
-            } else {
-                newItemId = THREE.MathUtils.generateUUID();
-                ctx.itemIdMap.set(oldItemId, newItemId);
-            }
-        } else {
-            newItemId = THREE.MathUtils.generateUUID();
-        }
-
-        targetBatch.userData.itemIds.set(newInstanceId, newItemId);
     }
     
     // Has Hat (Player Head)

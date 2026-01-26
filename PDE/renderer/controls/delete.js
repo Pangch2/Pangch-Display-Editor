@@ -29,9 +29,6 @@ function _deleteBatchedMeshInstances(mesh, instanceIds) {
             if (mesh.userData.displayTypes instanceof Map) {
                 mesh.userData.displayTypes.delete(instanceId);
             }
-            if (mesh.userData.itemIds instanceof Map) {
-                mesh.userData.itemIds.delete(instanceId);
-            }
             if (mesh.userData.customPivots instanceof Map) {
                 mesh.userData.customPivots.delete(instanceId);
             }

@@ -359,17 +359,6 @@ export function handleSelectionClick(
     const instanceId = picked.instanceId;
     let idsToSelect = [instanceId];
 
-    // 2. BatchedMesh item ID resolution
-    if (object.isBatchedMesh && object.userData.itemIds) {
-        const targetItemId = object.userData.itemIds.get(instanceId);
-        if (targetItemId !== undefined) {
-            idsToSelect = [];
-            for (const [id, itemId] of object.userData.itemIds) {
-                if (itemId === targetItemId) idsToSelect.push(id);
-            }
-        }
-    }
-
     // 3. Group selection hierarchy
     const key = GroupUtils.getGroupKey(object, idsToSelect[0]);
     const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);

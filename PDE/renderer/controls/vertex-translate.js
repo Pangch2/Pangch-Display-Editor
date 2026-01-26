@@ -34,6 +34,147 @@ export function processVertexSnap(
 ) {
     if (!isVertexMode || gizmoMode !== 'translate') return false;
 
+    // Helper for swapping selection (A -> Select, B -> Queue)
+    const performSelectionSwap = (src, targetSrc) => {
+        if (!targetSrc) return;
+
+        // 1. Select Source (A) if provided
+        if (src) {
+             currentSelection.groups.clear();
+             currentSelection.objects.clear();
+             currentSelection.primary = null;
+
+             if (src.type === 'group') {
+                 currentSelection.groups.add(src.id);
+                 currentSelection.primary = { type: 'group', id: src.id };
+             } else {
+                 const { mesh, instanceId } = src;
+                 const ids = new Set();
+                 ids.add(instanceId);
+
+                 currentSelection.objects.set(mesh, ids);
+                 currentSelection.primary = { type: 'object', mesh, instanceId };
+             }
+
+             // Recompute Pivot State for 'src'
+             let pivotWorld = null;
+
+             if (src.type === 'object') {
+                 const { mesh, instanceId } = src;
+                 
+                 const getWorldPivot = (id) => {
+                     let local = null;
+                     if (mesh.userData.customPivots) {
+                         local = mesh.userData.customPivots.get(id);
+                         if (!local) {
+                             const k = (typeof id === 'number') ? String(id) : Number(id);
+                             local = mesh.userData.customPivots.get(k);
+                         }
+                     }
+                     
+                     if (local) {
+                         const m = _TMP_MAT4_A;
+                         if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                             mesh.getMatrixAt(id, m);
+                         } else {
+                             m.copy(mesh.matrix);
+                         }
+                         m.premultiply(mesh.matrixWorld);
+                         return local.clone().applyMatrix4(m);
+                     }
+                     return null;
+                 };
+
+                 if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                     pivotWorld = getWorldPivot(instanceId);
+                 } else if (mesh.userData.customPivot) {
+                     pivotWorld = mesh.userData.customPivot.clone().applyMatrix4(mesh.matrixWorld);
+                 }
+                 
+             } else if (src.type === 'group') {
+                 const groups = getGroups();
+                 const group = groups.get(src.id);
+                 if (group && group.isCustomPivot && group.pivot) {
+                     const gMat = getGroupWorldMatrixWithFallback(src.id, _TMP_MAT4_A);
+                     pivotWorld = group.pivot.clone().applyMatrix4(gMat);
+                 }
+             }
+
+             if (pivotWorld) {
+                 const origin = SelectionCenter('origin', false, _ZERO_VEC3);
+                 const offset = new THREE.Vector3().subVectors(pivotWorld, origin);
+                 
+                 setGizmoState({
+                     isCustomPivot: true,
+                     pivotOffset: offset
+                 });
+             } else {
+                 setGizmoState({
+                     isCustomPivot: false,
+                     pivotOffset: new THREE.Vector3(0, 0, 0)
+                 });
+             }
+
+             updateHelperPosition();
+        }
+
+        // 2. Queue Target (B)
+        let targetLocalPivot = new THREE.Vector3(0, 0, 0); 
+        let hasCustomPivot = false;
+        
+        if (targetSrc.type === 'object') {
+            const { mesh, instanceId } = targetSrc;
+            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                 let pivot = null;
+                 if (mesh.userData.customPivots) {
+                     pivot = mesh.userData.customPivots.get(instanceId);
+                     if (!pivot) {
+                         const key = (typeof instanceId === 'number') ? String(instanceId) : Number(instanceId);
+                         pivot = mesh.userData.customPivots.get(key);
+                     }
+                 }
+                 if (pivot) {
+                     targetLocalPivot.copy(pivot);
+                     hasCustomPivot = true;
+                 }
+            } else if (mesh.userData.customPivot) {
+                 targetLocalPivot.copy(mesh.userData.customPivot);
+                 hasCustomPivot = true;
+            }
+        } else if (targetSrc.type === 'group') {
+            const groups = getGroups();
+            const group = groups.get(targetSrc.id);
+            if (group && group.isCustomPivot && group.pivot) {
+                 targetLocalPivot.copy(group.pivot);
+                 hasCustomPivot = true;
+            }
+        }
+
+        const state = getGizmoState();
+        if (!hasCustomPivot && state.pivotMode === 'center') {
+            let localBox = null;
+            if (targetSrc.type === 'object') {
+                localBox = Overlay.getInstanceLocalBox(targetSrc.mesh, targetSrc.instanceId);
+            } else if (targetSrc.type === 'group') {
+                 localBox = Overlay.getGroupLocalBoundingBox(targetSrc.id);
+            }
+            if (localBox && !localBox.isEmpty()) {
+                localBox.getCenter(targetLocalPivot);
+            }
+        }
+
+        vertexQueue.push({
+            type: targetSrc.type,
+            id: targetSrc.id,
+            mesh: targetSrc.mesh,
+            instanceId: targetSrc.instanceId,
+            gizmoLocalPosition: targetLocalPivot,
+            gizmoLocalQuaternion: new THREE.Quaternion() 
+        });
+
+        while (vertexQueue.length > 1) vertexQueue.shift();
+    };
+
     const keys = Array.from(selectedVertexKeys);
     if (keys.length !== 2) return false;
 
@@ -91,23 +232,6 @@ export function processVertexSnap(
                 if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
                     if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
                     mesh.userData.customPivots.set(instanceId, localPivot);
-
-                    // Propagate to peers if composite object
-                    if (mesh.userData.itemIds) {
-                        const myItemId = mesh.userData.itemIds.get(instanceId);
-                        if (myItemId !== undefined) {
-                            for (const [peerId, peerItemId] of mesh.userData.itemIds) {
-                                if (peerItemId === myItemId && peerId !== instanceId) {
-                                     // Re-calculate local pivot for peer (World Space Pivot -> Peer Local Space)
-                                     mesh.getMatrixAt(peerId, _TMP_MAT4_B);
-                                     _TMP_MAT4_B.premultiply(mesh.matrixWorld);
-                                     _TMP_MAT4_B.invert();
-                                     const peerPivot = targetPos.clone().applyMatrix4(_TMP_MAT4_B);
-                                     mesh.userData.customPivots.set(peerId, peerPivot);
-                                }
-                            }
-                        }
-                    }
                 } else {
                     mesh.userData.customPivot = localPivot;
                 }
@@ -127,6 +251,8 @@ export function processVertexSnap(
                 }
             }
             
+            performSelectionSwap(sprite1.userData.source, sprite2.userData.source);
+
             selectedVertexKeys.clear();
             updateHelperPosition();
             updateSelectionOverlay();
@@ -211,29 +337,6 @@ export function processVertexSnap(
                         if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
                             if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
                             mesh.userData.customPivots.set(id, localPivot);
-                            
-                             // Propagate to peers if composite object
-                            if (mesh.userData.itemIds) {
-                                let myItemId = mesh.userData.itemIds.get(id);
-                                if (myItemId === undefined) {
-                                    const key = (typeof id === 'number') ? String(id) : Number(id);
-                                    myItemId = mesh.userData.itemIds.get(key);
-                                }
-                                
-                                if (myItemId !== undefined) {
-                                    for (const [peerKey, peerItemId] of mesh.userData.itemIds) {
-                                        const peerId = Number(peerKey);
-                                        const currentId = Number(id);
-                                        if (peerItemId === myItemId && peerId !== currentId) {
-                                             mesh.getMatrixAt(peerId, _TMP_MAT4_B);
-                                             _TMP_MAT4_B.premultiply(mesh.matrixWorld);
-                                             _TMP_MAT4_B.invert();
-                                             const peerPivot = targetPos.clone().applyMatrix4(_TMP_MAT4_B);
-                                             mesh.userData.customPivots.set(peerId, peerPivot);
-                                        }
-                                    }
-                                }
-                            }
                         } else {
                             mesh.userData.customPivot = localPivot;
                         }
@@ -242,6 +345,8 @@ export function processVertexSnap(
                     }
                 }
             }
+
+            performSelectionSwap(null, sprite2.userData.source);
 
             selectedVertexKeys.clear();
             updateHelperPosition();
@@ -279,20 +384,6 @@ export function processVertexSnap(
                     }
                 }
 
-                // ItemId Linkage (Composite Object part of selection?)
-                if (src.mesh.isBatchedMesh && src.mesh.userData.itemIds) {
-                    const myItemId = src.mesh.userData.itemIds.get(src.instanceId);
-                    if (myItemId !== undefined) {
-                        // Check if any selected object shares this itemId
-                        for (const [sMesh, sIds] of currentSelection.objects) {
-                            if (sMesh.isBatchedMesh && sMesh.userData.itemIds) {
-                                for (const sId of sIds) {
-                                    if (sMesh.userData.itemIds.get(sId) === myItemId) return true;
-                                }
-                            }
-                        }
-                    }
-                }
             }
             return false;
         })();
@@ -319,23 +410,6 @@ export function processVertexSnap(
             }
         };
 
-        const addItemIdPeers = (mesh, instanceId) => {
-            if (mesh.isBatchedMesh && mesh.userData.itemIds) {
-                const itemId = mesh.userData.itemIds.get(instanceId);
-                if (itemId !== undefined) {
-                    // Scan logic: we must find all parts of this item
-                    loadedObjectGroup.traverse(obj => {
-                        if (obj.isBatchedMesh && obj.userData.itemIds) {
-                            // iterate all to find match
-                            for (const [id, tId] of obj.userData.itemIds) {
-                                if (tId === itemId) addInstance(obj, id);
-                            }
-                        }
-                    });
-                }
-            }
-        }
-
         if (isSrcEffectiveSelected) {
             // Move entire selection
             if (currentSelection.groups) {
@@ -345,7 +419,6 @@ export function processVertexSnap(
                 for (const [mesh, ids] of currentSelection.objects) {
                     for (const id of ids) {
                         addInstance(mesh, id);
-                        addItemIdPeers(mesh, id); // Ensure composite parts come along
                     }
                 }
             }
@@ -365,9 +438,8 @@ export function processVertexSnap(
                     // It's in a group -> Move that specific group
                     addGroup(groupId);
                 } else {
-                    // Loose object -> Move it + peers
+                    // Loose object
                     addInstance(mesh, instanceId);
-                    addItemIdPeers(mesh, instanceId);
                 }
             }
         }
@@ -406,6 +478,9 @@ export function processVertexSnap(
                 group.matrix.decompose(group.position, group.quaternion, group.scale);
             }
         }
+
+        // Swapping selection state: Object A (Source) becomes selected, Object B (Target) goes to Vertex Queue
+        performSelectionSwap(src, sprite2.userData.source);
         
         selectedVertexKeys.clear();
         updateHelperPosition();
