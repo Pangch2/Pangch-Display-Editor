@@ -251,7 +251,11 @@ export function processVertexSnap(
                 }
             }
             
-            performSelectionSwap(sprite1.userData.source, sprite2.userData.source);
+            let targetSrc = sprite2.userData.source;
+            if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
+                targetSrc = currentSelection.primary;
+            }
+            performSelectionSwap(sprite1.userData.source, targetSrc);
 
             selectedVertexKeys.clear();
             updateHelperPosition();

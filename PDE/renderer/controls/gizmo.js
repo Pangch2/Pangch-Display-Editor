@@ -208,6 +208,18 @@ const VERTEX_QUEUE_MAX_SIZE = 1;
 function _pushToVertexQueue() {
     if (suppressVertexQueue || !isVertexMode) return;
 
+    let totalCount = 0;
+    if (currentSelection.groups) totalCount += currentSelection.groups.size;
+    if (currentSelection.objects) {
+        for (const ids of currentSelection.objects.values()) totalCount += ids.size;
+    }
+
+    if (totalCount > 1) {
+        vertexQueue.length = 0;
+        selectedVertexKeys.clear();
+        return;
+    }
+
     let currentGizmoPos = null;
     let currentGizmoQuat = null;
     if ((currentSelection.groups.size > 0 || currentSelection.objects.size > 0)) {
@@ -271,7 +283,8 @@ function _pushToVertexQueue() {
         vertexQueue.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat });
 
         if (isCenterSelected && localPos) {
-            const qKey = `QUEUE_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
+            const idStr = item.type === 'group' ? `G_${item.id}` : `O_${item.mesh.uuid}_${item.instanceId}`;
+            const qKey = `QUEUE_${idStr}_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
             selectedVertexKeys.add(qKey);
         }
     }
@@ -609,8 +622,10 @@ function updateHelperPosition() {
         localPos = gizmoPos.clone().applyMatrix4(inv);
     }
 
-    if (localPos) {
-        const queueKey = `QUEUE_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
+    if (localPos && currentSelection.primary) {
+        const prim = currentSelection.primary;
+        const idStr = prim.type === 'group' ? `G_${prim.id}` : `O_${prim.mesh.uuid}_${prim.instanceId}`;
+        const queueKey = `QUEUE_${idStr}_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
         if (selectedVertexKeys.has(queueKey)) {
             selectedVertexKeys.delete(queueKey);
             const centerKey = `CENTER_${gizmoPos.x.toFixed(4)}_${gizmoPos.y.toFixed(4)}_${gizmoPos.z.toFixed(4)}`;
@@ -1290,7 +1305,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 isVertexMode = !isVertexMode;
                 console.log(isVertexMode ? 'Vertex mode activated' : 'Vertex mode deactivated');
 
-                if (!isVertexMode) {
+                if (isVertexMode) {
+                    transformControls.detach();
+                } else {
                     for (let i = vertexQueue.length - 1; i >= 0; i--) {
                         const item = vertexQueue[i];
                         let isSelected = false;
@@ -1308,9 +1325,9 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             vertexQueue.splice(i, 1);
                         }
                     }
+                    updateHelperPosition();
                 }
 
-                updateHelperPosition();
                 updateSelectionOverlay();
                 break;
             case 't':

@@ -655,7 +655,9 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
                     queueSprite.position.copy(item.gizmoPosition);
                     
                     const posForKey = item.gizmoLocalPosition || item.gizmoPosition;
-                    const qKey = `QUEUE_${posForKey.x.toFixed(4)}_${posForKey.y.toFixed(4)}_${posForKey.z.toFixed(4)}`;
+                    const src = item.source;
+                    const idStr = src.type === 'group' ? `G_${src.id}` : `O_${src.mesh.uuid}_${src.instanceId}`;
+                    const qKey = `QUEUE_${idStr}_${posForKey.x.toFixed(4)}_${posForKey.y.toFixed(4)}_${posForKey.z.toFixed(4)}`;
                     queueSprite.userData = { isCenter: true, key: qKey, source: item.source };
                     
                     if (selectedVertexKeys.has(qKey)) {
