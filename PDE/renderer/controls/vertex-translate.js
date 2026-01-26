@@ -121,37 +121,40 @@ export function processVertexSnap(
         // 2. Queue Target (B)
         let targetLocalPivot = new THREE.Vector3(0, 0, 0); 
         let hasCustomPivot = false;
-        
-        if (targetSrc.type === 'object') {
-            const { mesh, instanceId } = targetSrc;
-            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                 let pivot = null;
-                 if (mesh.userData.customPivots) {
-                     pivot = mesh.userData.customPivots.get(instanceId);
-                     if (!pivot) {
-                         const key = (typeof instanceId === 'number') ? String(instanceId) : Number(instanceId);
-                         pivot = mesh.userData.customPivots.get(key);
+
+        const state = getGizmoState();
+
+        if (state.pivotMode !== 'center') {
+            if (targetSrc.type === 'object') {
+                const { mesh, instanceId } = targetSrc;
+                if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                     let pivot = null;
+                     if (mesh.userData.customPivots) {
+                         pivot = mesh.userData.customPivots.get(instanceId);
+                         if (!pivot) {
+                             const key = (typeof instanceId === 'number') ? String(instanceId) : Number(instanceId);
+                             pivot = mesh.userData.customPivots.get(key);
+                         }
                      }
-                 }
-                 if (pivot) {
-                     targetLocalPivot.copy(pivot);
+                     if (pivot) {
+                         targetLocalPivot.copy(pivot);
+                         hasCustomPivot = true;
+                     }
+                } else if (mesh.userData.customPivot) {
+                     targetLocalPivot.copy(mesh.userData.customPivot);
                      hasCustomPivot = true;
-                 }
-            } else if (mesh.userData.customPivot) {
-                 targetLocalPivot.copy(mesh.userData.customPivot);
-                 hasCustomPivot = true;
-            }
-        } else if (targetSrc.type === 'group') {
-            const groups = getGroups();
-            const group = groups.get(targetSrc.id);
-            if (group && group.isCustomPivot && group.pivot) {
-                 targetLocalPivot.copy(group.pivot);
-                 hasCustomPivot = true;
+                }
+            } else if (targetSrc.type === 'group') {
+                const groups = getGroups();
+                const group = groups.get(targetSrc.id);
+                if (group && group.isCustomPivot && group.pivot) {
+                     targetLocalPivot.copy(group.pivot);
+                     hasCustomPivot = true;
+                }
             }
         }
 
-        const state = getGizmoState();
-        if (!hasCustomPivot && state.pivotMode === 'center') {
+        if (state.pivotMode === 'center') {
             let localBox = null;
             if (targetSrc.type === 'object') {
                 localBox = Overlay.getInstanceLocalBox(targetSrc.mesh, targetSrc.instanceId);
@@ -256,6 +259,10 @@ export function processVertexSnap(
                 targetSrc = currentSelection.primary;
             }
             performSelectionSwap(sprite1.userData.source, targetSrc);
+
+            if (state.pivotMode === 'center') {
+                setGizmoState({ pivotMode: 'origin' });
+            }
 
             selectedVertexKeys.clear();
             updateHelperPosition();
@@ -474,7 +481,11 @@ export function processVertexSnap(
         }
 
         // Swapping selection state: Object A (Source) becomes selected, Object B (Target) goes to Vertex Queue
-        performSelectionSwap(src, sprite2.userData.source);
+        let targetSrc = sprite2.userData.source;
+        if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
+            targetSrc = currentSelection.primary;
+        }
+        performSelectionSwap(src, targetSrc);
         
         selectedVertexKeys.clear();
         updateHelperPosition();

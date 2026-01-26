@@ -368,6 +368,7 @@ export function handleSelectionClick(
     const bypassGroupSelection = !!(event.ctrlKey || event.metaKey);
 
     let target = { type: 'object', mesh: object, ids: idsToSelect };
+    let groupToDeselect = null;
 
     if (!bypassGroupSelection && immediateGroupId) {
         const groupChain = GroupUtils.getGroupChain(loadedObjectGroup, immediateGroupId);
@@ -388,6 +389,10 @@ export function handleSelectionClick(
             }
 
             if (deepestSelectedIndex !== -1) {
+                if (callbacks && callbacks.isVertexMode) {
+                    groupToDeselect = groupChain[deepestSelectedIndex];
+                }
+
                 if (deepestSelectedIndex < groupChain.length - 1) {
                     nextGroupIdToSelect = groupChain[deepestSelectedIndex + 1];
                 } else {
@@ -404,6 +409,14 @@ export function handleSelectionClick(
 
     // 4. Update Selection State
     if (event.shiftKey) {
+        if (groupToDeselect) {
+            if (currentSelection.groups.has(groupToDeselect)) {
+                currentSelection.groups.delete(groupToDeselect);
+                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
+                    currentSelection.primary = null;
+                }
+            }
+        }
         // Toggle Logic
         // In toggle mode, we don't clear existing selection.
         if (target.type === 'group') {
@@ -453,16 +466,58 @@ export function handleSelectionClick(
         }
     } else {
         // Single Select (Replace)
-        // We use beginSelectionReplace to clear previous selection clearly and handle undo/history callbacks if any
-        beginSelectionReplace(callbacks, { detachTransform: true });
         
-        if (target.type === 'group') {
-             currentSelection.groups.add(target.id);
-             currentSelection.primary = { type: 'group', id: target.id };
-        } else {
-             const set = new Set(target.ids);
-             currentSelection.objects.set(target.mesh, set);
-             currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+        let performedSurgicalUpdate = false;
+
+        // Surgical Drill-Down Logic (Vertex Mode Only)
+        // If we are drilling down (groupToDeselect is set), we remove the parent and add the child,
+        // BUT we preserve other existing selections (like siblings).
+        if (groupToDeselect) {
+            // 1. Remove Parent
+            if (currentSelection.groups.has(groupToDeselect)) {
+                currentSelection.groups.delete(groupToDeselect);
+                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
+                    currentSelection.primary = null;
+                }
+            }
+            
+            // 2. Add Target
+            if (target.type === 'group') {
+                currentSelection.groups.add(target.id);
+                if (!currentSelection.primary) currentSelection.primary = { type: 'group', id: target.id };
+            } else {
+                let set = currentSelection.objects.get(target.mesh);
+                if (!set) {
+                    set = new Set();
+                    currentSelection.objects.set(target.mesh, set);
+                }
+                for (const id of target.ids) set.add(id);
+                if (!currentSelection.primary) {
+                    currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+                }
+            }
+
+            // Flag to skip standard replace
+            performedSurgicalUpdate = true;
+            
+            // Still need to notify system that transform might ideally detach or re-evaluate
+            // But we typically want smoother transition in drill-down.
+            // Let's call detachTransformControls if passed, to be safe.
+             if (callbacks.detachTransformControls) callbacks.detachTransformControls();
+        }
+
+        if (!performedSurgicalUpdate) {
+            // Standard Replace behavior: Clear all, select target.
+            beginSelectionReplace(callbacks, { detachTransform: true });
+            
+            if (target.type === 'group') {
+                currentSelection.groups.add(target.id);
+                currentSelection.primary = { type: 'group', id: target.id };
+            } else {
+                const set = new Set(target.ids);
+                currentSelection.objects.set(target.mesh, set);
+                currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+            }
         }
     }
 

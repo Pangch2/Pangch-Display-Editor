@@ -205,6 +205,17 @@ let suppressVertexQueue = false;
 // Increase history to allow selecting vertices on multiple previously selected objects
 const VERTEX_QUEUE_MAX_SIZE = 1;
 
+const _unitCubeCorners = [
+    new THREE.Vector3(-0.5, -0.5, -0.5),
+    new THREE.Vector3( 0.5, -0.5, -0.5),
+    new THREE.Vector3( 0.5,  0.5, -0.5),
+    new THREE.Vector3(-0.5,  0.5, -0.5),
+    new THREE.Vector3(-0.5, -0.5,  0.5),
+    new THREE.Vector3( 0.5, -0.5,  0.5),
+    new THREE.Vector3( 0.5,  0.5,  0.5),
+    new THREE.Vector3(-0.5,  0.5,  0.5)
+];
+
 function _pushToVertexQueue() {
     if (suppressVertexQueue || !isVertexMode) return;
 
@@ -290,7 +301,65 @@ function _pushToVertexQueue() {
     }
 
     while (vertexQueue.length > VERTEX_QUEUE_MAX_SIZE) {
-        vertexQueue.shift(); 
+        const removedItem = vertexQueue.shift(); 
+        
+        // Remove keys associated with the removed item
+        const idStr = removedItem.type === 'group' 
+            ? `G_${removedItem.id}` 
+            : `O_${removedItem.mesh.uuid}_${removedItem.instanceId}`;
+        const prefix = `QUEUE_${idStr}_`;
+
+        for (const key of selectedVertexKeys) {
+            if (key.startsWith(prefix)) {
+                selectedVertexKeys.delete(key);
+            }
+        }
+
+        // Remove overlay keys (spatial position) associated with the removed item
+        let matrix = null;
+        const tempSize = _TMP_VEC3_A;
+        const tempCenter = _TMP_VEC3_B;
+        
+        if (removedItem.type === 'group') {
+             const groupId = removedItem.id;
+             const localBox = getGroupLocalBoundingBox(groupId);
+             if (localBox && !localBox.isEmpty()) {
+                 localBox.getSize(tempSize);
+                 localBox.getCenter(tempCenter);
+                 
+                 const groupWorld = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
+                 matrix = _TMP_MAT4_B;
+                 matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+                 matrix.scale(tempSize);
+                 matrix.premultiply(groupWorld);
+             }
+        } else if (removedItem.type === 'object') {
+             const { mesh, instanceId } = removedItem;
+             if (isInstanceValid(mesh, instanceId)) {
+                 const localBox = getInstanceLocalBox(mesh, instanceId);
+                 if (localBox) {
+                     localBox.getSize(tempSize);
+                     localBox.getCenter(tempCenter);
+
+                     const worldMat = getInstanceWorldMatrix(mesh, instanceId, _TMP_MAT4_A);
+                     matrix = _TMP_MAT4_B;
+                     matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+                     matrix.scale(tempSize);
+                     matrix.premultiply(worldMat);
+                 }
+             }
+        }
+
+        if (matrix) {
+             const v = new THREE.Vector3();
+             for (const corner of _unitCubeCorners) {
+                 v.copy(corner).applyMatrix4(matrix);
+                 const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
+                 if (selectedVertexKeys.has(key)) {
+                     selectedVertexKeys.delete(key);
+                 }
+             }
+        }
     }
 }
 
@@ -1641,6 +1710,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 }
 
                 updateHelperPosition();
+                
+                if (isVertexMode) {
+                    _pushToVertexQueue();
+                    updateSelectionOverlay();
+                }
+
                 console.log('Pivot reset to origin');
             }
         }
@@ -1898,7 +1973,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
             resetPivotState: () => { 
                 pivotOffset.set(0, 0, 0); 
                 isCustomPivot = false; 
-            }
+            },
+            isVertexMode: isVertexMode
         });
     });
 
