@@ -433,18 +433,8 @@ export function processVertexSnap(
                 addGroup(src.id);
             } else {
                 const { mesh, instanceId } = src;
-                // Check if it belongs to a group
-                const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
-                const key = GroupUtils.getGroupKey(mesh, instanceId);
-                const groupId = objectToGroup ? objectToGroup.get(key) : null;
-                
-                if (groupId) {
-                    // It's in a group -> Move that specific group
-                    addGroup(groupId);
-                } else {
-                    // Loose object
-                    addInstance(mesh, instanceId);
-                }
+                // Always move the specific object instance, even if it's in a group
+                addInstance(mesh, instanceId);
             }
         }
 
