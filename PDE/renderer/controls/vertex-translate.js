@@ -316,43 +316,43 @@ export function processVertexSnap(
                         _multiSelectionOriginAnchorInitialValid: true
                     });
                 }
-            }
-
-            // Always persist to Groups (Single or Multi)
-            if (currentSelection.groups && currentSelection.groups.size > 0) {
-                 const groups = getGroups();
-                 for (const groupId of currentSelection.groups) {
-                     const group = groups.get(groupId);
-                     if (group) {
-                         const groupMatrix = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
-                         const inv = groupMatrix.clone().invert();
-                         group.pivot = targetPos.clone().applyMatrix4(inv);
-                         group.isCustomPivot = true;
-                         updateQueueItemPivot({ type: 'group', id: groupId }, group.pivot);
-                     }
-                 }
-            }
-
-            // Always persist to Objects (Single or Multi)
-            if (currentSelection.objects && currentSelection.objects.size > 0) {
-                for (const [mesh, ids] of currentSelection.objects) {
-                    if (!mesh || !ids) continue;
-                    
-                    for (const id of ids) {
-                        const instanceMatrix = _TMP_MAT4_A;
-                        mesh.getMatrixAt(id, instanceMatrix);
-                        const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
-                        const inv = worldMatrix.clone().invert();
-                        const localPivot = targetPos.clone().applyMatrix4(inv);
-                        
-                        if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                            if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
-                            mesh.userData.customPivots.set(id, localPivot);
-                        } else {
-                            mesh.userData.customPivot = localPivot;
+            } else {
+                // Always persist to Groups (Single selection only)
+                if (currentSelection.groups && currentSelection.groups.size > 0) {
+                    const groups = getGroups();
+                    for (const groupId of currentSelection.groups) {
+                        const group = groups.get(groupId);
+                        if (group) {
+                            const groupMatrix = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
+                            const inv = groupMatrix.clone().invert();
+                            group.pivot = targetPos.clone().applyMatrix4(inv);
+                            group.isCustomPivot = true;
+                            updateQueueItemPivot({ type: 'group', id: groupId }, group.pivot);
                         }
-                        mesh.userData.isCustomPivot = true;
-                        updateQueueItemPivot({ type: 'object', mesh, instanceId: id }, localPivot);
+                    }
+                }
+
+                // Always persist to Objects (Single selection only)
+                if (currentSelection.objects && currentSelection.objects.size > 0) {
+                    for (const [mesh, ids] of currentSelection.objects) {
+                        if (!mesh || !ids) continue;
+                        
+                        for (const id of ids) {
+                            const instanceMatrix = _TMP_MAT4_A;
+                            mesh.getMatrixAt(id, instanceMatrix);
+                            const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
+                            const inv = worldMatrix.clone().invert();
+                            const localPivot = targetPos.clone().applyMatrix4(inv);
+                            
+                            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
+                                mesh.userData.customPivots.set(id, localPivot);
+                            } else {
+                                mesh.userData.customPivot = localPivot;
+                            }
+                            mesh.userData.isCustomPivot = true;
+                            updateQueueItemPivot({ type: 'object', mesh, instanceId: id }, localPivot);
+                        }
                     }
                 }
             }
