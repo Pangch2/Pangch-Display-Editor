@@ -18,6 +18,7 @@ import { focusCameraOnSelection } from './camera.js';
 import { initDrag } from './drag.js';
 
 import { processVertexSnap } from './vertex-translate.js';
+import { processVertexRotate } from './vertex-rotate.js';
 import * as Select from './select.js';
 
 // Aliases for moved/exported functions
@@ -1884,7 +1885,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 } else {
                     selectedVertexKeys.add(key);
 
-                    if (transformControls.mode === 'translate' && selectedVertexKeys.size === 2) {
+                    if (selectedVertexKeys.size === 2) {
                         const getGizmoState = () => ({
                             pivotMode, isCustomPivot, pivotOffset,
                             _gizmoAnchorValid, _gizmoAnchorPosition,
@@ -1903,7 +1904,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             if (updates._multiSelectionOriginAnchorInitialPosition !== undefined) _multiSelectionOriginAnchorInitialPosition.copy(updates._multiSelectionOriginAnchorInitialPosition);
                         };
 
-                        processVertexSnap(selectedVertexKeys, {
+                        const handled = processVertexSnap(selectedVertexKeys, {
                             isVertexMode,
                             gizmoMode: transformControls.mode,
                             currentSelection, loadedObjectGroup, selectionHelper,
@@ -1913,6 +1914,19 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             _isMultiSelection, _getSingleSelectedGroupId, SelectionCenter,
                             vertexQueue
                         });
+
+                        if (!handled && transformControls.mode === 'rotate') {
+                            processVertexRotate(selectedVertexKeys, {
+                                isVertexMode,
+                                gizmoMode: transformControls.mode,
+                                currentSelection, loadedObjectGroup, selectionHelper,
+                                getGizmoState, setGizmoState,
+                                getGroups, getGroupWorldMatrixWithFallback,
+                                updateHelperPosition, updateSelectionOverlay,
+                                SelectionCenter,
+                                vertexQueue
+                            });
+                        }
                     }
                 }
                 

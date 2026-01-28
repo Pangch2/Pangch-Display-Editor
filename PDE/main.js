@@ -121,7 +121,7 @@ function createWindow() {
         const startTime = Date.now();
 
         // client.jar 다운로드
-        const url = 'https://piston-data.mojang.com/v1/objects/26551033b7b935436f3407b85d14cac835e65640/client.jar';
+        const url = 'https://piston-data.mojang.com/v1/objects/4c938df4f6ce3138ab38b488f3add8693918a7a0/client.jar';
         console.log('Downloading client.jar...');
         const response = await axios({
           url,

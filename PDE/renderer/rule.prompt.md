@@ -44,7 +44,9 @@ renderer/
 │   ├── overlay.js - 오버레이 및 선택 관련 함수 모음집
 │   ├── select.js - 오브젝트 선택 및 선택 상태 관리 로직
 │   ├── shear-remove.js - Shear(기울기) 제거 및 정규화 로직
-│   └── vertex-translate.js - 버텍스 스냅 및 이동 로직
+│   ├── vertex-swap.js - 버텍스 스왑 로직
+│   ├── vertex-translate.js - 버텍스 스냅 및 이동 로직
+│   └── vertex-rotate.js - 버텍스 스냅 및 회전 로직
 ├── renderer.js - 메인 씬 렌더러
 └── ui-open-close.js - UI 열기/닫기 애니메이션
 
