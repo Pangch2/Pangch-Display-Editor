@@ -126,12 +126,26 @@ export function performSelectionSwap(
                  targetLocalPivot.copy(mesh.userData.customPivot);
                  hasCustomPivot = true;
             }
+
+            if (!hasCustomPivot) {
+                const displayType = Overlay.getDisplayType(mesh, instanceId);
+                if (displayType === 'block_display') {
+                    Overlay.getInstanceLocalBoxMin(mesh, instanceId, targetLocalPivot);
+                }
+            }
         } else if (targetSrc.type === 'group') {
             const groups = getGroups();
             const group = groups.get(targetSrc.id);
             if (group && group.isCustomPivot && group.pivot) {
                  targetLocalPivot.copy(group.pivot);
                  hasCustomPivot = true;
+            }
+            
+            if (!hasCustomPivot) {
+                const box = Overlay.getGroupLocalBoundingBox(targetSrc.id);
+                if (box && !box.isEmpty()) {
+                    targetLocalPivot.copy(box.min);
+                }
             }
         }
     }

@@ -59,12 +59,50 @@ export function processVertexRotate(
     }
 
     // CASE 2: First Click = Object Vertex, Second Click = (Gizmo OR Object Vertex)
-    // -> Rotate Object around Gizmo Center (Pivot)
+    // -> Rotate Object around Opposite Corner (Pivot) logic
     if (sprite1 && sprite2 && sprite1.userData.source && (sprite2.userData.isCenter || sprite2.userData.source)) {
-        const pivot = selectionHelper.position.clone();
-        
+        const src = sprite1.userData.source;
+        let objectWorldMatrix = new THREE.Matrix4();
+        let localBox = null;
+
+        // 1. Resolve effective World Matrix and Local Bounding Box (similar to vertex-scale)
+        if (src.type === 'object') {
+            const { mesh, instanceId } = src;
+            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                mesh.getMatrixAt(instanceId, objectWorldMatrix);
+            } else {
+                objectWorldMatrix.copy(mesh.matrix);
+            }
+            objectWorldMatrix.premultiply(mesh.matrixWorld);
+            localBox = Overlay.getInstanceLocalBox(mesh, instanceId);
+        } else if (src.type === 'group') {
+            getGroupWorldMatrixWithFallback(src.id, objectWorldMatrix);
+            localBox = Overlay.getGroupLocalBoundingBox(src.id);
+        }
+
+        if (!localBox || localBox.isEmpty()) {
+            selectedVertexKeys.clear();
+            return false;
+        }
+
         const p1 = sprite1.position;
         const p2 = sprite2.position;
+
+        // Compute Pivot: Opposite Corner in Local Space -> World Space
+        const invMatrix = objectWorldMatrix.clone().invert();
+        const p1Local = p1.clone().applyMatrix4(invMatrix);
+
+        const min = localBox.min;
+        const max = localBox.max;
+        const center = new THREE.Vector3().addVectors(min, max).multiplyScalar(0.5);
+        const eps = 1e-4;
+
+        const fixedLocal = new THREE.Vector3();
+        fixedLocal.x = (p1Local.x > center.x + eps) ? min.x : ((p1Local.x < center.x - eps) ? max.x : p1Local.x);
+        fixedLocal.y = (p1Local.y > center.y + eps) ? min.y : ((p1Local.y < center.y - eps) ? max.y : p1Local.y);
+        fixedLocal.z = (p1Local.z > center.z + eps) ? min.z : ((p1Local.z < center.z - eps) ? max.z : p1Local.z);
+
+        const pivot = fixedLocal.clone().applyMatrix4(objectWorldMatrix);
         
         // Vectors from Pivot to Clicked Points
         const v1 = _TMP_VEC3_A.subVectors(p1, pivot);
@@ -90,8 +128,6 @@ export function processVertexRotate(
 
         // Combine: M = T * R * T_inv
         const transformMat = tMat.multiply(rMat).multiply(tInvMat);
-
-        const src = sprite1.userData.source;
 
         // 1. Identify effective selection (same as vertex-translate)
         const isSrcEffectiveSelected = (() => {
@@ -158,17 +194,35 @@ export function processVertexRotate(
         
         // A. Update Instances (Visuals)
         for (const [mesh, ids] of targets.instances) {
-            const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
-            // Delta = M_inv_parent * Transform * M_parent
-            const localTransform = new THREE.Matrix4().multiplyMatrices(meshWorldInv, transformMat);
-            localTransform.multiply(mesh.matrixWorld);
+            
+            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
+                // Delta = M_inv_parent * Transform * M_parent
+                const localTransform = new THREE.Matrix4().multiplyMatrices(meshWorldInv, transformMat);
+                localTransform.multiply(mesh.matrixWorld);
 
-            for (const id of ids) {
-                mesh.getMatrixAt(id, _TMP_INSTANCE_MATRIX);
-                _TMP_INSTANCE_MATRIX.premultiply(localTransform);
-                mesh.setMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                for (const id of ids) {
+                    mesh.getMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                    _TMP_INSTANCE_MATRIX.premultiply(localTransform);
+                    mesh.setMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                }
+                if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
+
+            } else {
+                // Standard Mesh Logic
+                // NewWorld = Transform * OldWorld
+                // NewLocal = ParentWorldInv * NewWorld
+
+                const parentWorld = mesh.parent ? mesh.parent.matrixWorld : new THREE.Matrix4().identity();
+                const parentInv = parentWorld.clone().invert();
+                
+                const newWorld = transformMat.clone().multiply(mesh.matrixWorld);
+                const newLocal = parentInv.multiply(newWorld);
+                
+                mesh.matrix.copy(newLocal);
+                mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+                mesh.updateMatrixWorld(true);
             }
-            if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
         }
 
         // B. Update Group Metadata (Logic)

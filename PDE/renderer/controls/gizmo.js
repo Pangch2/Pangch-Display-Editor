@@ -19,6 +19,7 @@ import { initDrag } from './drag.js';
 
 import { processVertexSnap } from './vertex-translate.js';
 import { processVertexRotate } from './vertex-rotate.js';
+import { processVertexScale } from './vertex-scale.js';
 import * as Select from './select.js';
 
 // Aliases for moved/exported functions
@@ -1919,6 +1920,20 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             processVertexRotate(selectedVertexKeys, {
                                 isVertexMode,
                                 gizmoMode: transformControls.mode,
+                                currentSelection, loadedObjectGroup, selectionHelper,
+                                getGizmoState, setGizmoState,
+                                getGroups, getGroupWorldMatrixWithFallback,
+                                updateHelperPosition, updateSelectionOverlay,
+                                SelectionCenter,
+                                vertexQueue
+                            });
+                        }
+
+                        if (!handled && transformControls.mode === 'scale') {
+                            processVertexScale(selectedVertexKeys, {
+                                isVertexMode,
+                                gizmoMode: transformControls.mode,
+                                isCtrlDown: event.ctrlKey || event.metaKey,
                                 currentSelection, loadedObjectGroup, selectionHelper,
                                 getGizmoState, setGizmoState,
                                 getGroups, getGroupWorldMatrixWithFallback,
