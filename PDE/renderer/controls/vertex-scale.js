@@ -3,6 +3,7 @@ import * as THREE from 'three/webgpu';
 import * as Overlay from './overlay.js';
 import { performSelectionSwap } from './vertex-swap.js';
 import { removeShearFromSelection } from './shear-remove.js';
+import { getAllGroupChildren } from './group.js';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_MAT4_B = new THREE.Matrix4();
@@ -234,10 +235,42 @@ export function processVertexScale(
                 if (Math.abs(group.scale.z) < MIN_SCALE) group.scale.z = Math.sign(group.scale.z) * MIN_SCALE || MIN_SCALE;
 
                 let parentMatrixWorld = new THREE.Matrix4();
-                if (group.parent) getGroupWorldMatrixWithFallback(group.parent, parentMatrixWorld);
+                if (group.parent && group.parent.matrixWorld) {
+                    parentMatrixWorld.copy(group.parent.matrixWorld);
+                }
                 const parentInv = parentMatrixWorld.clone().invert();
                 const newLocalPos = pivotWorldNew.clone().applyMatrix4(parentInv);
                 group.position.copy(newLocalPos);
+
+                // --- Apply to Children ---
+                const newLocalMatrix = new THREE.Matrix4().compose(group.position, group.quaternion, group.scale);
+                const newGroupWorldMatrix = parentMatrixWorld.clone().multiply(newLocalMatrix);
+                const deltaMatrix = new THREE.Matrix4().multiplyMatrices(newGroupWorldMatrix, objectWorldMatrix.clone().invert());
+
+                const allChildren = getAllGroupChildren(loadedObjectGroup, src.id);
+                for (const child of allChildren) {
+                    if (child.type === 'object' && child.mesh) {
+                        const { mesh, instanceId } = child;
+                        const instanceLocalMatrix = new THREE.Matrix4();
+                        if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                            mesh.getMatrixAt(instanceId, instanceLocalMatrix);
+                        } else {
+                            instanceLocalMatrix.copy(mesh.matrix);
+                        }
+
+                        const meshWorld = mesh.matrixWorld;
+                        const transformer = meshWorld.clone().invert().multiply(deltaMatrix).multiply(meshWorld);
+                        instanceLocalMatrix.premultiply(transformer);
+
+                        if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                            mesh.setMatrixAt(instanceId, instanceLocalMatrix);
+                            if (mesh.instanceMatrix) mesh.instanceMatrix.needsUpdate = true;
+                        } else {
+                            mesh.matrix.copy(instanceLocalMatrix);
+                            mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+                        }
+                    }
+                }
             }
         }
 
@@ -349,26 +382,45 @@ export function processVertexScale(
             if (group) {
                 // Local = ParentWorldInverse * NewWorld
                 let parentMatrixWorld = new THREE.Matrix4();
-                if (group.parent) getGroupWorldMatrixWithFallback(group.parent, parentMatrixWorld);
+                if (group.parent && group.parent.matrixWorld) {
+                    parentMatrixWorld.copy(group.parent.matrixWorld);
+                }
                 const parentInv = parentMatrixWorld.invert();
                 
                 const newLocal = parentInv.multiply(newWorldMatrix);
                 
                 if (!group.matrix) group.matrix = new THREE.Matrix4();
                 group.matrix.copy(newLocal);
-                // Group logic uses P/Q/S properties primarily. 
-                // We must update them, but shear will be lost in P/Q/S.
-                // If the group renderer respects group.matrix, we are good.
-                // Assuming standard Three.js Object3D behavior for groups created as Object3D.
-                // We should set logic to use matrix.
-                // However, `group.js` structure seems to rely on explicit P/Q/S storage in the map?
-                // If `group` is just a data object in a Map, we need to ensure the renderer utilizes `.matrix`.
-                // Renderer usually traverses `loadedObjectGroup`.
                 
                 newLocal.decompose(group.position, group.quaternion, group.scale);
-                // If the system relies on `group.matrix` being authoritative, we might need a flag.
-                // But `group.js` usually recomposes matrix from P/Q/S.
-                // For now, decompose is the best we can do for generic Group data structures without deeper refactor.
+
+                // --- Apply to Children ---
+                const deltaMatrix = new THREE.Matrix4().multiplyMatrices(newWorldMatrix, objectWorldMatrix.clone().invert());
+                
+                const allChildren = getAllGroupChildren(loadedObjectGroup, src.id);
+                for (const child of allChildren) {
+                    if (child.type === 'object' && child.mesh) {
+                        const { mesh, instanceId } = child;
+                        const instanceLocalMatrix = new THREE.Matrix4();
+                        if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                            mesh.getMatrixAt(instanceId, instanceLocalMatrix);
+                        } else {
+                            instanceLocalMatrix.copy(mesh.matrix);
+                        }
+
+                        const meshWorld = mesh.matrixWorld;
+                        const transformer = meshWorld.clone().invert().multiply(deltaMatrix).multiply(meshWorld);
+                        instanceLocalMatrix.premultiply(transformer);
+
+                        if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                            mesh.setMatrixAt(instanceId, instanceLocalMatrix);
+                            if (mesh.instanceMatrix) mesh.instanceMatrix.needsUpdate = true;
+                        } else {
+                            mesh.matrix.copy(instanceLocalMatrix);
+                            mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+                        }
+                    }
+                }
             }
         }
     }
