@@ -101,6 +101,21 @@ export function performSelectionSwap(
     }
 
     // 2. Queue Target (B)
+
+    // Check if target is already selected to avoid double overlay
+    let isTargetSelected = false;
+    if (targetSrc.type === 'group') {
+        if (currentSelection.groups.has(targetSrc.id)) isTargetSelected = true;
+    } else if (targetSrc.type === 'object') {
+        const ids = currentSelection.objects.get(targetSrc.mesh);
+        if (ids && ids.has(targetSrc.instanceId)) isTargetSelected = true;
+    }
+    
+    if (isTargetSelected) {
+         while (vertexQueue.length > 0) vertexQueue.shift();
+         return;
+    }
+
     let targetLocalPivot = new THREE.Vector3(0, 0, 0); 
     let hasCustomPivot = false;
 

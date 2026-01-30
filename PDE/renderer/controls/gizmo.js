@@ -1379,25 +1379,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 if (isVertexMode) {
                     transformControls.detach();
                 } else {
-                    for (let i = vertexQueue.length - 1; i >= 0; i--) {
-                        const item = vertexQueue[i];
-                        let isSelected = false;
-
-                        if (item.type === 'group') {
-                            if (currentSelection.groups.has(item.id)) isSelected = true;
-                        } else {
-                            const ids = currentSelection.objects.get(item.mesh);
-                            if (ids && ids.has(item.instanceId)) {
-                                isSelected = true;
-                            }
-                        }
-
-                        if (!isSelected) {
-                            vertexQueue.splice(i, 1);
-                        }
-                    }
+                    // Vertex mode exiting: clear queue so old objects don't persist in overlay
+                    vertexQueue.length = 0;
+                    selectedVertexKeys.clear();
                     updateHelperPosition();
                 }
+                updateSelectionOverlay();
+                break;
 
                 updateSelectionOverlay();
                 break;
