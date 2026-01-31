@@ -550,6 +550,7 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
             selectionOverlay.setColorAt(index, colorObj);
         });
 
+        selectionOverlay.userData.items = allOverlayItems;
         selectionOverlay.instanceMatrix.needsUpdate = true;
         if (selectionOverlay.instanceColor) selectionOverlay.instanceColor.needsUpdate = true;
 
@@ -745,11 +746,59 @@ export function syncSelectionPointsOverlay(delta) {
 }
 
 export function syncSelectionOverlay(deltaMatrix) {
-    if (selectionOverlay) {
-        selectionOverlay.matrix.premultiply(deltaMatrix);
-        selectionOverlay.updateMatrixWorld(true);
-    }
-}
+    if (!selectionOverlay || !selectionOverlay.userData.items) return;                                                                                
+                                                                                                                                                      
+    const items = selectionOverlay.userData.items;                                                                                                    
+    const tempSize = _TMP_VEC3_B;                                                                                                                     
+    const tempCenter = _TMP_VEC3_A;                                                                                                                   
+    const objTempMat = _TMP_MAT4_A;                                                                                                                   
+                                                                                                                                                      
+    items.forEach((item, index) => {                                                                                                                  
+        const source = item.source;                                                                                                                   
+        let instanceMat = null;                                                                                                                       
+                                                                                                                                                      
+        if (source.type === 'group') {                                                                                                                
+            const groupId = source.id;                                                                                                                
+            const localBox = getGroupLocalBoundingBox(groupId);                                                                                       
+            if (!localBox || localBox.isEmpty()) return;                                                                                              
+                                                                                                                                                      
+            localBox.getSize(tempSize);                                                                                                               
+            localBox.getCenter(tempCenter);                                                                                                           
+                                                                                                                                                      
+            const groupWorld = getGroupWorldMatrixWithFallback(groupId, objTempMat);                                                                  
+                                                                                                                                                      
+            instanceMat = new THREE.Matrix4();                                                                                                        
+            instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);                                                                    
+            instanceMat.scale(tempSize);                                                                                                              
+            instanceMat.premultiply(groupWorld);                                                                                                      
+                                                                                                                                                      
+        } else if (source.type === 'object') {                                                                                                        
+            const { mesh, instanceId } = source;                                                                                                      
+            if (!mesh) return;                                                                                                                        
+                                                                                                                                                      
+            const localBox = getInstanceLocalBox(mesh, instanceId);                                                                                   
+            if (!localBox) return;                                                                                                                    
+                                                                                                                                                      
+            localBox.getSize(tempSize);                                                                                                               
+            localBox.getCenter(tempCenter);                                                                                                           
+                                                                                                                                                      
+            getInstanceWorldMatrix(mesh, instanceId, objTempMat);                                                                                     
+                                                                                                                                                      
+            instanceMat = new THREE.Matrix4();                                                                                                        
+            instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);                                                                    
+            instanceMat.scale(tempSize);                                                                                                              
+            instanceMat.premultiply(objTempMat);                                                                                                      
+        }                                                                                                                                             
+                                                                                                                                                      
+        if (instanceMat) {                                                                                                                            
+            selectionOverlay.setMatrixAt(index, instanceMat);                                                                                         
+            if (item.matrix) item.matrix.copy(instanceMat);                                                                                           
+        }                                                                                                                                             
+    });                                                                                                                                               
+                                                                                                                                                      
+    selectionOverlay.instanceMatrix.needsUpdate = true;                                                                                               
+    selectionOverlay.updateMatrixWorld(true);                                                                                                         
+}                                                                                                                                            
 
 export function findClosestVertexForSnapping(gizmoWorldPos, camera, renderer, snapThreshold = 15) {
     if (!selectionPointsOverlay) return null;
