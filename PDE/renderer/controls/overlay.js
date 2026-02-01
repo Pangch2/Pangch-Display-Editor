@@ -7,8 +7,12 @@ const _TMP_MAT4_B = new THREE.Matrix4();
 const _TMP_BOX3_A = new THREE.Box3();
 const _TMP_VEC3_A = new THREE.Vector3();
 const _TMP_VEC3_B = new THREE.Vector3();
+const _TMP_CORNERS = new Array(8).fill(0).map(() => new THREE.Vector3());
 
 let loadedObjectGroup = null;
+let _dragCachePos = new Float32Array(0);
+let _dragCacheExt = new Float32Array(0);
+let _dragCacheCount = 0;
 
 export function setLoadedObjectGroup(group) {
     loadedObjectGroup = group;
@@ -262,7 +266,22 @@ export function getGroupLocalBoundingBox(groupId) {
     if (!group) return new THREE.Box3();
 
     const groupMatrix = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
-    const groupInverse = groupMatrix.clone().invert();
+    
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    groupMatrix.decompose(pos, quat, scale);
+
+    const groupInverse = new THREE.Matrix4();
+    groupInverse.makeTranslation(-pos.x, -pos.y, -pos.z);
+    
+    const tempInv = new THREE.Matrix4();
+    tempInv.makeRotationFromQuaternion(quat.invert());
+    groupInverse.premultiply(tempInv);
+    
+    const safeInv = (s) => (Math.abs(s) < 1e-10 ? 0 : 1 / s);
+    tempInv.makeScale(safeInv(scale.x), safeInv(scale.y), safeInv(scale.z));
+    groupInverse.premultiply(tempInv);
 
     const children = getAllGroupChildren(groupId);
     const box = new THREE.Box3();
@@ -352,6 +371,77 @@ function _getSelectedObjectCount(currentSelection) {
     return count;
 }
 
+export function prepareMultiSelectionDrag(currentSelection) {
+    if (!currentSelection) {
+        _dragCacheCount = 0;
+        return;
+    }
+    
+    // Estimate count
+    const objCount = _getSelectedObjectCount(currentSelection);
+    const grpCount = currentSelection.groups ? currentSelection.groups.size : 0;
+    const totalCount = objCount + grpCount;
+
+    if (totalCount === 0) {
+        _dragCacheCount = 0;
+        return;
+    }
+
+    // Resize cache arrays if needed
+    if (_dragCachePos.length < totalCount * 3) {
+        _dragCachePos = new Float32Array(totalCount * 3);
+        _dragCacheExt = new Float32Array(totalCount * 3);
+    }
+    _dragCacheCount = 0;
+
+    const tempMat = _TMP_MAT4_A;
+    const tempBox = _TMP_BOX3_A;
+    const size = _TMP_VEC3_A;
+    const center = _TMP_VEC3_B;
+    
+    const addBox = (box) => {
+        if (!box || box.isEmpty()) return;
+        box.getCenter(center);
+        box.getSize(size);
+        
+        const idx = _dragCacheCount * 3;
+        _dragCachePos[idx] = center.x;
+        _dragCachePos[idx+1] = center.y;
+        _dragCachePos[idx+2] = center.z;
+        
+        _dragCacheExt[idx] = size.x * 0.5;
+        _dragCacheExt[idx+1] = size.y * 0.5;
+        _dragCacheExt[idx+2] = size.z * 0.5;
+        
+        _dragCacheCount++;
+    };
+
+    // Groups
+    if (currentSelection.groups && currentSelection.groups.size > 0) {
+        for (const groupId of currentSelection.groups) {
+            if (!groupId) continue;
+            const localBox = getGroupLocalBoundingBox(groupId);
+             if (!localBox || localBox.isEmpty()) continue;
+             getGroupWorldMatrixWithFallback(groupId, tempMat);
+             tempBox.copy(localBox).applyMatrix4(tempMat);
+             addBox(tempBox);
+        }
+    }
+
+    // Objects
+    if (currentSelection.objects && currentSelection.objects.size > 0) {
+        for (const [mesh, ids] of currentSelection.objects) {
+            if (!mesh || !ids || ids.size === 0) continue;
+             for (const id of ids) {
+                const localBox = getInstanceLocalBox(mesh, id);
+                if (!localBox) continue;
+                getInstanceWorldMatrix(mesh, id, tempMat);
+                tempBox.copy(localBox).applyMatrix4(tempMat);
+                addBox(tempBox);
+             }
+        }
+    }
+}
 
 // Overlay State
 let selectionOverlay = null;
@@ -419,7 +509,16 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
             instanceMat.scale(tempSize);
             instanceMat.premultiply(groupWorld);
 
-            itemsToRender.push({ matrix: instanceMat, color: 0x6FA21C, source: { type: 'group', id: groupId } });
+            itemsToRender.push({ 
+                matrix: instanceMat, 
+                color: 0x6FA21C, 
+                source: { 
+                    type: 'group', 
+                    id: groupId,
+                    cachedLocalCenter: tempCenter.clone(),
+                    cachedLocalSize: tempSize.clone()
+                } 
+            });
         }
     }
 
@@ -446,7 +545,17 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
                 const displayType = getDisplayType(mesh, id);
                 const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
 
-                itemsToRender.push({ matrix: instanceMat, color: color, source: { type: 'object', mesh, instanceId: id } });
+                itemsToRender.push({ 
+                    matrix: instanceMat, 
+                    color: color, 
+                    source: { 
+                        type: 'object', 
+                        mesh, 
+                        instanceId: id,
+                        cachedLocalCenter: tempCenter.clone(),
+                        cachedLocalSize: tempSize.clone()
+                    } 
+                });
             }
         }
     }
@@ -733,7 +842,7 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
     }
 }
 
-export function updateMultiSelectionOverlayDuringDrag(currentSelection, scene) {
+export function updateMultiSelectionOverlayDuringDrag(currentSelection, scene, currentGizmoMat, initialGizmoMat) {
     if (!multiSelectionOverlay) return;
 
     const objectIdCount = _getSelectedObjectCount(currentSelection);
@@ -748,7 +857,73 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection, scene) {
         return;
     }
 
-    const worldBox = getSelectionBoundingBox(currentSelection);
+    let worldBox = _TMP_BOX3_A.makeEmpty();
+
+    // Fast path: use cached box centers/extents and transform
+    if (currentGizmoMat && initialGizmoMat && _dragCacheCount > 0) {
+        // Compute transform: T = Current * Initial^-1
+        const transformMat = _TMP_MAT4_A;
+        transformMat.copy(initialGizmoMat).invert();
+        transformMat.premultiply(currentGizmoMat);
+        
+        const e = transformMat.elements;
+        
+        // Abs matrix components for extents (Rotation/Scale)
+        const m00 = Math.abs(e[0]), m01 = Math.abs(e[4]), m02 = Math.abs(e[8]);
+        const m10 = Math.abs(e[1]), m11 = Math.abs(e[5]), m12 = Math.abs(e[9]);
+        const m20 = Math.abs(e[2]), m21 = Math.abs(e[6]), m22 = Math.abs(e[10]);
+        
+        // Translation from matrix
+        const tx = e[12], ty = e[13], tz = e[14];
+
+        // Raw matrix components for center transform
+        const r00 = e[0], r01 = e[4], r02 = e[8];
+        const r10 = e[1], r11 = e[5], r12 = e[9];
+        const r20 = e[2], r21 = e[6], r22 = e[10];
+        
+        // Direct access to cache arrays
+        const pos = _dragCachePos;
+        const ext = _dragCacheExt;
+        
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+        for (let i = 0; i < _dragCacheCount; i++) {
+            const idx = i * 3;
+            const px = pos[idx], py = pos[idx+1], pz = pos[idx+2];
+            const ex = ext[idx], ey = ext[idx+1], ez = ext[idx+2];
+            
+            // Transform Center
+            const nx = r00 * px + r01 * py + r02 * pz + tx;
+            const ny = r10 * px + r11 * py + r12 * pz + ty;
+            const nz = r20 * px + r21 * py + r22 * pz + tz;
+            
+            // Transform Extent (AABB of rotated box)
+            const nex = m00 * ex + m01 * ey + m02 * ez;
+            const ney = m10 * ex + m11 * ey + m12 * ez;
+            const nez = m20 * ex + m21 * ey + m22 * ez;
+            
+            // Expand bounds
+            if (nx - nex < minX) minX = nx - nex;
+            if (nx + nex > maxX) maxX = nx + nex;
+            
+            if (ny - ney < minY) minY = ny - ney;
+            if (ny + ney > maxY) maxY = ny + ney;
+            
+            if (nz - nez < minZ) minZ = nz - nez;
+            if (nz + nez > maxZ) maxZ = nz + nez;
+        }
+
+        worldBox.min.set(minX, minY, minZ);
+        worldBox.max.set(maxX, maxY, maxZ);
+
+    } else {
+        worldBox = getSelectionBoundingBox(currentSelection);
+    }
+    
+    // Only update if box is valid
+    if (worldBox.isEmpty()) return;
+
     const edgesGeo = createEdgesGeometryFromBox3(worldBox);
     if (!edgesGeo) return;
 
@@ -766,63 +941,96 @@ export function syncSelectionPointsOverlay(delta) {
 }
 
 export function syncSelectionOverlay(deltaMatrix) {
-    if (!selectionOverlay) return;
+    if (!selectionOverlay && !selectionPointsOverlay) return;
 
-    const tempCenter = _TMP_VEC3_A;
-    const tempSize = _TMP_VEC3_B;
-    const tempMat = _TMP_MAT4_A;
-    const tempWorldMat = _TMP_MAT4_B;
+    if (selectionOverlay) {
+        const tempSize = _TMP_VEC3_B;
+        const tempCenter = _TMP_VEC3_A;
+        const tempMat = _TMP_MAT4_A;
 
-    const updateMesh = (mesh) => {
-        if (!mesh.isInstancedMesh || !mesh.userData.items) return;
-        
-        const items = mesh.userData.items;
-        items.forEach((item, index) => {
-            let instanceMat = null;
-            
-            if (item.source.type === 'group') {
-                const groupId = item.source.id;
-                const localBox = getGroupLocalBoundingBox(groupId);
-                
-                if (localBox && !localBox.isEmpty()) {
-                    localBox.getSize(tempSize);
-                    localBox.getCenter(tempCenter);
+        const updateMesh = (mesh) => {
+            if (!mesh.isInstancedMesh || !mesh.userData.items) return;
 
-                    getGroupWorldMatrixWithFallback(groupId, tempWorldMat);
-                    
-                    instanceMat = tempMat;
-                    instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                    instanceMat.scale(tempSize);
-                    instanceMat.premultiply(tempWorldMat);
-                }
-            } else if (item.source.type === 'object') {
-                const { mesh, instanceId } = item.source;
-                const localBox = getInstanceLocalBox(mesh, instanceId);
+            const items = mesh.userData.items;
+            for (let i = 0; i < mesh.count; i++) {
+                const item = items[i];
+                if (!item || !item.source) continue;
 
-                if (localBox) {
-                    localBox.getSize(tempSize);
-                    localBox.getCenter(tempCenter);
+                const source = item.source;
 
-                    getInstanceWorldMatrix(mesh, instanceId, tempWorldMat);
+                if (source.type === 'group') {
+                    const groupId = source.id;
+                    if (source.cachedLocalCenter && source.cachedLocalSize) {
+                         const center = source.cachedLocalCenter;
+                         const size = source.cachedLocalSize;
 
-                    instanceMat = tempMat;
-                    instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                    instanceMat.scale(tempSize);
-                    instanceMat.premultiply(tempWorldMat);
+                         const groupWorld = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
+                         
+                         tempMat.makeTranslation(center.x, center.y, center.z);
+                         tempMat.scale(size);
+                         tempMat.premultiply(groupWorld);
+
+                         mesh.setMatrixAt(i, tempMat);
+                    } else {
+                         const localBox = getGroupLocalBoundingBox(groupId);
+                         if (localBox && !localBox.isEmpty()) {
+                             localBox.getSize(tempSize);
+                             localBox.getCenter(tempCenter);
+     
+                             const groupWorld = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
+     
+                             tempMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+                             tempMat.scale(tempSize);
+                             tempMat.premultiply(groupWorld);
+     
+                             mesh.setMatrixAt(i, tempMat);
+                         }
+                    }
+                } else if (source.type === 'object') {
+                    const { mesh: objMesh, instanceId } = source;
+                    if (!objMesh.parent) continue;
+
+                    if (source.cachedLocalCenter && source.cachedLocalSize) {
+                        const center = source.cachedLocalCenter;
+                        const size = source.cachedLocalSize;
+
+                        const worldMat = getInstanceWorldMatrix(objMesh, instanceId, new THREE.Matrix4());
+                        
+                        tempMat.makeTranslation(center.x, center.y, center.z);
+                        tempMat.scale(size);
+                        tempMat.premultiply(worldMat);
+
+                        mesh.setMatrixAt(i, tempMat);
+                    } else {
+                        const localBox = getInstanceLocalBox(objMesh, instanceId);
+                        if (localBox) {
+                            localBox.getSize(tempSize);
+                            localBox.getCenter(tempCenter);
+    
+                            const worldMat = getInstanceWorldMatrix(objMesh, instanceId, new THREE.Matrix4());
+                            
+                            tempMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+                            tempMat.scale(tempSize);
+                            tempMat.premultiply(worldMat);
+    
+                            mesh.setMatrixAt(i, tempMat);
+                        }
+                    }
                 }
             }
+            mesh.instanceMatrix.needsUpdate = true;
+        };
 
-            if (instanceMat) {
-                mesh.setMatrixAt(index, instanceMat);
-            }
-        });
-        mesh.instanceMatrix.needsUpdate = true;
-    };
+        if (selectionOverlay.isGroup) {
+            selectionOverlay.children.forEach(updateMesh);
+        } else {
+            updateMesh(selectionOverlay);
+        }
+    }
 
-    if (selectionOverlay.isGroup) {
-        selectionOverlay.children.forEach(updateMesh);
-    } else {
-        updateMesh(selectionOverlay);
+    if (selectionPointsOverlay) {
+        selectionPointsOverlay.applyMatrix4(deltaMatrix);
+        selectionPointsOverlay.updateMatrixWorld(true);
     }
 }
 

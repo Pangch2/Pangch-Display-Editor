@@ -534,7 +534,7 @@ function updateSelectionOverlay() {
 }
 
 function _updateMultiSelectionOverlayDuringDrag() {
-    Overlay.updateMultiSelectionOverlayDuringDrag(currentSelection, scene);
+    Overlay.updateMultiSelectionOverlayDuringDrag(currentSelection, scene, selectionHelper.matrixWorld, dragInitialMatrix);
 }
 
 function resetSelectionAndDeselect() {
@@ -991,6 +991,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     transformControls.addEventListener('dragging-changed', (event) => {
         controls.enabled = !event.value;
         if (event.value) {
+            Overlay.prepareMultiSelectionDrag(currentSelection);
             draggingMode = transformControls.mode;
             
             // Pre-calculate mesh grouping for performance
