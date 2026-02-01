@@ -14,6 +14,7 @@ const getObjectToGroup = GroupUtils.getObjectToGroup;
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_VEC3_A = new THREE.Vector3();
 const _TMP_VEC3_B = new THREE.Vector3();
+const _TMP_CORNERS = new Array(8).fill(0).map(() => new THREE.Vector3());
 
 export function initDrag({
     renderer,
@@ -179,6 +180,9 @@ export function initDrag({
                     if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
                     if (obj.visible === false) return;
 
+                    if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+                    const bbox = obj.geometry.boundingBox;
+
                     const instanceCount = getInstanceCount(obj);
                     if (instanceCount <= 0) return;
 
@@ -186,16 +190,41 @@ export function initDrag({
                         if (!isInstanceValid(obj, instanceId)) continue;
 
                         getInstanceWorldMatrixForOrigin(obj, instanceId, tmpMat);
-                        const localY = isItemDisplayHatEnabled(obj, instanceId) ? 0.03125 : 0;
-                        tmpWorld.set(0, localY, 0).applyMatrix4(tmpMat);
+                        const localYOffset = isItemDisplayHatEnabled(obj, instanceId) ? 0.03125 : 0;
 
-                        tmpNdc.copy(tmpWorld).project(camera);
-                        if (tmpNdc.z < -1 || tmpNdc.z > 1) continue;
+                        // Calculate projected bounding box
+                        _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y + localYOffset, bbox.min.z);
+                        _TMP_CORNERS[1].set(bbox.max.x, bbox.min.y + localYOffset, bbox.min.z);
+                        _TMP_CORNERS[2].set(bbox.min.x, bbox.max.y + localYOffset, bbox.min.z);
+                        _TMP_CORNERS[3].set(bbox.min.x, bbox.min.y + localYOffset, bbox.max.z);
+                        _TMP_CORNERS[4].set(bbox.max.x, bbox.max.y + localYOffset, bbox.min.z);
+                        _TMP_CORNERS[5].set(bbox.max.x, bbox.min.y + localYOffset, bbox.max.z);
+                        _TMP_CORNERS[6].set(bbox.min.x, bbox.max.y + localYOffset, bbox.max.z);
+                        _TMP_CORNERS[7].set(bbox.max.x, bbox.max.y + localYOffset, bbox.max.z);
 
-                        const sx = (tmpNdc.x * 0.5 + 0.5) * canvasRect.width;
-                        const sy = (-tmpNdc.y * 0.5 + 0.5) * canvasRect.height;
+                        let minSx = Infinity, maxSx = -Infinity;
+                        let minSy = Infinity, maxSy = -Infinity;
+                        let validCornerCount = 0;
 
-                        if (sx < minX || sx > maxX || sy < minY || sy > maxY) continue;
+                        for (let i = 0; i < 8; i++) {
+                            const v = _TMP_CORNERS[i];
+                            v.applyMatrix4(tmpMat);
+                            v.project(camera);
+
+                            if (v.z < -1 || v.z > 1) continue;
+
+                            validCornerCount++;
+                            const sx = (v.x * 0.5 + 0.5) * canvasRect.width;
+                            const sy = (-v.y * 0.5 + 0.5) * canvasRect.height;
+
+                            if (sx < minSx) minSx = sx;
+                            if (sx > maxSx) maxSx = sx;
+                            if (sy < minSy) minSy = sy;
+                            if (sy > maxSy) maxSy = sy;
+                        }
+
+                        if (validCornerCount === 0) continue;
+                        if (minSx > maxX || maxSx < minX || minSy > maxY || maxSy < minY) continue;
 
                         if (!ignoreGroups && objectToGroup) {
                             const key = getGroupKey(obj, instanceId);
