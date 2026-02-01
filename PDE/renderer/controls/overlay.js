@@ -528,31 +528,51 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
     const allOverlayItems = [...itemsToRender, ...queueItemsToRender];
 
     if (allOverlayItems.length > 0) {
-        const material = new THREE.MeshBasicMaterial({
-            color: 0xffffff,
-            depthTest: true,
-            depthWrite: false,
-            transparent: true,
-            opacity: 0.9,
-            wireframe: true
-        });
+        const createMesh = (items) => {
+            const material = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                depthTest: true,
+                depthWrite: false,
+                transparent: true,
+                opacity: 0.9,
+                wireframe: true
+            });
 
-        selectionOverlay = new THREE.InstancedMesh(_overlayUnitGeo, material, allOverlayItems.length);
-        selectionOverlay.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        selectionOverlay.renderOrder = 1;
-        selectionOverlay.matrixAutoUpdate = false;
-        selectionOverlay.matrix.identity();
+            const mesh = new THREE.InstancedMesh(_overlayUnitGeo, material, items.length);
+            mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            mesh.renderOrder = 1;
+            mesh.matrixAutoUpdate = false;
+            mesh.matrix.identity();
+            mesh.frustumCulled = false; // Prevent culling when instances move away
 
-        const colorObj = new THREE.Color();
-        allOverlayItems.forEach((item, index) => {
-            selectionOverlay.setMatrixAt(index, item.matrix);
-            colorObj.setHex(item.color);
-            selectionOverlay.setColorAt(index, colorObj);
-        });
+            mesh.userData.items = items;
 
-        selectionOverlay.userData.items = allOverlayItems;
-        selectionOverlay.instanceMatrix.needsUpdate = true;
-        if (selectionOverlay.instanceColor) selectionOverlay.instanceColor.needsUpdate = true;
+            const colorObj = new THREE.Color();
+            items.forEach((item, index) => {
+                mesh.setMatrixAt(index, item.matrix);
+                colorObj.setHex(item.color);
+                mesh.setColorAt(index, colorObj);
+            });
+
+            mesh.instanceMatrix.needsUpdate = true;
+            if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+            return mesh;
+        };
+
+        const CHUNK_SIZE = 1000; // Chunk size to avoid limits
+        if (allOverlayItems.length > CHUNK_SIZE) {
+            selectionOverlay = new THREE.Group();
+            selectionOverlay.matrixAutoUpdate = false;
+            selectionOverlay.renderOrder = 1;
+            selectionOverlay.matrix.identity();
+
+            for (let i = 0; i < allOverlayItems.length; i += CHUNK_SIZE) {
+                const chunk = allOverlayItems.slice(i, i + CHUNK_SIZE);
+                selectionOverlay.add(createMesh(chunk));
+            }
+        } else {
+            selectionOverlay = createMesh(allOverlayItems);
+        }
 
         scene.add(selectionOverlay);
     }
@@ -746,58 +766,65 @@ export function syncSelectionPointsOverlay(delta) {
 }
 
 export function syncSelectionOverlay(deltaMatrix) {
-    if (!selectionOverlay || !selectionOverlay.userData.items) return;
-                                                                                                    
-    const items = selectionOverlay.userData.items;
-    const tempSize = _TMP_VEC3_B;
+    if (!selectionOverlay) return;
+
     const tempCenter = _TMP_VEC3_A;
-    const objTempMat = _TMP_MAT4_A;
+    const tempSize = _TMP_VEC3_B;
+    const tempMat = _TMP_MAT4_A;
+    const tempWorldMat = _TMP_MAT4_B;
 
-    items.forEach((item, index) => {
-        const source = item.source;
-        let instanceMat = null;
-                                                                                                                                                      
-        if (source.type === 'group') {
-            const groupId = source.id;
-            const localBox = getGroupLocalBoundingBox(groupId);
-            if (!localBox || localBox.isEmpty()) return;
+    const updateMesh = (mesh) => {
+        if (!mesh.isInstancedMesh || !mesh.userData.items) return;
+        
+        const items = mesh.userData.items;
+        items.forEach((item, index) => {
+            let instanceMat = null;
+            
+            if (item.source.type === 'group') {
+                const groupId = item.source.id;
+                const localBox = getGroupLocalBoundingBox(groupId);
+                
+                if (localBox && !localBox.isEmpty()) {
+                    localBox.getSize(tempSize);
+                    localBox.getCenter(tempCenter);
 
-            localBox.getSize(tempSize);
-            localBox.getCenter(tempCenter);
+                    getGroupWorldMatrixWithFallback(groupId, tempWorldMat);
+                    
+                    instanceMat = tempMat;
+                    instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+                    instanceMat.scale(tempSize);
+                    instanceMat.premultiply(tempWorldMat);
+                }
+            } else if (item.source.type === 'object') {
+                const { mesh, instanceId } = item.source;
+                const localBox = getInstanceLocalBox(mesh, instanceId);
 
-            const groupWorld = getGroupWorldMatrixWithFallback(groupId, objTempMat);
+                if (localBox) {
+                    localBox.getSize(tempSize);
+                    localBox.getCenter(tempCenter);
 
-            instanceMat = new THREE.Matrix4();
-            instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-            instanceMat.scale(tempSize);
-            instanceMat.premultiply(groupWorld);
+                    getInstanceWorldMatrix(mesh, instanceId, tempWorldMat);
 
-        } else if (source.type === 'object') {
-            const { mesh, instanceId } = source;
-            if (!mesh) return;
+                    instanceMat = tempMat;
+                    instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+                    instanceMat.scale(tempSize);
+                    instanceMat.premultiply(tempWorldMat);
+                }
+            }
 
-            const localBox = getInstanceLocalBox(mesh, instanceId);                                                                                   
-            if (!localBox) return;
+            if (instanceMat) {
+                mesh.setMatrixAt(index, instanceMat);
+            }
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+    };
 
-            localBox.getSize(tempSize);
-            localBox.getCenter(tempCenter);
-            getInstanceWorldMatrix(mesh, instanceId, objTempMat);
-
-            instanceMat = new THREE.Matrix4();
-            instanceMat.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-            instanceMat.scale(tempSize);
-            instanceMat.premultiply(objTempMat);
-        }
-
-        if (instanceMat) {
-            selectionOverlay.setMatrixAt(index, instanceMat);
-            if (item.matrix) item.matrix.copy(instanceMat);
-        }
-    });
-
-    selectionOverlay.instanceMatrix.needsUpdate = true;
-    selectionOverlay.updateMatrixWorld(true);
-}                                                                                                                                            
+    if (selectionOverlay.isGroup) {
+        selectionOverlay.children.forEach(updateMesh);
+    } else {
+        updateMesh(selectionOverlay);
+    }
+}
 
 export function findClosestVertexForSnapping(gizmoWorldPos, camera, renderer, snapThreshold = 15) {
     if (!selectionPointsOverlay) return null;
