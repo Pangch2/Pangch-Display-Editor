@@ -227,12 +227,6 @@ function _pushToVertexQueue() {
         for (const ids of currentSelection.objects.values()) totalCount += ids.size;
     }
 
-    if (totalCount > 1) {
-        vertexQueue.length = 0;
-        selectedVertexKeys.clear();
-        return;
-    }
-
     let currentGizmoPos = null;
     let currentGizmoQuat = null;
     if ((currentSelection.groups.size > 0 || currentSelection.objects.size > 0)) {
@@ -273,6 +267,7 @@ function _pushToVertexQueue() {
     const tempMat = _TMP_MAT4_A;
     const tempInv = _TMP_MAT4_B;
 
+    const bundleItems = [];
     for (const item of itemsToAdd) {
         let localPos = null;
         let localQuat = null;
@@ -293,7 +288,7 @@ function _pushToVertexQueue() {
             }
         }
 
-        vertexQueue.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat });
+        bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat });
 
         if (isCenterSelected && localPos) {
             const idStr = item.type === 'group' ? `G_${item.id}` : `O_${item.mesh.uuid}_${item.instanceId}`;
@@ -302,65 +297,78 @@ function _pushToVertexQueue() {
         }
     }
 
+    if (bundleItems.length > 0) {
+        vertexQueue.push({
+            type: 'bundle',
+            items: bundleItems
+        });
+    }
+
     while (vertexQueue.length > VERTEX_QUEUE_MAX_SIZE) {
         const removedItem = vertexQueue.shift(); 
         
-        // Remove keys associated with the removed item
-        const idStr = removedItem.type === 'group' 
-            ? `G_${removedItem.id}` 
-            : `O_${removedItem.mesh.uuid}_${removedItem.instanceId}`;
-        const prefix = `QUEUE_${idStr}_`;
+        const removeKeysForSubItem = (sub) => {
+            const idStr = sub.type === 'group' 
+                ? `G_${sub.id}` 
+                : `O_${sub.mesh.uuid}_${sub.instanceId}`;
+            const prefix = `QUEUE_${idStr}_`;
 
-        for (const key of selectedVertexKeys) {
-            if (key.startsWith(prefix)) {
-                selectedVertexKeys.delete(key);
+            for (const key of selectedVertexKeys) {
+                if (key.startsWith(prefix)) {
+                    selectedVertexKeys.delete(key);
+                }
             }
-        }
 
-        // Remove overlay keys (spatial position) associated with the removed item
-        let matrix = null;
-        const tempSize = _TMP_VEC3_A;
-        const tempCenter = _TMP_VEC3_B;
-        
-        if (removedItem.type === 'group') {
-             const groupId = removedItem.id;
-             const localBox = getGroupLocalBoundingBox(groupId);
-             if (localBox && !localBox.isEmpty()) {
-                 localBox.getSize(tempSize);
-                 localBox.getCenter(tempCenter);
-                 
-                 const groupWorld = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
-                 matrix = _TMP_MAT4_B;
-                 matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                 matrix.scale(tempSize);
-                 matrix.premultiply(groupWorld);
-             }
-        } else if (removedItem.type === 'object') {
-             const { mesh, instanceId } = removedItem;
-             if (isInstanceValid(mesh, instanceId)) {
-                 const localBox = getInstanceLocalBox(mesh, instanceId);
-                 if (localBox) {
+            let matrix = null;
+            const tempSize = _TMP_VEC3_A;
+            const tempCenter = _TMP_VEC3_B;
+            
+            if (sub.type === 'group') {
+                 const groupId = sub.id;
+                 const localBox = getGroupLocalBoundingBox(groupId);
+                 if (localBox && !localBox.isEmpty()) {
                      localBox.getSize(tempSize);
                      localBox.getCenter(tempCenter);
-
-                     const worldMat = getInstanceWorldMatrix(mesh, instanceId, _TMP_MAT4_A);
+                     
+                     const groupWorld = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
                      matrix = _TMP_MAT4_B;
                      matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
                      matrix.scale(tempSize);
-                     matrix.premultiply(worldMat);
+                     matrix.premultiply(groupWorld);
                  }
-             }
-        }
+            } else if (sub.type === 'object') {
+                 const { mesh, instanceId } = sub;
+                 if (isInstanceValid(mesh, instanceId)) {
+                     const localBox = getInstanceLocalBox(mesh, instanceId);
+                     if (localBox) {
+                         localBox.getSize(tempSize);
+                         localBox.getCenter(tempCenter);
 
-        if (matrix) {
-             const v = new THREE.Vector3();
-             for (const corner of _unitCubeCorners) {
-                 v.copy(corner).applyMatrix4(matrix);
-                 const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
-                 if (selectedVertexKeys.has(key)) {
-                     selectedVertexKeys.delete(key);
+                         const worldMat = getInstanceWorldMatrix(mesh, instanceId, _TMP_MAT4_A);
+                         matrix = _TMP_MAT4_B;
+                         matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
+                         matrix.scale(tempSize);
+                         matrix.premultiply(worldMat);
+                     }
                  }
-             }
+            }
+
+            if (matrix) {
+                 const v = new THREE.Vector3();
+                 for (const corner of _unitCubeCorners) {
+                     v.copy(corner).applyMatrix4(matrix);
+                     const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
+                     if (selectedVertexKeys.has(key)) {
+                         selectedVertexKeys.delete(key);
+                     }
+                 }
+            }
+        };
+
+        if (removedItem.type === 'bundle') {
+            removedItem.items.forEach(removeKeysForSubItem);
+        } else {
+            removeKeysForSubItem(removedItem);
         }
     }
 }
@@ -794,6 +802,39 @@ function _commitSelectionChange() {
     _recomputePivotStateForSelection();
     updateHelperPosition();
     updateSelectionOverlay();
+}
+
+function _promoteVertexQueueBundleOnExit() {
+    if (!Array.isArray(vertexQueue) || vertexQueue.length === 0) return false;
+
+    const bundle = vertexQueue.find((item) => item && item.type === 'bundle' && Array.isArray(item.items));
+    if (!bundle || !bundle.items || bundle.items.length === 0) return false;
+
+    const groupIds = new Set();
+    const meshToIds = new Map();
+
+    for (const sub of bundle.items) {
+        if (!sub) continue;
+        if (sub.type === 'group' && sub.id) {
+            groupIds.add(sub.id);
+            continue;
+        }
+        if (sub.type === 'object' && sub.mesh && Number.isInteger(sub.instanceId) && isInstanceValid(sub.mesh, sub.instanceId)) {
+            let ids = meshToIds.get(sub.mesh);
+            if (!ids) {
+                ids = new Set();
+                meshToIds.set(sub.mesh, ids);
+            }
+            ids.add(sub.instanceId);
+        }
+    }
+
+    let total = groupIds.size;
+    for (const ids of meshToIds.values()) total += ids.size;
+    if (total <= 1) return false;
+
+    _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'default' });
+    return true;
 }
 
 function createGroup() {
@@ -1380,6 +1421,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 if (isVertexMode) {
                     transformControls.detach();
                 } else {
+                    _promoteVertexQueueBundleOnExit();
                     // Vertex mode exiting: clear queue so old objects don't persist in overlay
                     vertexQueue.length = 0;
                     selectedVertexKeys.clear();
@@ -1928,7 +1970,8 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                                 getGroups, getGroupWorldMatrixWithFallback,
                                 updateHelperPosition, updateSelectionOverlay,
                                 SelectionCenter,
-                                vertexQueue
+                                vertexQueue,
+                                getSelectedItems // Add missing callback
                             });
                         }
                     }

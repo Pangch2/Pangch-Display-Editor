@@ -35,6 +35,16 @@ export function processVertexSnap(
 ) {
     if (!isVertexMode) return false;
 
+    const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
+    let objectIdCount = 0;
+    if (currentSelection.objects && currentSelection.objects.size > 0) {
+        for (const ids of currentSelection.objects.values()) {
+            objectIdCount += ids.size;
+        }
+    }
+    const activeSelectionCount = groupCount + objectIdCount;
+    const preserveSelectionOnSnap = _isMultiSelection() || activeSelectionCount > 1;
+
     const keys = Array.from(selectedVertexKeys);
     if (keys.length !== 2) return false;
 
@@ -124,7 +134,7 @@ export function processVertexSnap(
                 updateHelperPosition,
                 SelectionCenter,
                 vertexQueue
-            });
+            }, { preserveSelection: preserveSelectionOnSnap });
 
             if (state.pivotMode === 'center') {
                 setGizmoState({ pivotMode: 'origin' });
@@ -232,7 +242,7 @@ export function processVertexSnap(
                 updateHelperPosition,
                 SelectionCenter,
                 vertexQueue
-            });
+            }, { preserveSelection: preserveSelectionOnSnap });
 
             selectedVertexKeys.clear();
             updateHelperPosition();
@@ -279,7 +289,8 @@ export function processVertexSnap(
         // 2. Build explicit lists of what to move
         const targets = {
             groups: new Set(),         // Group Metadata to update
-            instances: new Map()       // Actual visual instances { mesh -> Set<id> }
+            instances: new Map(),      // Actual visual instances { mesh -> Set<id> }
+            isBundleMove: false        // Flag to indicate if we are moving a bundle from the queue
         };
 
         const addInstance = (mesh, id) => {
@@ -298,8 +309,36 @@ export function processVertexSnap(
             }
         };
 
+        const addBundle = (bundle) => {
+            if (!bundle || !bundle.items) return;
+            targets.isBundleMove = true;
+            for (const item of bundle.items) {
+                if (item.type === 'group') addGroup(item.id);
+                else if (item.type === 'object') addInstance(item.mesh, item.instanceId);
+            }
+        };
+
+        // Check if src is part of a bundle in the queue
+        let containingBundle = null;
+        if (!isSrcEffectiveSelected) {
+            // Search all bundles in the queue to see if this object/group belongs to one
+            for (const qItem of vertexQueue) {
+                if (qItem.type === 'bundle' && qItem.items) {
+                    const found = qItem.items.find(sub => {
+                        if (src.type === 'group' && sub.type === 'group') return sub.id === src.id;
+                        if (src.type === 'object' && sub.type === 'object') return sub.mesh === src.mesh && sub.instanceId === src.instanceId;
+                        return false;
+                    });
+                    if (found) {
+                        containingBundle = qItem;
+                        break;
+                    }
+                }
+            }
+        }
+
         if (isSrcEffectiveSelected) {
-            // Move entire selection
+            // Move entire active selection
             if (currentSelection.groups) {
                 for (const gid of currentSelection.groups) addGroup(gid);
             }
@@ -310,12 +349,27 @@ export function processVertexSnap(
                     }
                 }
             }
+
+            // Update Gizmo State anchors so they follow the move
+            const state = getGizmoState();
+            const updates = {};
+            if (state._gizmoAnchorValid && state._gizmoAnchorPosition) {
+                updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().add(delta);
+            }
+            if (state._multiSelectionOriginAnchorValid && state._multiSelectionOriginAnchorPosition) {
+                updates._multiSelectionOriginAnchorPosition = state._multiSelectionOriginAnchorPosition.clone().add(delta);
+            }
+            if (Object.keys(updates).length > 0) setGizmoState(updates);
+
+        } else if (containingBundle) {
+            // Move the entire bundle from the queue
+            addBundle(containingBundle);
         } else {
             // Move only the picked logical entity
             if (src.type === 'group') {
                 // Move the specific group clicked
                 addGroup(src.id);
-            } else {
+            } else if (src.type === 'object') {
                 const { mesh, instanceId } = src;
                 // Always move the specific object instance, even if it's in a group
                 addInstance(mesh, instanceId);
@@ -357,12 +411,27 @@ export function processVertexSnap(
             }
         }
 
-        // Swapping selection state: Object A (Source) becomes selected, Object B (Target) goes to Vertex Queue
-        let targetSrc = sprite2.userData.source;
-        if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
-            targetSrc = currentSelection.primary;
+        // C. Update Bundle/Queue Metadata (If moving a bundle not in active selection)
+        // If we moved items that were in the vertexQueue, their gizmoLocalPosition needs update
+        // (Though typically they are moved in world space, we must ensure they stay consistent)
+        if (targets.isBundleMove && containingBundle) {
+            // No action needed for localPositions because they are relative to world matrix which was updated.
+            // But we should invalidate caches.
         }
-        performSelectionSwap(src, targetSrc, {
+
+                        // Swapping selection state: Object A (Source) becomes selected, Object B (Target) goes to Vertex Queue
+
+                        let targetSrc = sprite2.userData.source;
+
+                        if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
+
+                            targetSrc = currentSelection.primary;
+
+                        }
+
+                
+
+                        performSelectionSwap(src, targetSrc, {
             currentSelection,
             getGroups,
             getGroupWorldMatrixWithFallback,
@@ -371,7 +440,7 @@ export function processVertexSnap(
             updateHelperPosition,
             SelectionCenter,
             vertexQueue
-        });
+        }, { preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle });
         
         selectedVertexKeys.clear();
         updateHelperPosition();

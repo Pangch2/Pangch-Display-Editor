@@ -389,7 +389,7 @@ export function handleSelectionClick(
             }
 
             if (deepestSelectedIndex !== -1) {
-                if (callbacks && callbacks.isVertexMode) {
+                if (event.shiftKey || (callbacks && callbacks.isVertexMode)) {
                     groupToDeselect = groupChain[deepestSelectedIndex];
                 }
 

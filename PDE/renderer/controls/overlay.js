@@ -563,22 +563,28 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
     const queueItemsToRender = [];
     if (vertexQueue.length > 0) {
         const groups = getGroups();
-        for (const item of vertexQueue) {
+        
+        const processQueueItem = (item) => {
+            if (item.type === 'bundle') {
+                item.items.forEach(processQueueItem);
+                return;
+            }
+
             let isSelected = false;
             if (item.type === 'group') {
                 if (currentSelection.groups.has(item.id)) isSelected = true;
-            } else {
+            } else if (item.type === 'object') {
                 if (currentSelection.objects.has(item.mesh) && currentSelection.objects.get(item.mesh).has(item.instanceId)) {
                     isSelected = true;
                 }
             }
-            if (isSelected) continue;
+            if (isSelected) return;
 
             if (item.type === 'group') {
                 const groupId = item.id;
-                if (!groups.has(groupId)) continue;
+                if (!groups.has(groupId)) return;
                 const localBox = getGroupLocalBoundingBox(groupId);
-                if (!localBox || localBox.isEmpty()) continue;
+                if (!localBox || localBox.isEmpty()) return;
                 
                 localBox.getSize(tempSize);
                 localBox.getCenter(tempCenter);
@@ -602,10 +608,10 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
                 queueItemsToRender.push({ matrix: instanceMat, color: 0x6FA21C, source: { type: 'group', id: groupId }, gizmoPosition: gPos, gizmoQuaternion: gQuat, gizmoLocalPosition: item.gizmoLocalPosition });
             } else if (item.type === 'object') {
                 const { mesh, instanceId } = item;
-                if (!mesh.parent || !isInstanceValid(mesh, instanceId)) continue;
+                if (!mesh.parent || !isInstanceValid(mesh, instanceId)) return;
                 
                 const localBox = getInstanceLocalBox(mesh, instanceId);
-                if (!localBox) continue;
+                if (!localBox) return;
                 
                 localBox.getSize(tempSize);
                 localBox.getCenter(tempCenter);
@@ -631,6 +637,10 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
 
                 queueItemsToRender.push({ matrix: instanceMat, color: color, source: { type: 'object', mesh, instanceId }, gizmoPosition: gPos, gizmoQuaternion: gQuat, gizmoLocalPosition: item.gizmoLocalPosition });
             }
+        };
+
+        for (const item of vertexQueue) {
+            processQueueItem(item);
         }
     }
 
@@ -817,22 +827,69 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
         scene.add(selectionPointsOverlay);
     }
 
-    // Multi-selection: add a white world-aligned bounding box overlay (no rotation)
-    const objectIdCount = _getSelectedObjectCount(currentSelection);
-    const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
-    const isMultiSelection = (groupCount + objectIdCount) > 1;
+    // Multi-selection: add white world-aligned bounding box overlays (no rotation)
+    if (multiSelectionOverlay) {
+        scene.remove(multiSelectionOverlay);
+        disposeThreeObjectTree(multiSelectionOverlay);
+        multiSelectionOverlay = null;
+    }
 
-    if (isMultiSelection) {
-        const worldBox = getSelectionBoundingBox(currentSelection);
-        const edgesGeo = createEdgesGeometryFromBox3(worldBox);
-        if (edgesGeo) {
-            const overlayMaterial = createOverlayLineMaterial(0xFFFFFF);
-            multiSelectionOverlay = new THREE.LineSegments(edgesGeo, overlayMaterial);
-            multiSelectionOverlay.renderOrder = 1;
-            multiSelectionOverlay.matrixAutoUpdate = false;
-            multiSelectionOverlay.matrix.identity();
-            scene.add(multiSelectionOverlay);
+    const boxesToDraw = [];
+
+    // 1. Active Multi-selection Box
+    const activeObjCount = _getSelectedObjectCount(currentSelection);
+    const activeGrpCount = currentSelection.groups ? currentSelection.groups.size : 0;
+    if ((activeObjCount + activeGrpCount) > 1) {
+        boxesToDraw.push(getSelectionBoundingBox(currentSelection));
+    }
+
+    // 2. Vertex Queue Bundle Boxes
+    for (const qItem of vertexQueue) {
+        if (qItem.type === 'bundle' && qItem.items && qItem.items.length > 1) {
+            const bundleBox = new THREE.Box3();
+            const tempMat = new THREE.Matrix4();
+            const tempBox = new THREE.Box3();
+
+            for (const sub of qItem.items) {
+                let localBox = null;
+                let worldMat = new THREE.Matrix4();
+
+                if (sub.type === 'group') {
+                    localBox = getGroupLocalBoundingBox(sub.id);
+                    getGroupWorldMatrixWithFallback(sub.id, worldMat);
+                } else if (sub.type === 'object') {
+                    localBox = getInstanceLocalBox(sub.mesh, sub.instanceId);
+                    getInstanceWorldMatrix(sub.mesh, sub.instanceId, worldMat);
+                }
+
+                if (localBox && !localBox.isEmpty()) {
+                    tempBox.copy(localBox).applyMatrix4(worldMat);
+                    bundleBox.union(tempBox);
+                }
+            }
+
+            if (!bundleBox.isEmpty()) {
+                boxesToDraw.push(bundleBox);
+            }
         }
+    }
+
+    if (boxesToDraw.length > 0) {
+        multiSelectionOverlay = new THREE.Group();
+        multiSelectionOverlay.matrixAutoUpdate = false;
+        multiSelectionOverlay.renderOrder = 1;
+
+        const overlayMaterial = createOverlayLineMaterial(0xFFFFFF);
+
+        for (const box of boxesToDraw) {
+            const edgesGeo = createEdgesGeometryFromBox3(box);
+            if (edgesGeo) {
+                const lines = new THREE.LineSegments(edgesGeo, overlayMaterial);
+                lines.matrixAutoUpdate = false;
+                multiSelectionOverlay.add(lines);
+            }
+        }
+        scene.add(multiSelectionOverlay);
     }
 
     if (selectionOverlay) selectionOverlay.updateMatrixWorld(true);
@@ -845,17 +902,21 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
 export function updateMultiSelectionOverlayDuringDrag(currentSelection, scene, currentGizmoMat, initialGizmoMat) {
     if (!multiSelectionOverlay) return;
 
+    // Identify if the first child of the group is the active selection's box
+    // (Based on updateSelectionOverlay, the active box is pushed first)
+    const activeBoxLine = multiSelectionOverlay.children[0];
+    if (!activeBoxLine || !activeBoxLine.isLineSegments) return;
+
     const objectIdCount = _getSelectedObjectCount(currentSelection);
     const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
     const isMultiSelection = (groupCount + objectIdCount) > 1;
     
     if (!isMultiSelection) {
-        scene.remove(multiSelectionOverlay);
-        if (multiSelectionOverlay.geometry) multiSelectionOverlay.geometry.dispose();
-        if (multiSelectionOverlay.material) multiSelectionOverlay.material.dispose();
-        multiSelectionOverlay = null;
+        // If active selection is no longer multi, hide its box but keep the group for others
+        activeBoxLine.visible = false;
         return;
     }
+    activeBoxLine.visible = true;
 
     let worldBox = _TMP_BOX3_A.makeEmpty();
 
@@ -927,10 +988,9 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection, scene, c
     const edgesGeo = createEdgesGeometryFromBox3(worldBox);
     if (!edgesGeo) return;
 
-    if (multiSelectionOverlay.geometry) multiSelectionOverlay.geometry.dispose();
-    multiSelectionOverlay.geometry = edgesGeo;
-    multiSelectionOverlay.matrix.identity();
-    multiSelectionOverlay.updateMatrixWorld(true);
+    if (activeBoxLine.geometry) activeBoxLine.geometry.dispose();
+    activeBoxLine.geometry = edgesGeo;
+    activeBoxLine.updateMatrixWorld(true);
 }
 
 export function syncSelectionPointsOverlay(delta) {

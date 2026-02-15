@@ -34,6 +34,16 @@ export function processVertexRotate(
 ) {
     if (!isVertexMode || gizmoMode !== 'rotate') return false;
 
+    const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
+    let objectIdCount = 0;
+    if (currentSelection.objects && currentSelection.objects.size > 0) {
+        for (const ids of currentSelection.objects.values()) {
+            objectIdCount += ids.size;
+        }
+    }
+    const activeSelectionCount = groupCount + objectIdCount;
+    const preserveSelectionOnSnap = activeSelectionCount > 1;
+
     const keys = Array.from(selectedVertexKeys);
     if (keys.length !== 2) return false;
 
@@ -152,7 +162,8 @@ export function processVertexRotate(
         // 2. Build explicit lists of what to move
         const targets = {
             groups: new Set(),
-            instances: new Map() 
+            instances: new Map(),
+            isBundleMove: false
         };
 
         const addInstance = (mesh, id) => {
@@ -170,6 +181,33 @@ export function processVertexRotate(
             }
         };
 
+        const addBundle = (bundle) => {
+            if (!bundle || !bundle.items) return;
+            targets.isBundleMove = true;
+            for (const item of bundle.items) {
+                if (item.type === 'group') addGroup(item.id);
+                else if (item.type === 'object') addInstance(item.mesh, item.instanceId);
+            }
+        };
+
+        // Check if src is part of a bundle in the queue
+        let containingBundle = null;
+        if (!isSrcEffectiveSelected) {
+            for (const qItem of vertexQueue) {
+                if (qItem.type === 'bundle' && qItem.items) {
+                    const found = qItem.items.find(sub => {
+                        if (src.type === 'group' && sub.type === 'group') return sub.id === src.id;
+                        if (src.type === 'object' && sub.type === 'object') return sub.mesh === src.mesh && sub.instanceId === src.instanceId;
+                        return false;
+                    });
+                    if (found) {
+                        containingBundle = qItem;
+                        break;
+                    }
+                }
+            }
+        }
+
         if (isSrcEffectiveSelected) {
             if (currentSelection.groups) {
                 for (const gid of currentSelection.groups) addGroup(gid);
@@ -181,6 +219,20 @@ export function processVertexRotate(
                     }
                 }
             }
+
+            // Update Gizmo State anchors
+            const state = getGizmoState();
+            const updates = {};
+            if (state._gizmoAnchorValid && state._gizmoAnchorPosition) {
+                updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().applyMatrix4(transformMat);
+            }
+            if (state._multiSelectionOriginAnchorValid && state._multiSelectionOriginAnchorPosition) {
+                updates._multiSelectionOriginAnchorPosition = state._multiSelectionOriginAnchorPosition.clone().applyMatrix4(transformMat);
+            }
+            if (Object.keys(updates).length > 0) setGizmoState(updates);
+
+        } else if (containingBundle) {
+            addBundle(containingBundle);
         } else {
             if (src.type === 'group') {
                 addGroup(src.id);
@@ -194,35 +246,16 @@ export function processVertexRotate(
         
         // A. Update Instances (Visuals)
         for (const [mesh, ids] of targets.instances) {
-            
-            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
-                // Delta = M_inv_parent * Transform * M_parent
-                const localTransform = new THREE.Matrix4().multiplyMatrices(meshWorldInv, transformMat);
-                localTransform.multiply(mesh.matrixWorld);
+            const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
+            const localTransform = new THREE.Matrix4().multiplyMatrices(meshWorldInv, transformMat);
+            localTransform.multiply(mesh.matrixWorld);
 
-                for (const id of ids) {
-                    mesh.getMatrixAt(id, _TMP_INSTANCE_MATRIX);
-                    _TMP_INSTANCE_MATRIX.premultiply(localTransform);
-                    mesh.setMatrixAt(id, _TMP_INSTANCE_MATRIX);
-                }
-                if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
-
-            } else {
-                // Standard Mesh Logic
-                // NewWorld = Transform * OldWorld
-                // NewLocal = ParentWorldInv * NewWorld
-
-                const parentWorld = mesh.parent ? mesh.parent.matrixWorld : new THREE.Matrix4().identity();
-                const parentInv = parentWorld.clone().invert();
-                
-                const newWorld = transformMat.clone().multiply(mesh.matrixWorld);
-                const newLocal = parentInv.multiply(newWorld);
-                
-                mesh.matrix.copy(newLocal);
-                mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
-                mesh.updateMatrixWorld(true);
+            for (const id of ids) {
+                mesh.getMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                _TMP_INSTANCE_MATRIX.premultiply(localTransform);
+                mesh.setMatrixAt(id, _TMP_INSTANCE_MATRIX);
             }
+            if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
         }
 
         // B. Update Group Metadata (Logic)
@@ -258,7 +291,7 @@ export function processVertexRotate(
             updateHelperPosition,
             SelectionCenter,
             vertexQueue
-        });
+        }, { preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle });
         
         selectedVertexKeys.clear();
         updateHelperPosition();
