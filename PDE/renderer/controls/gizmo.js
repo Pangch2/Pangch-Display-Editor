@@ -581,7 +581,8 @@ function updateHelperPosition() {
     // If we have a primary selection, and IT has a custom pivot, we should respect it
     // effectively treating it as the "multi-selection custom pivot".
     // BUT only do this if we don't already have an active custom pivot (e.g. manually edited).
-    if (!isCustomPivot && _isMultiSelection() && currentSelection.primary) {
+    // Also skip if _multiSelectionOriginAnchorValid is already true (e.g. set by vertex snap).
+    if (!isCustomPivot && !_multiSelectionOriginAnchorValid && _isMultiSelection() && currentSelection.primary) {
         let primaryPivotWorld = null;
         const prim = currentSelection.primary;
 

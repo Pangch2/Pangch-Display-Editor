@@ -88,6 +88,57 @@ export function performSelectionSwap(
 
     const state = getGizmoState();
 
+    const computeAndApplyPivotState = (source) => {
+        let pivotWorld = null;
+
+        if (source.type === 'object') {
+            const { mesh, instanceId } = source;
+
+            const getWorldPivot = (id) => {
+                let local = null;
+                if (mesh.userData.customPivots) {
+                    local = mesh.userData.customPivots.get(id);
+                    if (!local) {
+                        const k = (typeof id === 'number') ? String(id) : Number(id);
+                        local = mesh.userData.customPivots.get(k);
+                    }
+                }
+                if (local) {
+                    const m = _TMP_MAT4_A;
+                    if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                        mesh.getMatrixAt(id, m);
+                    } else {
+                        m.copy(mesh.matrix);
+                    }
+                    m.premultiply(mesh.matrixWorld);
+                    return local.clone().applyMatrix4(m);
+                }
+                return null;
+            };
+
+            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                pivotWorld = getWorldPivot(instanceId);
+            } else if (mesh.userData.customPivot) {
+                pivotWorld = mesh.userData.customPivot.clone().applyMatrix4(mesh.matrixWorld);
+            }
+        } else if (source.type === 'group') {
+            const groups = getGroups();
+            const group = groups.get(source.id);
+            if (group && group.isCustomPivot && group.pivot) {
+                const gMat = getGroupWorldMatrixWithFallback(source.id, _TMP_MAT4_A);
+                pivotWorld = group.pivot.clone().applyMatrix4(gMat);
+            }
+        }
+
+        if (pivotWorld) {
+            const origin = SelectionCenter('origin', false, _ZERO_VEC3);
+            const offset = new THREE.Vector3().subVectors(pivotWorld, origin);
+            setGizmoState({ isCustomPivot: true, pivotOffset: offset });
+        } else {
+            setGizmoState({ isCustomPivot: false, pivotOffset: new THREE.Vector3(0, 0, 0) });
+        }
+    };
+
     const createQueueEntry = (source) => {
         const targetLocalPivot = new THREE.Vector3(0, 0, 0);
         let hasCustomPivot = false;
@@ -200,6 +251,7 @@ export function performSelectionSwap(
             if (currentSelection.primary && matchesSource(currentSelection.primary, src)) {
                 currentSelection.primary = toSelectionSource(targetSrc);
             }
+            computeAndApplyPivotState(targetSrc);
             return;
         }
 
@@ -211,6 +263,7 @@ export function performSelectionSwap(
             if (currentSelection.primary && matchesSource(currentSelection.primary, targetSrc)) {
                 currentSelection.primary = toSelectionSource(src);
             }
+            computeAndApplyPivotState(src);
             return;
         }
     }
@@ -234,64 +287,7 @@ export function performSelectionSwap(
          }
 
          // Recompute Pivot State for 'src'
-         let pivotWorld = null;
-
-         if (src.type === 'object') {
-             const { mesh, instanceId } = src;
-             
-             const getWorldPivot = (id) => {
-                 let local = null;
-                 if (mesh.userData.customPivots) {
-                     local = mesh.userData.customPivots.get(id);
-                     if (!local) {
-                         const k = (typeof id === 'number') ? String(id) : Number(id);
-                         local = mesh.userData.customPivots.get(k);
-                     }
-                 }
-                 
-                 if (local) {
-                     const m = _TMP_MAT4_A;
-                     if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                         mesh.getMatrixAt(id, m);
-                     } else {
-                         m.copy(mesh.matrix);
-                     }
-                     m.premultiply(mesh.matrixWorld);
-                     return local.clone().applyMatrix4(m);
-                 }
-                 return null;
-             };
-
-             if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                 pivotWorld = getWorldPivot(instanceId);
-             } else if (mesh.userData.customPivot) {
-                 pivotWorld = mesh.userData.customPivot.clone().applyMatrix4(mesh.matrixWorld);
-             }
-             
-         } else if (src.type === 'group') {
-             const groups = getGroups();
-             const group = groups.get(src.id);
-             if (group && group.isCustomPivot && group.pivot) {
-                 const gMat = getGroupWorldMatrixWithFallback(src.id, _TMP_MAT4_A);
-                 pivotWorld = group.pivot.clone().applyMatrix4(gMat);
-             }
-         }
-
-         if (pivotWorld) {
-             const origin = SelectionCenter('origin', false, _ZERO_VEC3);
-             const offset = new THREE.Vector3().subVectors(pivotWorld, origin);
-             
-             setGizmoState({
-                 isCustomPivot: true,
-                 pivotOffset: offset
-             });
-         } else {
-             setGizmoState({
-                 isCustomPivot: false,
-                 pivotOffset: new THREE.Vector3(0, 0, 0)
-             });
-         }
-
+         computeAndApplyPivotState(src);
          updateHelperPosition();
     }
 
