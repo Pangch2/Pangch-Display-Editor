@@ -14,7 +14,7 @@ import {
 } from 'three/webgpu';
 import { initAssets } from './asset-manager.js';
 import { loadedObjectGroup } from './load-project/upload-pbde.ts';
-import { openWithAnimation, closeWithAnimation } from './ui-open-close.js';
+import { openWithAnimation, closeWithAnimation } from './ui/ui-open-close.js';
 
 // 전역 변수로 선언
 let scene, camera, renderer, controls;

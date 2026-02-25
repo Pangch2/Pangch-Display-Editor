@@ -45,7 +45,7 @@ export function initDrag({
         marqueeDiv = document.createElement('div');
         marqueeDiv.style.position = 'fixed';
         marqueeDiv.style.pointerEvents = 'none';
-        marqueeDiv.style.border = '1px dashed rgba(160,160,160,0.95)';
+        marqueeDiv.style.border = '1px solid rgba(160,160,160,0.95)';
         marqueeDiv.style.background = 'rgba(160,160,160,0.12)';
         marqueeDiv.style.zIndex = '9999';
         marqueeDiv.style.left = '0px';

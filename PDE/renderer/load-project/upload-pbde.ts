@@ -1,4 +1,4 @@
-import { openWithAnimation, closeWithAnimation } from '../ui-open-close.js';
+import { openWithAnimation, closeWithAnimation } from '../ui/ui-open-close.js';
 import * as THREE from 'three/webgpu';
 import PbdeWorker from './pbde-worker?worker&inline';
 import { createEntityMaterial } from '../entityMaterial.js';
