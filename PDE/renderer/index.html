@@ -9,6 +9,15 @@
       src: url('../resources/lucide.woff2') format('woff2');
       font-weight: normal;
       font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: 'Noto Sans KR';
+      src: url('../resources/NotoSansKR-Medium.ttf') format('truetype');
+      font-weight: 500;
+      font-style: normal;
+      font-display: swap;
     }
 
     /* ----- 기본 설정 ----- */
@@ -16,7 +25,7 @@
       margin: 0;
       overflow: hidden;
       background: #1e1e1e;
-      font-family: sans-serif;
+      font-family: 'Noto Sans KR', sans-serif;
       color: #f0f0f0;
       user-select: none;
     }
@@ -196,7 +205,7 @@
     #loading-text {
       color: #cccccc;
       margin-top: 20px;
-      font-family: sans-serif;
+      font-family: 'Noto Sans KR', sans-serif;
       font-size: 16px;
     }
 
@@ -206,7 +215,7 @@
       bottom: 10px;
       left: 10px;
       color: #f0f0f0;
-      font-family: sans-serif;
+      font-family: 'Noto Sans KR', sans-serif;
       font-size: 17px;
       z-index: 100;
       background-color: rgba(0, 0, 0, 0.5);
