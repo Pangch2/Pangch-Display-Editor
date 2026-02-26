@@ -1581,6 +1581,7 @@ function generateUUID() {
 }
 
 let groups = new Map<string, GroupData>();
+let sceneOrder: { rootIndex: number, type: 'group' | 'object', id: string }[] = [];
 
 // 두 개의 4x4 행렬을 곱해 누적 변환을 계산한다.
 function apply_transforms(parent: Float32Array | number[], child: Float32Array | number[]) {
@@ -1668,6 +1669,10 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
             pivot: pivot
         });
 
+        if (parentGroupId === null && (node as any)._rootIndex !== undefined) {
+            sceneOrder.push({ rootIndex: (node as any)._rootIndex, type: 'group', id: newGroupId });
+        }
+
         if (parentGroupId) {
             const parentGroup = groups.get(parentGroupId);
             if (parentGroup) {
@@ -1681,6 +1686,7 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
         const modelData = await processBlockDisplay(node);
         if (modelData) {
             (modelData as any).transform = worldTransform; // 계산된 월드 변환 행렬을 결과에 포함한다.
+            (modelData as any).name = node.name;
             
             const uuid = generateUUID();
             (modelData as any).uuid = uuid;
@@ -1689,6 +1695,8 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
             if (currentGroupId) {
                 const g = groups.get(currentGroupId);
                 if (g) g.children.push({ type: 'object', id: uuid });
+            } else if ((node as any)._rootIndex !== undefined) {
+                sceneOrder.push({ rootIndex: (node as any)._rootIndex, type: 'object', id: uuid });
             }
 
             renderItems.push(modelData);
@@ -1760,6 +1768,8 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
             if (currentGroupId) {
                 const g = groups.get(currentGroupId);
                 if (g) g.children.push({ type: 'object', id: uuid });
+            } else if ((node as any)._rootIndex !== undefined) {
+                sceneOrder.push({ rootIndex: (node as any)._rootIndex, type: 'object', id: uuid });
             }
 
             renderItems.push(itemData);
@@ -1770,6 +1780,7 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
             });
             if (modelDisplay) {
                 (modelDisplay as any).transform = worldTransform;
+                (modelDisplay as any).name = node.name;
 
                 const uuid = generateUUID();
                 (modelDisplay as any).uuid = uuid;
@@ -1777,11 +1788,12 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
                 if (currentGroupId) {
                     const g = groups.get(currentGroupId);
                     if (g) g.children.push({ type: 'object', id: uuid });
+                } else if ((node as any)._rootIndex !== undefined) {
+                    sceneOrder.push({ rootIndex: (node as any)._rootIndex, type: 'object', id: uuid });
                 }
 
                 renderItems.push(modelDisplay);
             } else {
-                // 기존 큐브 대체 경로를 유지하기 위해 단순 itemDisplay 객체를 추가한다.
                 const itemData: RenderItem = {
                     type: 'itemDisplay',
                     name: node.name,
@@ -1797,6 +1809,8 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
                 if (currentGroupId) {
                     const g = groups.get(currentGroupId);
                     if (g) g.children.push({ type: 'object', id: uuid });
+                } else if ((node as any)._rootIndex !== undefined) {
+                    sceneOrder.push({ rootIndex: (node as any)._rootIndex, type: 'object', id: uuid });
                 }
 
                 renderItems.push(itemData);
@@ -1842,6 +1856,7 @@ self.onmessage = async (e) => {
     resetWorkerCaches({ clearCanvas: true });
     initializeAssetProvider(workerAssetProvider);
     groups = new Map();
+    sceneOrder = [];
 
     try {
         // 전달받은 PBDE 파일을 디코딩하고 JSON으로 변환한다.
@@ -1857,8 +1872,12 @@ self.onmessage = async (e) => {
 
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         // 루트 자식 노드를 병렬로 처리해 렌더 항목을 구성한다.
+        // 루트 노드에 순서 인덱스를 태깅한 뒤 병렬 처리한다.
+        processedChildren.forEach((node: any, i: number) => { node._rootIndex = i; });
         const promises = processedChildren.map((node: any) => processNode(node, identityMatrix, null));
         const renderList: RenderItem[] = (await Promise.all(promises)).flat();
+        // 루트 인덱스 기준으로 sceneOrder 정렬
+        sceneOrder.sort((a, b) => a.rootIndex - b.rootIndex);
 
         // --- Atlas Generation Start ---
         let atlasInfo = null;
@@ -2076,7 +2095,8 @@ self.onmessage = async (e) => {
                         indicesByteOffset: indicesByteOffset + idxStart * indexElementSize,
                         indicesLen: indices.length,
                         uuid: item.uuid,
-                        groupId: item.groupId
+                        groupId: item.groupId,
+                        name: (item as any).name ?? null
                     });
                 });
             }
@@ -2088,7 +2108,8 @@ self.onmessage = async (e) => {
             otherItems: otherItems,
             useUint32Indices: useUint32Indices,
             atlas: atlasInfo,
-            groups: groups
+            groups: groups,
+            sceneOrder: sceneOrder.map(({ type, id }) => ({ type, id }))
         };
 
         // 메타데이터와 지오메트리 버퍼를 메인 스레드로 전송한다.

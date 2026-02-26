@@ -37,6 +37,7 @@ const unionTransformedBox3 = Overlay.unionTransformedBox3;
 const getInstanceLocalBox = Overlay.getInstanceLocalBox;
 const getInstanceWorldMatrix = Overlay.getInstanceWorldMatrix;
 const getGroupLocalBoundingBox = Overlay.getGroupLocalBoundingBox;
+const getGroupWorldAABB = Overlay.getGroupWorldAABB;
 const getRotationFromMatrix = Overlay.getRotationFromMatrix;
 const getSelectionBoundingBox = () => Overlay.getSelectionBoundingBox(currentSelection);
 const createOverlayLineMaterial = Overlay.createOverlayLineMaterial;
@@ -325,16 +326,15 @@ function _pushToVertexQueue() {
             
             if (sub.type === 'group') {
                  const groupId = sub.id;
-                 const localBox = getGroupLocalBoundingBox(groupId);
-                 if (localBox && !localBox.isEmpty()) {
-                     localBox.getSize(tempSize);
-                     localBox.getCenter(tempCenter);
-                     
-                     const groupWorld = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
+                 // Use world AABB to avoid double-expansion from rotate(AABB)
+                 const worldBox = getGroupWorldAABB(groupId);
+                 if (worldBox && !worldBox.isEmpty()) {
+                     worldBox.getSize(tempSize);
+                     worldBox.getCenter(tempCenter);
                      matrix = _TMP_MAT4_B;
                      matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
                      matrix.scale(tempSize);
-                     matrix.premultiply(groupWorld);
+                     // No premultiply: already world-space
                  }
             } else if (sub.type === 'object') {
                  const { mesh, instanceId } = sub;

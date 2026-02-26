@@ -32,6 +32,7 @@ interface GeometryMeta {
     indicesLen: number;
     uuid: string;
     groupId: string | null;
+    name?: string | null;
 }
 
 interface OtherItem {
@@ -68,6 +69,7 @@ interface WorkerMetadata {
     useUint32Indices?: boolean;
     atlas?: { width: number; height: number; data: Uint8ClampedArray };
     groups?: Map<string, GroupData>;
+    sceneOrder?: { type: 'group' | 'object', id: string }[];
 }
 
 // --- 메인 스레드용 에셋 공급자 ---
@@ -838,7 +840,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                     resolve(new Set());
                     return;
                 }
-                const { geometries: geometryMetas, otherItems, useUint32Indices, atlas, groups } = metadataPayload;
+                const { geometries: geometryMetas, otherItems, useUint32Indices, atlas, groups, sceneOrder } = metadataPayload;
 
                 const newlyAddedSelectableMeshes = new Set<THREE.Object3D>();
 
@@ -946,6 +948,29 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                 }
 
                 console.log(`[Debug] Processing ${geometryMetas.length + otherItems.length} items from worker (binary).`);
+
+                // uuid → 표시 이름 맵 구성
+                if (!isMerge) {
+                    loadedObjectGroup.userData.objectNames = new Map<string, string>();
+                }
+                const objectNamesMap: Map<string, string> =
+                    (loadedObjectGroup.userData.objectNames as Map<string, string>) ?? new Map<string, string>();
+                for (const meta of geometryMetas) {
+                    if (meta.uuid && !objectNamesMap.has(meta.uuid) && meta.name) {
+                        objectNamesMap.set(meta.uuid, meta.name);
+                    }
+                }
+                for (const item of otherItems) {
+                    if (item.uuid && !objectNamesMap.has(item.uuid) && (item as any).name) {
+                        objectNamesMap.set(item.uuid, (item as any).name);
+                    }
+                }
+                loadedObjectGroup.userData.objectNames = objectNamesMap;
+
+                // 로드 순서 보존 (merge 시는 덧붙임)
+                const prevOrder: { type: 'group' | 'object', id: string }[] =
+                    isMerge ? (loadedObjectGroup.userData.sceneOrder ?? []) : [];
+                loadedObjectGroup.userData.sceneOrder = prevOrder.concat(sceneOrder ?? []);
 
                 const instancedGeometries = new Map<string, THREE.BufferGeometry>();
                 const instancedMaterials = new Map<string, THREE.Material>();
@@ -1597,6 +1622,7 @@ async function loadpbde(files: File | File[]): Promise<void> {
     } catch (e) {
         console.error("Error loading project files:", e);
     }
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
 async function mergepbde(files: File | File[]): Promise<void> {
@@ -1619,6 +1645,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
     } catch (e) {
         console.error("Error merging project files:", e);
     }
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
 
@@ -1660,8 +1687,8 @@ function createDropModal(files?: File[]) {
         <h3 style="margin-top: 0; color: #f0f0f0;">프로젝트 파일 감지됨</h3>
         <p style="color: #aaa; margin-bottom: 25px;">어떻게 열건가요?</p>
         <div style="display: flex; gap: 15px;">
-            <button id="new-project-btn" class="ui-button">프로젝트 열기</button>
-            <button id="merge-project-btn" class="ui-button">프로젝트 합치기</button>
+            <button id="new-project-btn" class="project-ui-button">프로젝트 열기</button>
+            <button id="merge-project-btn" class="project-ui-button">프로젝트 합치기</button>
         </div>
     `;
 

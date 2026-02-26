@@ -266,24 +266,34 @@ export function getGroupLocalBoundingBox(groupId) {
     if (!group) return new THREE.Box3();
 
     const groupMatrix = getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
-    
-    const pos = new THREE.Vector3();
-    const quat = new THREE.Quaternion();
-    const scale = new THREE.Vector3();
-    groupMatrix.decompose(pos, quat, scale);
-
     const groupInverse = new THREE.Matrix4();
-    groupInverse.makeTranslation(-pos.x, -pos.y, -pos.z);
-    
-    const tempInv = new THREE.Matrix4();
-    tempInv.makeRotationFromQuaternion(quat.invert());
-    groupInverse.premultiply(tempInv);
-    
-    const safeInv = (s) => (Math.abs(s) < 1e-10 ? 0 : 1 / s);
-    tempInv.makeScale(safeInv(scale.x), safeInv(scale.y), safeInv(scale.z));
-    groupInverse.premultiply(tempInv);
+
+    // Try standard inversion first
+    if (Math.abs(groupMatrix.determinant()) > 1e-10) {
+        groupInverse.copy(groupMatrix).invert();
+    } else {
+        // Fallback to decomposition if determinant is too small (likely zero scale)
+        const pos = new THREE.Vector3();
+        const quat = new THREE.Quaternion();
+        const scale = new THREE.Vector3();
+        groupMatrix.decompose(pos, quat, scale);
+
+        // Invert Translation
+        groupInverse.makeTranslation(-pos.x, -pos.y, -pos.z);
+        
+        const tempInv = new THREE.Matrix4();
+        // Invert Rotation
+        tempInv.makeRotationFromQuaternion(quat.invert());
+        groupInverse.premultiply(tempInv);
+        
+        // Invert Scale safely (default to 0 if too small)
+        const safeInv = (s) => (Math.abs(s) < 1e-10 ? 0 : 1 / s);
+        tempInv.makeScale(safeInv(scale.x), safeInv(scale.y), safeInv(scale.z));
+        groupInverse.premultiply(tempInv); 
+    }
 
     const children = getAllGroupChildren(groupId);
+
     const box = new THREE.Box3();
     const tempMat = new THREE.Matrix4();
     const tempBox = new THREE.Box3();
