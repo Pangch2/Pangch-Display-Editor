@@ -42,6 +42,7 @@ function makeObjectRow(uuid, depth) {
     el.className = 'scene-object-item';
     el.style.paddingLeft = `${12 + depth * 16}px`;
     el.dataset.uuid = uuid;
+    el.dataset.displayType = isItemDisplay ? 'item_display' : 'block_display';
 
     const leftIcon = document.createElement('span');
     leftIcon.className = `scene-icon ${iconClass}`;
@@ -81,6 +82,21 @@ function makeObjectRow(uuid, depth) {
     rightIcon.innerHTML = '&#xE0BA;';
     el.appendChild(rightIcon);
 
+    el.addEventListener('click', (e) => {
+        const ud = loadedObjectGroup?.userData;
+        if (!ud) return;
+        const uuidToInstance = ud.objectUuidToInstance;
+        if (!uuidToInstance) return;
+        const inst = uuidToInstance.get(uuid);
+        if (!inst) return;
+        const meshToIds = new Map([[inst.mesh, new Set([inst.instanceId])]]);
+        if (e.shiftKey) {
+            ud.addOrToggleInSelection?.(null, meshToIds);
+        } else {
+            ud.replaceSelectionWithObjectsMap?.(meshToIds, { anchorMode: 'default' });
+        }
+    });
+
     return el;
 }
 
@@ -89,7 +105,7 @@ function fitSceneExtraBlocks() {
 
     const viewTop = scenePanelList.scrollTop;
     const viewBottom = viewTop + scenePanelList.clientHeight;
-    const rows = scenePanelList.querySelectorAll('.scene-object-item');
+    const rows = scenePanelList.querySelectorAll('.scene-object-item, .scene-tree-group');
     for (const row of rows) {
         const rowTop = row.offsetTop;
         const rowBottom = rowTop + row.offsetHeight;
@@ -265,11 +281,35 @@ function renderGroup(groupId, depth) {
     header.className = 'scene-tree-group';
     header.style.paddingLeft = `${12 + depth * 16}px`;
     header.dataset.groupId = groupId;
-    header.innerHTML = `
-        <span class="scene-toggle">&#xE06F;</span>
-        <span class="scene-name">${group.name}</span>
-        <span class="scene-icon-right">&#xE0BA;</span>
-    `;
+    header.dataset.displayType = 'group';
+
+    const toggleEl = document.createElement('span');
+    toggleEl.className = 'scene-toggle';
+    toggleEl.innerHTML = '&#xE06F;';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'scene-name';
+    const cleanGroupName = group.name || '';
+    nameEl.dataset.fullText = cleanGroupName;
+
+    const nameTextEl = document.createElement('span');
+    nameTextEl.className = 'scene-name-text';
+    nameTextEl.textContent = cleanGroupName;
+
+    const nameDotsEl = document.createElement('span');
+    nameDotsEl.className = 'scene-name-dots';
+    nameDotsEl.textContent = ELLIPSIS;
+
+    nameEl.appendChild(nameTextEl);
+    nameEl.appendChild(nameDotsEl);
+
+    const rightIconEl = document.createElement('span');
+    rightIconEl.className = 'scene-icon-right';
+    rightIconEl.innerHTML = '&#xE0BA;';
+
+    header.appendChild(toggleEl);
+    header.appendChild(nameEl);
+    header.appendChild(rightIconEl);
 
     // 자식 컨테이너 — 기본 접힘
     const childContainer = document.createElement('div');
@@ -285,11 +325,24 @@ function renderGroup(groupId, depth) {
         }
     }
 
-    // 토글
-    header.addEventListener('click', () => {
+    // 토글 아이콘 클릭 → 접기/펼치
+    header.querySelector('.scene-toggle').addEventListener('click', (e) => {
+        e.stopPropagation();
         const isCollapsed = childContainer.classList.toggle('collapsed');
         header.querySelector('.scene-toggle').innerHTML = isCollapsed ? '&#xE06F;' : '&#xE06D;';
         scheduleSceneExtraFit();
+    });
+
+    // 헤더 클릭 → 그룹 선택
+    header.addEventListener('click', (e) => {
+        const ud = loadedObjectGroup?.userData;
+        if (!ud) return;
+        const groupIds = new Set([groupId]);
+        if (e.shiftKey) {
+            ud.addOrToggleInSelection?.(groupIds, null);
+        } else {
+            ud.replaceSelectionWithGroupsAndObjects?.(groupIds, new Map(), { anchorMode: 'default' });
+        }
     });
 
     wrapper.appendChild(header);
@@ -336,3 +389,55 @@ export function refreshScenePanel() {
 }
 
 window.addEventListener('pde:scene-updated', refreshScenePanel);
+
+function _expandAncestors(el) {
+    let node = el.parentElement;
+    while (node && node !== scenePanelList) {
+        if (node.classList.contains('scene-tree-children') && node.classList.contains('collapsed')) {
+            node.classList.remove('collapsed');
+            const header = node.previousElementSibling;
+            if (header?.classList.contains('scene-tree-group')) {
+                const toggle = header.querySelector('.scene-toggle');
+                if (toggle) toggle.innerHTML = '&#xE06D;';
+            }
+        }
+        node = node.parentElement;
+    }
+}
+
+function syncScenePanelSelection(sel) {
+    if (!scenePanelList) return;
+
+    scenePanelList.querySelectorAll('.selected').forEach(el => el.classList.remove('selected'));
+
+    if (!sel) return;
+
+    if (sel.groups && sel.groups.size > 0) {
+        for (const groupId of sel.groups) {
+            const el = scenePanelList.querySelector(`.scene-tree-group[data-group-id="${groupId}"]`);
+            if (el) {
+                el.classList.add('selected');
+                _expandAncestors(el);
+            }
+        }
+    }
+
+    if (sel.objects && sel.objects.size > 0) {
+        const keyToUuid = loadedObjectGroup?.userData?.instanceKeyToObjectUuid;
+        if (keyToUuid) {
+            for (const [mesh, ids] of sel.objects) {
+                for (const instanceId of ids) {
+                    const uuid = keyToUuid.get(`${mesh.uuid}_${instanceId}`);
+                    if (!uuid) continue;
+                    const el = scenePanelList.querySelector(`.scene-object-item[data-uuid="${uuid}"]`);
+                    if (el) {
+                        el.classList.add('selected');
+                        _expandAncestors(el);
+                    }
+                }
+            }
+        }
+    }
+}
+
+window.addEventListener('pde:selection-changed', (e) => syncScenePanelSelection(e.detail));

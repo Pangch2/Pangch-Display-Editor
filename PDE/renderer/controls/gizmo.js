@@ -389,8 +389,17 @@ let _multiSelectionOriginAnchorValid = false;
 
 // The very first remembered origin anchor for the current multi-selection session.
 // Used by "Pivot reset to origin" to restore the original temporary origin.
+// Stored BOTH as world snapshot (for reference) AND in primary-local space so it
+// recomputes correctly after the primary object is moved.
 const _multiSelectionOriginAnchorInitialPosition = new THREE.Vector3();
 let _multiSelectionOriginAnchorInitialValid = false;
+const _multiSelectionOriginAnchorInitialLocal = new THREE.Vector3(); // primary-local coords
+let _multiSelectionOriginAnchorInitialLocalValid = false;
+
+// True only when the user explicitly created a custom pivot DURING the current
+// multi-selection session (pivot edit drag end with isMultiPivotEdit).
+// Distinct from isCustomPivot, which can be inherited from single-object context.
+let _multiSelectionExplicitPivot = false;
 
 // Multi-selection Rotation Accumulator (for "No Basis" / Select All mode)
 const _multiSelectionAccumulatedRotation = new THREE.Quaternion();
@@ -408,8 +417,60 @@ function _clearGizmoAnchor() {
 
     _multiSelectionOriginAnchorInitialValid = false;
     _multiSelectionOriginAnchorInitialPosition.set(0, 0, 0);
+    _multiSelectionOriginAnchorInitialLocalValid = false;
+    _multiSelectionOriginAnchorInitialLocal.set(0, 0, 0);
+
+    _multiSelectionExplicitPivot = false;
     
     _multiSelectionAccumulatedRotation.set(0, 0, 0, 1);
+}
+
+// Returns the world-to-primary-local matrix for the current primary, or null.
+function _getPrimaryWorldMatrix(out = new THREE.Matrix4()) {
+    if (!currentSelection.primary) return null;
+    const prim = currentSelection.primary;
+    if (prim.type === 'group') {
+        const groups = getGroups();
+        const group = groups.get(prim.id);
+        if (!group) return null;
+        getGroupWorldMatrix(group, out);
+        return out;
+    } else if (prim.type === 'object' && prim.mesh) {
+        prim.mesh.getMatrixAt(prim.instanceId, out);
+        out.premultiply(prim.mesh.matrixWorld);
+        return out;
+    }
+    return null;
+}
+
+// Always overwrites the initial anchor (world + local).
+function _setMultiAnchorInitial(worldPos) {
+    _multiSelectionOriginAnchorInitialPosition.copy(worldPos);
+    _multiSelectionOriginAnchorInitialValid = true;
+    const mat = _getPrimaryWorldMatrix(_TMP_MAT4_B);
+    if (mat) {
+        _multiSelectionOriginAnchorInitialLocal.copy(worldPos).applyMatrix4(_TMP_MAT4_B.clone().invert());
+        _multiSelectionOriginAnchorInitialLocalValid = true;
+    } else {
+        _multiSelectionOriginAnchorInitialLocalValid = false;
+    }
+}
+
+// Only captures if not yet set this multi-selection session.
+function _captureMultiAnchorInitialIfNeeded(worldPos) {
+    if (_multiSelectionOriginAnchorInitialValid) return;
+    _setMultiAnchorInitial(worldPos);
+}
+
+// Converts the stored local anchor to world using the current primary transform.
+// Falls back to the world snapshot if local is unavailable.
+function _resolveMultiAnchorInitialWorld(out = new THREE.Vector3()) {
+    if (_multiSelectionOriginAnchorInitialLocalValid) {
+        const mat = _getPrimaryWorldMatrix(_TMP_MAT4_B);
+        if (mat) return out.copy(_multiSelectionOriginAnchorInitialLocal).applyMatrix4(mat);
+    }
+    if (_multiSelectionOriginAnchorInitialValid) return out.copy(_multiSelectionOriginAnchorInitialPosition);
+    return null;
 }
 
 function _getSelectionCenterWorld(out = new THREE.Vector3()) {
@@ -539,6 +600,7 @@ function calculateAvgOrigin() {
 
 function updateSelectionOverlay() {
     Overlay.updateSelectionOverlay(scene, renderer, camera, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys);
+    window.dispatchEvent(new CustomEvent('pde:selection-changed', { detail: currentSelection }));
 }
 
 function _updateMultiSelectionOverlayDuringDrag() {
@@ -642,10 +704,7 @@ function updateHelperPosition() {
         if (primaryPivotWorld) {
             _multiSelectionOriginAnchorPosition.copy(primaryPivotWorld);
             _multiSelectionOriginAnchorValid = true;
-            if (!_multiSelectionOriginAnchorInitialValid) {
-                _multiSelectionOriginAnchorInitialPosition.copy(primaryPivotWorld);
-                _multiSelectionOriginAnchorInitialValid = true;
-            }
+            _captureMultiAnchorInitialIfNeeded(primaryPivotWorld);
         }
     }
 
@@ -655,10 +714,7 @@ function updateHelperPosition() {
     if (pivotMode === 'origin' && isMulti && !_multiSelectionOriginAnchorValid && _gizmoAnchorValid) {
         _multiSelectionOriginAnchorPosition.copy(_gizmoAnchorPosition);
         _multiSelectionOriginAnchorValid = true;
-        if (!_multiSelectionOriginAnchorInitialValid) {
-            _multiSelectionOriginAnchorInitialPosition.copy(_gizmoAnchorPosition);
-            _multiSelectionOriginAnchorInitialValid = true;
-        }
+        _captureMultiAnchorInitialIfNeeded(_gizmoAnchorPosition);
     }
 
     const lockMultiOrigin = (pivotMode === 'origin') && isMulti && _multiSelectionOriginAnchorValid;
@@ -678,10 +734,7 @@ function updateHelperPosition() {
         if (pivotMode === 'origin' && isMulti) {
             _multiSelectionOriginAnchorPosition.copy(center);
             _multiSelectionOriginAnchorValid = true;
-            if (!_multiSelectionOriginAnchorInitialValid) {
-                _multiSelectionOriginAnchorInitialPosition.copy(center);
-                _multiSelectionOriginAnchorInitialValid = true;
-            }
+            _captureMultiAnchorInitialIfNeeded(center);
         }
     }
 
@@ -1168,54 +1221,25 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         const pivotWorld = selectionHelper.position.clone();
                         
                         // Capture undo state for the primary object (if not already captured)
-                        if (!_ephemeralPivotUndo && !_pivotEditUndoCapture) {
-                            if (prim.type === 'group') {
-                                const groups = getGroups();
-                                const group = groups.get(prim.id);
-                                if (group) {
-                                    const prevPivot = group.pivot ? (group.pivot.clone ? group.pivot.clone() : new THREE.Vector3().copy(group.pivot)) : undefined;
-                                    const prevIsCustom = group.isCustomPivot;
-                                    _pivotEditUndoCapture = () => {
-                                        group.pivot = prevPivot;
-                                        if (prevIsCustom) group.isCustomPivot = true;
-                                        else delete group.isCustomPivot;
-                                    };
-                                }
-                            } else if (prim.type === 'object') {
-                                const { mesh, instanceId } = prim;
-                                if (mesh) {
-                                    const prevIsCustom = mesh.userData.isCustomPivot;
-                                    let prevPivotEntry = undefined;
-                                    const isBatchOrInst = mesh.isBatchedMesh || mesh.isInstancedMesh;
-                                    
-                                    if (isBatchOrInst) {
-                                        if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
-                                            prevPivotEntry = mesh.userData.customPivots.get(instanceId).clone();
-                                        }
-                                    } else {
-                                        if (mesh.userData.customPivot) prevPivotEntry = mesh.userData.customPivot.clone();
-                                    }
-
-                                    _pivotEditUndoCapture = () => {
-                                        if (isBatchOrInst) {
-                                            if (prevPivotEntry) {
-                                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
-                                                mesh.userData.customPivots.set(instanceId, prevPivotEntry);
-                                            } else if (mesh.userData.customPivots) {
-                                                mesh.userData.customPivots.delete(instanceId);
-                                            }
-                                        } else {
-                                            mesh.userData.customPivot = prevPivotEntry;
-                                        }
-                                        
-                                        if (prevIsCustom) mesh.userData.isCustomPivot = true;
-                                        else delete mesh.userData.isCustomPivot;
-                                    };
-                                }
+                        // For group primaries, persist the pivot so it rotates with the group.
+                        // For object primaries, do NOT write to userData — the multi-selection pivot
+                        // is ephemeral and lives only in pivotOffset/isCustomPivot.
+                        if (!_ephemeralPivotUndo && !_pivotEditUndoCapture && prim.type === 'group') {
+                            const groups = getGroups();
+                            const group = groups.get(prim.id);
+                            if (group) {
+                                const prevPivot = group.pivot ? (group.pivot.clone ? group.pivot.clone() : new THREE.Vector3().copy(group.pivot)) : undefined;
+                                const prevIsCustom = group.isCustomPivot;
+                                _pivotEditUndoCapture = () => {
+                                    group.pivot = prevPivot;
+                                    if (prevIsCustom) group.isCustomPivot = true;
+                                    else delete group.isCustomPivot;
+                                };
                             }
                         }
 
                         if (prim.type === 'group') {
+                             // Group primary: persist so the pivot rotates with the group.
                              const groups = getGroups();
                              const group = groups.get(prim.id);
                              if (group) {
@@ -1225,25 +1249,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                                  group.pivot = localPivot;
                                  group.isCustomPivot = true;
                              }
-                        } else if (prim.type === 'object') {
-                             const { mesh, instanceId } = prim;
-                             if (mesh) {
-                                 const instanceMatrix = new THREE.Matrix4();
-                                 mesh.getMatrixAt(instanceId, instanceMatrix);
-                                 const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
-                                 const invWorldMatrix = worldMatrix.invert();
-                                 const localPivot = pivotWorld.applyMatrix4(invWorldMatrix);
-
-                                 if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                                     if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
-                                     mesh.userData.customPivots.set(instanceId, localPivot);
-                                 } else {
-                                     mesh.userData.customPivot = localPivot;
-                                 }
-                                 mesh.userData.isCustomPivot = true;
-                             }
                         }
+                        // prim.type === 'object': do NOT persist to mesh.userData.
+                        // Multi-selection pivot is ephemeral — pivotOffset/isCustomPivot carry it.
                     }
+
+                    // Mark that an explicit custom pivot was created in this multi-selection session.
+                    _multiSelectionExplicitPivot = true;
                 }
 
                 // Preserve the user's pivotMode (e.g. allow creating a custom pivot while in center mode).
@@ -1266,10 +1278,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                     _multiSelectionOriginAnchorPosition.copy(selectionHelper.position);
                     _multiSelectionOriginAnchorValid = true;
                     // Do not overwrite the initial anchor; pivot reset should restore that.
-                    if (!_multiSelectionOriginAnchorInitialValid) {
-                        _multiSelectionOriginAnchorInitialPosition.copy(selectionHelper.position);
-                        _multiSelectionOriginAnchorInitialValid = true;
-                    }
+                    _captureMultiAnchorInitialIfNeeded(selectionHelper.position);
                 }
             } else {
                 _recomputePivotStateForSelection();
@@ -1637,21 +1646,166 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 event.preventDefault();
 
                 const isMultiReset = _isMultiSelection();
-                const wasCustomPivot = isCustomPivot;
+                // Use the dedicated flag — not isCustomPivot, which can be inherited from
+                // single-object context via preserveMultiCustomPivot and cause a two-press bug.
+                const hadExplicitMultiPivot = isMultiReset && _multiSelectionExplicitPivot;
 
                 // Reset should also drop any ephemeral multi-selection pivot edits.
                 _revertEphemeralPivotUndoIfAny();
 
                 pivotOffset.set(0, 0, 0);
                 isCustomPivot = false;
+                _multiSelectionExplicitPivot = false;
 
-                let shouldClearAll = true;
-                if (isMultiReset && wasCustomPivot) {
-                    shouldClearAll = false;
-                }
+                if (isMultiReset) {
+                    if (hadExplicitMultiPivot) {
+                        // Had an explicitly created multi-selection custom pivot → revert it.
+                        // Individual object/group pivots are preserved.
+                        // Gizmo restores to the initial anchor recomputed from primary-local coords
+                        // so it correctly follows the object after moves (not a stale world snapshot).
+                        const _resolvedInitial = _resolveMultiAnchorInitialWorld(new THREE.Vector3());
+                        if (_resolvedInitial) {
+                            _multiSelectionOriginAnchorPosition.copy(_resolvedInitial);
+                            _multiSelectionOriginAnchorValid = true;
+                            _gizmoAnchorPosition.copy(_resolvedInitial);
+                            _gizmoAnchorValid = true;
+                            _selectionAnchorMode = 'default';
+                        } else {
+                            // Fallback: live-compute from primary's current transform (with its own pivot respected).
+                            const targetPos = new THREE.Vector3();
+                            let found = false;
+                            if (currentSelection.primary) {
+                                const prim = currentSelection.primary;
+                                if (prim.type === 'group') {
+                                    const groups = getGroups();
+                                    const group = groups.get(prim.id);
+                                    if (group) {
+                                        if (shouldUseGroupPivot(group)) {
+                                            const localPivot = normalizePivotToVector3(group.pivot, new THREE.Vector3());
+                                            if (localPivot) {
+                                                const groupMatrix = getGroupWorldMatrix(group, new THREE.Matrix4());
+                                                targetPos.copy(localPivot.applyMatrix4(groupMatrix));
+                                                found = true;
+                                            }
+                                        }
+                                        if (!found) { getGroupOriginWorld(prim.id, targetPos); found = true; }
+                                    }
+                                } else if (prim.type === 'object' && prim.mesh) {
+                                    const { mesh, instanceId } = prim;
+                                    const tempMat = new THREE.Matrix4();
+                                    let custom = null;
+                                    if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                                        if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId))
+                                            custom = mesh.userData.customPivots.get(instanceId);
+                                    } else { if (mesh.userData.customPivot) custom = mesh.userData.customPivot; }
+                                    if (custom) {
+                                        mesh.getMatrixAt(instanceId, tempMat);
+                                        tempMat.premultiply(mesh.matrixWorld);
+                                        targetPos.copy(custom.clone().applyMatrix4(tempMat)); found = true;
+                                    }
+                                    if (!found) {
+                                        const displayType = getDisplayType(mesh, instanceId);
+                                        if (displayType === 'block_display') {
+                                            const localPivot = getInstanceLocalBoxMin(mesh, instanceId, new THREE.Vector3());
+                                            if (localPivot) {
+                                                const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+                                                targetPos.copy(localPivot.applyMatrix4(worldMatrix)); found = true;
+                                            }
+                                        }
+                                        if (!found) {
+                                            getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+                                            const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
+                                            targetPos.set(0, localY, 0).applyMatrix4(tempMat); found = true;
+                                        }
+                                    }
+                                }
+                            }
+                            if (found) {
+                                _multiSelectionOriginAnchorPosition.copy(targetPos);
+                                _multiSelectionOriginAnchorValid = true;
+                                _setMultiAnchorInitial(targetPos);
+                                _gizmoAnchorPosition.copy(targetPos);
+                                _gizmoAnchorValid = true;
+                                _selectionAnchorMode = 'default';
+                            } else {
+                                _multiSelectionOriginAnchorValid = false;
+                                _multiSelectionOriginAnchorInitialValid = false;
+                                _multiSelectionOriginAnchorInitialLocalValid = false;
+                                _gizmoAnchorValid = false;
+                                _selectionAnchorMode = 'center';
+                            }
+                        }
+                    } else {
+                        // No explicit custom pivot was active: clear ALL per-object/group pivots.
+                        if (currentSelection.groups && currentSelection.groups.size > 0) {
+                            const groups = getGroups();
+                            for (const groupId of currentSelection.groups) {
+                                const group = groups.get(groupId);
+                                if (!group) continue;
+                                group.pivot = _DEFAULT_GROUP_PIVOT.clone();
+                                delete group.isCustomPivot;
+                            }
+                        }
+                        if (currentSelection.objects && currentSelection.objects.size > 0) {
+                            for (const [mesh, ids] of currentSelection.objects) {
+                                if (!mesh) continue;
+                                if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
+                                    for (const id of ids) mesh.userData.customPivots.delete(id);
+                                }
+                                delete mesh.userData.customPivot;
+                                delete mesh.userData.isCustomPivot;
+                            }
+                        }
 
-                if (shouldClearAll) {
-                    // Clear ALL group pivots
+                        // Recompute gizmo from primary's CURRENT live transform (pivots now cleared).
+                        const targetPos = new THREE.Vector3();
+                        let found = false;
+
+                        if (currentSelection.primary) {
+                            const prim = currentSelection.primary;
+
+                            if (prim.type === 'group') {
+                                // Pivots cleared above → shouldUseGroupPivot is false → getGroupOriginWorld.
+                                getGroupOriginWorld(prim.id, targetPos);
+                                found = true;
+                            } else if (prim.type === 'object' && prim.mesh) {
+                                const { mesh, instanceId } = prim;
+                                const tempMat = new THREE.Matrix4();
+                                const displayType = getDisplayType(mesh, instanceId);
+                                if (displayType === 'block_display') {
+                                    const localPivot = getInstanceLocalBoxMin(mesh, instanceId, new THREE.Vector3());
+                                    if (localPivot) {
+                                        const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+                                        targetPos.copy(localPivot.applyMatrix4(worldMatrix));
+                                        found = true;
+                                    }
+                                }
+                                if (!found) {
+                                    getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+                                    const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
+                                    targetPos.set(0, localY, 0).applyMatrix4(tempMat);
+                                    found = true;
+                                }
+                            }
+                        }
+
+                        if (found) {
+                            _multiSelectionOriginAnchorPosition.copy(targetPos);
+                            _multiSelectionOriginAnchorValid = true;
+                            _setMultiAnchorInitial(targetPos);
+                            _gizmoAnchorPosition.copy(targetPos);
+                            _gizmoAnchorValid = true;
+                            _selectionAnchorMode = 'default';
+                        } else {
+                            _multiSelectionOriginAnchorValid = false;
+                            _multiSelectionOriginAnchorInitialValid = false;
+                            _multiSelectionOriginAnchorInitialLocalValid = false;
+                            _gizmoAnchorValid = false;
+                            _selectionAnchorMode = 'center';
+                        }
+                    }
+                } else {
+                    // Single selection: clear ALL individual pivots and reset to geometric origin.
                     if (currentSelection.groups && currentSelection.groups.size > 0) {
                         const groups = getGroups();
                         for (const groupId of currentSelection.groups) {
@@ -1662,7 +1816,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                         }
                     }
 
-                    // Clear ALL object pivots
                     if (currentSelection.objects && currentSelection.objects.size > 0) {
                         for (const [mesh, ids] of currentSelection.objects) {
                             if (!mesh) continue;
@@ -1673,75 +1826,13 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             delete mesh.userData.isCustomPivot;
                         }
                     }
-                } else {
-                    // Clear ONLY Primary pivot (acts as selection pivot)
-                    if (currentSelection.primary) {
-                        if (currentSelection.primary.type === 'group') {
-                            const groups = getGroups();
-                            const group = groups.get(currentSelection.primary.id);
-                            if (group) {
-                                group.pivot = _DEFAULT_GROUP_PIVOT.clone();
-                                delete group.isCustomPivot;
-                            }
-                        } else if (currentSelection.primary.type === 'object') {
-                            const { mesh, instanceId } = currentSelection.primary;
-                            if (mesh) {
-                                if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
-                                    mesh.userData.customPivots.delete(instanceId);
-                                }
-                                delete mesh.userData.customPivot;
-                                delete mesh.userData.isCustomPivot;
-                            }
-                        }
-                    }
-                }
 
-                _recomputePivotStateForSelection();
-
-                // Multi-selection: clear the origin anchors so they recompute based on current positions.
-                if (_isMultiSelection()) {
-                    let restoredToPrimary = false;
-
-                    // Reset to the CURRENT position of the primary object (geometric origin).
-                    // We prefer the Primary as the origin reset target.
-                    if (currentSelection.primary) {
-                        const prim = currentSelection.primary;
-                        const targetPos = new THREE.Vector3();
-                        let found = false;
-
-                        if (prim.type === 'group') {
-                            getGroupOriginWorld(prim.id, targetPos);
-                            found = true;
-                        } else if (prim.type === 'object' && prim.mesh) {
-                            const tempMat = new THREE.Matrix4();
-                            getInstanceWorldMatrixForOrigin(prim.mesh, prim.instanceId, tempMat);
-                            const localY = isItemDisplayHatEnabled(prim.mesh, prim.instanceId) ? 0.03125 : 0;
-                            targetPos.set(0, localY, 0).applyMatrix4(tempMat);
-                            found = true;
-                        }
-
-                        if (found) {
-                            _multiSelectionOriginAnchorPosition.copy(targetPos);
-                            _multiSelectionOriginAnchorValid = true;
-                            _gizmoAnchorPosition.copy(targetPos);
-                            _gizmoAnchorValid = true;
-                            _selectionAnchorMode = 'default';
-                            restoredToPrimary = true;
-                        }
-                    }
-
-                    if (!restoredToPrimary) {
-                        _multiSelectionOriginAnchorValid = false;
-                        _multiSelectionOriginAnchorInitialValid = false;
-                        _gizmoAnchorValid = false;
-                        _selectionAnchorMode = 'center';
-                    }
-                } else {
-                    // Not multi-selection: clear multi-selection caches.
                     _multiSelectionOriginAnchorValid = false;
                     _multiSelectionOriginAnchorInitialValid = false;
                     _selectionAnchorMode = 'default';
                 }
+
+                _recomputePivotStateForSelection();
 
                 updateHelperPosition();
                 
@@ -1895,6 +1986,45 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     };
     loadedObjectGroup.userData.replaceSelectionWithGroupsAndObjects = (groupIds, meshToIds, options) => {
         _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, options);
+    };
+    loadedObjectGroup.userData.addOrToggleInSelection = (groupIds, meshToIds) => {
+        _revertEphemeralPivotUndoIfAny();
+        // _clearGizmoAnchor() intentionally omitted: viewport Shift+Click also preserves the
+        // existing anchor so the gizmo stays on the first-selected item when building a
+        // multi-selection. _commitSelectionChange -> updateHelperPosition will recompute
+        // the anchor via the primary-pivot seeding block.
+        if (groupIds) {
+            for (const gid of groupIds) {
+                if (!gid) continue;
+                if (currentSelection.groups.has(gid)) {
+                    currentSelection.groups.delete(gid);
+                    if (currentSelection.primary?.type === 'group' && currentSelection.primary.id === gid)
+                        currentSelection.primary = null;
+                } else {
+                    currentSelection.groups.add(gid);
+                    if (!currentSelection.primary) currentSelection.primary = { type: 'group', id: gid };
+                }
+            }
+        }
+        if (meshToIds) {
+            for (const [mesh, ids] of meshToIds) {
+                if (!mesh || !ids) continue;
+                let existing = currentSelection.objects.get(mesh);
+                for (const id of ids) {
+                    if (!existing) { existing = new Set(); currentSelection.objects.set(mesh, existing); }
+                    if (existing.has(id)) {
+                        existing.delete(id);
+                        if (existing.size === 0) currentSelection.objects.delete(mesh);
+                        if (currentSelection.primary?.type === 'object' && currentSelection.primary.mesh === mesh && currentSelection.primary.instanceId === id)
+                            currentSelection.primary = null;
+                    } else {
+                        existing.add(id);
+                        if (!currentSelection.primary) currentSelection.primary = { type: 'object', mesh, instanceId: id };
+                    }
+                }
+            }
+        }
+        _commitSelectionChange();
     };
 
     renderer.domElement.addEventListener('pointerdown', (event) => {

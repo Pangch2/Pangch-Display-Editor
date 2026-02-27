@@ -241,6 +241,22 @@ export function SelectionCenter(
             } else {
                 center.copy(calculateAvgOrigin());
             }
+        } else if (currentSelection.groups && currentSelection.groups.size > 0) {
+            // Multi-group selection: anchor to the first selected group's origin,
+            // not the first child object (items[0]). Mirrors updateHelperPosition's
+            // _multiSelectionOriginAnchorPosition logic.
+            const firstGroupId = Array.from(currentSelection.groups)[0];
+            const groups = GroupUtils.getGroups(loadedObjectGroup);
+            const group = groups.get(firstGroupId);
+            const box = getGroupLocalBoundingBox(firstGroupId);
+            if (!box.isEmpty()) {
+                const groupMatrix = getGroupWorldMatrixWithFallback(firstGroupId, new THREE.Matrix4());
+                center.copy(box.min).applyMatrix4(groupMatrix);
+            } else if (group && group.position) {
+                center.copy(group.position);
+            } else {
+                center.copy(calculateAvgOrigin());
+            }
         } else {
              const firstItem = items[0];
              const mesh = firstItem.mesh;

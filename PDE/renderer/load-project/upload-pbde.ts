@@ -918,9 +918,15 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                 }
 
                 function registerObject(mesh: THREE.Object3D, instanceId: number, uuid: string, groupId: string) {
+                    const key = `${mesh.uuid}_${instanceId}`;
+                    // Always store reverse lookup: instanceKey → custom uuid
+                    (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string>).set(key, uuid);
+                    // Forward reverse lookup: custom uuid → { mesh, instanceId }
+                    (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.Object3D; instanceId: number }>)
+                        .set(uuid, { mesh, instanceId });
+
                     if (!groupId || !incomingGroups) return;
                     const finalGroupId = groupIdRemap.get(groupId) ?? groupId;
-                    const key = `${mesh.uuid}_${instanceId}`;
                     objectToGroup.set(key, finalGroupId);
 
                     const group = effectiveGroups.get(finalGroupId);
@@ -955,6 +961,13 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                     loadedObjectGroup.userData.objectIsItemDisplay = new Set<string>();
                     loadedObjectGroup.userData.objectDisplayTypes = new Map<string, string>();
                     loadedObjectGroup.userData.objectBlockProps = new Map<string, any>();
+                    loadedObjectGroup.userData.instanceKeyToObjectUuid = new Map<string, string>();
+                    loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: THREE.Object3D; instanceId: number }>();
+                } else {
+                    if (!loadedObjectGroup.userData.instanceKeyToObjectUuid)
+                        loadedObjectGroup.userData.instanceKeyToObjectUuid = new Map<string, string>();
+                    if (!loadedObjectGroup.userData.objectUuidToInstance)
+                        loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: THREE.Object3D; instanceId: number }>();
                 }
                 const objectNamesMap: Map<string, string> =
                     (loadedObjectGroup.userData.objectNames as Map<string, string>) ?? new Map<string, string>();

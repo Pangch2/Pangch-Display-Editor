@@ -194,6 +194,24 @@ canvas {
   color: #f0f0f0;
 }
 
+/* Selected state colors (속성값 .scene-extra 제외) */
+.scene-object-item.selected[data-display-type="item_display"] .scene-name-text,
+.scene-object-item.selected[data-display-type="item_display"] .scene-name-dots,
+.scene-object-item.selected[data-display-type="item_display"] .scene-icon {
+  color: #2E87EC;
+}
+
+.scene-object-item.selected[data-display-type="block_display"] .scene-name-text,
+.scene-object-item.selected[data-display-type="block_display"] .scene-name-dots,
+.scene-object-item.selected[data-display-type="block_display"] .scene-icon {
+  color: #FFD147;
+}
+
+.scene-tree-group.selected .scene-name,
+.scene-tree-group.selected .scene-toggle {
+  color: #3DFC70;
+}
+
 .scene-toggle {
   font-family: 'lucide';
   font-size: 15px;
