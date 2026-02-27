@@ -164,9 +164,10 @@ export function processVertexScale(
         const vOld = new THREE.Vector3().subVectors(p1, fixedWorld);
         const vNew = new THREE.Vector3().subVectors(p2, fixedWorld);
 
-        const ratioX = Math.abs(vOld.dot(basisX)) > 1e-5 ? vNew.dot(basisX) / vOld.dot(basisX) : 1;
-        const ratioY = Math.abs(vOld.dot(basisY)) > 1e-5 ? vNew.dot(basisY) / vOld.dot(basisY) : 1;
-        const ratioZ = Math.abs(vOld.dot(basisZ)) > 1e-5 ? vNew.dot(basisZ) / vOld.dot(basisZ) : 1;
+        const clampRatio = r => r >= 0 ? Math.max(MIN_SCALE, r) : Math.min(-MIN_SCALE, r);
+        const ratioX = clampRatio(Math.abs(vOld.dot(basisX)) > 1e-5 ? vNew.dot(basisX) / vOld.dot(basisX) : 1);
+        const ratioY = clampRatio(Math.abs(vOld.dot(basisY)) > 1e-5 ? vNew.dot(basisY) / vOld.dot(basisY) : 1);
+        const ratioZ = clampRatio(Math.abs(vOld.dot(basisZ)) > 1e-5 ? vNew.dot(basisZ) / vOld.dot(basisZ) : 1);
 
         const matT = new THREE.Matrix4().makeTranslation(fixedWorld.x, fixedWorld.y, fixedWorld.z);
         const matTInv = new THREE.Matrix4().makeTranslation(-fixedWorld.x, -fixedWorld.y, -fixedWorld.z);
