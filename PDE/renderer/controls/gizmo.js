@@ -604,7 +604,7 @@ function updateSelectionOverlay() {
 }
 
 function _updateMultiSelectionOverlayDuringDrag() {
-    Overlay.updateMultiSelectionOverlayDuringDrag(currentSelection, scene, selectionHelper.matrixWorld, dragInitialMatrix);
+    Overlay.updateMultiSelectionOverlayDuringDrag(currentSelection, selectionHelper.matrixWorld, dragInitialMatrix);
 }
 
 function resetSelectionAndDeselect() {

@@ -10,8 +10,9 @@ const _TMP_VEC3_B = new THREE.Vector3();
 const _TMP_CORNERS = new Array(8).fill(0).map(() => new THREE.Vector3());
 
 let loadedObjectGroup = null;
-let _dragCachePos = new Float32Array(0);
-let _dragCacheExt = new Float32Array(0);
+let _dragCachePos      = new Float32Array(0); // world center,       3 floats/item
+let _dragCacheLocalExt = new Float32Array(0); // local half-extents, 3 floats/item
+let _dragCacheWorldMat3 = new Float32Array(0);// initial world 3x3 (row-major), 9 floats/item
 let _dragCacheCount = 0;
 
 export function setLoadedObjectGroup(group) {
@@ -399,30 +400,45 @@ export function prepareMultiSelectionDrag(currentSelection) {
 
     // Resize cache arrays if needed
     if (_dragCachePos.length < totalCount * 3) {
-        _dragCachePos = new Float32Array(totalCount * 3);
-        _dragCacheExt = new Float32Array(totalCount * 3);
+        _dragCachePos       = new Float32Array(totalCount * 3);
+        _dragCacheLocalExt  = new Float32Array(totalCount * 3);
+        _dragCacheWorldMat3 = new Float32Array(totalCount * 9);
     }
     _dragCacheCount = 0;
 
     const tempMat = _TMP_MAT4_A;
-    const tempBox = _TMP_BOX3_A;
-    const size = _TMP_VEC3_A;
-    const center = _TMP_VEC3_B;
-    
-    const addBox = (box) => {
-        if (!box || box.isEmpty()) return;
-        box.getCenter(center);
-        box.getSize(size);
-        
-        const idx = _dragCacheCount * 3;
-        _dragCachePos[idx] = center.x;
-        _dragCachePos[idx+1] = center.y;
-        _dragCachePos[idx+2] = center.z;
-        
-        _dragCacheExt[idx] = size.x * 0.5;
-        _dragCacheExt[idx+1] = size.y * 0.5;
-        _dragCacheExt[idx+2] = size.z * 0.5;
-        
+    const size    = _TMP_VEC3_A;
+    const center  = _TMP_VEC3_B;
+
+    // Cache: world center + local half-extents + world 3x3 (rotation+scale).
+    // During drag we compute C = T_3x3 * M3_initial, then AABB half-ext = abs(C) * local_ext.
+    // This avoids the double-expansion bug that occurred when abs(T) was applied to
+    // already-rotated world-AABB half-extents.
+    const addBox = (localBox, worldMat) => {
+        if (!localBox || localBox.isEmpty()) return;
+
+        localBox.getCenter(center);
+        localBox.getSize(size);
+
+        // World center
+        center.applyMatrix4(worldMat);
+        const pIdx = _dragCacheCount * 3;
+        _dragCachePos[pIdx]   = center.x;
+        _dragCachePos[pIdx+1] = center.y;
+        _dragCachePos[pIdx+2] = center.z;
+
+        // Local half-extents (geometry space, before world matrix)
+        _dragCacheLocalExt[pIdx]   = size.x * 0.5;
+        _dragCacheLocalExt[pIdx+1] = size.y * 0.5;
+        _dragCacheLocalExt[pIdx+2] = size.z * 0.5;
+
+        // World 3x3 stored row-major: row0=(e[0],e[4],e[8]), row1=(e[1],e[5],e[9]), row2=(e[2],e[6],e[10])
+        const e = worldMat.elements;
+        const rIdx = _dragCacheCount * 9;
+        _dragCacheWorldMat3[rIdx]   = e[0]; _dragCacheWorldMat3[rIdx+1] = e[4]; _dragCacheWorldMat3[rIdx+2] = e[8];
+        _dragCacheWorldMat3[rIdx+3] = e[1]; _dragCacheWorldMat3[rIdx+4] = e[5]; _dragCacheWorldMat3[rIdx+5] = e[9];
+        _dragCacheWorldMat3[rIdx+6] = e[2]; _dragCacheWorldMat3[rIdx+7] = e[6]; _dragCacheWorldMat3[rIdx+8] = e[10];
+
         _dragCacheCount++;
     };
 
@@ -431,10 +447,9 @@ export function prepareMultiSelectionDrag(currentSelection) {
         for (const groupId of currentSelection.groups) {
             if (!groupId) continue;
             const localBox = getGroupLocalBoundingBox(groupId);
-             if (!localBox || localBox.isEmpty()) continue;
-             getGroupWorldMatrixWithFallback(groupId, tempMat);
-             tempBox.copy(localBox).applyMatrix4(tempMat);
-             addBox(tempBox);
+            if (!localBox || localBox.isEmpty()) continue;
+            getGroupWorldMatrixWithFallback(groupId, tempMat);
+            addBox(localBox, tempMat);
         }
     }
 
@@ -442,13 +457,12 @@ export function prepareMultiSelectionDrag(currentSelection) {
     if (currentSelection.objects && currentSelection.objects.size > 0) {
         for (const [mesh, ids] of currentSelection.objects) {
             if (!mesh || !ids || ids.size === 0) continue;
-             for (const id of ids) {
+            for (const id of ids) {
                 const localBox = getInstanceLocalBox(mesh, id);
                 if (!localBox) continue;
                 getInstanceWorldMatrix(mesh, id, tempMat);
-                tempBox.copy(localBox).applyMatrix4(tempMat);
-                addBox(tempBox);
-             }
+                addBox(localBox, tempMat);
+            }
         }
     }
 }
@@ -909,90 +923,89 @@ export function updateSelectionOverlay(scene, renderer, camera, currentSelection
     }
 }
 
-export function updateMultiSelectionOverlayDuringDrag(currentSelection, scene, currentGizmoMat, initialGizmoMat) {
+export function updateMultiSelectionOverlayDuringDrag(currentSelection, currentGizmoMat, initialGizmoMat) {
     if (!multiSelectionOverlay) return;
 
-    // Identify if the first child of the group is the active selection's box
-    // (Based on updateSelectionOverlay, the active box is pushed first)
     const activeBoxLine = multiSelectionOverlay.children[0];
     if (!activeBoxLine || !activeBoxLine.isLineSegments) return;
 
     const objectIdCount = _getSelectedObjectCount(currentSelection);
     const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
     const isMultiSelection = (groupCount + objectIdCount) > 1;
-    
+
     if (!isMultiSelection) {
-        // If active selection is no longer multi, hide its box but keep the group for others
         activeBoxLine.visible = false;
         return;
     }
     activeBoxLine.visible = true;
 
-    let worldBox = _TMP_BOX3_A.makeEmpty();
+    const worldBox = _TMP_BOX3_A.makeEmpty();
 
-    // Fast path: use cached box centers/extents and transform
     if (currentGizmoMat && initialGizmoMat && _dragCacheCount > 0) {
-        // Compute transform: T = Current * Initial^-1
+        // Delta transform: T = currentGizmoMat * initialGizmoMat^-1
         const transformMat = _TMP_MAT4_A;
         transformMat.copy(initialGizmoMat).invert();
         transformMat.premultiply(currentGizmoMat);
-        
-        const e = transformMat.elements;
-        
-        // Abs matrix components for extents (Rotation/Scale)
-        const m00 = Math.abs(e[0]), m01 = Math.abs(e[4]), m02 = Math.abs(e[8]);
-        const m10 = Math.abs(e[1]), m11 = Math.abs(e[5]), m12 = Math.abs(e[9]);
-        const m20 = Math.abs(e[2]), m21 = Math.abs(e[6]), m22 = Math.abs(e[10]);
-        
-        // Translation from matrix
-        const tx = e[12], ty = e[13], tz = e[14];
+        const te = transformMat.elements;
 
-        // Raw matrix components for center transform
-        const r00 = e[0], r01 = e[4], r02 = e[8];
-        const r10 = e[1], r11 = e[5], r12 = e[9];
-        const r20 = e[2], r21 = e[6], r22 = e[10];
-        
-        // Direct access to cache arrays
-        const pos = _dragCachePos;
-        const ext = _dragCacheExt;
-        
-        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        // T 3x3 rows (Three.js col-major: row i, col j → te[j*4 + i])
+        const t00 = te[0], t01 = te[4], t02 = te[8];
+        const t10 = te[1], t11 = te[5], t12 = te[9];
+        const t20 = te[2], t21 = te[6], t22 = te[10];
+        const tx  = te[12], ty = te[13], tz = te[14];
+
+        const pos  = _dragCachePos;
+        const lext = _dragCacheLocalExt;
+        const wm3  = _dragCacheWorldMat3;
+
+        let minX = Infinity,  minY = Infinity,  minZ = Infinity;
         let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
 
         for (let i = 0; i < _dragCacheCount; i++) {
-            const idx = i * 3;
-            const px = pos[idx], py = pos[idx+1], pz = pos[idx+2];
-            const ex = ext[idx], ey = ext[idx+1], ez = ext[idx+2];
-            
-            // Transform Center
-            const nx = r00 * px + r01 * py + r02 * pz + tx;
-            const ny = r10 * px + r11 * py + r12 * pz + ty;
-            const nz = r20 * px + r21 * py + r22 * pz + tz;
-            
-            // Transform Extent (AABB of rotated box)
-            const nex = m00 * ex + m01 * ey + m02 * ez;
-            const ney = m10 * ex + m11 * ey + m12 * ez;
-            const nez = m20 * ex + m21 * ey + m22 * ez;
-            
-            // Expand bounds
+            const pIdx = i * 3;
+            const rIdx = i * 9;
+
+            // Transform world center
+            const px = pos[pIdx], py = pos[pIdx+1], pz = pos[pIdx+2];
+            const nx = t00*px + t01*py + t02*pz + tx;
+            const ny = t10*px + t11*py + t12*pz + ty;
+            const nz = t20*px + t21*py + t22*pz + tz;
+
+            // Combined C = T_3x3 * M3_initial  (both stored row-major)
+            const m00 = wm3[rIdx],   m01 = wm3[rIdx+1], m02 = wm3[rIdx+2];
+            const m10 = wm3[rIdx+3], m11 = wm3[rIdx+4], m12 = wm3[rIdx+5];
+            const m20 = wm3[rIdx+6], m21 = wm3[rIdx+7], m22 = wm3[rIdx+8];
+
+            const c00 = t00*m00 + t01*m10 + t02*m20;
+            const c01 = t00*m01 + t01*m11 + t02*m21;
+            const c02 = t00*m02 + t01*m12 + t02*m22;
+            const c10 = t10*m00 + t11*m10 + t12*m20;
+            const c11 = t10*m01 + t11*m11 + t12*m21;
+            const c12 = t10*m02 + t11*m12 + t12*m22;
+            const c20 = t20*m00 + t21*m10 + t22*m20;
+            const c21 = t20*m01 + t21*m11 + t22*m21;
+            const c22 = t20*m02 + t21*m12 + t22*m22;
+
+            // AABB half-extents = abs(C) * local_ext
+            const ex = lext[pIdx], ey = lext[pIdx+1], ez = lext[pIdx+2];
+            const nex = Math.abs(c00)*ex + Math.abs(c01)*ey + Math.abs(c02)*ez;
+            const ney = Math.abs(c10)*ex + Math.abs(c11)*ey + Math.abs(c12)*ez;
+            const nez = Math.abs(c20)*ex + Math.abs(c21)*ey + Math.abs(c22)*ez;
+
             if (nx - nex < minX) minX = nx - nex;
             if (nx + nex > maxX) maxX = nx + nex;
-            
             if (ny - ney < minY) minY = ny - ney;
             if (ny + ney > maxY) maxY = ny + ney;
-            
             if (nz - nez < minZ) minZ = nz - nez;
             if (nz + nez > maxZ) maxZ = nz + nez;
         }
 
         worldBox.min.set(minX, minY, minZ);
         worldBox.max.set(maxX, maxY, maxZ);
-
     } else {
-        worldBox = getSelectionBoundingBox(currentSelection);
+        worldBox.copy(getSelectionBoundingBox(currentSelection));
     }
-    
-    // Only update if box is valid
+
     if (worldBox.isEmpty()) return;
 
     const edgesGeo = createEdgesGeometryFromBox3(worldBox);
