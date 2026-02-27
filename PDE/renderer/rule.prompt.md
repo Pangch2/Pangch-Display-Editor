@@ -11,7 +11,7 @@
 - renderer/controls/: 조작 로직 (camera, gizmo, pivot, select 등)
 - renderer/load-project/: .bdengine, .pdengine 파싱 (Worker)
 - renderer/entityMaterial.js: 셰이더 관리
-- renderer/ui/: ui요소 관리
+- renderer/ui/: ui요소 관리(css, pannel 등)
 - hardcoded/: 리소스 (player_head 제외)
 
 # 응답 및 스타일 가이드
