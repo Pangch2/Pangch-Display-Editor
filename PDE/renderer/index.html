@@ -109,11 +109,37 @@
     }
 
     .scene-name {
-      flex: 0 1 auto;
+      flex: 0 0 auto;
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      overflow: visible;
+      text-overflow: clip;
       min-width: 0;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .scene-name-text {
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    .scene-name-dots {
+      color: #828282;
+      display: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .scene-object-item.scene-extra-active .scene-name {
+      flex: 0 0 auto;
+    }
+
+    .scene-object-item.scene-extra-ellipsis .scene-name {
+      flex: 0 0 auto;
+    }
+
+    .scene-object-item.scene-extra-ellipsis .scene-extra {
+      margin-left: -10px;
     }
 
     .scene-object-item:hover {
@@ -148,9 +174,9 @@
       color: #828282;
       font-family: 'Noto Sans KR', sans-serif;
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      flex: 1 1 0;
+      overflow: visible;
+      text-overflow: clip;
+      flex: 0 0 auto;
       min-width: 0;
     }
 

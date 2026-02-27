@@ -2,6 +2,9 @@ import { loadedObjectGroup } from '../load-project/upload-pbde.ts';
 
 // ----- Scene 패널 오브젝트 목록 갱신 -----
 const scenePanelList = document.getElementById('scene-object-list');
+let sceneExtraFitRaf = 0;
+const extraTokenCache = new WeakMap();
+const ELLIPSIS = '...';
 
 function cleanLabel(rawName) {
     return (rawName || '')
@@ -22,13 +25,13 @@ function makeObjectRow(uuid, depth) {
     let extraInfo = '';
     if (isItemDisplay) {
         const dType = displayTypes?.get(uuid);
-        if (dType) extraInfo = `<span class="scene-extra">display=${dType}</span>`;
+        if (dType) extraInfo = `display=${dType}`;
     } else {
         const props = blockPropsMap?.get(uuid);
         if (props) {
             const propStrings = Object.entries(props).map(([k, v]) => `${k}=${v}`);
             if (propStrings.length > 0) {
-                extraInfo = `<span class="scene-extra">${propStrings.join(' ')}</span>`;
+                extraInfo = propStrings.join(' ');
             }
         }
     }
@@ -39,14 +42,216 @@ function makeObjectRow(uuid, depth) {
     el.className = 'scene-object-item';
     el.style.paddingLeft = `${12 + depth * 16}px`;
     el.dataset.uuid = uuid;
-    el.innerHTML = `
-        <span class="scene-icon ${iconClass}">${iconCode}</span>
-        <span class="scene-name">${cleanLabel(rawName)}</span>
-        ${extraInfo}
-        <span class="scene-icon-right">&#xE0BA;</span>
-    `;
+
+    const leftIcon = document.createElement('span');
+    leftIcon.className = `scene-icon ${iconClass}`;
+    leftIcon.innerHTML = iconCode;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'scene-name';
+    const cleanName = cleanLabel(rawName);
+    nameEl.dataset.fullText = cleanName;
+
+    const nameTextEl = document.createElement('span');
+    nameTextEl.className = 'scene-name-text';
+    nameTextEl.textContent = cleanName;
+
+    const nameDotsEl = document.createElement('span');
+    nameDotsEl.className = 'scene-name-dots';
+    nameDotsEl.textContent = ELLIPSIS;
+
+    nameEl.appendChild(nameTextEl);
+    nameEl.appendChild(nameDotsEl);
+
+    el.appendChild(leftIcon);
+    el.appendChild(nameEl);
+
+    if (extraInfo) {
+        const extraEl = document.createElement('span');
+        extraEl.className = 'scene-extra';
+        extraEl.dataset.fullText = extraInfo;
+        extraEl.textContent = extraInfo;
+        el.classList.add('scene-extra-active');
+        extraTokenCache.set(extraEl, extraInfo.split(/\s+/).filter(Boolean));
+        el.appendChild(extraEl);
+    }
+
+    const rightIcon = document.createElement('span');
+    rightIcon.className = 'scene-icon-right';
+    rightIcon.innerHTML = '&#xE0BA;';
+    el.appendChild(rightIcon);
+
     return el;
 }
+
+function fitSceneExtraBlocks() {
+    if (!scenePanelList) return;
+
+    const viewTop = scenePanelList.scrollTop;
+    const viewBottom = viewTop + scenePanelList.clientHeight;
+    const rows = scenePanelList.querySelectorAll('.scene-object-item');
+    for (const row of rows) {
+        const rowTop = row.offsetTop;
+        const rowBottom = rowTop + row.offsetHeight;
+        if (rowBottom < viewTop - 40 || rowTop > viewBottom + 40) continue;
+
+        const nameEl = row.querySelector('.scene-name');
+        const nameTextEl = row.querySelector('.scene-name-text');
+        const nameDotsEl = row.querySelector('.scene-name-dots');
+        const extraEl = row.querySelector('.scene-extra');
+        if (!nameEl || !nameTextEl || !nameDotsEl) continue;
+
+        const fullName = nameEl.dataset.fullText || '';
+        const setNameByCount = (count, showDots = true) => {
+            const safeCount = Math.max(0, Math.min(count, fullName.length));
+            if (safeCount >= fullName.length) {
+                nameTextEl.textContent = fullName;
+                nameDotsEl.style.display = 'none';
+                return;
+            }
+
+            nameTextEl.textContent = fullName.slice(0, safeCount);
+            nameDotsEl.style.display = showDots ? 'inline' : 'none';
+        };
+
+        const isOverflow = () => row.scrollWidth > row.clientWidth + 1;
+
+        setNameByCount(fullName.length);
+
+        if (!extraEl) {
+            if (!isOverflow()) continue;
+
+            let lowNameOnly = 0;
+            let highNameOnly = fullName.length;
+            let bestNameOnly = -1;
+
+            while (lowNameOnly <= highNameOnly) {
+                const mid = (lowNameOnly + highNameOnly) >> 1;
+                setNameByCount(mid, true);
+                if (isOverflow()) {
+                    highNameOnly = mid - 1;
+                } else {
+                    bestNameOnly = mid;
+                    lowNameOnly = mid + 1;
+                }
+            }
+
+            if (bestNameOnly >= 0) setNameByCount(bestNameOnly, true);
+            continue;
+        }
+
+        const fullText = (extraEl.dataset.fullText || '').trim();
+        if (!fullText) {
+            extraEl.textContent = '';
+            row.classList.remove('scene-extra-active');
+            row.classList.remove('scene-extra-ellipsis');
+
+            if (!isOverflow()) continue;
+
+            let lowNameNoExtra = 0;
+            let highNameNoExtra = fullName.length;
+            let bestNameNoExtra = -1;
+
+            while (lowNameNoExtra <= highNameNoExtra) {
+                const mid = (lowNameNoExtra + highNameNoExtra) >> 1;
+                setNameByCount(mid, true);
+                if (isOverflow()) {
+                    highNameNoExtra = mid - 1;
+                } else {
+                    bestNameNoExtra = mid;
+                    lowNameNoExtra = mid + 1;
+                }
+            }
+
+            if (bestNameNoExtra >= 0) setNameByCount(bestNameNoExtra, true);
+            continue;
+        }
+
+        let tokens = extraTokenCache.get(extraEl);
+        if (!tokens) {
+            tokens = fullText.split(/\s+/).filter(Boolean);
+            extraTokenCache.set(extraEl, tokens);
+        }
+
+        const setExtraByCount = (count) => {
+            if (count <= 0) {
+                extraEl.textContent = '';
+                return;
+            }
+            if (count >= tokens.length) {
+                extraEl.textContent = fullText;
+                return;
+            }
+            extraEl.textContent = `${tokens.slice(0, count).join(' ')}${ELLIPSIS}`;
+        };
+
+        row.classList.add('scene-extra-active');
+        row.classList.remove('scene-extra-ellipsis');
+        extraEl.textContent = fullText;
+
+        if (!isOverflow()) {
+            continue;
+        }
+
+        let lowExtra = 1;
+        let highExtra = tokens.length - 1;
+        let bestExtraFit = 0;
+
+        while (lowExtra <= highExtra) {
+            const mid = (lowExtra + highExtra) >> 1;
+            setExtraByCount(mid);
+            if (isOverflow()) {
+                highExtra = mid - 1;
+            } else {
+                bestExtraFit = mid;
+                lowExtra = mid + 1;
+            }
+        }
+
+        if (bestExtraFit > 0) {
+            row.classList.add('scene-extra-active');
+            row.classList.remove('scene-extra-ellipsis');
+            setExtraByCount(bestExtraFit);
+        } else {
+            extraEl.textContent = ELLIPSIS;
+            row.classList.remove('scene-extra-active');
+            row.classList.add('scene-extra-ellipsis');
+        }
+
+        if (!isOverflow()) {
+            setNameByCount(fullName.length, false);
+            continue;
+        }
+
+        let lowNameAfterExtra = 0;
+        let highNameAfterExtra = fullName.length;
+        let bestNameAfterExtra = -1;
+
+        while (lowNameAfterExtra <= highNameAfterExtra) {
+            const mid = (lowNameAfterExtra + highNameAfterExtra) >> 1;
+            setNameByCount(mid, false);
+            if (isOverflow()) {
+                highNameAfterExtra = mid - 1;
+            } else {
+                bestNameAfterExtra = mid;
+                lowNameAfterExtra = mid + 1;
+            }
+        }
+
+        if (bestNameAfterExtra >= 0) setNameByCount(bestNameAfterExtra, false);
+    }
+}
+
+function scheduleSceneExtraFit() {
+    if (sceneExtraFitRaf) return;
+    sceneExtraFitRaf = requestAnimationFrame(() => {
+        sceneExtraFitRaf = 0;
+        fitSceneExtraBlocks();
+    });
+}
+
+window.addEventListener('resize', scheduleSceneExtraFit);
+scenePanelList?.addEventListener('scroll', scheduleSceneExtraFit, { passive: true });
 
 function renderGroup(groupId, depth) {
     const groups = loadedObjectGroup.userData.groups;
@@ -84,6 +289,7 @@ function renderGroup(groupId, depth) {
     header.addEventListener('click', () => {
         const isCollapsed = childContainer.classList.toggle('collapsed');
         header.querySelector('.scene-toggle').innerHTML = isCollapsed ? '&#xE06F;' : '&#xE06D;';
+        scheduleSceneExtraFit();
     });
 
     wrapper.appendChild(header);
@@ -126,6 +332,7 @@ export function refreshScenePanel() {
     }
 
     scenePanelList.appendChild(fragment);
+    scheduleSceneExtraFit();
 }
 
 window.addEventListener('pde:scene-updated', refreshScenePanel);
