@@ -904,7 +904,8 @@ async function processBlockDisplay(item: any): Promise<RenderItem | null> {
         if (allGeometryData.length > 0) {
             return {
                 type: 'blockDisplay',
-                models: allGeometryData
+                models: allGeometryData,
+                blockProps: props
             };
         }
 
@@ -1536,7 +1537,8 @@ async function processItemModelDisplay(node: any): Promise<RenderItem | null> {
             displayType: displayType || null,
             tints: tintList || null,
             models: [{ modelMatrix: modelMatrix.elements.slice(), geometries: geomData, geometryId: modelId }],
-            transform: node.transform || node.transforms || null
+            transform: node.transform || node.transforms || null,
+            itemDisplayType: displayType || null
         };
     } catch (e) {
         //try { console.warn('[ItemModel] error', node.name, e); } catch {}
@@ -1972,6 +1974,9 @@ self.onmessage = async (e) => {
                                         }
                                     }
                                 }
+                                // geometryMeta에 추가 속성 주입 (onmessage 루프 내 renderList 처리 부분)
+                                (model as any).blockProps = item.blockProps;
+                                (model as any).itemDisplayType = item.itemDisplayType;
                             }
                         }
                     }
@@ -2096,7 +2101,9 @@ self.onmessage = async (e) => {
                         indicesLen: indices.length,
                         uuid: item.uuid,
                         groupId: item.groupId,
-                        name: (item as any).name ?? null
+                        name: (item as any).name ?? null,
+                        blockProps: (model as any).blockProps || item.blockProps,
+                        itemDisplayType: (model as any).itemDisplayType || item.displayType
                     });
                 });
             }

@@ -952,20 +952,48 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                 // uuid → 표시 이름 맵 구성
                 if (!isMerge) {
                     loadedObjectGroup.userData.objectNames = new Map<string, string>();
+                    loadedObjectGroup.userData.objectIsItemDisplay = new Set<string>();
+                    loadedObjectGroup.userData.objectDisplayTypes = new Map<string, string>();
+                    loadedObjectGroup.userData.objectBlockProps = new Map<string, any>();
                 }
                 const objectNamesMap: Map<string, string> =
                     (loadedObjectGroup.userData.objectNames as Map<string, string>) ?? new Map<string, string>();
+                const objectIsItemDisplay: Set<string> =
+                    (loadedObjectGroup.userData.objectIsItemDisplay as Set<string>) ?? new Set<string>();
+                const objectDisplayTypes: Map<string, string> =
+                    (loadedObjectGroup.userData.objectDisplayTypes as Map<string, string>) ?? new Map<string, string>();
+                const objectBlockProps: Map<string, any> =
+                    (loadedObjectGroup.userData.objectBlockProps as Map<string, any>) ?? new Map<string, any>();
+
                 for (const meta of geometryMetas) {
                     if (meta.uuid && !objectNamesMap.has(meta.uuid) && meta.name) {
                         objectNamesMap.set(meta.uuid, meta.name);
+                    }
+                    if (meta.uuid && meta.isItemDisplayModel) {
+                        objectIsItemDisplay.add(meta.uuid);
+                        if ((meta as any).itemDisplayType) {
+                            objectDisplayTypes.set(meta.uuid, (meta as any).itemDisplayType);
+                        }
+                    }
+                    if (meta.uuid && !meta.isItemDisplayModel && (meta as any).blockProps) {
+                        objectBlockProps.set(meta.uuid, (meta as any).blockProps);
                     }
                 }
                 for (const item of otherItems) {
                     if (item.uuid && !objectNamesMap.has(item.uuid) && (item as any).name) {
                         objectNamesMap.set(item.uuid, (item as any).name);
                     }
+                    if (item.uuid && item.type === 'itemDisplay') {
+                        objectIsItemDisplay.add(item.uuid);
+                        if (item.displayType) {
+                            objectDisplayTypes.set(item.uuid, item.displayType);
+                        }
+                    }
                 }
                 loadedObjectGroup.userData.objectNames = objectNamesMap;
+                loadedObjectGroup.userData.objectIsItemDisplay = objectIsItemDisplay;
+                loadedObjectGroup.userData.objectDisplayTypes = objectDisplayTypes;
+                loadedObjectGroup.userData.objectBlockProps = objectBlockProps;
 
                 // 로드 순서 보존 (merge 시는 덧붙임)
                 const prevOrder: { type: 'group' | 'object', id: string }[] =

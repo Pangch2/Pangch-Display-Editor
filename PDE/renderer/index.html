@@ -14,7 +14,7 @@
 
     @font-face {
       font-family: 'Noto Sans KR';
-      src: url('../resources/NotoSansKR-Medium.ttf') format('truetype');
+      src: url('../resources/NotoSansKR-ExtraBold.ttf') format('truetype');
       font-weight: 500;
       font-style: normal;
       font-display: swap;
@@ -68,7 +68,7 @@
     #scene-panel-header {
       padding: 8px 12px;
       border-bottom: 1px solid #3a3a3e;
-      font-size: 11px;
+      font-size: 13px;
       font-weight: 600;
       letter-spacing: 0.08em;
       text-transform: uppercase;
@@ -97,7 +97,7 @@
 
     .scene-object-item {
       padding: 4px 12px;
-      font-size: 12px;
+      font-size: 14px;
       cursor: pointer;
       white-space: nowrap;
       overflow: hidden;
@@ -105,7 +105,15 @@
       color: #ccc;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 10px;
+    }
+
+    .scene-name {
+      flex: 0 1 auto;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
     }
 
     .scene-object-item:hover {
@@ -115,16 +123,41 @@
 
     .scene-object-item .scene-icon {
       font-family: 'lucide';
-      font-size: 13px;
-      opacity: 0.6;
+      font-size: 15px;
       flex-shrink: 0;
       line-height: 1;
+      font-weight: 600;
+    }
+
+    .scene-object-item .scene-icon.icon-box {
+      transform: translateY(2px);
+    }
+
+    .scene-icon-right {
+      font-family: 'lucide';
+      font-size: 14px;
+      margin-left: auto;
+      flex-shrink: 0;
+      color: #CCCCCC;
+      font-weight: 600;
+    }
+
+    .scene-extra {
+      margin-left: 0px;
+      font-size: 13px;
+      color: #828282;
+      font-family: 'Noto Sans KR', sans-serif;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1 1 0;
+      min-width: 0;
     }
 
     /* Scene 패널 트리: 그룹 헤더 */
     .scene-tree-group {
       padding: 4px 12px;
-      font-size: 12px;
+      font-size: 14px;
       cursor: pointer;
       white-space: nowrap;
       overflow: hidden;
@@ -132,7 +165,7 @@
       color: #ccc;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 10px;
       user-select: none;
     }
 
@@ -143,12 +176,12 @@
 
     .scene-toggle {
       font-family: 'lucide';
-      font-size: 13px;
-      opacity: 0.7;
+      font-size: 15px;
       flex-shrink: 0;
       width: 14px;
       display: inline-block;
       line-height: 1;
+      font-weight: 600;
     }
 
     /* 접힌 상태 */
