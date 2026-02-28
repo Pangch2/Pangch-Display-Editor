@@ -6,6 +6,128 @@ let sceneExtraFitRaf = 0;
 const extraTokenCache = new WeakMap();
 const ELLIPSIS = '...';
 
+let lastClickedItem = null;
+
+function handleSceneItemClick(e, el) {
+    const ud = loadedObjectGroup?.userData;
+    if (!ud) return;
+
+    if (e.ctrlKey && e.shiftKey && lastClickedItem && lastClickedItem !== el) {
+        const visibleItems = Array.from(scenePanelList.querySelectorAll('.scene-object-item, .scene-tree-group'))
+            .filter(node => node.offsetParent !== null);
+            
+        const idx1 = visibleItems.indexOf(lastClickedItem);
+        const idx2 = visibleItems.indexOf(el);
+        
+        if (idx1 !== -1 && idx2 !== -1) {
+            const start = Math.min(idx1, idx2);
+            const end = Math.max(idx1, idx2);
+            
+            const rangeGroups = new Set();
+            const rangeObjects = new Map();
+            const uuidToInstance = ud.objectUuidToInstance;
+            
+            const selectedNodes = scenePanelList.querySelectorAll('.selected');
+            selectedNodes.forEach(node => {
+                if (node.dataset.displayType === 'group') {
+                    const gId = node.dataset.groupId;
+                    if (gId) rangeGroups.add(gId);
+                } else if (node.dataset.uuid) {
+                    const uuid = node.dataset.uuid;
+                    if (uuid && uuidToInstance) {
+                        const inst = uuidToInstance.get(uuid);
+                        if (inst) {
+                            if (!rangeObjects.has(inst.mesh)) {
+                                rangeObjects.set(inst.mesh, new Set());
+                            }
+                            rangeObjects.get(inst.mesh).add(inst.instanceId);
+                        }
+                    }
+                }
+            });
+            
+            for (let i = start; i <= end; i++) {
+                const node = visibleItems[i];
+                if (node.dataset.displayType === 'group') {
+                    const gId = node.dataset.groupId;
+                    if (gId) {
+                        rangeGroups.add(gId);
+                    }
+                } else {
+                    const uuid = node.dataset.uuid;
+                    if (uuid && uuidToInstance) {
+                        const inst = uuidToInstance.get(uuid);
+                        if (inst) {
+                            if (!rangeObjects.has(inst.mesh)) {
+                                rangeObjects.set(inst.mesh, new Set());
+                            }
+                            rangeObjects.get(inst.mesh).add(inst.instanceId);
+                        }
+                    }
+                }
+            }
+            
+            // To properly preserve the primary object, we will rely on the `primaryIsRangeStart` flag we added
+            // to select.js, and we'll let handleSceneItemClick's `replaceSelectionWithGroupsAndObjects` handle it.
+            // When multiple selections are passed into this function, `firstGroupId` or `firstObjectMesh` 
+            // inside select.js gets set to whatever was iterated first. To guarantee lastClickedItem becomes `primary`,
+            // we will find its specific id/mesh and inject it into the API call natively if needed, but 
+            // currently select.js loops `rangeGroups` and `rangeObjects` as they were added.
+            
+            // Let's ensure the `lastClickedItem` is at the FRONT of the Iterator.
+            const sortedRangeGroups = new Set();
+            const sortedRangeObjects = new Map();
+            
+            if (lastClickedItem.dataset.displayType === 'group') {
+                sortedRangeGroups.add(lastClickedItem.dataset.groupId);
+            } else {
+                const uuid = lastClickedItem.dataset.uuid;
+                const inst = uuidToInstance.get(uuid);
+                if (inst) {
+                    sortedRangeObjects.set(inst.mesh, new Set([inst.instanceId]));
+                }
+            }
+            
+            rangeGroups.forEach(g => sortedRangeGroups.add(g));
+            rangeObjects.forEach((ids, mesh) => {
+                if (!sortedRangeObjects.has(mesh)) {
+                    sortedRangeObjects.set(mesh, new Set());
+                }
+                ids.forEach(id => sortedRangeObjects.get(mesh).add(id));
+            });
+
+            ud.replaceSelectionWithGroupsAndObjects?.(sortedRangeGroups, sortedRangeObjects, { 
+                anchorMode: 'default',
+                primaryIsRangeStart: true
+            });
+            return;
+        }
+    }
+
+    lastClickedItem = el;
+
+    let groupIds = null;
+    let meshToIds = null;
+
+    if (el.dataset.displayType === 'group') {
+        const groupId = el.dataset.groupId;
+        if (groupId) groupIds = new Set([groupId]);
+    } else {
+        const uuidToInstance = ud.objectUuidToInstance;
+        if (!uuidToInstance) return;
+        const inst = uuidToInstance.get(el.dataset.uuid);
+        if (inst) {
+            meshToIds = new Map([[inst.mesh, new Set([inst.instanceId])]]);
+        }
+    }
+
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        ud.addOrToggleInSelection?.(groupIds, meshToIds);
+    } else {
+        ud.replaceSelectionWithGroupsAndObjects?.(groupIds || new Set(), meshToIds || new Map(), { anchorMode: 'default' });
+    }
+}
+
 function cleanLabel(rawName) {
     return (rawName || '')
         .replace(/^[^:]+:/, '')  // 네임스페이스 제거
@@ -83,18 +205,7 @@ function makeObjectRow(uuid, depth) {
     el.appendChild(rightIcon);
 
     el.addEventListener('click', (e) => {
-        const ud = loadedObjectGroup?.userData;
-        if (!ud) return;
-        const uuidToInstance = ud.objectUuidToInstance;
-        if (!uuidToInstance) return;
-        const inst = uuidToInstance.get(uuid);
-        if (!inst) return;
-        const meshToIds = new Map([[inst.mesh, new Set([inst.instanceId])]]);
-        if (e.shiftKey) {
-            ud.addOrToggleInSelection?.(null, meshToIds);
-        } else {
-            ud.replaceSelectionWithObjectsMap?.(meshToIds, { anchorMode: 'default' });
-        }
+        handleSceneItemClick(e, el);
     });
 
     return el;
@@ -335,14 +446,7 @@ function renderGroup(groupId, depth) {
 
     // 헤더 클릭 → 그룹 선택
     header.addEventListener('click', (e) => {
-        const ud = loadedObjectGroup?.userData;
-        if (!ud) return;
-        const groupIds = new Set([groupId]);
-        if (e.shiftKey) {
-            ud.addOrToggleInSelection?.(groupIds, null);
-        } else {
-            ud.replaceSelectionWithGroupsAndObjects?.(groupIds, new Map(), { anchorMode: 'default' });
-        }
+        handleSceneItemClick(e, header);
     });
 
     wrapper.appendChild(header);
@@ -412,6 +516,8 @@ function syncScenePanelSelection(sel) {
 
     if (!sel) return;
 
+    let newPrimaryEl = null;
+
     if (sel.groups && sel.groups.size > 0) {
         for (const groupId of sel.groups) {
             const el = scenePanelList.querySelector(`.scene-tree-group[data-group-id="${groupId}"]`);
@@ -437,6 +543,24 @@ function syncScenePanelSelection(sel) {
                 }
             }
         }
+    }
+    
+    if (sel.primary) {
+        if (sel.primary.type === 'group') {
+            newPrimaryEl = scenePanelList.querySelector(`.scene-tree-group[data-group-id="${sel.primary.id}"]`);
+        } else if (sel.primary.type === 'object') {
+            const uuid = loadedObjectGroup?.userData?.instanceKeyToObjectUuid?.get(`${sel.primary.mesh.uuid}_${sel.primary.instanceId}`);
+            if (uuid) {
+                newPrimaryEl = scenePanelList.querySelector(`.scene-object-item[data-uuid="${uuid}"]`);
+            }
+        }
+    }
+
+    if (newPrimaryEl) {
+        lastClickedItem = newPrimaryEl;
+    } else if (!sel.primary && sel.groups?.size === 0 && sel.objects?.size === 0) {
+        // Selection was completely cleared
+        lastClickedItem = null;
     }
 }
 

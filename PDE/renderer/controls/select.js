@@ -254,7 +254,7 @@ export function replaceSelectionWithObjectsMap(meshToIds, callbacks, { anchorMod
     if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
 }
 
-export function replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, callbacks, { anchorMode = 'default' } = {}) {
+export function replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, callbacks, { anchorMode = 'default', primaryIsRangeStart = false } = {}) {
     const hasGroups = groupIds && groupIds.size > 0;
     const hasObjects = meshToIds && meshToIds.size > 0;
     if (!hasGroups && !hasObjects) {
@@ -264,15 +264,36 @@ export function replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, callba
 
     beginSelectionReplace(callbacks, { anchorMode, detachTransform: true });
 
+    let firstGroupId = null;
+    let firstObjectMesh = null;
+    let firstObjectInstanceId = null;
+
     if (hasGroups) {
         for (const gid of groupIds) {
-            if (gid) currentSelection.groups.add(gid);
+            if (gid) {
+                currentSelection.groups.add(gid);
+                if (!firstGroupId) firstGroupId = gid;
+            }
         }
     }
     if (hasObjects) {
         for (const [mesh, ids] of meshToIds) {
             if (!mesh || !ids || ids.size === 0) continue;
             currentSelection.objects.set(mesh, ids);
+            if (!firstObjectMesh) {
+                firstObjectMesh = mesh;
+                firstObjectInstanceId = Array.from(ids)[0];
+            }
+        }
+    }
+
+    // Usually we don't set primary here (it relies on setPrimaryToFirstAvailable implicitly if undefined)
+    // But if primaryIsRangeStart is true, we want to force the primary to be the FIRST item in this new selection.
+    if (primaryIsRangeStart) {
+        if (firstGroupId) {
+            currentSelection.primary = { type: 'group', id: firstGroupId };
+        } else if (firstObjectMesh) {
+            currentSelection.primary = { type: 'object', mesh: firstObjectMesh, instanceId: firstObjectInstanceId };
         }
     }
 
