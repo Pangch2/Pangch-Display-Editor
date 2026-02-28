@@ -1834,11 +1834,22 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                 _recomputePivotStateForSelection();
 
                 updateHelperPosition();
-                
-                if (isVertexMode) {
-                    _pushToVertexQueue();
-                    updateSelectionOverlay();
+
+                // If a drag is active: rebaseline the drag caches to match the post-reset gizmo state.
+                // Without this, _updateMultiSelectionOverlayDuringDrag computes a stale delta
+                // against the old custom-pivot position, causing the multi-selection overlay
+                // to snap to the gizmo instead of covering the actual objects.
+                if (transformControls.dragging) {
+                    Overlay.prepareMultiSelectionDrag(currentSelection);
+                    dragInitialMatrix.copy(selectionHelper.matrixWorld);
+                    dragInitialPosition.copy(selectionHelper.position);
+                    dragInitialQuaternion.copy(selectionHelper.quaternion);
+                    dragInitialScale.copy(selectionHelper.scale);
                 }
+
+                // Rebuild overlay at correct object positions (unconditional).
+                if (isVertexMode) _pushToVertexQueue();
+                updateSelectionOverlay();
 
                 console.log('Pivot reset to origin');
             }
@@ -1879,9 +1890,29 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
     window.addEventListener('keyup', (event) => {
         if (event.key === 'Alt') {
             if (isPivotEditMode) {
+                // Rebaseline previousHelperMatrix BEFORE setMode so that any synchronous
+                // `change` event fired by setMode computes δT = I (no object movement).
+                // Without this, if previousHelperMatrix is still at G_old the delta
+                // G_pivot × G_old⁻¹ teleports objects to the gizmo pivot position.
+                if (transformControls.dragging) {
+                    selectionHelper.updateMatrixWorld();
+                    previousHelperMatrix.copy(selectionHelper.matrixWorld);
+                }
+
                 isPivotEditMode = false;
                 transformControls.setMode(previousGizmoMode);
                 _pivotEditPreviousPivotMode = null;
+
+                // Rebaseline all drag caches so the resuming normal drag
+                // doesn't apply the accumulated pivot-edit offset to objects/overlay.
+                if (transformControls.dragging) {
+                    Overlay.prepareMultiSelectionDrag(currentSelection);
+                    dragInitialMatrix.copy(selectionHelper.matrixWorld);
+                    dragInitialPosition.copy(selectionHelper.position);
+                    dragInitialQuaternion.copy(selectionHelper.quaternion);
+                    dragInitialScale.copy(selectionHelper.scale);
+                    updateSelectionOverlay();
+                }
             }
         }
     });
