@@ -37,7 +37,6 @@ const unionTransformedBox3 = Overlay.unionTransformedBox3;
 const getInstanceLocalBox = Overlay.getInstanceLocalBox;
 const getInstanceWorldMatrix = Overlay.getInstanceWorldMatrix;
 const getGroupLocalBoundingBox = Overlay.getGroupLocalBoundingBox;
-const getGroupWorldAABB = Overlay.getGroupWorldAABB;
 const getRotationFromMatrix = Overlay.getRotationFromMatrix;
 const getSelectionBoundingBox = () => Overlay.getSelectionBoundingBox(currentSelection);
 const createOverlayLineMaterial = Overlay.createOverlayLineMaterial;
@@ -463,13 +462,12 @@ function _captureMultiAnchorInitialIfNeeded(worldPos) {
 }
 
 // Converts the stored local anchor to world using the current primary transform.
-// Falls back to the world snapshot if local is unavailable.
+// Never falls back to the world snapshot, because if objects moved it would jump to stale world coords.
 function _resolveMultiAnchorInitialWorld(out = new THREE.Vector3()) {
     if (_multiSelectionOriginAnchorInitialLocalValid) {
         const mat = _getPrimaryWorldMatrix(_TMP_MAT4_B);
         if (mat) return out.copy(_multiSelectionOriginAnchorInitialLocal).applyMatrix4(mat);
     }
-    if (_multiSelectionOriginAnchorInitialValid) return out.copy(_multiSelectionOriginAnchorInitialPosition);
     return null;
 }
 
@@ -1720,6 +1718,12 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                                     }
                                 }
                             }
+
+                            if (!found && isMultiReset) {
+                                targetPos.copy(calculateAvgOrigin());
+                                found = true;
+                            }
+
                             if (found) {
                                 _multiSelectionOriginAnchorPosition.copy(targetPos);
                                 _multiSelectionOriginAnchorValid = true;
@@ -1732,7 +1736,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                                 _multiSelectionOriginAnchorInitialValid = false;
                                 _multiSelectionOriginAnchorInitialLocalValid = false;
                                 _gizmoAnchorValid = false;
-                                _selectionAnchorMode = 'center';
+                                _selectionAnchorMode = 'default';
                             }
                         }
                     } else {
@@ -1789,6 +1793,11 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             }
                         }
 
+                        if (!found && isMultiReset) {
+                            targetPos.copy(calculateAvgOrigin());
+                            found = true;
+                        }
+
                         if (found) {
                             _multiSelectionOriginAnchorPosition.copy(targetPos);
                             _multiSelectionOriginAnchorValid = true;
@@ -1801,7 +1810,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             _multiSelectionOriginAnchorInitialValid = false;
                             _multiSelectionOriginAnchorInitialLocalValid = false;
                             _gizmoAnchorValid = false;
-                            _selectionAnchorMode = 'center';
+                            _selectionAnchorMode = 'default';
                         }
                     }
                 } else {
