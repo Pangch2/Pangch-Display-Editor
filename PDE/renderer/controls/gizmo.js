@@ -1719,11 +1719,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                                 }
                             }
 
-                            if (!found && isMultiReset) {
-                                targetPos.copy(calculateAvgOrigin());
-                                found = true;
-                            }
-
                             if (found) {
                                 _multiSelectionOriginAnchorPosition.copy(targetPos);
                                 _multiSelectionOriginAnchorValid = true;
@@ -1736,7 +1731,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                                 _multiSelectionOriginAnchorInitialValid = false;
                                 _multiSelectionOriginAnchorInitialLocalValid = false;
                                 _gizmoAnchorValid = false;
-                                _selectionAnchorMode = 'default';
+                                _selectionAnchorMode = 'center';
                             }
                         }
                     } else {
@@ -1793,11 +1788,6 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             }
                         }
 
-                        if (!found && isMultiReset) {
-                            targetPos.copy(calculateAvgOrigin());
-                            found = true;
-                        }
-
                         if (found) {
                             _multiSelectionOriginAnchorPosition.copy(targetPos);
                             _multiSelectionOriginAnchorValid = true;
@@ -1810,7 +1800,7 @@ function initGizmo({scene: s, camera: cam, renderer: rend, controls: orbitContro
                             _multiSelectionOriginAnchorInitialValid = false;
                             _multiSelectionOriginAnchorInitialLocalValid = false;
                             _gizmoAnchorValid = false;
-                            _selectionAnchorMode = 'default';
+                            _selectionAnchorMode = 'center';
                         }
                     }
                 } else {
