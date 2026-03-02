@@ -254,7 +254,7 @@ export function replaceSelectionWithObjectsMap(meshToIds, callbacks, { anchorMod
     if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
 }
 
-export function replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, callbacks, { anchorMode = 'default', primaryIsRangeStart = false } = {}) {
+export function replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, callbacks, { anchorMode = 'default', primaryIsRangeStart = false, preserveAnchors = false } = {}) {
     const hasGroups = groupIds && groupIds.size > 0;
     const hasObjects = meshToIds && meshToIds.size > 0;
     if (!hasGroups && !hasObjects) {
@@ -262,7 +262,7 @@ export function replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, callba
         return;
     }
 
-    beginSelectionReplace(callbacks, { anchorMode, detachTransform: true });
+    beginSelectionReplace(callbacks, { anchorMode, detachTransform: true, preserveAnchors });
 
     let firstGroupId = null;
     let firstObjectMesh = null;

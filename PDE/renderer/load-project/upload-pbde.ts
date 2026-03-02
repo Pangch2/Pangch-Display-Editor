@@ -1593,7 +1593,6 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                             instancedMesh.instanceMatrix.needsUpdate = true;
                             instancedMesh.frustumCulled = false;
                             instancedMesh.instanceMatrix.array = matrices;
-                            instancedMesh.frustumCulled = false;
                             instancedMesh.layers.enable(2);
                             instancedMesh.computeBoundingSphere();
 

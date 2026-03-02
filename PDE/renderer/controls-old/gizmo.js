@@ -886,7 +886,10 @@ function _promoteVertexQueueBundleOnExit() {
     for (const ids of meshToIds.values()) total += ids.size;
     if (total <= 1) return false;
 
-    _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'default' });
+    // preserveAnchors: true — vertex-mode pivot/snap operations update _multiSelectionOriginAnchorPosition.
+    // Without this, beginSelectionReplace → _clearGizmoAnchor() would zero them out before
+    // updateHelperPosition() runs, causing the gizmo to jump away from its vertex-mode position.
+    _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'default', preserveAnchors: true });
     return true;
 }
 

@@ -230,40 +230,76 @@ export function performSelectionSwap(
     }
     const activeSelectionCount = groupCount + objectIdCount;
     const hasActiveSelection = activeSelectionCount > 0;
-    const hasMultiBundleInQueue = Array.isArray(vertexQueue) && vertexQueue.some((item) => {
-        return item && item.type === 'bundle' && Array.isArray(item.items) && item.items.length > 1;
-    });
-    const allowPreserveMemberSwap = !!options.preserveSelection && activeSelectionCount <= 1 && !hasMultiBundleInQueue;
+    
+    const isSwap = !!options.preserveSelection;
+    const shouldReplaceWithSrc = !!src && (!isSwap || !hasActiveSelection);
 
-    const shouldReplaceWithSrc = !!src && (!options.preserveSelection || !hasActiveSelection);
-
-    if (allowPreserveMemberSwap && src) {
+    if (isSwap && src) {
         const srcSelected = isSelectedSource(src);
         const targetSelected = isSelectedSource(targetSrc);
         const srcInQueue = findQueueLocation(src);
         const targetInQueue = findQueueLocation(targetSrc);
 
-        if (srcSelected && targetInQueue) {
-            removeSelectedSource(src);
-            addSelectedSource(targetSrc);
-            replaceQueueLocation(targetInQueue, src);
-
-            if (currentSelection.primary && matchesSource(currentSelection.primary, src)) {
-                currentSelection.primary = toSelectionSource(targetSrc);
+        const executeFullSwap = (selectedSource, queuedLocation, newPrimarySrc) => {
+            const qItem = vertexQueue[queuedLocation.itemIndex];
+            const itemsToSelect = [];
+            if (qItem.type === 'bundle' && Array.isArray(qItem.items)) {
+                itemsToSelect.push(...qItem.items);
+            } else {
+                itemsToSelect.push(qItem);
             }
-            computeAndApplyPivotState(targetSrc);
+
+            const itemsToQueue = [];
+            if (currentSelection.groups) {
+                for (const gid of currentSelection.groups) itemsToQueue.push({ type: 'group', id: gid });
+            }
+            if (currentSelection.objects) {
+                for (const [mesh, ids] of currentSelection.objects) {
+                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh, instanceId: id });
+                }
+            }
+
+            currentSelection.groups.clear();
+            currentSelection.objects.clear();
+            currentSelection.primary = null;
+
+            for (const item of itemsToSelect) {
+                if (item.type === 'group') {
+                    currentSelection.groups.add(item.id);
+                } else {
+                    let set = currentSelection.objects.get(item.mesh);
+                    if (!set) {
+                        set = new Set();
+                        currentSelection.objects.set(item.mesh, set);
+                    }
+                    set.add(item.instanceId);
+                }
+            }
+            currentSelection.primary = toSelectionSource(newPrimarySrc);
+
+            let newQueueItem;
+            if (itemsToQueue.length === 1) {
+                newQueueItem = createQueueEntry(itemsToQueue[0]);
+            } else if (itemsToQueue.length > 1) {
+                const bundleItems = itemsToQueue.map(item => createQueueEntry(item));
+                newQueueItem = { type: 'bundle', items: bundleItems };
+            }
+
+            if (newQueueItem) {
+                vertexQueue[queuedLocation.itemIndex] = newQueueItem;
+            }
+
+            computeAndApplyPivotState(newPrimarySrc);
+            updateHelperPosition();
+        };
+
+        if (srcSelected && targetInQueue) {
+            executeFullSwap(src, targetInQueue, targetSrc);
             return;
         }
 
         if (targetSelected && srcInQueue) {
-            removeSelectedSource(targetSrc);
-            addSelectedSource(src);
-            replaceQueueLocation(srcInQueue, targetSrc);
-
-            if (currentSelection.primary && matchesSource(currentSelection.primary, targetSrc)) {
-                currentSelection.primary = toSelectionSource(src);
-            }
-            computeAndApplyPivotState(src);
+            executeFullSwap(targetSrc, srcInQueue, src);
             return;
         }
     }
@@ -303,12 +339,12 @@ export function performSelectionSwap(
     }
     
     if (isTargetSelected) {
-            if (options.preserveSelection && !allowPreserveMemberSwap) return;
+         if (isSwap) return;
          while (vertexQueue.length > 0) vertexQueue.shift();
          return;
     }
 
-    if (options.preserveSelection && !allowPreserveMemberSwap && Array.isArray(vertexQueue) && vertexQueue.length > 0) {
+    if (isSwap && Array.isArray(vertexQueue) && vertexQueue.length > 0) {
         const targetInBundle = vertexQueue.some((item) => {
             if (!item || item.type !== 'bundle' || !Array.isArray(item.items)) return false;
             return item.items.some((sub) => matchesSource(sub, targetSrc));

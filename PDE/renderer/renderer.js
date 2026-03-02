@@ -173,11 +173,6 @@ async function initScene() {
     // Initialize gizmo module after creating controls
     gizmoModule = initGizmo({ scene, camera, renderer, controls, loadedObjectGroup, setControls: (c) => { controls = c; } });
 
-    // Key/mouse events and pointer selection handled in gizmo module
-
-    // 7. Raycaster로 객체 선택
-    // pointer selection handled inside gizmo module
-
     // 8. 헬퍼(Helper)
     const axes = createFullAxesHelper(150);
     axes.renderOrder = 1;
