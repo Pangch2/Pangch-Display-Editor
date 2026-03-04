@@ -274,3 +274,128 @@ export class OverlayManager {
         this.chunks = [];
     }
 }
+
+// ─── MultiAABBOverlay ─────────────────────────────────────────────────────────
+
+/**
+ * 다중 선택 시 전체 선택 범위를 감싸는 하나의 월드-스페이스 AABB 와이어프레임을 렌더링한다.
+ *
+ * 작동 원리:
+ *  - items.length >= 2 일 때만 표시.
+ *  - 각 인스턴스의 로컬 바운딩박스 → worldMat 으로 Box3.applyMatrix4() → 유니온 누적.
+ *  - 유니온 AABB의 center + size 를 LineSegments 의 position / scale 에 적용.
+ *  - depthTest: false 로 항상 전면에 표시.
+ */
+export class MultiAABBOverlay {
+    private scene: THREE.Scene;
+    private lines: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicNodeMaterial>;
+
+    // 가비지 컬렉션 방지용 재사용 객체
+    private readonly _unionBox  = new THREE.Box3();
+    private readonly _itemBox   = new THREE.Box3();
+    private readonly _worldMat  = new THREE.Matrix4();
+    private readonly _center    = new THREE.Vector3();
+    private readonly _size      = new THREE.Vector3();
+
+    /** 다중 선택 AABB 색상 (흰색) */
+    private static readonly COLOR = new THREE.Color(0xffffff);
+
+    constructor(scene: THREE.Scene) {
+        this.scene = scene;
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(EDGE_VERTICES.slice(), 3));
+
+        const mat = new THREE.LineBasicNodeMaterial({
+            color:       MultiAABBOverlay.COLOR,
+            depthTest:   true,
+            transparent: true,
+            opacity:     0.5,
+        });
+
+        this.lines = new THREE.LineSegments(geo, mat);
+        this.lines.frustumCulled  = false;
+        this.lines.visible        = false;
+        this.lines.renderOrder    = 999; // 항상 최상단
+        this.scene.add(this.lines);
+    }
+
+    // ─── 공개 API ─────────────────────────────────────────────────────────────
+
+    public updateFromSelection(): void {
+        this.update(getSelectedItems());
+    }
+
+    public update(items: SelectedItem[]): void {
+        if (items.length < 2) {
+            this.lines.visible = false;
+            return;
+        }
+
+        this._unionBox.makeEmpty();
+
+        for (const { mesh, instanceId } of items) {
+            // 1. 월드 행렬 취득
+            if ((mesh as any).isInstancedMesh) {
+                (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, this._worldMat);
+                this._worldMat.premultiply(mesh.matrixWorld);
+            } else if ((mesh as any).isBatchedMesh) {
+                (mesh as any).getMatrixAt(instanceId, this._worldMat);
+                this._worldMat.premultiply(mesh.matrixWorld);
+            } else {
+                this._worldMat.copy(mesh.matrixWorld);
+            }
+
+            // 2. 지오메트리 바운딩 박스 취득
+            let boxFound = false;
+
+            if ((mesh as any).isBatchedMesh) {
+                const geomId: number | undefined = (mesh as any).userData?.instanceGeometryIds?.[instanceId];
+                const box: THREE.Box3 | undefined = geomId !== undefined
+                    ? (mesh as any).userData?.geometryBounds?.get?.(geomId)
+                    : undefined;
+                if (box) { this._itemBox.copy(box); boxFound = true; }
+            }
+
+            if (!boxFound) {
+                const geo = (mesh as any).geometry;
+                if (geo) {
+                    if (!geo.boundingBox) geo.computeBoundingBox();
+                    if (geo.boundingBox) { this._itemBox.copy(geo.boundingBox); boxFound = true; }
+                }
+            }
+
+            if (!boxFound) continue;
+
+            // 3. player_head 1-레이어 크기 보정 (OverlayManager 와 동일 로직)
+            const hasHatMap = (mesh as any).userData?.hasHat;
+            if (hasHatMap && hasHatMap[instanceId] === false) {
+                this._itemBox.getCenter(this._center);
+                this._itemBox.setFromCenterAndSize(this._center, _UNIT3);
+            }
+
+            // 4. OBB → 월드 스페이스 AABB 로 변환 후 유니온 누적
+            //    applyMatrix4 는 8개 코너를 world 공간으로 투영한 최소 AABB 를 반환
+            this._itemBox.applyMatrix4(this._worldMat);
+            this._unionBox.union(this._itemBox);
+        }
+
+        if (this._unionBox.isEmpty()) {
+            this.lines.visible = false;
+            return;
+        }
+
+        this._unionBox.getCenter(this._center);
+        this._unionBox.getSize(this._size);
+
+        this.lines.position.copy(this._center);
+        this.lines.scale.copy(this._size);
+        this.lines.visible = true;
+    }
+
+    public dispose(): void {
+        this.scene.remove(this.lines);
+        this.lines.geometry.dispose();
+        this.lines.material.dispose();
+    }
+}

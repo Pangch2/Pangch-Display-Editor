@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { setupGizmo, type GizmoLines } from './gizmo-setup';
-import { OverlayManager } from './overlay';
+import { OverlayManager, MultiAABBOverlay } from './overlay';
 import {
     currentSelection,
     type SelectedItem,
@@ -48,6 +48,7 @@ export class GizmoController {
     private loadedObjectGroup!: THREE.Object3D;
     private setControlsFn!: (c: any) => void;
     private overlayManager!: OverlayManager;
+    private multiAABBOverlay!: MultiAABBOverlay;
 
     // TransformControls / Helper
     private transformControls!: TransformControls;
@@ -112,6 +113,7 @@ export class GizmoController {
         this.loadedObjectGroup = loadedObjectGroup;
         this.setControlsFn = setControls;
         this.overlayManager = new OverlayManager(scene);
+        this.multiAABBOverlay = new MultiAABBOverlay(scene);
 
         // Selection helper: invisible mesh, gizmo위치와 방향의 기준
         this.selectionHelper = new THREE.Mesh(
@@ -393,10 +395,6 @@ export class GizmoController {
 
         // 멀티셀렉션 origin 앵커 처리
         if (this.pivotMode === 'origin' && isMulti) {
-            if (!this._multiOriginAnchorValid && this._gizmoAnchorValid) {
-                this._multiOriginAnchorPos.copy(this._gizmoAnchorPos);
-                this._multiOriginAnchorValid = true;
-            }
             if (this._multiOriginAnchorValid) {
                 this.selectionHelper.position.copy(this._multiOriginAnchorPos);
                 this._gizmoAnchorPos.copy(this._multiOriginAnchorPos);
@@ -480,7 +478,9 @@ export class GizmoController {
         );
         // 오버레이 메쉬 직접 업데이트
         if (this.overlayManager) {
-            this.overlayManager.update(getSelectedItems());
+            const items = getSelectedItems();
+            this.overlayManager.update(items);
+            this.multiAABBOverlay.update(items);
         }
     }
 
@@ -519,7 +519,9 @@ export class GizmoController {
 
         // 조작 중 오버레이 실시간 갱신
         if (this.overlayManager) {
-            this.overlayManager.update(getSelectedItems());
+            const items = getSelectedItems();
+            this.overlayManager.update(items);
+            this.multiAABBOverlay.update(items);
         }
     }
 
@@ -582,6 +584,11 @@ export class GizmoController {
         this._tmpDeltaMat.multiplyMatrices(this.selectionHelper.matrixWorld, this._tmpPrevInvMat);
 
         this._applyDeltaToInstances();
+
+        // 조작 중 멀티셀렉션 origin 앵커 동기화 (center 모드에서도 origin이 그룹과 함께 이동/회전하도록 함)
+        if (this._multiOriginAnchorValid && !this._isPivotEditMode) {
+            this._multiOriginAnchorPos.applyMatrix4(this._tmpDeltaMat);
+        }
 
         this._prevHelperMatrix.copy(this.selectionHelper.matrixWorld);
     };
@@ -668,14 +675,12 @@ export class GizmoController {
                 break;
             }
             case 'z': {
-                const prevPos = this.selectionHelper.position.clone();
                 if (this.pivotMode === 'center') {
                     this.pivotMode = 'origin';
                 } else {
                     this.pivotMode = 'center';
                 }
-                // 멀티셀렉션 origin 앵커 무효화 (pivot 기준 변경)
-                this._multiOriginAnchorValid = false;
+                // 멀티셀렉션 origin 앵커는 무효화하지 않고 유지하여 복원 가능하게 함
                 this.updateHelperPosition();
                 this.updateSelectionOverlay();
                 break;

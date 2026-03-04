@@ -208,10 +208,13 @@ export function handleSelectionClick(
     const picked = pickInstance(raycaster, loadedObjectGroup);
 
     if (!picked) {
+        // 배경 클릭 시 Shift가 없으면 전체 해제
         if (!event.shiftKey) {
-            callbacks.onDeselect
-                ? callbacks.onDeselect()
-                : beginSelectionReplace(callbacks, { detachTransform: true });
+            if (callbacks.onDeselect) {
+                callbacks.onDeselect();
+            } else {
+                beginSelectionReplace(callbacks, { detachTransform: true });
+            }
         }
         commitSelectionChange(callbacks);
         return;
@@ -221,27 +224,34 @@ export function handleSelectionClick(
     const isShift = event.shiftKey;
 
     if (isShift) {
-        // 토글: 기존 선택 유지하면서 추가/제거
+        // 다중 선택 (토글 로직)
         let set = currentSelection.objects.get(mesh);
-        if (!set) {
-            set = new Set();
-            currentSelection.objects.set(mesh, set);
-        }
-        if (set.has(instanceId)) {
+        
+        if (set && set.has(instanceId)) {
+            // 이미 선택된 경우 제거
             set.delete(instanceId);
             if (set.size === 0) currentSelection.objects.delete(mesh);
+            
+            // 제거된 게 primary였다면 초기화 (commit 시 다음 후보가 primary가 됨)
             const p = currentSelection.primary as PrimaryObject | null;
             if (p?.type === 'object' && p.mesh === mesh && p.instanceId === instanceId) {
                 currentSelection.primary = null;
             }
         } else {
+            // 새로 선택 추가
+            if (!set) {
+                set = new Set();
+                currentSelection.objects.set(mesh, set);
+            }
             set.add(instanceId);
+            
+            // "처음 선택한 오브젝트가 기준" -> 이미 primary가 있다면 건드리지 않음
             if (!currentSelection.primary) {
                 currentSelection.primary = { type: 'object', mesh, instanceId };
             }
         }
     } else {
-        // 단일 선택: 이전 선택 교체
+        // 단일 선택 (기존 선택 교체)
         beginSelectionReplace(callbacks, { detachTransform: true });
         const set = new Set([instanceId]);
         currentSelection.objects.set(mesh, set);
