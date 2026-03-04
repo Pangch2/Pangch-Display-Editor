@@ -329,6 +329,34 @@ export class GizmoController {
         return sum.divideScalar(items.length);
     }
 
+    private _getInstanceWorldBox(item: SelectedItem, out: THREE.Box3): THREE.Box3 {
+        out.makeEmpty();
+        const mesh = item.mesh as any;
+
+        let localBox: THREE.Box3 | null = null;
+        if (mesh.isBatchedMesh) {
+            const geomId = mesh.userData?.instanceGeometryIds?.[item.instanceId];
+            localBox = geomId !== undefined ? mesh.userData?.geometryBounds?.get?.(geomId) : null;
+        } else {
+            const geometry = mesh.geometry;
+            if (!geometry.boundingBox) geometry.computeBoundingBox();
+            localBox = geometry.boundingBox;
+        }
+
+        if (localBox) {
+            out.copy(localBox);
+            const mat = this._TMP_MAT4_A;
+            this._getInstanceWorldMat(item, mat);
+            out.applyMatrix4(mat);
+        } else {
+            // Fallback: use position if no bounding box
+            const pos = new THREE.Vector3();
+            out.expandByPoint(this._getInstanceWorldPos(item, pos));
+        }
+
+        return out;
+    }
+
     /** 현재 pivotMode에 따른 기즈모 위치를 계산한다. */
     private _selectionCenter(): THREE.Vector3 {
         const items = getSelectedItems();
@@ -336,8 +364,10 @@ export class GizmoController {
 
         if (this.pivotMode === 'center') {
             const box = new THREE.Box3();
-            const tmp = new THREE.Vector3();
-            items.forEach(item => box.expandByPoint(this._getInstanceWorldPos(item, tmp)));
+            const tmpBox = new THREE.Box3();
+            items.forEach(item => {
+                box.union(this._getInstanceWorldBox(item, tmpBox));
+            });
             return box.isEmpty() ? this._calculateAvgOrigin() : box.getCenter(new THREE.Vector3());
         }
 

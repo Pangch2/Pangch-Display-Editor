@@ -7,7 +7,7 @@
 - Vanilla JS & TS & CSS3만 사용 (프레임워크 금지).
 - TypeScript는 명확한 타입 정의와 인터페이스 사용을 엄격히 준수할 것.
 - TransformControls 사용 시 반드시 `scene.add(controls.getHelper())` 호출.
-- CLI 환경에서 `package.json`의 npm scripts를 임의로 실행하지 말 것.
+- Three js의 WebGPURenderer는 셰이더를 tsl로 작성할 것을 명심할것.
 
 # 프로젝트 구조 및 컨텍스트
 - `index.html`: 메인 진입점
