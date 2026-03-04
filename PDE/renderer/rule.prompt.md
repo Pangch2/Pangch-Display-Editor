@@ -21,6 +21,7 @@
   - `gizmo.ts`: `GizmoController` 클래스 — TransformControls 바인딩, 피벗·공간 상태, 드래그/키 이벤트 처리
   - `gizmo-setup.ts`: TransformControls 인스턴스 생성 및 축 라인(`GizmoLines`) 초기화
   - `select.ts`: 선택 상태(`currentSelection`), 레이캐스팅, 클릭 핸들러, 선택 변이 함수
+  - `overlay.ts`: `OverlayManager` 클래스 — `InstancedMesh` 기반 고성능 선택 외곽선(EdgeGeometry) 렌더링 및 선택 상태 동기화
 
 - `ui/main.css`: 전체 스타일시트
 - `ui/scene-panel.js`: 아웃라이너 및 씬 관리 UI

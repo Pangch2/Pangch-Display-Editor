@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { setupGizmo, type GizmoLines } from './gizmo-setup';
+import { OverlayManager } from './overlay';
 import {
     currentSelection,
     type SelectedItem,
@@ -46,6 +47,7 @@ export class GizmoController {
     private controls: any;
     private loadedObjectGroup!: THREE.Object3D;
     private setControlsFn!: (c: any) => void;
+    private overlayManager!: OverlayManager;
 
     // TransformControls / Helper
     private transformControls!: TransformControls;
@@ -109,6 +111,7 @@ export class GizmoController {
         this.controls = controls;
         this.loadedObjectGroup = loadedObjectGroup;
         this.setControlsFn = setControls;
+        this.overlayManager = new OverlayManager(scene);
 
         // Selection helper: invisible mesh, gizmo위치와 방향의 기준
         this.selectionHelper = new THREE.Mesh(
@@ -155,7 +158,6 @@ export class GizmoController {
     // ─── Selection ────────────────────────────────────────────────────────
 
     resetSelectionAndDeselect(): void {
-        if (!hasAnySelection()) return;
         this.transformControls.detach();
         clearSelectionState();
         this._clearGizmoAnchor();
@@ -442,10 +444,14 @@ export class GizmoController {
     }
 
     updateSelectionOverlay(): void {
-        // overlay 모듈 연결 전: 이벤트만 디스패치
+        // UI 연동용 이벤트 디스패치
         window.dispatchEvent(
             new CustomEvent('pde:selection-changed', { detail: currentSelection }),
         );
+        // 오버레이 메쉬 직접 업데이트
+        if (this.overlayManager) {
+            this.overlayManager.update(getSelectedItems());
+        }
     }
 
     // ─── Instance Transform ───────────────────────────────────────────────
@@ -479,6 +485,11 @@ export class GizmoController {
         // 선택된 메시의 bounding sphere 무효화
         for (const mesh of this._meshToInstanceIds.keys()) {
             (mesh as any).boundingSphere = null;
+        }
+
+        // 조작 중 오버레이 실시간 갱신
+        if (this.overlayManager) {
+            this.overlayManager.update(getSelectedItems());
         }
     }
 
