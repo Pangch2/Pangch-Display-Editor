@@ -17,6 +17,8 @@ export interface GizmoLines {
 export interface GizmoSetupResult {
     transformControls: TransformControls;
     gizmoLines: GizmoLines;
+    /** clone된 geometry / material을 일괄 해제. GizmoController.dispose() 시 반드시 호출. */
+    disposeGizmoLines: () => void;
 }
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
@@ -42,6 +44,9 @@ export function setupGizmo(
         Z: { original: [], negative: [] },
     };
 
+    // clone된 리소스를 추적해 disposeGizmoLines에서 일괄 해제
+    const clonedResources: Array<THREE.BufferGeometry | THREE.Material> = [];
+
     try {
         const gizmoRoot = transformControls.getHelper();
         const gizmoContainer = (gizmoRoot as any).children[0];
@@ -65,6 +70,7 @@ export function setupGizmo(
             for (const originalLine of originalLines) {
                 const axis = originalLine.name as 'X' | 'Y' | 'Z';
                 const negativeGeometry = originalLine.geometry.clone();
+                clonedResources.push(negativeGeometry);
 
                 if (axis === 'X') negativeGeometry.rotateY(Math.PI);
                 else if (axis === 'Y') negativeGeometry.rotateX(Math.PI);
@@ -72,11 +78,13 @@ export function setupGizmo(
 
                 originalLine.material = (originalLine.material as THREE.Material).clone();
                 const origMat = originalLine.material as any;
+                clonedResources.push(origMat);
                 origMat.transparent = true;
                 origMat._opacity = origMat._opacity ?? 1;
                 origMat.opacity = origMat._opacity;
 
                 const negativeMaterial = origMat.clone();
+                clonedResources.push(negativeMaterial);
                 negativeMaterial.transparent = true;
                 negativeMaterial._opacity = 0.001;
                 negativeMaterial.opacity = 0.001;
@@ -95,5 +103,9 @@ export function setupGizmo(
         console.error('TransformControls gizmo patch failed:', error);
     }
 
-    return { transformControls, gizmoLines };
+    return {
+        transformControls,
+        gizmoLines,
+        disposeGizmoLines: () => clonedResources.forEach(r => r.dispose()),
+    };
 }

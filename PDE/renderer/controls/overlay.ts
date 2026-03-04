@@ -78,6 +78,9 @@ export class OverlayManager {
     private chunks: OverlayChunk[] = [];
     private readonly INSTANCES_PER_CHUNK = 4096;
 
+    // 이벤트 리스너 참조 보관 (dispose 시 제거용)
+    private readonly _onSelectionChanged = () => this.updateFromSelection();
+
     // 가비지 컬렉션 방지용 재사용 객체
     private readonly _WORLD_MAT  = new THREE.Matrix4();
     private readonly _BOX_MAT    = new THREE.Matrix4();
@@ -88,7 +91,7 @@ export class OverlayManager {
 
     constructor(scene: THREE.Scene) {
         this.scene = scene;
-        window.addEventListener('pde:selection-changed', () => this.updateFromSelection());
+        window.addEventListener('pde:selection-changed', this._onSelectionChanged);
     }
 
     // ─── 청크 생성 ────────────────────────────────────────────────────────────
@@ -103,6 +106,9 @@ export class OverlayManager {
         const geo = new THREE.InstancedBufferGeometry();
         geo.attributes['position'] = baseGeo.attributes['position'];
         geo.instanceCount = 0;
+
+        // InstancedBufferGeometry에 attribute를 복사한 뒤 원본 baseGeo는 즉시 해제
+        baseGeo.dispose();
 
         // mat4 컬럼 분리 저장
         const col0 = new THREE.InstancedBufferAttribute(new Float32Array(N * 4), 4);
@@ -173,6 +179,60 @@ export class OverlayManager {
 
     public updateFromSelection(): void {
         this.update(getSelectedItems());
+    }
+
+    /**
+     * 드래그 중 저비용 경로: mesh/bbox 재탐색 없이 버퍼에 저장된
+     * overlay 행렬에 delta 를 직접 곱해 GPU 업로드만 수행한다.
+     * - getMatrixAt × 0, bbox 재계산 × 0, colColor needsUpdate × 0
+     */
+    public applyDelta(delta: THREE.Matrix4): void {
+        const de = delta.elements; // column-major
+        for (const chunk of this.chunks) {
+            if (!chunk.lines.visible || chunk.count === 0) continue;
+
+            const a0 = chunk.col0.array as Float32Array;
+            const a1 = chunk.col1.array as Float32Array;
+            const a2 = chunk.col2.array as Float32Array;
+            const a3 = chunk.col3.array as Float32Array;
+
+            for (let i = 0; i < chunk.count; i++) {
+                const b = i * 4; // itemSize = 4
+
+                // 현재 버퍼에서 column-major 행렬 복원
+                const e0=a0[b],   e1=a0[b+1], e2=a0[b+2],  e3=a0[b+3];
+                const e4=a1[b],   e5=a1[b+1], e6=a1[b+2],  e7=a1[b+3];
+                const e8=a2[b],   e9=a2[b+1], e10=a2[b+2], e11=a2[b+3];
+                const e12=a3[b],  e13=a3[b+1],e14=a3[b+2], e15=a3[b+3];
+
+                // result = delta * current  (premultiply)
+                a0[b]   = de[0]*e0 + de[4]*e1 + de[8]*e2  + de[12]*e3;
+                a0[b+1] = de[1]*e0 + de[5]*e1 + de[9]*e2  + de[13]*e3;
+                a0[b+2] = de[2]*e0 + de[6]*e1 + de[10]*e2 + de[14]*e3;
+                a0[b+3] = de[3]*e0 + de[7]*e1 + de[11]*e2 + de[15]*e3;
+
+                a1[b]   = de[0]*e4 + de[4]*e5 + de[8]*e6  + de[12]*e7;
+                a1[b+1] = de[1]*e4 + de[5]*e5 + de[9]*e6  + de[13]*e7;
+                a1[b+2] = de[2]*e4 + de[6]*e5 + de[10]*e6 + de[14]*e7;
+                a1[b+3] = de[3]*e4 + de[7]*e5 + de[11]*e6 + de[15]*e7;
+
+                a2[b]   = de[0]*e8  + de[4]*e9  + de[8]*e10  + de[12]*e11;
+                a2[b+1] = de[1]*e8  + de[5]*e9  + de[9]*e10  + de[13]*e11;
+                a2[b+2] = de[2]*e8  + de[6]*e9  + de[10]*e10 + de[14]*e11;
+                a2[b+3] = de[3]*e8  + de[7]*e9  + de[11]*e10 + de[15]*e11;
+
+                a3[b]   = de[0]*e12 + de[4]*e13 + de[8]*e14  + de[12]*e15;
+                a3[b+1] = de[1]*e12 + de[5]*e13 + de[9]*e14  + de[13]*e15;
+                a3[b+2] = de[2]*e12 + de[6]*e13 + de[10]*e14 + de[14]*e15;
+                a3[b+3] = de[3]*e12 + de[7]*e13 + de[11]*e14 + de[15]*e15;
+            }
+
+            // 색상은 바뀌지 않으므로 colColor.needsUpdate 생략
+            chunk.col0.needsUpdate = true;
+            chunk.col1.needsUpdate = true;
+            chunk.col2.needsUpdate = true;
+            chunk.col3.needsUpdate = true;
+        }
     }
 
     public update(items: SelectedItem[]): void {
@@ -266,10 +326,12 @@ export class OverlayManager {
     }
 
     public dispose(): void {
+        // window 이벤트 리스너 해제 (메모리 누수 방지)
+        window.removeEventListener('pde:selection-changed', this._onSelectionChanged);
         for (const chunk of this.chunks) {
             this.scene.remove(chunk.lines);
             chunk.lines.geometry.dispose();
-            chunk.lines.material.dispose();
+            (chunk.lines.material as THREE.Material).dispose();
         }
         this.chunks = [];
     }
@@ -291,11 +353,14 @@ export class MultiAABBOverlay {
     private lines: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicNodeMaterial>;
 
     // 가비지 컬렉션 방지용 재사용 객체
-    private readonly _unionBox  = new THREE.Box3();
-    private readonly _itemBox   = new THREE.Box3();
-    private readonly _worldMat  = new THREE.Matrix4();
-    private readonly _center    = new THREE.Vector3();
-    private readonly _size      = new THREE.Vector3();
+    private readonly _unionBox   = new THREE.Box3();
+    private readonly _refBox     = new THREE.Box3(); // 드래그 시작 시 스냅샷 (불변)
+    private readonly _scratchBox = new THREE.Box3(); // applyDelta 계산용 임시 박스
+    private readonly _totalDelta = new THREE.Matrix4(); // 드래그 시작 이후 누적 변환
+    private readonly _itemBox    = new THREE.Box3();
+    private readonly _worldMat   = new THREE.Matrix4();
+    private readonly _center     = new THREE.Vector3();
+    private readonly _size       = new THREE.Vector3();
 
     /** 다중 선택 AABB 색상 (흰색) */
     private static readonly COLOR = new THREE.Color(0xffffff);
@@ -390,7 +455,31 @@ export class MultiAABBOverlay {
 
         this.lines.position.copy(this._center);
         this.lines.scale.copy(this._size);
+        // 드래그 시작점 기준 스냅샷 저장 및 누적 행렬 초기화
+        this._refBox.copy(this._unionBox);
+        this._totalDelta.identity();
         this.lines.visible = true;
+    }
+
+    /**
+     * 드래그 중 저비용 경로.
+     *
+     * 핵심 원리: AABB에 회전 delta를 반복 적용하면
+     *   AABB → applyMatrix4 → 더 큰 AABB → 또 applyMatrix4 → ...
+     * 로 누적 팽창이 발생한다.
+     *
+     * 해결: _totalDelta 에 delta를 누산하고,
+     * 매 프레임 항상 초기 스냅샷(_refBox)에 _totalDelta를 한 번만 적용해
+     * 팽창 없이 현재 AABB를 재계산한다.
+     */
+    public applyDelta(delta: THREE.Matrix4): void {
+        if (!this.lines.visible) return;
+        this._totalDelta.premultiply(delta);
+        this._scratchBox.copy(this._refBox).applyMatrix4(this._totalDelta);
+        this._scratchBox.getCenter(this._center);
+        this._scratchBox.getSize(this._size);
+        this.lines.position.copy(this._center);
+        this.lines.scale.copy(this._size);
     }
 
     public dispose(): void {

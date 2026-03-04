@@ -12,6 +12,8 @@ import {
     isMultiSelection,
     invalidateSelectionCaches,
     clearSelectionState,
+    setPrimaryToFirstAvailable,
+    commitSelectionChange,
     handleSelectionClick,
 } from './select';
 
@@ -54,6 +56,7 @@ export class GizmoController {
     private transformControls!: TransformControls;
     private selectionHelper!: THREE.Mesh;
     private gizmoLines!: GizmoLines;
+    private disposeGizmoLines!: () => void;
 
     // 피벗 · 공간 상태
     private pivotMode: PivotMode = 'origin';
@@ -95,6 +98,21 @@ export class GizmoController {
     private readonly _tmpLocalDelta     = new THREE.Matrix4();
     private readonly _meshToInstanceIds = new Map<THREE.Object3D, number[]>();
 
+    // 매 프레임 축 방향 계산용 재사용 객체 (new THREE.Vector3/Quaternion 방지)
+    private readonly _tmpDir     = new THREE.Vector3();
+    private readonly _tmpQuat    = new THREE.Quaternion();
+
+    // _selectionCenter() 재사용 객체 (선택 변경 시 호출, 프레임마다는 아님)
+    private readonly _tmpBox     = new THREE.Box3();   // center 모드 union 누적
+    private readonly _tmpBox2    = new THREE.Box3();   // 개별 인스턴스 box
+    private readonly _tmpCenter  = new THREE.Vector3(); // 결과 위치
+
+    // _getRotationFromMatrix() 재사용 객체
+    private readonly _tmpVecX    = new THREE.Vector3();
+    private readonly _tmpVecY    = new THREE.Vector3();
+    private readonly _tmpVecZ    = new THREE.Vector3();
+    private readonly _tmpRotMat4 = new THREE.Matrix4();
+
     // 마지막 축 방향 (프레임별 비교를 위한 캐시)
     private _lastDirections: Record<'X' | 'Y' | 'Z', 'positive' | 'negative' | null> =
         { X: null, Y: null, Z: null };
@@ -125,6 +143,7 @@ export class GizmoController {
         const setup = setupGizmo(camera, renderer, scene);
         this.transformControls = setup.transformControls;
         this.gizmoLines = setup.gizmoLines;
+        this.disposeGizmoLines = setup.disposeGizmoLines;
 
         this._prevHelperMatrix.copy(this.selectionHelper.matrixWorld);
 
@@ -155,6 +174,29 @@ export class GizmoController {
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         this.transformControls.removeEventListener('dragging-changed', this._onDraggingChanged);
         this.transformControls.removeEventListener('change',           this._onTransformChange);
+
+        // OverlayManager / MultiAABBOverlay 해제
+        this.overlayManager?.dispose();
+        this.multiAABBOverlay?.dispose();
+
+        // SelectionHelper 씬에서 제거 및 geometry/material 해제
+        if (this.selectionHelper) {
+            this.selectionHelper.removeFromParent();
+            (this.selectionHelper.geometry as THREE.BufferGeometry).dispose();
+            (this.selectionHelper.material as THREE.Material).dispose();
+        }
+
+        // TransformControls Helper 제거 후 clone 리소스 일괄 해제, controls.dispose()
+        if (this.transformControls) {
+            this.transformControls.getHelper()?.removeFromParent();
+            this.disposeGizmoLines?.();
+            this.transformControls.dispose();
+        }
+
+        // loadedObjectGroup userData 참조 정리
+        if (this.loadedObjectGroup) {
+            delete this.loadedObjectGroup.userData.resetSelection;
+        }
     }
 
     // ─── Selection ────────────────────────────────────────────────────────
@@ -324,11 +366,11 @@ export class GizmoController {
 
     private _calculateAvgOrigin(): THREE.Vector3 {
         const items = getSelectedItems();
-        const sum = new THREE.Vector3();
-        if (items.length === 0) return sum;
+        this._tmpCenter.set(0, 0, 0);
+        if (items.length === 0) return this._tmpCenter;
         const tmp = new THREE.Vector3();
-        items.forEach(item => sum.add(this._getInstanceOriginAnchorPos(item, tmp)));
-        return sum.divideScalar(items.length);
+        items.forEach(item => this._tmpCenter.add(this._getInstanceOriginAnchorPos(item, tmp)));
+        return this._tmpCenter.divideScalar(items.length);
     }
 
     private _getInstanceWorldBox(item: SelectedItem, out: THREE.Box3): THREE.Box3 {
@@ -362,24 +404,24 @@ export class GizmoController {
     /** 현재 pivotMode에 따른 기즈모 위치를 계산한다. */
     private _selectionCenter(): THREE.Vector3 {
         const items = getSelectedItems();
-        if (items.length === 0) return new THREE.Vector3();
+        if (items.length === 0) return this._tmpCenter.set(0, 0, 0);
 
         if (this.pivotMode === 'center') {
-            const box = new THREE.Box3();
-            const tmpBox = new THREE.Box3();
+            this._tmpBox.makeEmpty();
             items.forEach(item => {
-                box.union(this._getInstanceWorldBox(item, tmpBox));
+                this._tmpBox.union(this._getInstanceWorldBox(item, this._tmpBox2));
             });
-            return box.isEmpty() ? this._calculateAvgOrigin() : box.getCenter(new THREE.Vector3());
+            return this._tmpBox.isEmpty()
+                ? this._calculateAvgOrigin()
+                : this._tmpBox.getCenter(this._tmpCenter);
         }
 
         // pivotMode === 'origin'
         const p = currentSelection.primary;
         if (p?.type === 'object') {
-            const pos = new THREE.Vector3();
-            this._getInstanceOriginAnchorPos({ mesh: p.mesh, instanceId: p.instanceId }, pos);
-            if (this.isCustomPivot) pos.add(this.pivotOffset);
-            return pos;
+            this._getInstanceOriginAnchorPos({ mesh: p.mesh, instanceId: p.instanceId }, this._tmpCenter);
+            if (this.isCustomPivot) this._tmpCenter.add(this.pivotOffset);
+            return this._tmpCenter;
         }
 
         return this._calculateAvgOrigin();
@@ -438,16 +480,14 @@ export class GizmoController {
      * 순수 회전 쿼터니언을 추출한다. (shear가 섞인 세계행렬에서도 정확히 동작)
      */
     private _getRotationFromMatrix(matrix: THREE.Matrix4): THREE.Quaternion {
-        const x = new THREE.Vector3().setFromMatrixColumn(matrix, 0);
-        const y = new THREE.Vector3().setFromMatrixColumn(matrix, 1);
-
-        x.normalize();
-        const yDotX = y.dot(x);
-        y.sub(x.clone().multiplyScalar(yDotX)).normalize();
-        const z = new THREE.Vector3().crossVectors(x, y).normalize();
-
-        const R = new THREE.Matrix4().makeBasis(x, y, z);
-        return new THREE.Quaternion().setFromRotationMatrix(R);
+        this._tmpVecX.setFromMatrixColumn(matrix, 0).normalize();
+        this._tmpVecY.setFromMatrixColumn(matrix, 1);
+        const yDotX = this._tmpVecY.dot(this._tmpVecX);
+        // Gram-Schmidt 재직교화: y -= (y·x)*x  →  addScaledVector(x, -yDotX)
+        this._tmpVecY.addScaledVector(this._tmpVecX, -yDotX).normalize();
+        this._tmpVecZ.crossVectors(this._tmpVecX, this._tmpVecY).normalize();
+        this._tmpRotMat4.makeBasis(this._tmpVecX, this._tmpVecY, this._tmpVecZ);
+        return this._tmpQuat.setFromRotationMatrix(this._tmpRotMat4);
     }
 
     private _updateHelperRotation(items: SelectedItem[], isMulti: boolean): void {
@@ -517,11 +557,10 @@ export class GizmoController {
             (mesh as any).boundingSphere = null;
         }
 
-        // 조작 중 오버레이 실시간 갱신
+        // 조작 중 오버레이 실시간 갱신 (delta 직접 적용 → mesh/bbox 재탐색 없음)
         if (this.overlayManager) {
-            const items = getSelectedItems();
-            this.overlayManager.update(items);
-            this.multiAABBOverlay.update(items);
+            this.overlayManager.applyDelta(delta);
+            this.multiAABBOverlay.applyDelta(delta);
         }
     }
 
@@ -653,6 +692,39 @@ export class GizmoController {
         handleSelectionClick(raycaster, event, this.loadedObjectGroup, this._getCallbacks());
     };
 
+    // ─── Select All ───────────────────────────────────────────────────────
+
+    private _selectAll(): void {
+        clearSelectionState();
+
+        this.loadedObjectGroup.traverse((obj) => {
+            if (!obj.visible) return;
+
+            if ((obj as THREE.InstancedMesh).isInstancedMesh) {
+                const mesh = obj as THREE.InstancedMesh;
+                if (mesh.count === 0) return;
+                const ids = new Set<number>();
+                for (let i = 0; i < mesh.count; i++) ids.add(i);
+                currentSelection.objects.set(mesh, ids);
+            } else if ((obj as any).isBatchedMesh) {
+                const mesh = obj as any;
+                // Three.js BatchedMesh: _maxInstanceCount 또는 userData.instanceGeometryIds 길이 사용
+                const instanceCount: number =
+                    mesh.userData?.instanceGeometryIds?.length ??
+                    (mesh._instanceCount as number | undefined) ??
+                    0;
+                if (instanceCount === 0) return;
+                const ids = new Set<number>();
+                for (let i = 0; i < instanceCount; i++) ids.add(i);
+                currentSelection.objects.set(mesh, ids);
+            }
+        });
+
+        setPrimaryToFirstAvailable();
+        invalidateSelectionCaches();
+        commitSelectionChange(this._getCallbacks());
+    }
+
     private _handleKeyPress = (key: string): void => {
         const resetHelperRot = () => {
             if (this.currentSpace !== 'world') return;
@@ -691,6 +763,13 @@ export class GizmoController {
     private _onKeyDown = (event: KeyboardEvent): void => {
         if ((event.target as HTMLElement).tagName === 'INPUT' ||
             (event.target as HTMLElement).tagName === 'TEXTAREA') return;
+
+        // Ctrl+A: 전체 선택
+        if (event.ctrlKey && event.key.toLowerCase() === 'a') {
+            event.preventDefault();
+            if (!this._isGizmoBusy) this._selectAll();
+            return;
+        }
 
         // Alt: 피벗 편집 모드 진입
         if (event.key === 'Alt') {
@@ -777,9 +856,10 @@ export class GizmoController {
         if (mode !== 'translate' && mode !== 'scale') return;
 
         const gizmoPos = this.transformControls.object.position;
-        const dir = this.camera.position.clone().sub(gizmoPos).normalize();
+        const dir = this._tmpDir.copy(this.camera.position).sub(gizmoPos).normalize();
         if (this.currentSpace === 'local') {
-            dir.applyQuaternion(this.transformControls.object.quaternion.clone().invert());
+            this._tmpQuat.copy(this.transformControls.object.quaternion).invert();
+            dir.applyQuaternion(this._tmpQuat);
         }
 
         const axes: Array<{ axis: 'X' | 'Y' | 'Z'; positive: boolean }> = [
