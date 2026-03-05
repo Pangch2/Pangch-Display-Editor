@@ -43,7 +43,7 @@ export function processVertexRotate(
         gizmoMode,
         currentSelection,
         loadedObjectGroup,
-        selectionHelper,
+        selectionHelper: _selectionHelper,
         
         // State Interface
         getGizmoState,

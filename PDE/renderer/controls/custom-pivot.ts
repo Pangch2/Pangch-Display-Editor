@@ -1,5 +1,4 @@
 import * as THREE from 'three/webgpu';
-import type { GroupData } from './group';
 // @ts-ignore
 import * as GroupUtils from './group';
 // @ts-ignore
@@ -141,7 +140,7 @@ export function recomputePivotStateForSelection(
     isMultiSelection: boolean, 
     isCustomPivot: boolean, 
     pivotOffset: THREE.Vector3, 
-    currentSelection: CurrentSelection,
+    _currentSelection: CurrentSelection,
     loadedObjectGroup: THREE.Group,
     callbacks: Pick<CustomPivotCallbacks, 'getSingleSelectedGroupId' | 'getSingleSelectedMeshEntry'>
 ): boolean {

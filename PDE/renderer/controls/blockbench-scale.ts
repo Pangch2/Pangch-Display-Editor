@@ -100,7 +100,7 @@ export function detectBlockbenchScaleAxes(
 export function computeBlockbenchScaleShift(
     selectionHelper: THREE.Object3D, 
     dragInitialScale: THREE.Vector3, 
-    dragInitialPosition: THREE.Vector3, 
+    _dragInitialPosition: THREE.Vector3, 
     dragInitialBoundingBox: THREE.Box3, 
     dragAnchorDirections: AxisSelection, 
     currentSpace: 'world' | 'local'

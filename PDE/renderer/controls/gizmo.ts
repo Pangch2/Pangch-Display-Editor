@@ -82,7 +82,6 @@ export interface InitGizmoResult {
 
 // ─── Aliases ────────────────────────────────────────────────────────────────
 
-const disposeThreeObjectTree = Overlay.disposeThreeObjectTree;
 const getInstanceCount = Overlay.getInstanceCount;
 const isInstanceValid = Overlay.isInstanceValid;
 const getDisplayType = Overlay.getDisplayType;
@@ -91,20 +90,17 @@ const getInstanceLocalBoxMin = Overlay.getInstanceLocalBoxMin;
 const getInstanceWorldMatrixForOrigin = Overlay.getInstanceWorldMatrixForOrigin;
 const calculateAvgOriginForChildren = Overlay.calculateAvgOriginForChildren;
 const getGroupWorldMatrixWithFallback = Overlay.getGroupWorldMatrixWithFallback;
-const createEdgesGeometryFromBox3 = Overlay.createEdgesGeometryFromBox3;
 const unionTransformedBox3 = Overlay.unionTransformedBox3;
 const getInstanceLocalBox = Overlay.getInstanceLocalBox;
 const getInstanceWorldMatrix = Overlay.getInstanceWorldMatrix;
 const getGroupLocalBoundingBox = Overlay.getGroupLocalBoundingBox;
 const getRotationFromMatrix = Overlay.getRotationFromMatrix;
 const getSelectionBoundingBox = () => Overlay.getSelectionBoundingBox(currentSelection);
-const createOverlayLineMaterial = Overlay.createOverlayLineMaterial;
 
 // ─── Shared temporaries ─────────────────────────────────────────────────────
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_MAT4_B = new THREE.Matrix4();
-const _TMP_BOX3_A = new THREE.Box3();
 const _TMP_VEC3_A = new THREE.Vector3();
 const _TMP_VEC3_B = new THREE.Vector3();
 
@@ -125,7 +121,6 @@ function _beginSelectionReplace(options?: { anchorMode?: string; detachTransform
     }, options);
 }
 
-const pickInstanceByOverlayBox = Select.pickInstanceByOverlayBox;
 
 // ─── Group helpers ───────────────────────────────────────────────────────────
 
@@ -158,16 +153,8 @@ function getAllDescendantGroups(groupId: string): string[] {
 const _DEFAULT_GROUP_PIVOT = GroupUtils.DEFAULT_GROUP_PIVOT;
 const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
 
-function _nearlyEqual(a: number, b: number, eps = 1e-6): boolean {
-    return Math.abs(a - b) <= eps;
-}
-
 function normalizePivotToVector3(pivot: THREE.Vector3 | undefined, out = new THREE.Vector3()): THREE.Vector3 | null {
     return GroupUtils.normalizePivotToVector3(pivot, out);
-}
-
-function isCustomGroupPivot(pivot: THREE.Vector3 | undefined): boolean {
-    return GroupUtils.isCustomGroupPivot(pivot);
 }
 
 function getGroupWorldMatrix(group: GroupData, out = new THREE.Matrix4()): THREE.Matrix4 {
@@ -221,28 +208,17 @@ function getGroupOriginWorld(groupId: string, out = new THREE.Vector3()): THREE.
 
 // ─── Selection caches ────────────────────────────────────────────────────────
 
-let _selectedItemsCacheKey: string | null = null;
-let _selectedItemsCache: SelectedItem[] | null = null;
 let _ephemeralPivotUndo: (() => void) | null = null;
 let _pivotEditUndoCapture: (() => void) | null = null;
 
 const _isMultiSelection = Select.isMultiSelection;
 
-function _clearEphemeralPivotUndo(): void {
-    CustomPivot.clearEphemeralPivotUndo();
-}
-
 function _revertEphemeralPivotUndoIfAny(): void {
     CustomPivot.revertEphemeralPivotUndoIfAny();
 }
 
-function _capturePivotUndoForCurrentSelection(): (() => void) | null {
-    return CustomPivot.capturePivotUndoForCurrentSelection(currentSelection);
-}
-
 const _hasAnySelection = Select.hasAnySelection;
 const _getSingleSelectedGroupId = Select.getSingleSelectedGroupId;
-const _getSingleSelectedMeshEntry = Select.getSingleSelectedMeshEntry;
 const _setPrimaryToFirstAvailable = Select.setPrimaryToFirstAvailable;
 
 function _clearSelectionState(): void {
@@ -1217,6 +1193,7 @@ export function initGizmo({
                             const localPivot = pivotWorld.clone().applyMatrix4(invWorldMatrix);
 
                             if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, THREE.Vector3>();
                                 for (const id of ids) {
                                     mesh.userData.customPivots.set(id, localPivot.clone());
                                 }

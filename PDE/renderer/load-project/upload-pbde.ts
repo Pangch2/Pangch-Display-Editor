@@ -1104,7 +1104,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                     }
 
                     // Process each item and merge its parts if necessary
-                    for (const [itemId, types] of itemParts) {
+                    for (const [_itemId, types] of itemParts) {
                         const processTypeGroup = (type: 'opaque' | 'translucent', parts: GeometryMeta[]) => {
                             if (parts.length === 0) return;
                             
@@ -1306,7 +1306,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                     // Group instances by Signature (combination of parts and materials)
                     const signatureGroups = new Map<string, { parts: GeometryMeta[], matrices: THREE.Matrix4[], instanceMetas: { uuid: string, groupId: string | null }[] }>();
 
-                    for (const [matrixStr, parts] of instancesMap) {
+                    for (const [_matrixStr, parts] of instancesMap) {
                         // Sort parts by geometryIndex to ensure consistent order
                         parts.sort((a, b) => a.geometryIndex - b.geometryIndex);
 
@@ -1328,7 +1328,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                     }
 
                     // Create InstancedMesh for each signature group
-                    for (const [sig, group] of signatureGroups) {
+                    for (const [_sig, group] of signatureGroups) {
                         const representativeParts = group.parts;
                         const matrices = group.matrices;
                         const instanceMetas = group.instanceMetas;

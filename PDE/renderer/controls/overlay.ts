@@ -496,7 +496,7 @@ export function getSelectionPointsOverlay(): THREE.Group | null {
 export function updateSelectionOverlay(
     scene: THREE.Scene, 
     renderer: THREE.Renderer, 
-    camera: THREE.Camera, 
+    _camera: THREE.Camera, 
     currentSelection: SelectionState, 
     vertexQueue: QueueItem[], 
     isVertexMode: boolean, 

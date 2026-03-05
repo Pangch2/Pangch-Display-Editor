@@ -12,7 +12,9 @@
     "allowJs": false,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "noEmit": true
+    "noEmit": true,
+    "noUnusedLocals": true,           // 추가
+    "noUnusedParameters": true        // 추가
   },
   "include": [
     "renderer/**/*.ts",
@@ -20,5 +22,5 @@
     "renderer/**/*.tsx",
     "renderer/**/*.mts",
     "renderer/**/*.cts"
-]
+  ]
 }

@@ -12,6 +12,7 @@
     "dist": "npm run build && electron-builder"
   },
   "devDependencies": {
+    "typescript": "^5.9.3",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^40.7.0",

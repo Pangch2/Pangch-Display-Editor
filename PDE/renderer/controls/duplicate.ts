@@ -225,7 +225,7 @@ function _batchHasSpace(batch: THREE.BatchedMesh): boolean {
     return _getBatchCurrentInstances(batch) < max;
 }
 
-function _planWritableBatchFor(mesh: THREE.InstancedMesh | THREE.BatchedMesh, instanceId: number, targetGroupId: string | null, ctx: DuplicationContext): void {
+function _planWritableBatchFor(mesh: THREE.InstancedMesh | THREE.BatchedMesh, instanceId: number, _targetGroupId: string | null, ctx: DuplicationContext): void {
     if (!ctx || !mesh) return;
 
     // Player heads are handled by a dedicated bulk path (InstancedMesh with instancedUvOffset)
@@ -401,7 +401,7 @@ export function flushPendingHeadClones(loadedObjectGroup: THREE.Group, ctx: Dupl
     return newSelectionItems;
 }
 
-function getOrCreateWritableBatch(loadedObjectGroup: THREE.Group, targetGroupId: string | null, material: THREE.Material, geometry: THREE.BufferGeometry, ctx: DuplicationContext): THREE.BatchedMesh | null {
+function getOrCreateWritableBatch(loadedObjectGroup: THREE.Group, _targetGroupId: string | null, material: THREE.Material, _geometry: THREE.BufferGeometry, ctx: DuplicationContext): THREE.BatchedMesh | null {
     if (ctx) {
         const key = _batchPoolKey(material);
         const cached = ctx.batchPool.get(key);
@@ -703,7 +703,7 @@ function cloneInstance(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh
     return { mesh: targetBatch, instanceId: newInstanceId };
 }
 
-function cloneGroup(loadedObjectGroup: THREE.Group, groupId: string, parentId: string | null, idMap: Map<string, string>, ctx: DuplicationContext): string | null {
+function cloneGroup(loadedObjectGroup: THREE.Group, groupId: string, parentId: string | null, idMap: Map<string, string>, _ctx: DuplicationContext): string | null {
     return GroupUtils.cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap);
 }
 

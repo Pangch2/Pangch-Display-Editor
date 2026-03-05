@@ -53,11 +53,11 @@ export function processVertexSnap(
         // Methods
         getGroups,
         getGroupWorldMatrixWithFallback,
-        getGroupWorldMatrix,
+        getGroupWorldMatrix: _getGroupWorldMatrix,
         updateHelperPosition,
         updateSelectionOverlay,
         _isMultiSelection,
-        _getSingleSelectedGroupId,
+        _getSingleSelectedGroupId: __getSingleSelectedGroupId,
         SelectionCenter,
         vertexQueue
     }: VertexTranslateContext
