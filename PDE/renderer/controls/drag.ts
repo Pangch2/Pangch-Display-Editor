@@ -1,34 +1,53 @@
 import * as THREE from 'three/webgpu';
-import * as Select from './select.js';
+import * as Select from './select';
 import * as Overlay from './overlay.js';
-import * as GroupUtils from './group.js';
+import * as GroupUtils from './group';
 
-const getInstanceCount = Overlay.getInstanceCount;
-const isInstanceValid = Overlay.isInstanceValid;
-const getInstanceWorldMatrixForOrigin = Overlay.getInstanceWorldMatrixForOrigin;
-const isItemDisplayHatEnabled = Overlay.isItemDisplayHatEnabled;
-const getGroupKey = GroupUtils.getGroupKey;
-const getGroupChain = GroupUtils.getGroupChain;
-const getObjectToGroup = GroupUtils.getObjectToGroup;
+// Helper aliases for untyped modules
+const getInstanceCount = (Overlay as any).getInstanceCount;
+const isInstanceValid = (Overlay as any).isInstanceValid;
+const getInstanceWorldMatrixForOrigin = (Overlay as any).getInstanceWorldMatrixForOrigin;
+const isItemDisplayHatEnabled = (Overlay as any).isItemDisplayHatEnabled;
+const getGroupKey = (GroupUtils as any).getGroupKey;
+const getGroupChain = (GroupUtils as any).getGroupChain;
+const getObjectToGroup = (GroupUtils as any).getObjectToGroup;
 
 const _TMP_MAT4_A = new THREE.Matrix4();
-const _TMP_VEC3_A = new THREE.Vector3();
-const _TMP_VEC3_B = new THREE.Vector3();
 const _TMP_CORNERS = new Array(8).fill(0).map(() => new THREE.Vector3());
 
+export interface DragInitOptions {
+    renderer: THREE.Renderer;
+    camera: THREE.Camera;
+    getControls: () => any; // OrbitControls instance
+    transformControls: any; // TransformControls instance
+    loadedObjectGroup: THREE.Group;
+    getSelectionCallbacks: () => any; // Selection callbacks from gizmo
+}
+
+export interface DragInterface {
+    abortMarquee: () => void;
+    isMarqueeActiveOrCandidate: () => boolean;
+    onPointerDown: (event: PointerEvent | MouseEvent) => boolean;
+    onPointerMove: (event: PointerEvent | MouseEvent) => boolean;
+    onPointerUp: (event: PointerEvent | MouseEvent) => boolean;
+}
+
+/**
+ * 드래그 및 영역 선택(Marquee Selection) 로직을 관리하는 모듈
+ */
 export function initDrag({
     renderer,
     camera,
     getControls,
     transformControls,
     loadedObjectGroup,
-    getSelectionCallbacks // Function that returns the callbacks object
-}) {
+    getSelectionCallbacks
+}: DragInitOptions): DragInterface {
     let marqueeActive = false;
     let marqueeCandidate = false;
     let marqueeIgnoreGroups = false;
-    let marqueeStart = null;
-    let marqueeDiv = null;
+    let marqueeStart: { x: number; y: number } | null = null;
+    let marqueeDiv: HTMLDivElement | null = null;
     let marqueePrevControlsEnabled = true;
 
     const abortMarqueeNoControls = () => {
@@ -56,7 +75,7 @@ export function initDrag({
         return marqueeDiv;
     };
 
-    const updateMarqueeDiv = (x1, y1, x2, y2) => {
+    const updateMarqueeDiv = (x1: number, y1: number, x2: number, y2: number) => {
         const left = Math.min(x1, x2);
         const top = Math.min(y1, y2);
         const width = Math.abs(x2 - x1);
@@ -78,12 +97,12 @@ export function initDrag({
         getControls().enabled = marqueePrevControlsEnabled;
     };
 
-    function _replaceSelectionWithObjectsMap(meshToIds, options) {
-        Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
+    function _replaceSelectionWithObjectsMap(meshToIds: Map<THREE.Mesh, Set<number>>, options: any) {
+        (Select as any).replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
     }
 
-    function _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, options) {
-        Select.replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, getSelectionCallbacks(), options);
+    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<THREE.Mesh, Set<number>>, options: any) {
+        (Select as any).replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, getSelectionCallbacks(), options);
     }
 
     return {
@@ -91,25 +110,24 @@ export function initDrag({
 
         isMarqueeActiveOrCandidate: () => marqueeActive || marqueeCandidate,
 
-        onPointerDown: (event) => {
-            // Ctrl+Drag: marquee selection (start only after the user actually drags)
+        onPointerDown: (event: PointerEvent | MouseEvent) => {
+            // Ctrl+Drag: 영역 선택 시작 (실제 드래그 발생 전까지는 후보 상태)
             if ((event.ctrlKey || event.metaKey) && !transformControls.dragging) {
-                // NOTE: We do not raycast here to allow marquee candidate start.
                 marqueeCandidate = true;
                 marqueeIgnoreGroups = !!event.shiftKey;
                 marqueeStart = { x: event.clientX, y: event.clientY };
                 marqueePrevControlsEnabled = getControls().enabled;
-                // Prevent OrbitControls from starting a drag
+                // OrbitControls가 드래그를 시작하지 못하도록 비활성화
                 getControls().enabled = false;
-                return true; // Handled
+                return true; // 처리됨
             }
             return false;
         },
 
-        onPointerMove: (event) => {
+        onPointerMove: (event: PointerEvent | MouseEvent) => {
             if (!marqueeStart) return false;
 
-            // If another interaction takes over (e.g. user grabbed the gizmo), abort marquee.
+            // 기즈모 조작 등 다른 상호작용이 시작되면 취소
             if (transformControls.dragging) {
                 abortMarqueeNoControls();
                 return false;
@@ -133,8 +151,7 @@ export function initDrag({
             return true;
         },
 
-        onPointerUp: (event) => {
-             // If TransformControls is handling a drag, marquee should not run.
+        onPointerUp: (event: PointerEvent | MouseEvent) => {
             if (marqueeStart && transformControls.dragging) {
                 abortMarqueeNoControls();
                 return false;
@@ -144,7 +161,6 @@ export function initDrag({
                 event.preventDefault();
 
                 const ignoreGroups = marqueeIgnoreGroups;
-
                 const canvasRect = renderer.domElement.getBoundingClientRect();
                 const x1 = marqueeStart.x;
                 const y1 = marqueeStart.y;
@@ -168,20 +184,19 @@ export function initDrag({
                 const minY = top - canvasRect.top;
                 const maxY = bottom - canvasRect.top;
 
-                const groupIds = ignoreGroups ? null : new Set();
-                const meshToIds = new Map();
+                const groupIds = ignoreGroups ? null : new Set<string>();
+                const meshToIds = new Map<THREE.Mesh, Set<number>>();
                 const tmpMat = _TMP_MAT4_A;
-                const tmpWorld = _TMP_VEC3_A;
-                const tmpNdc = _TMP_VEC3_B;
 
-                const objectToGroup = ignoreGroups ? null : getObjectToGroup(loadedObjectGroup);
+                const objectToGroup = ignoreGroups ? null : getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
-                loadedObjectGroup.traverse((obj) => {
+                loadedObjectGroup.traverse((obj: any) => {
                     if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
                     if (obj.visible === false) return;
 
                     if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
                     const bbox = obj.geometry.boundingBox;
+                    if (!bbox) return;
 
                     const instanceCount = getInstanceCount(obj);
                     if (instanceCount <= 0) return;
@@ -192,7 +207,7 @@ export function initDrag({
                         getInstanceWorldMatrixForOrigin(obj, instanceId, tmpMat);
                         const localYOffset = isItemDisplayHatEnabled(obj, instanceId) ? 0.03125 : 0;
 
-                        // Calculate projected bounding box
+                        // 투영된 바운딩 박스 계산을 위한 코너 좌표
                         _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y + localYOffset, bbox.min.z);
                         _TMP_CORNERS[1].set(bbox.max.x, bbox.min.y + localYOffset, bbox.min.z);
                         _TMP_CORNERS[2].set(bbox.min.x, bbox.max.y + localYOffset, bbox.min.z);
@@ -230,16 +245,16 @@ export function initDrag({
                             const key = getGroupKey(obj, instanceId);
                             const immediateGroupId = objectToGroup.get(key);
                             if (immediateGroupId) {
-                                const chain = getGroupChain(loadedObjectGroup, immediateGroupId);
+                                const chain = getGroupChain(loadedObjectGroup, immediateGroupId) as string[];
                                 const root = chain && chain.length > 0 ? chain[0] : immediateGroupId;
-                                if (root) groupIds.add(root);
+                                if (root && groupIds) groupIds.add(root);
                                 continue;
                             }
                         }
 
                         let set = meshToIds.get(obj);
                         if (!set) {
-                            set = new Set();
+                            set = new Set<number>();
                             meshToIds.set(obj, set);
                         }
                         set.add(instanceId);
@@ -254,14 +269,11 @@ export function initDrag({
                 return true;
             }
 
-            // Ctrl+Click should still work (group bypass) when no marquee actually started.
             if (marqueeCandidate) {
                 marqueeCandidate = false;
                 marqueeIgnoreGroups = false;
                 marqueeStart = null;
                 getControls().enabled = marqueePrevControlsEnabled;
-                // We return false here so that the "click selection" logic in the caller can proceed
-                // (e.g. gizmo.js handling the click)
                 return false; 
             }
             

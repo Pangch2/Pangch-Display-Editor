@@ -1,19 +1,25 @@
 import * as THREE from 'three/webgpu';
 
-export let blockbenchScaleMode = false;
+export let blockbenchScaleMode: boolean = false;
 
 // Helpers to avoid allocations
 const _BB_PIVOT_FRAME_MAT4 = new THREE.Matrix4();
 const _BB_PIVOT_FRAME_MAT4_INV = new THREE.Matrix4();
 export const _BB_PIVOT_FRAME_MAT3 = new THREE.Matrix3();
 
-export function toggleBlockbenchScaleMode() {
+export function toggleBlockbenchScaleMode(): boolean {
     blockbenchScaleMode = !blockbenchScaleMode;
     console.log(`blockbench scale모드 ${blockbenchScaleMode ? '켜짐' : '꺼짐'}`);
     return blockbenchScaleMode;
 }
 
-export function computeBlockbenchPivotFrame(selectionHelper, currentSpace) {
+interface PivotFrameMatrices {
+    mat4: THREE.Matrix4;
+    invMat4: THREE.Matrix4;
+    mat3: THREE.Matrix3;
+}
+
+export function computeBlockbenchPivotFrame(selectionHelper: THREE.Object3D, currentSpace: 'world' | 'local'): PivotFrameMatrices {
     // Default: use the current selectionHelper world matrix
     _BB_PIVOT_FRAME_MAT4.copy(selectionHelper.matrixWorld);
 
@@ -33,7 +39,7 @@ export function computeBlockbenchPivotFrame(selectionHelper, currentSpace) {
     };
 }
 
-export function getBlockbenchPivotFrameMatrices() {
+export function getBlockbenchPivotFrameMatrices(): PivotFrameMatrices {
     return {
         mat4: _BB_PIVOT_FRAME_MAT4,
         invMat4: _BB_PIVOT_FRAME_MAT4_INV,
@@ -41,14 +47,32 @@ export function getBlockbenchPivotFrameMatrices() {
     };
 }
 
-export function transformBoxToPivotFrame(worldMatrix, tempMat4 = new THREE.Matrix4()) {
+export function transformBoxToPivotFrame(worldMatrix: THREE.Matrix4, tempMat4: THREE.Matrix4 = new THREE.Matrix4()): THREE.Matrix4 {
     // Transform: Object Local -> World -> Pivot Frame
     // matrix = InvPivotFrame * WorldMatrix
     return tempMat4.copy(_BB_PIVOT_FRAME_MAT4_INV).multiply(worldMatrix);
 }
 
-export function detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper, currentSpace, defaultDetectedKeys) {
-    const checkAxis = (x, y, z) => {
+interface AxisSelection {
+    x: boolean;
+    y: boolean;
+    z: boolean;
+}
+
+interface DetectedKeys {
+    x: boolean | null;
+    y: boolean | null;
+    z: boolean | null;
+}
+
+export function detectBlockbenchScaleAxes(
+    camera: THREE.Camera, 
+    mouseInput: THREE.Vector2, 
+    selectionHelper: THREE.Object3D, 
+    currentSpace: 'world' | 'local', 
+    defaultDetectedKeys: DetectedKeys
+): AxisSelection {
+    const checkAxis = (x: number, y: number, z: number): boolean => {
         const axisVec = new THREE.Vector3(x, y, z);
         if (currentSpace === 'local') {
             axisVec.applyQuaternion(selectionHelper.quaternion);
@@ -73,7 +97,14 @@ export function detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper, c
     };
 }
 
-export function computeBlockbenchScaleShift(selectionHelper, dragInitialScale, dragInitialPosition, dragInitialBoundingBox, dragAnchorDirections, currentSpace) {
+export function computeBlockbenchScaleShift(
+    selectionHelper: THREE.Object3D, 
+    dragInitialScale: THREE.Vector3, 
+    dragInitialPosition: THREE.Vector3, 
+    dragInitialBoundingBox: THREE.Box3, 
+    dragAnchorDirections: AxisSelection, 
+    currentSpace: 'world' | 'local'
+): THREE.Vector3 | null {
     if (dragInitialBoundingBox.isEmpty()) return null;
 
     const deltaScale = selectionHelper.scale; 

@@ -1,7 +1,8 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from './group.js';
-import * as Overlay from './overlay.js';
-import { performSelectionSwap } from './vertex-swap.js';
+import * as GroupUtils from './group';
+import * as Overlay from './overlay';
+import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
+import type { GroupData } from './group';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_MAT4_B = new THREE.Matrix4();
@@ -10,8 +11,32 @@ const _TMP_VEC3_A = new THREE.Vector3();
 const _TMP_VEC3_B = new THREE.Vector3();
 const _TMP_QUAT = new THREE.Quaternion();
 
+type MeshType = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+
+interface VertexRotateContext {
+    isVertexMode: boolean;
+    gizmoMode: string;
+    currentSelection: {
+        groups: Set<string>;
+        objects: Map<THREE.Object3D, Set<number>>;
+        primary: SelectionSource | null;
+    };
+    loadedObjectGroup: THREE.Group;
+    selectionHelper: THREE.Mesh;
+
+    getGizmoState: () => any;
+    setGizmoState: (updates: any) => void;
+
+    getGroups: () => Map<string, GroupData>;
+    getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
+    updateHelperPosition: () => void;
+    updateSelectionOverlay: () => void;
+    SelectionCenter: (mode: string, useOffset: boolean, target: THREE.Vector3) => THREE.Vector3;
+    vertexQueue: QueueItem[];
+}
+
 export function processVertexRotate(
-    selectedVertexKeys,
+    selectedVertexKeys: Set<string>,
     {
         isVertexMode,
         gizmoMode,
@@ -30,8 +55,8 @@ export function processVertexRotate(
         updateSelectionOverlay,
         SelectionCenter,
         vertexQueue
-    }
-) {
+    }: VertexRotateContext
+): boolean {
     if (!isVertexMode || gizmoMode !== 'rotate') return false;
 
     const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
@@ -50,8 +75,8 @@ export function processVertexRotate(
     const k1 = keys[0];
     const k2 = keys[1];
     
-    let sprite1 = null;
-    let sprite2 = null;
+    let sprite1: THREE.Sprite | null = null;
+    let sprite2: THREE.Sprite | null = null;
     
     const foundSprites = Overlay.findSpritesByKeys([k1, k2]);
     sprite1 = foundSprites[k1];
@@ -71,15 +96,15 @@ export function processVertexRotate(
     // CASE 2: First Click = Object Vertex, Second Click = (Gizmo OR Object Vertex)
     // -> Rotate Object around Opposite Corner (Pivot) logic
     if (sprite1 && sprite2 && sprite1.userData.source && (sprite2.userData.isCenter || sprite2.userData.source)) {
-        const src = sprite1.userData.source;
+        const src: SelectionSource = sprite1.userData.source;
         let objectWorldMatrix = new THREE.Matrix4();
-        let localBox = null;
+        let localBox: THREE.Box3 | null = null;
 
         // 1. Resolve effective World Matrix and Local Bounding Box (similar to vertex-scale)
         if (src.type === 'object') {
             const { mesh, instanceId } = src;
-            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                mesh.getMatrixAt(instanceId, objectWorldMatrix);
+            if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, objectWorldMatrix);
             } else {
                 objectWorldMatrix.copy(mesh.matrix);
             }
@@ -143,7 +168,7 @@ export function processVertexRotate(
         const isSrcEffectiveSelected = (() => {
             if (src.type === 'group') return currentSelection.groups.has(src.id);
             if (src.type === 'object') {
-                if (currentSelection.objects.has(src.mesh) && currentSelection.objects.get(src.mesh).has(src.instanceId)) return true;
+                if (currentSelection.objects.has(src.mesh) && currentSelection.objects.get(src.mesh)!.has(src.instanceId)) return true;
                 
                 const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
                 if (objectToGroup) {
@@ -161,47 +186,47 @@ export function processVertexRotate(
 
         // 2. Build explicit lists of what to move
         const targets = {
-            groups: new Set(),
-            instances: new Map(),
+            groups: new Set<string>(),
+            instances: new Map<MeshType, Set<number>>(),
             isBundleMove: false
         };
 
-        const addInstance = (mesh, id) => {
+        const addInstance = (mesh: MeshType, id: number) => {
             let set = targets.instances.get(mesh);
             if (!set) { set = new Set(); targets.instances.set(mesh, set); }
             set.add(id);
         };
 
-        const addGroup = (groupId) => {
+        const addGroup = (groupId: string) => {
             targets.groups.add(groupId);
             const children = GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId);
             for (const child of children) {
                 if (child.type === 'object') addInstance(child.mesh, child.instanceId);
-                else if (child.type === 'group') addGroup(child.id);
+                else if (child.type === 'group') addGroup((child as unknown as GroupUtils.GroupChildGroup).id);
             }
         };
 
-        const addBundle = (bundle) => {
+        const addBundle = (bundle: QueueBundle) => {
             if (!bundle || !bundle.items) return;
             targets.isBundleMove = true;
             for (const item of bundle.items) {
-                if (item.type === 'group') addGroup(item.id);
-                else if (item.type === 'object') addInstance(item.mesh, item.instanceId);
+                if (item.type === 'group') addGroup(item.id!);
+                else if (item.type === 'object') addInstance(item.mesh!, item.instanceId!);
             }
         };
 
         // Check if src is part of a bundle in the queue
-        let containingBundle = null;
+        let containingBundle: QueueBundle | null = null;
         if (!isSrcEffectiveSelected) {
             for (const qItem of vertexQueue) {
-                if (qItem.type === 'bundle' && qItem.items) {
-                    const found = qItem.items.find(sub => {
+                if (qItem.type === 'bundle' && (qItem as QueueBundle).items) {
+                    const found = (qItem as QueueBundle).items.find(sub => {
                         if (src.type === 'group' && sub.type === 'group') return sub.id === src.id;
                         if (src.type === 'object' && sub.type === 'object') return sub.mesh === src.mesh && sub.instanceId === src.instanceId;
                         return false;
                     });
                     if (found) {
-                        containingBundle = qItem;
+                        containingBundle = qItem as QueueBundle;
                         break;
                     }
                 }
@@ -215,14 +240,14 @@ export function processVertexRotate(
             if (currentSelection.objects) {
                 for (const [mesh, ids] of currentSelection.objects) {
                     for (const id of ids) {
-                        addInstance(mesh, id);
+                        addInstance(mesh as MeshType, id);
                     }
                 }
             }
 
             // Update Gizmo State anchors
             const state = getGizmoState();
-            const updates = {};
+            const updates: Record<string, any> = {};
             if (state._gizmoAnchorValid && state._gizmoAnchorPosition) {
                 updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().applyMatrix4(transformMat);
             }
@@ -251,11 +276,11 @@ export function processVertexRotate(
             localTransform.multiply(mesh.matrixWorld);
 
             for (const id of ids) {
-                mesh.getMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                (mesh as THREE.InstancedMesh).getMatrixAt(id, _TMP_INSTANCE_MATRIX);
                 _TMP_INSTANCE_MATRIX.premultiply(localTransform);
-                mesh.setMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                (mesh as THREE.InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
             }
-            if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
+            if ((mesh as THREE.InstancedMesh).isInstancedMesh) (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
         }
 
         // B. Update Group Metadata (Logic)
@@ -278,7 +303,7 @@ export function processVertexRotate(
         }
 
         // Swapping selection state
-        let targetSrc = sprite2.userData.source;
+        let targetSrc: SelectionSource | null = sprite2.userData.source ?? null;
         if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
             targetSrc = currentSelection.primary;
         }

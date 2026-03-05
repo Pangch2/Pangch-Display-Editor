@@ -1,261 +1,523 @@
 import * as THREE from 'three/webgpu';
+import * as GroupUtils from './group';
+import * as Overlay from './overlay';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// --- Types ---
 
-export type SelectionAnchorMode = 'default' | 'center';
-
-export interface PrimaryObject {
-    type: 'object';
-    mesh: THREE.InstancedMesh | THREE.BatchedMesh;
-    instanceId: number;
-}
-export type Primary = PrimaryObject | null;
+export type PrimarySelection = 
+    | { type: 'group'; id: string }
+    | { type: 'object'; mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number };
 
 export interface SelectionState {
-    objects: Map<THREE.Object3D, Set<number>>;
-    primary: Primary;
-}
-
-export interface SelectedItem {
-    mesh: THREE.InstancedMesh | THREE.BatchedMesh;
-    instanceId: number;
-}
-
-export interface PickResult {
-    mesh: THREE.InstancedMesh | THREE.BatchedMesh;
-    instanceId: number;
+    groups: Set<string>;
+    objects: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>;
+    primary: PrimarySelection | null;
 }
 
 export interface SelectionCallbacks {
+    pushToVertexQueue?: () => void;
+    revertEphemeralPivotUndoIfAny?: () => void;
     detachTransformControls?: () => void;
     clearGizmoAnchor?: () => void;
-    setSelectionAnchorMode?: (mode: SelectionAnchorMode) => void;
+    setSelectionAnchorMode?: (mode: string) => void;
     resetPivotState?: () => void;
+    hasVertexQueue?: () => boolean;
     updateHelperPosition?: () => void;
     updateSelectionOverlay?: () => void;
     recomputePivotState?: () => void;
+    isVertexMode?: boolean;
     onDeselect?: () => void;
 }
 
-export interface BeginReplaceOptions {
-    anchorMode?: SelectionAnchorMode;
-    detachTransform?: boolean;
+export interface SelectedItem {
+    type: 'object';
+    mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh;
+    instanceId: number;
 }
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// --- Selection State ---
 
 export const currentSelection: SelectionState = {
-    objects: new Map(),
-    primary: null,
+    groups: new Set<string>(),
+    objects: new Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>(),
+    primary: null
 };
 
-// ─── Cache ────────────────────────────────────────────────────────────────────
+let loadedObjectGroupForSelect: THREE.Group | null = null;
+let _selectedItemsCacheKey: string | null = null;
+let _selectedItemsCache: SelectedItem[] | null = null;
 
-let _cacheKey: string | null = null;
-let _cache: SelectedItem[] | null = null;
+// --- Internal Helpers ---
 
-export function invalidateSelectionCaches(): void {
-    _cacheKey = null;
-    _cache = null;
-}
-
-function _buildCacheKey(): string {
+function _getSelectionCacheKey(): string {
     if (!hasAnySelection()) return 'none';
 
+    const g = currentSelection.groups && currentSelection.groups.size > 0
+        ? Array.from(currentSelection.groups).sort().join('|')
+        : '';
+
     const oParts: string[] = [];
-    for (const [mesh, ids] of currentSelection.objects) {
-        oParts.push(`${mesh.uuid}:${Array.from(ids).sort().join(',')}`);
+    if (currentSelection.objects && currentSelection.objects.size > 0) {
+        for (const [mesh, ids] of currentSelection.objects) {
+            oParts.push(`${mesh.uuid}:${Array.from(ids).sort().join(',')}`);
+        }
     }
     oParts.sort();
 
-    return oParts.join('|');
+    return `g:${g};o:${oParts.join('|')}`;
 }
 
-/**
- * 현재 선택된 모든 인스턴스를 반환한다.
- * 그룹 지원은 group 모듈 연결 후 추가 예정이므로 현재는 objects만 반환한다.
- */
+// --- Public API ---
+
+export function invalidateSelectionCaches(): void {
+    _selectedItemsCacheKey = null;
+    _selectedItemsCache = null;
+}
+
 export function getSelectedItems(): SelectedItem[] {
-    const key = _buildCacheKey();
-    if (_cacheKey === key && _cache) return _cache;
+    const key = _getSelectionCacheKey();
+    if (_selectedItemsCacheKey === key && _selectedItemsCache) return _selectedItemsCache;
 
     const items: SelectedItem[] = [];
     const seen = new Set<string>();
 
-    for (const [mesh, ids] of currentSelection.objects) {
-        for (const id of ids) {
-            const k = `${mesh.uuid}_${id}`;
-            if (!seen.has(k)) {
-                seen.add(k);
-                items.push({ mesh: mesh as THREE.InstancedMesh | THREE.BatchedMesh, instanceId: id });
+    if (currentSelection.groups && currentSelection.groups.size > 0) {
+        if (loadedObjectGroupForSelect) {
+            for (const groupId of currentSelection.groups) {
+                const children = GroupUtils.getAllGroupChildren(loadedObjectGroupForSelect, groupId);
+                children.forEach((child) => {
+                    const uniqueKey = `${child.mesh.uuid}_${child.instanceId}`;
+                    if (!seen.has(uniqueKey)) {
+                        seen.add(uniqueKey);
+                        items.push({ type: 'object', mesh: child.mesh, instanceId: child.instanceId });
+                    }
+                });
             }
         }
     }
 
-    _cacheKey = key;
-    _cache = items;
+    if (currentSelection.objects && currentSelection.objects.size > 0) {
+        for (const [mesh, ids] of currentSelection.objects) {
+            for (const id of ids) {
+                const uniqueKey = `${mesh.uuid}_${id}`;
+                if (!seen.has(uniqueKey)) {
+                    seen.add(uniqueKey);
+                    items.push({ type: 'object', mesh, instanceId: id });
+                }
+            }
+        }
+    }
+
+    _selectedItemsCacheKey = key;
+    _selectedItemsCache = items;
     return items;
 }
 
-// ─── Query Helpers ────────────────────────────────────────────────────────────
-
-export function hasAnySelection(): boolean {
-    return currentSelection.objects.size > 0;
+export function setLoadedObjectGroup(group: THREE.Group): void {
+    loadedObjectGroupForSelect = group;
 }
 
-export function isMultiSelection(): boolean {
-    let objectCount = 0;
-    for (const ids of currentSelection.objects.values()) objectCount += ids.size;
-    return objectCount > 1;
-}
-
-export function getSingleSelectedMeshEntry(): { mesh: THREE.Object3D; instanceId: number } | null {
-    if (currentSelection.objects.size !== 1) return null;
-    const [mesh, ids] = currentSelection.objects.entries().next().value!;
-    if (!mesh || !ids || ids.size !== 1) return null;
-    return { mesh, instanceId: Array.from(ids as Set<number>)[0] };
-}
-
-export function setPrimaryToFirstAvailable(): void {
-    for (const [mesh, ids] of currentSelection.objects) {
-        if (ids.size > 0) {
-            currentSelection.primary = {
-                type: 'object',
-                mesh: mesh as THREE.InstancedMesh | THREE.BatchedMesh,
-                instanceId: Array.from(ids)[0],
-            };
-            return;
-        }
-    }
-    currentSelection.primary = null;
-}
-
-// ─── Raycasting ───────────────────────────────────────────────────────────────
-
-/**
- * Raycaster로 loadedObjectGroup을 순회해 가장 가까운 인스턴스를 반환한다.
- * overlay 모듈 없이 THREE.InstancedMesh 기본 raycast()를 사용한다.
- */
-export function pickInstance(
-    raycaster: THREE.Raycaster,
-    rootGroup: THREE.Object3D,
-): PickResult | null {
-    const hits: THREE.Intersection[] = [];
+export function pickInstanceByOverlayBox(
+    raycaster: THREE.Raycaster, 
+    rootGroup: THREE.Group
+): { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number } | null {
+    const rayWorld = raycaster.ray.clone();
+    const best: { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh | null; instanceId: number | undefined; distance: number } = { 
+        mesh: null, 
+        instanceId: undefined, 
+        distance: Infinity 
+    };
 
     rootGroup.traverse((obj) => {
-        if (!obj.visible) return;
-        if (!(obj as THREE.InstancedMesh).isInstancedMesh && !(obj as any).isBatchedMesh) return;
-        raycaster.intersectObject(obj, false, hits);
+        if (!obj || (!('isInstancedMesh' in obj) && !('isBatchedMesh' in obj))) return;
+        if (obj.visible === false) return;
+        if (!raycaster.layers.test(obj.layers)) return;
+
+        const mesh = obj as THREE.InstancedMesh | THREE.BatchedMesh;
+        const instanceCount = Overlay.getInstanceCount(mesh);
+
+        if (instanceCount <= 0) return;
+
+        for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
+            if (!Overlay.isInstanceValid(mesh, instanceId)) continue;
+
+            const box = Overlay.getInstanceLocalBox(mesh, instanceId);
+            if (!box) continue;
+
+            const matrixWorld = Overlay.getInstanceWorldMatrix(mesh, instanceId, new THREE.Matrix4());
+            const invMatrix = matrixWorld.clone().invert();
+            const localRay = rayWorld.clone().applyMatrix4(invMatrix);
+            
+            const intersect = localRay.intersectBox(box, new THREE.Vector3());
+            if (intersect) {
+                const hitPointWorld = intersect.clone().applyMatrix4(matrixWorld);
+                const dist = rayWorld.origin.distanceTo(hitPointWorld);
+                
+                if (dist < best.distance) {
+                    best.distance = dist;
+                    best.mesh = mesh;
+                    best.instanceId = instanceId;
+                }
+            }
+        }
     });
 
-    if (hits.length === 0) return null;
-    hits.sort((a, b) => a.distance - b.distance);
-
-    const hit = hits[0];
-    const instanceId = (hit as any).instanceId ?? (hit as any).batchId ?? 0;
-    return {
-        mesh: hit.object as THREE.InstancedMesh | THREE.BatchedMesh,
-        instanceId,
-    };
+    if (!best.mesh || best.instanceId === undefined) return null;
+    return { mesh: best.mesh, instanceId: best.instanceId };
 }
 
-// ─── Selection Mutation ───────────────────────────────────────────────────────
+export function getSingleSelectedGroupId(): string | null {
+    if (!currentSelection.groups || currentSelection.groups.size !== 1) return null;
+    if (currentSelection.objects && currentSelection.objects.size > 0) return null;
+    return Array.from(currentSelection.groups)[0] || null;
+}
 
-export function clearSelectionState(): void {
+export function getSingleSelectedMeshEntry(): { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number } | null {
+    if (currentSelection.groups && currentSelection.groups.size > 0) return null;
+    if (!currentSelection.objects || currentSelection.objects.size !== 1) return null;
+    
+    const entry = currentSelection.objects.entries().next().value;
+    if (!entry) return null;
+    
+    const [mesh, ids] = entry as [THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>];
+    return (mesh && ids && ids.size === 1) ? { mesh, instanceId: Array.from(ids)[0] as number } : null;
+}
+
+export function hasAnySelection(): boolean {
+    return (currentSelection.groups.size > 0) || (currentSelection.objects.size > 0);
+}
+
+export function clearSelectionState(callbacks?: SelectionCallbacks): void {
+    if (callbacks && callbacks.pushToVertexQueue) {
+        callbacks.pushToVertexQueue();
+    }
+    
+    currentSelection.groups.clear();
     currentSelection.objects.clear();
     currentSelection.primary = null;
     invalidateSelectionCaches();
 }
 
 export function beginSelectionReplace(
-    callbacks: SelectionCallbacks,
-    options: BeginReplaceOptions = {},
+    callbacks: SelectionCallbacks, 
+    { anchorMode = 'default', detachTransform = false, preserveAnchors = false } = {}
 ): void {
-    const { anchorMode = 'default', detachTransform = false } = options;
-
-    if (detachTransform) callbacks.detachTransformControls?.();
-
-    clearSelectionState();
-    callbacks.clearGizmoAnchor?.();
-
-    callbacks.setSelectionAnchorMode?.(anchorMode);
-    callbacks.resetPivotState?.();
+    if (callbacks.revertEphemeralPivotUndoIfAny) callbacks.revertEphemeralPivotUndoIfAny();
+    if (detachTransform && callbacks.detachTransformControls) callbacks.detachTransformControls();
+    
+    clearSelectionState(callbacks);
+    
+    if (!preserveAnchors && callbacks.clearGizmoAnchor) callbacks.clearGizmoAnchor();
+    if (callbacks.setSelectionAnchorMode) callbacks.setSelectionAnchorMode(anchorMode);
+    if (callbacks.resetPivotState) callbacks.resetPivotState();
 
     currentSelection.primary = null;
     invalidateSelectionCaches();
 }
 
-export function commitSelectionChange(callbacks: SelectionCallbacks): void {
-    invalidateSelectionCaches();
-    if (hasAnySelection() && !currentSelection.primary) setPrimaryToFirstAvailable();
-    callbacks.recomputePivotState?.();
-    callbacks.updateHelperPosition?.();
-    callbacks.updateSelectionOverlay?.();
+export function resetSelectionAndDeselect(callbacks: SelectionCallbacks): void {
+     if (hasAnySelection() || (callbacks.hasVertexQueue && callbacks.hasVertexQueue())) {
+         beginSelectionReplace(callbacks, { detachTransform: true });
+         if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
+         if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
+     }
 }
 
-// ─── Click Handler ────────────────────────────────────────────────────────────
+export function setPrimaryToFirstAvailable(): void {
+    if (currentSelection.groups.size > 0) {
+        const id = Array.from(currentSelection.groups)[0];
+        currentSelection.primary = id ? { type: 'group', id } : null;
+        return;
+    }
+    if (currentSelection.objects.size > 0) {
+        for (const [mesh, ids] of currentSelection.objects) {
+            if (ids.size > 0) {
+                 const firstId = Array.from(ids)[0] as number;
+                 currentSelection.primary = { type: 'object', mesh, instanceId: firstId };
+                 return;
+            }
+        }
+    }
+    currentSelection.primary = null;
+}
 
-/**
- * 마우스 클릭 이벤트에 따라 선택 상태를 갱신한다.
- * 그룹 계층 드릴다운은 group 모듈 연결 후 추가 예정이다.
- */
+export function replaceSelectionWithObjectsMap(
+    meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, 
+    callbacks: SelectionCallbacks, 
+    { anchorMode = 'default' } = {}
+): void {
+    if (!meshToIds || meshToIds.size === 0) {
+        resetSelectionAndDeselect(callbacks);
+        return;
+    }
+
+    beginSelectionReplace(callbacks, { anchorMode, detachTransform: true });
+
+    for (const [mesh, ids] of meshToIds) {
+        if (!mesh || !ids || ids.size === 0) continue;
+        currentSelection.objects.set(mesh, new Set(ids));
+    }
+
+    if (callbacks.recomputePivotState) callbacks.recomputePivotState();
+    if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
+    if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
+}
+
+export function replaceSelectionWithGroupsAndObjects(
+    groupIds: Set<string>, 
+    meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, 
+    callbacks: SelectionCallbacks, 
+    { anchorMode = 'default', primaryIsRangeStart = false, preserveAnchors = false } = {}
+): void {
+    const hasGroups = groupIds && groupIds.size > 0;
+    const hasObjects = meshToIds && meshToIds.size > 0;
+    if (!hasGroups && !hasObjects) {
+        resetSelectionAndDeselect(callbacks);
+        return;
+    }
+
+    beginSelectionReplace(callbacks, { anchorMode, detachTransform: true, preserveAnchors });
+
+    let firstGroupId: string | null = null;
+    let firstObjectMesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh | null = null;
+    let firstObjectInstanceId: number | null = null;
+
+    if (hasGroups) {
+        for (const gid of groupIds) {
+            if (gid) {
+                currentSelection.groups.add(gid);
+                if (!firstGroupId) firstGroupId = gid;
+            }
+        }
+    }
+    if (hasObjects) {
+        for (const [mesh, ids] of meshToIds) {
+            if (!mesh || !ids || ids.size === 0) continue;
+            currentSelection.objects.set(mesh, new Set(ids));
+            if (!firstObjectMesh) {
+                firstObjectMesh = mesh;
+                firstObjectInstanceId = Array.from(ids)[0] as number;
+            }
+        }
+    }
+
+    if (primaryIsRangeStart) {
+        if (firstGroupId) {
+            currentSelection.primary = { type: 'group', id: firstGroupId };
+        } else if (firstObjectMesh && firstObjectInstanceId !== null) {
+            currentSelection.primary = { type: 'object', mesh: firstObjectMesh, instanceId: firstObjectInstanceId };
+        }
+    }
+
+    if (callbacks.recomputePivotState) callbacks.recomputePivotState();
+    if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
+    if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
+}
+
+export function selectAllObjectsVisibleInScene(loadedObjectGroup: THREE.Group): Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>> {
+    const meshToIds = new Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>();
+    if (!loadedObjectGroup) return meshToIds;
+
+    loadedObjectGroup.traverse((obj) => {
+        if (!obj || (!('isInstancedMesh' in obj) && !('isBatchedMesh' in obj))) return;
+        if (obj.visible === false) return;
+
+        const mesh = obj as THREE.InstancedMesh | THREE.BatchedMesh;
+        const instanceCount = Overlay.getInstanceCount(mesh);
+        if (instanceCount <= 0) return;
+
+        const ids = new Set<number>();
+        for (let i = 0; i < instanceCount; i++) {
+            if (Overlay.isInstanceValid(mesh, i)) {
+                ids.add(i);
+            }
+        }
+        if (ids.size > 0) {
+            meshToIds.set(mesh, ids);
+        }
+    });
+
+    return meshToIds;
+}
+
+export function isMultiSelection(): boolean {
+    const groupCount = currentSelection.groups.size;
+    
+    let objectIdCount = 0;
+    for (const ids of currentSelection.objects.values()) {
+        objectIdCount += ids.size;
+    }
+    
+    return (groupCount + objectIdCount) > 1;
+}
+
+export function commitSelectionChange(callbacks: SelectionCallbacks): void {
+    invalidateSelectionCaches();
+    if (hasAnySelection() && !currentSelection.primary) { 
+        setPrimaryToFirstAvailable();
+    }
+    if (callbacks.recomputePivotState) callbacks.recomputePivotState();
+    if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
+    if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
+}
+
 export function handleSelectionClick(
     raycaster: THREE.Raycaster,
-    event: PointerEvent,
-    loadedObjectGroup: THREE.Object3D,
-    callbacks: SelectionCallbacks,
+    event: MouseEvent | { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+    loadedObjectGroup: THREE.Group,
+    callbacks: SelectionCallbacks
 ): void {
-    const picked = pickInstance(raycaster, loadedObjectGroup);
-
+    const picked = pickInstanceByOverlayBox(raycaster, loadedObjectGroup);
+    
     if (!picked) {
-        // 배경 클릭 시 Shift가 없으면 전체 해제
         if (!event.shiftKey) {
             if (callbacks.onDeselect) {
                 callbacks.onDeselect();
             } else {
-                beginSelectionReplace(callbacks, { detachTransform: true });
+                resetSelectionAndDeselect(callbacks);
             }
         }
-        commitSelectionChange(callbacks);
         return;
     }
 
-    const { mesh, instanceId } = picked;
-    const isShift = event.shiftKey;
+    const object = picked.mesh;
+    const instanceId = picked.instanceId;
+    const idsToSelect = [instanceId];
 
-    if (isShift) {
-        // 다중 선택 (토글 로직)
-        let set = currentSelection.objects.get(mesh);
-        
-        if (set && set.has(instanceId)) {
-            // 이미 선택된 경우 제거
-            set.delete(instanceId);
-            if (set.size === 0) currentSelection.objects.delete(mesh);
-            
-            // 제거된 게 primary였다면 초기화 (commit 시 다음 후보가 primary가 됨)
-            const p = currentSelection.primary as PrimaryObject | null;
-            if (p?.type === 'object' && p.mesh === mesh && p.instanceId === instanceId) {
-                currentSelection.primary = null;
+    const key = GroupUtils.getGroupKey(object, idsToSelect[0]);
+    const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
+    const immediateGroupId = objectToGroup ? objectToGroup.get(key) : null;
+
+    const bypassGroupSelection = !!(event.ctrlKey || event.metaKey);
+
+    let target: { type: 'object'; mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; ids: number[] } | { type: 'group'; id: string } = { 
+        type: 'object', mesh: object, ids: idsToSelect 
+    };
+    let groupToDeselect: string | null = null;
+
+    if (!bypassGroupSelection && immediateGroupId) {
+        const groupChain = GroupUtils.getGroupChain(loadedObjectGroup, immediateGroupId);
+        if (groupChain && groupChain.length > 0) {
+            let nextGroupIdToSelect: string | null = groupChain[0];
+
+            let deepestSelectedIndex = -1;
+            for (let i = groupChain.length - 1; i >= 0; i--) {
+                if (currentSelection.groups.has(groupChain[i])) {
+                    deepestSelectedIndex = i;
+                    break;
+                }
+            }
+
+            if (deepestSelectedIndex !== -1) {
+                if (event.shiftKey || callbacks.isVertexMode) {
+                    groupToDeselect = groupChain[deepestSelectedIndex];
+                }
+
+                if (deepestSelectedIndex < groupChain.length - 1) {
+                    nextGroupIdToSelect = groupChain[deepestSelectedIndex + 1];
+                } else {
+                    nextGroupIdToSelect = null;
+                }
+            }
+
+            if (nextGroupIdToSelect) {
+                target = { type: 'group', id: nextGroupIdToSelect };
+            }
+        }
+    }
+
+    if (event.shiftKey) {
+        if (groupToDeselect) {
+            if (currentSelection.groups.has(groupToDeselect)) {
+                currentSelection.groups.delete(groupToDeselect);
+                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
+                    currentSelection.primary = null;
+                }
+            }
+        }
+
+        if (target.type === 'group') {
+            const gid = target.id;
+            if (currentSelection.groups.has(gid)) {
+                currentSelection.groups.delete(gid);
+                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === gid) {
+                    currentSelection.primary = null;
+                }
+            } else {
+                currentSelection.groups.add(gid);
+                if (!currentSelection.primary) {
+                    currentSelection.primary = { type: 'group', id: gid };
+                }
             }
         } else {
-            // 새로 선택 추가
-            if (!set) {
-                set = new Set();
-                currentSelection.objects.set(mesh, set);
+            let existingSet = currentSelection.objects.get(target.mesh);
+            if (!existingSet) {
+                existingSet = new Set<number>();
+                currentSelection.objects.set(target.mesh, existingSet);
             }
-            set.add(instanceId);
-            
-            // "처음 선택한 오브젝트가 기준" -> 이미 primary가 있다면 건드리지 않음
-            if (!currentSelection.primary) {
-                currentSelection.primary = { type: 'object', mesh, instanceId };
+
+            const firstId = target.ids[0];
+            const isSelected = existingSet.has(firstId);
+
+            if (isSelected) {
+                for (const id of target.ids) existingSet.delete(id);
+                if (existingSet.size === 0) currentSelection.objects.delete(target.mesh);
+                
+                if (currentSelection.primary && 
+                    currentSelection.primary.type === 'object' && 
+                    currentSelection.primary.mesh === target.mesh && 
+                    target.ids.includes(currentSelection.primary.instanceId)) {
+                    currentSelection.primary = null;
+                }
+            } else {
+                for (const id of target.ids) existingSet.add(id);
+                if (!currentSelection.primary) {
+                    currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: firstId };
+                }
             }
         }
     } else {
-        // 단일 선택 (기존 선택 교체)
-        beginSelectionReplace(callbacks, { detachTransform: true });
-        const set = new Set([instanceId]);
-        currentSelection.objects.set(mesh, set);
-        currentSelection.primary = { type: 'object', mesh, instanceId };
+        let performedSurgicalUpdate = false;
+
+        if (groupToDeselect) {
+            if (currentSelection.groups.has(groupToDeselect)) {
+                currentSelection.groups.delete(groupToDeselect);
+                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
+                    currentSelection.primary = null;
+                }
+            }
+            
+            if (target.type === 'group') {
+                currentSelection.groups.add(target.id);
+                if (!currentSelection.primary) currentSelection.primary = { type: 'group', id: target.id };
+            } else {
+                let set = currentSelection.objects.get(target.mesh);
+                if (!set) {
+                    set = new Set<number>();
+                    currentSelection.objects.set(target.mesh, set);
+                }
+                for (const id of target.ids) set.add(id);
+                if (!currentSelection.primary) {
+                    currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+                }
+            }
+
+            performedSurgicalUpdate = true;
+             if (callbacks.detachTransformControls) callbacks.detachTransformControls();
+        }
+
+        if (!performedSurgicalUpdate) {
+            beginSelectionReplace(callbacks, { detachTransform: true });
+            
+            if (target.type === 'group') {
+                currentSelection.groups.add(target.id);
+                currentSelection.primary = { type: 'group', id: target.id };
+            } else {
+                const set = new Set(target.ids);
+                currentSelection.objects.set(target.mesh, set);
+                currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+            }
+        }
     }
 
     commitSelectionChange(callbacks);

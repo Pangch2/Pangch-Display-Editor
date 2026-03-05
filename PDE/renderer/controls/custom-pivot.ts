@@ -1,6 +1,38 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from './group.js';
+// @ts-ignore
+import * as GroupUtils from './group';
+// @ts-ignore
 import * as Overlay from './overlay.js';
+
+/**
+ * Interface representing an element in the selection (either a group or a specific object instance).
+ */
+export interface SelectionElement {
+    type: 'group' | 'object';
+    id?: string;
+    mesh?: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh;
+    instanceId?: number;
+}
+
+/**
+ * Interface representing the current selection state.
+ */
+export interface CurrentSelection {
+    primary?: SelectionElement;
+    groups?: Set<string>;
+    objects?: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>;
+}
+
+/**
+ * Callbacks required for computing pivot states and selection centers.
+ */
+export interface CustomPivotCallbacks {
+    getSingleSelectedGroupId: () => string | null;
+    getSingleSelectedMeshEntry: () => { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, instanceId: number } | null;
+    getSelectedItems: () => SelectionElement[];
+    getSelectionBoundingBox: () => THREE.Box3 | null;
+    calculateAvgOrigin: () => THREE.Vector3;
+}
 
 // --- Imports from Overlay (mirrors gizmo.js aliases) ---
 const getInstanceWorldMatrixForOrigin = Overlay.getInstanceWorldMatrixForOrigin;
@@ -11,10 +43,8 @@ const getGroupWorldMatrixWithFallback = Overlay.getGroupWorldMatrixWithFallback;
 const getGroupLocalBoundingBox = Overlay.getGroupLocalBoundingBox;
 
 // --- State Variables managed by CustomPivot ---
-// Warning: These are module-level variables. 
-// In a fuller refactor, these might be part of a class instance or passed in consistently.
-let _ephemeralPivotUndo = null;
-let _pivotEditUndoCapture = null;
+let _ephemeralPivotUndo: (() => void) | null = null;
+let _pivotEditUndoCapture: (() => void) | null = null;
 
 // Small shared temporaries
 const _TMP_MAT4_A = new THREE.Matrix4();
@@ -22,12 +52,12 @@ const _TMP_MAT4_A = new THREE.Matrix4();
 
 // --- Public API Functions ---
 
-export function clearEphemeralPivotUndo() {
+export function clearEphemeralPivotUndo(): void {
     _ephemeralPivotUndo = null;
     _pivotEditUndoCapture = null;
 }
 
-export function revertEphemeralPivotUndoIfAny() {
+export function revertEphemeralPivotUndoIfAny(): void {
     if (!_ephemeralPivotUndo) return;
     try {
         _ephemeralPivotUndo();
@@ -36,49 +66,52 @@ export function revertEphemeralPivotUndoIfAny() {
     }
 }
 
-export function capturePivotUndoForCurrentSelection(currentSelection) {
-    const undoFns = [];
+/**
+ * Captures per-object custom pivot writes so they can be reverted.
+ */
+export function capturePivotUndoForCurrentSelection(currentSelection: CurrentSelection): (() => void) | null {
+    const undoFns: (() => void)[] = [];
 
-    // Legacy helper: captures per-object custom pivot writes so they can be reverted.
-    // Multi-selection pivot edit no longer writes per-object pivots, so this is normally unused.
     if (currentSelection.objects && currentSelection.objects.size > 0) {
         for (const [mesh, ids] of currentSelection.objects) {
             if (!mesh || !ids || ids.size === 0) continue;
 
-            const hadIsCustomPivot = Object.prototype.hasOwnProperty.call(mesh.userData, 'isCustomPivot');
-            const prevIsCustomPivot = mesh.userData.isCustomPivot;
+            const userData = mesh.userData as any;
+            const hadIsCustomPivot = Object.prototype.hasOwnProperty.call(userData, 'isCustomPivot');
+            const prevIsCustomPivot = userData.isCustomPivot;
             undoFns.push(() => {
                 if (!mesh.userData) return;
-                if (hadIsCustomPivot) mesh.userData.isCustomPivot = prevIsCustomPivot;
-                else delete mesh.userData.isCustomPivot;
+                if (hadIsCustomPivot) (mesh.userData as any).isCustomPivot = prevIsCustomPivot;
+                else delete (mesh.userData as any).isCustomPivot;
             });
 
-            const isInstancedLike = !!(mesh.isBatchedMesh || mesh.isInstancedMesh);
+            const isInstancedLike = !!((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh);
             if (isInstancedLike) {
-                const hadMap = Object.prototype.hasOwnProperty.call(mesh.userData, 'customPivots') && mesh.userData.customPivots;
-                const prevById = new Map();
+                const hadMap = Object.prototype.hasOwnProperty.call(userData, 'customPivots') && userData.customPivots;
+                const prevById = new Map<number, THREE.Vector3 | undefined>();
                 for (const id of ids) {
-                    const prev = hadMap ? mesh.userData.customPivots.get(id) : undefined;
+                    const prev = hadMap ? (userData.customPivots as Map<number, THREE.Vector3>).get(id) : undefined;
                     prevById.set(id, prev ? prev.clone() : undefined);
                 }
                 undoFns.push(() => {
                     if (!mesh.userData) return;
-                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
+                    if (!(mesh.userData as any).customPivots) (mesh.userData as any).customPivots = new Map<number, THREE.Vector3>();
+                    const customPivots = (mesh.userData as any).customPivots as Map<number, THREE.Vector3>;
                     for (const [id, prev] of prevById) {
-                        if (prev === undefined) mesh.userData.customPivots.delete(id);
-                        else mesh.userData.customPivots.set(id, prev.clone());
+                        if (prev === undefined) customPivots.delete(id);
+                        else customPivots.set(id, prev.clone());
                     }
-                    if (!hadMap && mesh.userData.customPivots.size === 0) {
-                        delete mesh.userData.customPivots;
+                    if (!hadMap && customPivots.size === 0) {
+                        delete (mesh.userData as any).customPivots;
                     }
                 });
             } else {
-                const hadCustomPivot = Object.prototype.hasOwnProperty.call(mesh.userData, 'customPivot');
-                const prevCustomPivot = mesh.userData.customPivot ? mesh.userData.customPivot.clone() : undefined;
+                const hadCustomPivot = Object.prototype.hasOwnProperty.call(userData, 'customPivot');
+                const prevCustomPivot = userData.customPivot ? (userData.customPivot as THREE.Vector3).clone() : undefined;
                 undoFns.push(() => {
                     if (!mesh.userData) return;
-                    if (hadCustomPivot) mesh.userData.customPivot = prevCustomPivot ? prevCustomPivot.clone() : undefined;
-                    else delete mesh.userData.customPivot;
+                    if (hadCustomPivot) (mesh.userData as any).customPivot = prevCustomPivot ? prevCustomPivot.clone() : undefined;
+                    else delete (mesh.userData as any).customPivot;
                 });
             }
         }
@@ -90,20 +123,24 @@ export function capturePivotUndoForCurrentSelection(currentSelection) {
             try {
                 undoFns[i]();
             } catch {
+                // Ignore errors during undo
             }
         }
     };
 }
 
+/**
+ * Recomputes pivot state for the selection.
+ */
 export function recomputePivotStateForSelection(
-    pivotMode, 
-    isMultiSelection, 
-    isCustomPivot, 
-    pivotOffset, 
-    currentSelection,
-    loadedObjectGroup,
-    callbacks // { getSelectedItems, getSingleSelectedGroupId, getSingleSelectedMeshEntry }
-) {
+    pivotMode: string, 
+    isMultiSelection: boolean, 
+    isCustomPivot: boolean, 
+    pivotOffset: THREE.Vector3, 
+    currentSelection: CurrentSelection,
+    loadedObjectGroup: THREE.Group,
+    callbacks: Pick<CustomPivotCallbacks, 'getSingleSelectedGroupId' | 'getSingleSelectedMeshEntry'>
+): boolean {
     const { getSingleSelectedGroupId, getSingleSelectedMeshEntry } = callbacks;
 
     const preserveMultiCustomPivot = pivotMode === 'origin' && isMultiSelection && isCustomPivot;
@@ -116,10 +153,9 @@ export function recomputePivotStateForSelection(
 
     const singleGroupId = getSingleSelectedGroupId();
     if (singleGroupId) {
-        // Single selection should always recompute pivot state.
         pivotOffset.set(0, 0, 0);
         newIsCustomPivot = false;
-        const groups = GroupUtils.getGroups(loadedObjectGroup);
+        const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, any>;
         const group = groups.get(singleGroupId);
         if (group && GroupUtils.shouldUseGroupPivot(group)) {
             const localPivot = GroupUtils.normalizePivotToVector3(group.pivot, new THREE.Vector3());
@@ -127,10 +163,8 @@ export function recomputePivotStateForSelection(
                 const groupMatrix = GroupUtils.getGroupWorldMatrix(group, new THREE.Matrix4());
                 const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
                 
-                // Group Origin World Calculation inline or helper
                 const baseWorld = new THREE.Vector3(0, 0, 0);
-                // logic from getGroupOriginWorld:
-                const box = getGroupLocalBoundingBox(singleGroupId);
+                const box = getGroupLocalBoundingBox(singleGroupId) as THREE.Box3;
                 if (!box.isEmpty()) baseWorld.copy(box.min).applyMatrix4(groupMatrix);
                 else {
                     const children = GroupUtils.getAllGroupChildren(loadedObjectGroup, singleGroupId);
@@ -147,42 +181,37 @@ export function recomputePivotStateForSelection(
     const singleMeshEntry = getSingleSelectedMeshEntry();
     if (!singleMeshEntry) return newIsCustomPivot;
 
-    // Single selection should always recompute pivot state.
     pivotOffset.set(0, 0, 0);
     newIsCustomPivot = false;
 
     const mesh = singleMeshEntry.mesh;
-    // singleMeshEntry from Select.getSingleSelectedMeshEntry returns { mesh, instanceId }, not a Set of ids.
-    const idsArr = [singleMeshEntry.instanceId];
-    if (!mesh || idsArr.length === 0) return newIsCustomPivot;
+    const instanceId = singleMeshEntry.instanceId;
+    if (!mesh) return newIsCustomPivot;
 
-    let customPivot = null;
-    if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots && idsArr.length > 0) {
-        if (mesh.userData.customPivots.has(idsArr[0])) {
-            customPivot = mesh.userData.customPivots.get(idsArr[0]);
+    let customPivot: THREE.Vector3 | null = null;
+    const userData = mesh.userData as any;
+    if (((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) && userData.customPivots) {
+        if (userData.customPivots.has(instanceId)) {
+            customPivot = userData.customPivots.get(instanceId);
         }
-    } else if (mesh.userData.customPivot) {
-        customPivot = mesh.userData.customPivot;
+    } else if (userData.customPivot) {
+        customPivot = userData.customPivot;
     }
 
     if (!customPivot) return newIsCustomPivot;
 
     newIsCustomPivot = true;
     
-    // Calculate Average Origin for single object (just one item)
-    // Using inline logic to avoid circular dependency or requiring callbacks for calculateAvgOrigin
     const center = new THREE.Vector3();
     const tempMat = new THREE.Matrix4();
     const tempPos = new THREE.Vector3();
     
-    getInstanceWorldMatrixForOrigin(mesh, idsArr[0], tempMat);
-    const localY = isItemDisplayHatEnabled(mesh, idsArr[0]) ? 0.03125 : 0;
+    getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+    const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
     tempPos.set(0, localY, 0).applyMatrix4(tempMat);
     center.add(tempPos);
-    // divide by 1 is same
 
-    const firstId = idsArr[0];
-    mesh.getMatrixAt(firstId, tempMat);
+    (mesh as any).getMatrixAt(instanceId, tempMat);
     const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
     const targetWorld = customPivot.clone().applyMatrix4(worldMatrix);
     pivotOffset.subVectors(targetWorld, center);
@@ -190,14 +219,17 @@ export function recomputePivotStateForSelection(
     return newIsCustomPivot;
 }
 
+/**
+ * Calculates the world center of the current selection based on the pivot mode.
+ */
 export function SelectionCenter(
-    pivotMode, 
-    isCustomPivot, 
-    pivotOffset, 
-    currentSelection,
-    loadedObjectGroup,
-    callbacks // { getSelectedItems, getSelectionBoundingBox, getSingleSelectedGroupId, calculateAvgOrigin }
-) {
+    pivotMode: string, 
+    isCustomPivot: boolean, 
+    pivotOffset: THREE.Vector3, 
+    currentSelection: CurrentSelection,
+    loadedObjectGroup: THREE.Group,
+    callbacks: CustomPivotCallbacks
+): THREE.Vector3 {
     const { getSelectedItems, getSelectionBoundingBox, getSingleSelectedGroupId, calculateAvgOrigin } = callbacks;
     
     const center = new THREE.Vector3();
@@ -208,9 +240,9 @@ export function SelectionCenter(
     if (pivotMode === 'center') {
         const singleGroupId = getSingleSelectedGroupId();
         if (singleGroupId) {
-            const groups = GroupUtils.getGroups(loadedObjectGroup);
+            const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, any>;
             const group = groups.get(singleGroupId);
-            const box = getGroupLocalBoundingBox(singleGroupId);
+            const box = getGroupLocalBoundingBox(singleGroupId) as THREE.Box3;
             if (!box.isEmpty()) {
                 const groupMatrix = getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
                 box.getCenter(center);
@@ -226,13 +258,13 @@ export function SelectionCenter(
             else center.copy(calculateAvgOrigin());
         }
     } else {
-        // Origin (Average Position)
+        // Origin Mode
         const singleGroupId = getSingleSelectedGroupId();
         if (singleGroupId) {
-            const groups = GroupUtils.getGroups(loadedObjectGroup);
+            const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, any>;
             const group = groups.get(singleGroupId);
 
-            const box = getGroupLocalBoundingBox(singleGroupId);
+            const box = getGroupLocalBoundingBox(singleGroupId) as THREE.Box3;
             if (!box.isEmpty()) {
                 const groupMatrix = getGroupWorldMatrixWithFallback(singleGroupId, new THREE.Matrix4());
                 center.copy(box.min).applyMatrix4(groupMatrix);
@@ -242,13 +274,10 @@ export function SelectionCenter(
                 center.copy(calculateAvgOrigin());
             }
         } else if (currentSelection.groups && currentSelection.groups.size > 0) {
-            // Multi-group selection: anchor to the first selected group's origin,
-            // not the first child object (items[0]). Mirrors updateHelperPosition's
-            // _multiSelectionOriginAnchorPosition logic.
             const firstGroupId = Array.from(currentSelection.groups)[0];
-            const groups = GroupUtils.getGroups(loadedObjectGroup);
+            const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, any>;
             const group = groups.get(firstGroupId);
-            const box = getGroupLocalBoundingBox(firstGroupId);
+            const box = getGroupLocalBoundingBox(firstGroupId) as THREE.Box3;
             if (!box.isEmpty()) {
                 const groupMatrix = getGroupWorldMatrixWithFallback(firstGroupId, new THREE.Matrix4());
                 center.copy(box.min).applyMatrix4(groupMatrix);
@@ -285,14 +314,14 @@ export function SelectionCenter(
     return center;
 }
 
-export function setEphemeralPivotUndo(undoFn) {
+export function setEphemeralPivotUndo(undoFn: (() => void) | null): void {
     _ephemeralPivotUndo = undoFn;
 }
 
-export function setPivotEditUndoCapture(undoFn) {
+export function setPivotEditUndoCapture(undoFn: (() => void) | null): void {
     _pivotEditUndoCapture = undoFn;
 }
 
-export function getPivotEditUndoCapture() {
+export function getPivotEditUndoCapture(): (() => void) | null {
     return _pivotEditUndoCapture;
 }

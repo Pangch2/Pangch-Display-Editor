@@ -1,13 +1,56 @@
 import * as THREE from 'three/webgpu';
-import * as Overlay from './overlay.js';
+import * as Overlay from './overlay';
+import { GroupData } from './group';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
 
+export type SelectionSource = 
+    | { type: 'group'; id: string }
+    | { type: 'object'; mesh: THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh; instanceId: number };
+
+export interface QueueEntry {
+    type: 'group' | 'object';
+    id?: string;
+    mesh?: THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+    instanceId?: number;
+    gizmoLocalPosition: THREE.Vector3;
+    gizmoLocalQuaternion: THREE.Quaternion;
+}
+
+export interface QueueBundle {
+    type: 'bundle';
+    items: QueueEntry[];
+}
+
+export type QueueItem = QueueEntry | QueueBundle;
+
+export interface SwapContext {
+    currentSelection: {
+        groups: Set<string>;
+        objects: Map<THREE.Object3D, Set<number>>;
+        primary: SelectionSource | null;
+    };
+    getGroups: () => Map<string, GroupData>;
+    getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
+    setGizmoState: (state: any) => void;
+    getGizmoState: () => any;
+    updateHelperPosition: () => void;
+    SelectionCenter: (mode: string, useOffset: boolean, target: THREE.Vector3) => THREE.Vector3;
+    vertexQueue: QueueItem[];
+}
+
+export interface SwapOptions {
+    preserveSelection?: boolean;
+}
+
 export function performSelectionSwap(
-    src,
-    targetSrc,
-    {
+    src: SelectionSource | null,
+    targetSrc: SelectionSource | null,
+    context: SwapContext,
+    options: SwapOptions = {}
+): void {
+    const {
         currentSelection,
         getGroups,
         getGroupWorldMatrixWithFallback,
@@ -16,62 +59,35 @@ export function performSelectionSwap(
         updateHelperPosition,
         SelectionCenter,
         vertexQueue
-    },
-    options = {}
-) {
+    } = context;
+
     if (!targetSrc) return;
 
-    const matchesSource = (a, b) => {
+    const matchesSource = (a: any, b: SelectionSource): boolean => {
         if (!a || !b || a.type !== b.type) return false;
-        if (a.type === 'group') return a.id === b.id;
-        return a.mesh === b.mesh && a.instanceId === b.instanceId;
+        if (a.type === 'group') return a.id === (b as any).id;
+        return a.mesh === (b as any).mesh && a.instanceId === (b as any).instanceId;
     };
 
-    const toSelectionSource = (source) => {
+    const toSelectionSource = (source: SelectionSource | null): SelectionSource | null => {
         if (!source) return null;
         if (source.type === 'group') return { type: 'group', id: source.id };
         return { type: 'object', mesh: source.mesh, instanceId: source.instanceId };
     };
 
-    const isSelectedSource = (source) => {
+    const isSelectedSource = (source: SelectionSource | null): boolean => {
         if (!source) return false;
         if (source.type === 'group') return currentSelection.groups.has(source.id);
         const ids = currentSelection.objects.get(source.mesh);
         return !!(ids && ids.has(source.instanceId));
     };
 
-    const removeSelectedSource = (source) => {
-        if (!source) return;
-        if (source.type === 'group') {
-            currentSelection.groups.delete(source.id);
-            return;
-        }
-        const ids = currentSelection.objects.get(source.mesh);
-        if (!ids) return;
-        ids.delete(source.instanceId);
-        if (ids.size === 0) currentSelection.objects.delete(source.mesh);
-    };
-
-    const addSelectedSource = (source) => {
-        if (!source) return;
-        if (source.type === 'group') {
-            currentSelection.groups.add(source.id);
-            return;
-        }
-        let ids = currentSelection.objects.get(source.mesh);
-        if (!ids) {
-            ids = new Set();
-            currentSelection.objects.set(source.mesh, ids);
-        }
-        ids.add(source.instanceId);
-    };
-
-    const findQueueLocation = (source) => {
+    const findQueueLocation = (source: SelectionSource | null): { kind: 'direct' | 'bundle'; itemIndex: number; subIndex?: number } | null => {
         if (!source || !Array.isArray(vertexQueue)) return null;
         for (let i = 0; i < vertexQueue.length; i++) {
             const qItem = vertexQueue[i];
             if (!qItem) continue;
-            if (qItem.type === 'bundle' && Array.isArray(qItem.items)) {
+            if ('items' in qItem && Array.isArray(qItem.items)) {
                 for (let j = 0; j < qItem.items.length; j++) {
                     if (matchesSource(qItem.items[j], source)) {
                         return { kind: 'bundle', itemIndex: i, subIndex: j };
@@ -88,25 +104,25 @@ export function performSelectionSwap(
 
     const state = getGizmoState();
 
-    const computeAndApplyPivotState = (source) => {
-        let pivotWorld = null;
+    const computeAndApplyPivotState = (source: SelectionSource): void => {
+        let pivotWorld: THREE.Vector3 | null = null;
 
         if (source.type === 'object') {
             const { mesh, instanceId } = source;
 
-            const getWorldPivot = (id) => {
-                let local = null;
+            const getWorldPivot = (id: number): THREE.Vector3 | null => {
+                let local: THREE.Vector3 | null = null;
                 if (mesh.userData.customPivots) {
                     local = mesh.userData.customPivots.get(id);
                     if (!local) {
-                        const k = (typeof id === 'number') ? String(id) : Number(id);
+                        const k = String(id);
                         local = mesh.userData.customPivots.get(k);
                     }
                 }
                 if (local) {
                     const m = _TMP_MAT4_A;
-                    if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                        mesh.getMatrixAt(id, m);
+                    if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
+                        (mesh as any).getMatrixAt(id, m);
                     } else {
                         m.copy(mesh.matrix);
                     }
@@ -116,7 +132,7 @@ export function performSelectionSwap(
                 return null;
             };
 
-            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+            if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
                 pivotWorld = getWorldPivot(instanceId);
             } else if (mesh.userData.customPivot) {
                 pivotWorld = mesh.userData.customPivot.clone().applyMatrix4(mesh.matrixWorld);
@@ -133,25 +149,25 @@ export function performSelectionSwap(
         if (pivotWorld) {
             const origin = SelectionCenter('origin', false, _ZERO_VEC3);
             const offset = new THREE.Vector3().subVectors(pivotWorld, origin);
-            setGizmoState({ isCustomPivot: true, pivotOffset: offset });
+            setGizmoState({ ...state, isCustomPivot: true, pivotOffset: offset });
         } else {
-            setGizmoState({ isCustomPivot: false, pivotOffset: new THREE.Vector3(0, 0, 0) });
+            setGizmoState({ ...state, isCustomPivot: false, pivotOffset: new THREE.Vector3(0, 0, 0) });
         }
     };
 
-    const createQueueEntry = (source) => {
+    const createQueueEntry = (source: SelectionSource): QueueEntry => {
         const targetLocalPivot = new THREE.Vector3(0, 0, 0);
         let hasCustomPivot = false;
 
         if (state.pivotMode !== 'center') {
             if (source.type === 'object') {
                 const { mesh, instanceId } = source;
-                if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                    let pivot = null;
+                if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
+                    let pivot: THREE.Vector3 | null = null;
                     if (mesh.userData.customPivots) {
                         pivot = mesh.userData.customPivots.get(instanceId);
                         if (!pivot) {
-                            const key = (typeof instanceId === 'number') ? String(instanceId) : Number(instanceId);
+                            const key = String(instanceId);
                             pivot = mesh.userData.customPivots.get(key);
                         }
                     }
@@ -188,7 +204,7 @@ export function performSelectionSwap(
         }
 
         if (state.pivotMode === 'center') {
-            let localBox = null;
+            let localBox: THREE.Box3 | null = null;
             if (source.type === 'object') {
                 localBox = Overlay.getInstanceLocalBox(source.mesh, source.instanceId);
             } else if (source.type === 'group') {
@@ -201,24 +217,12 @@ export function performSelectionSwap(
 
         return {
             type: source.type,
-            id: source.id,
-            mesh: source.mesh,
-            instanceId: source.instanceId,
+            id: source.type === 'group' ? source.id : undefined,
+            mesh: source.type === 'object' ? source.mesh : undefined,
+            instanceId: source.type === 'object' ? source.instanceId : undefined,
             gizmoLocalPosition: targetLocalPivot,
             gizmoLocalQuaternion: new THREE.Quaternion()
         };
-    };
-
-    const replaceQueueLocation = (location, newSource) => {
-        if (!location || !newSource) return;
-        const newEntry = createQueueEntry(newSource);
-        if (location.kind === 'bundle') {
-            const container = vertexQueue[location.itemIndex];
-            if (!container || !Array.isArray(container.items)) return;
-            container.items[location.subIndex] = newEntry;
-            return;
-        }
-        vertexQueue[location.itemIndex] = newEntry;
     };
 
     const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
@@ -236,26 +240,37 @@ export function performSelectionSwap(
 
     if (isSwap && src) {
         const srcSelected = isSelectedSource(src);
-        const targetSelected = isSelectedSource(targetSrc);
-        const srcInQueue = findQueueLocation(src);
         const targetInQueue = findQueueLocation(targetSrc);
+        const srcInQueue = findQueueLocation(src);
+        const targetSelected = isSelectedSource(targetSrc);
 
-        const executeFullSwap = (selectedSource, queuedLocation, newPrimarySrc) => {
+        const executeFullSwap = (queuedLocation: { kind: 'direct' | 'bundle'; itemIndex: number; subIndex?: number }, newPrimarySrc: SelectionSource) => {
             const qItem = vertexQueue[queuedLocation.itemIndex];
-            const itemsToSelect = [];
-            if (qItem.type === 'bundle' && Array.isArray(qItem.items)) {
-                itemsToSelect.push(...qItem.items);
+            const itemsToSelect: SelectionSource[] = [];
+            
+            if ('items' in qItem && Array.isArray(qItem.items)) {
+                itemsToSelect.push(...qItem.items.map(item => ({
+                    type: item.type,
+                    id: item.id,
+                    mesh: item.mesh,
+                    instanceId: item.instanceId
+                } as SelectionSource)));
             } else {
-                itemsToSelect.push(qItem);
+                itemsToSelect.push({
+                    type: qItem.type,
+                    id: (qItem as QueueEntry).id,
+                    mesh: (qItem as QueueEntry).mesh,
+                    instanceId: (qItem as QueueEntry).instanceId
+                } as SelectionSource);
             }
 
-            const itemsToQueue = [];
+            const itemsToQueue: SelectionSource[] = [];
             if (currentSelection.groups) {
                 for (const gid of currentSelection.groups) itemsToQueue.push({ type: 'group', id: gid });
             }
             if (currentSelection.objects) {
                 for (const [mesh, ids] of currentSelection.objects) {
-                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh, instanceId: id });
+                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as any, instanceId: id });
                 }
             }
 
@@ -277,7 +292,7 @@ export function performSelectionSwap(
             }
             currentSelection.primary = toSelectionSource(newPrimarySrc);
 
-            let newQueueItem;
+            let newQueueItem: QueueItem | null = null;
             if (itemsToQueue.length === 1) {
                 newQueueItem = createQueueEntry(itemsToQueue[0]);
             } else if (itemsToQueue.length > 1) {
@@ -294,18 +309,17 @@ export function performSelectionSwap(
         };
 
         if (srcSelected && targetInQueue) {
-            executeFullSwap(src, targetInQueue, targetSrc);
+            executeFullSwap(targetInQueue, targetSrc);
             return;
         }
 
         if (targetSelected && srcInQueue) {
-            executeFullSwap(targetSrc, srcInQueue, src);
+            executeFullSwap(srcInQueue, src);
             return;
         }
     }
 
-    // 1. Select Source (A) if provided
-    if (shouldReplaceWithSrc) {
+    if (shouldReplaceWithSrc && src) {
          currentSelection.groups.clear();
          currentSelection.objects.clear();
          currentSelection.primary = null;
@@ -315,21 +329,17 @@ export function performSelectionSwap(
              currentSelection.primary = { type: 'group', id: src.id };
          } else {
              const { mesh, instanceId } = src;
-             const ids = new Set();
+             const ids = new Set<number>();
              ids.add(instanceId);
 
              currentSelection.objects.set(mesh, ids);
              currentSelection.primary = { type: 'object', mesh, instanceId };
          }
 
-         // Recompute Pivot State for 'src'
          computeAndApplyPivotState(src);
          updateHelperPosition();
     }
 
-    // 2. Queue Target (B)
-
-    // Check if target is already selected to avoid double overlay
     let isTargetSelected = false;
     if (targetSrc.type === 'group') {
         if (currentSelection.groups.has(targetSrc.id)) isTargetSelected = true;
@@ -346,16 +356,13 @@ export function performSelectionSwap(
 
     if (isSwap && Array.isArray(vertexQueue) && vertexQueue.length > 0) {
         const targetInBundle = vertexQueue.some((item) => {
-            if (!item || item.type !== 'bundle' || !Array.isArray(item.items)) return false;
+            if (!item || !('items' in item) || !Array.isArray(item.items)) return false;
             return item.items.some((sub) => matchesSource(sub, targetSrc));
         });
 
-        if (targetInBundle) {
-            return;
-        }
+        if (targetInBundle) return;
     }
 
     vertexQueue.push(createQueueEntry(targetSrc));
-
     while (vertexQueue.length > 1) vertexQueue.shift();
 }

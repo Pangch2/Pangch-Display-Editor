@@ -1,14 +1,19 @@
 import * as THREE from 'three/webgpu';
 
+interface OrbitControlsLike {
+    target: THREE.Vector3;
+    update(): boolean;
+}
+
 export function focusCameraOnSelection(
-    camera, 
-    controls, 
-    hasAnySelection, 
-    getSelectionBoundingBox, 
-    getSelectionCenterWorld
-) {
-    let targetPosition = new THREE.Vector3();
-    let distance = 5.2; // Default distance for origin (approx sqrt(27))
+    camera: THREE.PerspectiveCamera, 
+    controls: OrbitControlsLike, 
+    hasAnySelection: boolean, 
+    getSelectionBoundingBox: () => THREE.Box3, 
+    getSelectionCenterWorld: (target: THREE.Vector3) => THREE.Vector3
+): void {
+    const targetPosition = new THREE.Vector3();
+    let distance = 5.2; 
 
     if (hasAnySelection) {
         const box = getSelectionBoundingBox();
@@ -18,12 +23,10 @@ export function focusCameraOnSelection(
             box.getSize(size);
             const maxDim = Math.max(size.x, size.y, size.z);
             
-            // Fit to view distance
-            // Ensure we don't zoom in infinitely on 0-size objects
             const fitSize = Math.max(maxDim, 1.0);
             const fov = camera.fov * (Math.PI / 180);
             distance = Math.abs(fitSize / (2 * Math.tan(fov / 2)));
-            distance *= 1.6; // Add some margin
+            distance *= 1.6; 
         } else {
              getSelectionCenterWorld(targetPosition);
         }
@@ -33,7 +36,6 @@ export function focusCameraOnSelection(
 
     const direction = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
     
-    // Fallback if camera is exactly at target
     if (direction.lengthSq() < 1e-6) {
         direction.set(1, 1, 1).normalize();
     }

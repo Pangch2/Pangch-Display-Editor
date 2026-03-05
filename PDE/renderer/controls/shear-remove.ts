@@ -1,16 +1,35 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from './group.js';
+import * as GroupUtils from './group';
 
+export interface ShearItem {
+    mesh: THREE.InstancedMesh | THREE.BatchedMesh;
+    instanceId: number;
+}
+
+export interface ShearSelection {
+    groups?: Set<string>;
+}
+
+export interface ShearCallbacks {
+    SelectionCenter: (pivotMode: string, isCustomPivot: boolean, pivotOffset: THREE.Vector3) => THREE.Vector3;
+    updateHelperPosition: () => void;
+    updateSelectionOverlay: () => void;
+}
+
+/**
+ * 선택된 객체들로부터 Shear(전단 변형)를 제거하고 스케일을 정규화합니다.
+ * Gram-Schmidt 직교화 과정을 통해 행렬에서 Shear 성분을 수학적으로 완벽히 제거합니다.
+ */
 export function removeShearFromSelection(
-    items,
-    selectionHelper,
-    currentSelection,
-    loadedObjectGroup,
-    pivotMode,
-    isCustomPivot,
-    pivotOffset,
-    callbacks // { SelectionCenter, updateHelperPosition, updateSelectionOverlay }
-) {
+    items: ShearItem[],
+    selectionHelper: THREE.Object3D,
+    currentSelection: ShearSelection,
+    loadedObjectGroup: THREE.Group,
+    pivotMode: string,
+    isCustomPivot: boolean,
+    pivotOffset: THREE.Vector3,
+    callbacks: ShearCallbacks
+): void {
     const { SelectionCenter, updateHelperPosition, updateSelectionOverlay } = callbacks;
 
     if (items.length > 0) {
@@ -60,14 +79,16 @@ export function removeShearFromSelection(
         });
         
         items.forEach(({mesh}) => {
-             if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
+             if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
+                 (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+             }
         });
 
         // For group selections, drop shear-carrying cached matrices BEFORE computing SelectionCenter.
         // This ensures the center used for offset matches what updateHelperPosition() will use next.
         if (currentSelection.groups && currentSelection.groups.size > 0) {
             const groups = GroupUtils.getGroups(loadedObjectGroup);
-            const toClear = new Set();
+            const toClear = new Set<string>();
             for (const rootId of currentSelection.groups) {
                 if (!rootId) continue;
                 toClear.add(rootId);
@@ -97,7 +118,9 @@ export function removeShearFromSelection(
                 
                 tempMat.premultiply(inverseMeshWorld);
                 mesh.setMatrixAt(instanceId, tempMat);
-                if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
+                if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
+                    (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+                }
             });
         }
 

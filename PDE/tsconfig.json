@@ -20,5 +20,5 @@
     "renderer/**/*.tsx",
     "renderer/**/*.mts",
     "renderer/**/*.cts"
-  ]
+]
 }

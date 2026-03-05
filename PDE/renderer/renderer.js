@@ -1,5 +1,5 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { initGizmo } from './controls/gizmo.ts';
+import { initGizmo } from './controls/gizmo';
 import {
     Group,
     BufferGeometry,
@@ -170,15 +170,8 @@ async function initScene() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
 
-    // 5. 기즈모(Gizmo) 초기화 (오버레이는 이제 내부에서 생성됨)
-    gizmoModule = initGizmo({ 
-        scene, 
-        camera, 
-        renderer, 
-        controls, 
-        loadedObjectGroup, 
-        setControls: (c) => { controls = c; }
-    });
+    // Initialize gizmo module after creating controls
+    gizmoModule = initGizmo({ scene, camera, renderer, controls, loadedObjectGroup, setControls: (c) => { controls = c; } });
 
     // 8. 헬퍼(Helper)
     const axes = createFullAxesHelper(150);

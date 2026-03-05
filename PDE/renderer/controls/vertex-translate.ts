@@ -1,26 +1,54 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from './group.js';
-import * as Overlay from './overlay.js';
-import { performSelectionSwap } from './vertex-swap.js';
+import * as GroupUtils from './group';
+import * as Overlay from './overlay';
+import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
+import type { GroupData } from './group';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_MAT4_B = new THREE.Matrix4();
 const _TMP_INSTANCE_MATRIX = new THREE.Matrix4();
 const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
 
+type MeshType = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+
+interface VertexTranslateContext {
+    isVertexMode: boolean;
+    gizmoMode: string;
+    currentSelection: {
+        groups: Set<string>;
+        objects: Map<THREE.Object3D, Set<number>>;
+        primary: SelectionSource | null;
+    };
+    loadedObjectGroup: THREE.Group;
+    selectionHelper: THREE.Mesh;
+
+    getGizmoState: () => any;
+    setGizmoState: (updates: any) => void;
+
+    getGroups: () => Map<string, GroupData>;
+    getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
+    getGroupWorldMatrix: (group: GroupData, out?: THREE.Matrix4) => THREE.Matrix4;
+    updateHelperPosition: () => void;
+    updateSelectionOverlay: () => void;
+    _isMultiSelection: () => boolean;
+    _getSingleSelectedGroupId: () => string | null;
+    SelectionCenter: (mode: string, useOffset: boolean, target: THREE.Vector3) => THREE.Vector3;
+    vertexQueue: QueueItem[];
+}
+
 export function processVertexSnap(
-    selectedVertexKeys,
+    selectedVertexKeys: Set<string>,
     {
         isVertexMode,
         gizmoMode,
         currentSelection,
         loadedObjectGroup,
         selectionHelper,
-        
+
         // State Interface
-        getGizmoState,   // Returns object with current state values
-        setGizmoState,   // Function to update state values
-        
+        getGizmoState,
+        setGizmoState,
+
         // Methods
         getGroups,
         getGroupWorldMatrixWithFallback,
@@ -31,8 +59,8 @@ export function processVertexSnap(
         _getSingleSelectedGroupId,
         SelectionCenter,
         vertexQueue
-    }
-) {
+    }: VertexTranslateContext
+): boolean {
     if (!isVertexMode) return false;
 
     const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
@@ -50,57 +78,55 @@ export function processVertexSnap(
 
     const k1 = keys[0];
     const k2 = keys[1];
-    
-    let sprite1 = null;
-    let sprite2 = null;
-    
+
+    let sprite1: THREE.Sprite | null = null;
+    let sprite2: THREE.Sprite | null = null;
+
     const foundSprites = Overlay.findSpritesByKeys([k1, k2]);
     sprite1 = foundSprites[k1];
     sprite2 = foundSprites[k2];
 
     const state = getGizmoState();
-    
+
     // Helper to update gizmoLocalPosition in vertexQueue
-    const updateQueueItemPivot = (sourceItem, newPivot) => {
+    const updateQueueItemPivot = (sourceItem: SelectionSource, newPivot: THREE.Vector3) => {
         if (!vertexQueue) return;
         const target = vertexQueue.find(item => {
             if (item.type !== sourceItem.type) return false;
-            if (item.type === 'group') return item.id === sourceItem.id;
-            return item.mesh === sourceItem.mesh && item.instanceId === sourceItem.instanceId;
+            if (item.type === 'group') return (item as QueueEntry).id === (sourceItem as { type: 'group'; id: string }).id;
+            return (item as QueueEntry).mesh === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).mesh
+                && (item as QueueEntry).instanceId === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).instanceId;
         });
         if (target) {
-            target.gizmoLocalPosition = newPivot;
+            (target as QueueEntry).gizmoLocalPosition = newPivot;
         }
     };
 
-    // Check for Gizmo Snap or Object Snap based on selection order
-    // sprite1 = First Clicked, sprite2 = Second Clicked
-
     // CASE 1: First Clicked = Gizmo (Center)
     if (sprite1 && sprite2 && sprite1.userData.isCenter) {
-        
+
         const isClonedGizmo = !!sprite1.userData.source;
 
         // 1-A. Cloned Gizmo (Has Source) -> Snap ONLY that object's pivot to Target (Vertex or Gizmo Center)
         if (isClonedGizmo && (sprite2.userData.source || sprite2.userData.isCenter)) {
             const targetPos = sprite2.position.clone();
-            const src = sprite1.userData.source;
+            const src: SelectionSource = sprite1.userData.source;
 
             if (src.type === 'object' && src.mesh) {
                 const { mesh, instanceId } = src;
                 const instanceMatrix = _TMP_MAT4_A;
-                
-                if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                     mesh.getMatrixAt(instanceId, instanceMatrix);
+
+                if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                    (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, instanceMatrix);
                 } else {
-                     instanceMatrix.copy(mesh.matrix);
+                    instanceMatrix.copy(mesh.matrix);
                 }
                 const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                 const inv = worldMatrix.clone().invert();
                 const localPivot = targetPos.clone().applyMatrix4(inv);
 
-                if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
+                if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, THREE.Vector3>();
                     mesh.userData.customPivots.set(instanceId, localPivot);
                 } else {
                     mesh.userData.customPivot = localPivot;
@@ -112,16 +138,16 @@ export function processVertexSnap(
                 const groups = getGroups();
                 const group = groups.get(src.id);
                 if (group) {
-                     const groupMatrix = getGroupWorldMatrixWithFallback(src.id, _TMP_MAT4_A);
-                     const inv = groupMatrix.clone().invert();
-                     group.pivot = targetPos.clone().applyMatrix4(inv);
-                     group.isCustomPivot = true;
-                     updateQueueItemPivot(src, group.pivot);
-                     console.log(`Cloned Gizmo: Custom pivot updated for group ${src.id}`);
+                    const groupMatrix = getGroupWorldMatrixWithFallback(src.id, _TMP_MAT4_A);
+                    const inv = groupMatrix.clone().invert();
+                    group.pivot = targetPos.clone().applyMatrix4(inv);
+                    group.isCustomPivot = true;
+                    updateQueueItemPivot(src, group.pivot);
+                    console.log(`Cloned Gizmo: Custom pivot updated for group ${src.id}`);
                 }
             }
-            
-            let targetSrc = sprite2.userData.source;
+
+            let targetSrc: SelectionSource | null = sprite2.userData.source ?? null;
             if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
                 targetSrc = currentSelection.primary;
             }
@@ -146,11 +172,10 @@ export function processVertexSnap(
 
         // 1-B. Main Gizmo (No Source) -> Snap Selection Pivot to Vertex (Original Logic)
         } else if (!isClonedGizmo && sprite2.userData.source) {
-            // Snap Gizmo to Vertex
             const targetSprite = sprite2;
             const targetPos = targetSprite.position.clone();
             selectionHelper.position.copy(targetPos);
-            
+
             setGizmoState({
                 _gizmoAnchorPosition: targetPos,
                 _gizmoAnchorValid: true
@@ -158,28 +183,19 @@ export function processVertexSnap(
 
             selectionHelper.updateMatrixWorld();
 
-            // Update Custom Pivot State
-            // Use isCustomPivot=true for baseline calculation to ensure we measure offset 
-            // against the same origin that will be used when rendering.
-            
-            // Note: We need to temporarily force isCustomPivot true locally if it wasn't, 
-            // but here we are establishing it so we pass true.
             const baseline = SelectionCenter('origin', true, _ZERO_VEC3);
             const newPivotOffset = new THREE.Vector3().subVectors(selectionHelper.position, baseline);
-            
+
             setGizmoState({
                 isCustomPivot: true,
                 pivotOffset: newPivotOffset
             });
 
-            // When a custom pivot is set by snapping, force switch to Origin mode
-            // so the user sees the new pivot location immediately.
             if (state.pivotMode === 'center') {
                 setGizmoState({ pivotMode: 'origin' });
                 console.log("Switched to Pivot Mode: Origin (due to Custom Pivot snap)");
             }
 
-            // Apply to Selection State (Persist)
             if (_isMultiSelection()) {
                 setGizmoState({
                     _multiSelectionOriginAnchorPosition: selectionHelper.position,
@@ -193,7 +209,6 @@ export function processVertexSnap(
                     });
                 }
             } else {
-                // Always persist to Groups (Single selection only)
                 if (currentSelection.groups && currentSelection.groups.size > 0) {
                     const groups = getGroups();
                     for (const groupId of currentSelection.groups) {
@@ -208,26 +223,25 @@ export function processVertexSnap(
                     }
                 }
 
-                // Always persist to Objects (Single selection only)
                 if (currentSelection.objects && currentSelection.objects.size > 0) {
                     for (const [mesh, ids] of currentSelection.objects) {
                         if (!mesh || !ids) continue;
-                        
+
                         for (const id of ids) {
                             const instanceMatrix = _TMP_MAT4_A;
-                            mesh.getMatrixAt(id, instanceMatrix);
+                            (mesh as MeshType).getMatrixAt(id, instanceMatrix);
                             const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                             const inv = worldMatrix.clone().invert();
                             const localPivot = targetPos.clone().applyMatrix4(inv);
-                            
-                            if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
-                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map();
+
+                            if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, THREE.Vector3>();
                                 mesh.userData.customPivots.set(id, localPivot);
                             } else {
                                 mesh.userData.customPivot = localPivot;
                             }
                             mesh.userData.isCustomPivot = true;
-                            updateQueueItemPivot({ type: 'object', mesh, instanceId: id }, localPivot);
+                            updateQueueItemPivot({ type: 'object', mesh: mesh as MeshType, instanceId: id }, localPivot);
                         }
                     }
                 }
@@ -258,20 +272,17 @@ export function processVertexSnap(
         const p1 = sprite1.position;
         const p2 = sprite2.position;
         const delta = new THREE.Vector3().subVectors(p2, p1);
-        
-        const src = sprite1.userData.source;
+
+        const src: SelectionSource = sprite1.userData.source;
         const tMat = _TMP_MAT4_A.makeTranslation(delta.x, delta.y, delta.z);
 
-        // Fix: Complete logic to resolve what to move (Group Children & Composite Items)
         // 1. Identify effective selection
         const isSrcEffectiveSelected = (() => {
             if (src.type === 'group') return currentSelection.groups.has(src.id);
             if (src.type === 'object') {
-                // Direct
-                if (currentSelection.objects.has(src.mesh) && currentSelection.objects.get(src.mesh).has(src.instanceId)) return true;
-                
-                // Group Ancestry
-                const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup); // Use GroupUtils direct import
+                if (currentSelection.objects.has(src.mesh) && currentSelection.objects.get(src.mesh)!.has(src.instanceId)) return true;
+
+                const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
                 if (objectToGroup) {
                     const key = GroupUtils.getGroupKey(src.mesh, src.instanceId);
                     let groupId = objectToGroup.get(key);
@@ -281,56 +292,53 @@ export function processVertexSnap(
                         groupId = g ? g.parent : null;
                     }
                 }
-
             }
             return false;
         })();
 
         // 2. Build explicit lists of what to move
         const targets = {
-            groups: new Set(),         // Group Metadata to update
-            instances: new Map(),      // Actual visual instances { mesh -> Set<id> }
-            isBundleMove: false        // Flag to indicate if we are moving a bundle from the queue
+            groups: new Set<string>(),
+            instances: new Map<MeshType, Set<number>>(),
+            isBundleMove: false
         };
 
-        const addInstance = (mesh, id) => {
+        const addInstance = (mesh: MeshType, id: number) => {
             let set = targets.instances.get(mesh);
             if (!set) { set = new Set(); targets.instances.set(mesh, set); }
             set.add(id);
         };
 
-        const addGroup = (groupId) => {
+        const addGroup = (groupId: string) => {
             targets.groups.add(groupId);
-            // Recursively add all children instances of this group
             const children = GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId);
             for (const child of children) {
                 if (child.type === 'object') addInstance(child.mesh, child.instanceId);
-                else if (child.type === 'group') addGroup(child.id);
+                else if (child.type === 'group') addGroup((child as unknown as GroupUtils.GroupChildGroup).id);
             }
         };
 
-        const addBundle = (bundle) => {
+        const addBundle = (bundle: QueueBundle) => {
             if (!bundle || !bundle.items) return;
             targets.isBundleMove = true;
             for (const item of bundle.items) {
-                if (item.type === 'group') addGroup(item.id);
-                else if (item.type === 'object') addInstance(item.mesh, item.instanceId);
+                if (item.type === 'group') addGroup(item.id!);
+                else if (item.type === 'object') addInstance(item.mesh!, item.instanceId!);
             }
         };
 
         // Check if src is part of a bundle in the queue
-        let containingBundle = null;
+        let containingBundle: QueueBundle | null = null;
         if (!isSrcEffectiveSelected) {
-            // Search all bundles in the queue to see if this object/group belongs to one
             for (const qItem of vertexQueue) {
-                if (qItem.type === 'bundle' && qItem.items) {
-                    const found = qItem.items.find(sub => {
+                if (qItem.type === 'bundle' && (qItem as QueueBundle).items) {
+                    const found = (qItem as QueueBundle).items.find(sub => {
                         if (src.type === 'group' && sub.type === 'group') return sub.id === src.id;
                         if (src.type === 'object' && sub.type === 'object') return sub.mesh === src.mesh && sub.instanceId === src.instanceId;
                         return false;
                     });
                     if (found) {
-                        containingBundle = qItem;
+                        containingBundle = qItem as QueueBundle;
                         break;
                     }
                 }
@@ -338,21 +346,19 @@ export function processVertexSnap(
         }
 
         if (isSrcEffectiveSelected) {
-            // Move entire active selection
             if (currentSelection.groups) {
                 for (const gid of currentSelection.groups) addGroup(gid);
             }
             if (currentSelection.objects) {
                 for (const [mesh, ids] of currentSelection.objects) {
                     for (const id of ids) {
-                        addInstance(mesh, id);
+                        addInstance(mesh as MeshType, id);
                     }
                 }
             }
 
-            // Update Gizmo State anchors so they follow the move
             const state = getGizmoState();
-            const updates = {};
+            const updates: Record<string, any> = {};
             if (state._gizmoAnchorValid && state._gizmoAnchorPosition) {
                 updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().add(delta);
             }
@@ -362,22 +368,18 @@ export function processVertexSnap(
             if (Object.keys(updates).length > 0) setGizmoState(updates);
 
         } else if (containingBundle) {
-            // Move the entire bundle from the queue
             addBundle(containingBundle);
         } else {
-            // Move only the picked logical entity
             if (src.type === 'group') {
-                // Move the specific group clicked
                 addGroup(src.id);
             } else if (src.type === 'object') {
                 const { mesh, instanceId } = src;
-                // Always move the specific object instance, even if it's in a group
                 addInstance(mesh, instanceId);
             }
         }
 
         // 3. Execute Moves
-        
+
         // A. Update Instances (Visuals)
         for (const [mesh, ids] of targets.instances) {
             const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
@@ -385,11 +387,11 @@ export function processVertexSnap(
             localDelta.multiply(mesh.matrixWorld);
 
             for (const id of ids) {
-                mesh.getMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                (mesh as THREE.InstancedMesh).getMatrixAt(id, _TMP_INSTANCE_MATRIX);
                 _TMP_INSTANCE_MATRIX.premultiply(localDelta);
-                mesh.setMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                (mesh as THREE.InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
             }
-            if (mesh.isInstancedMesh) mesh.instanceMatrix.needsUpdate = true;
+            if ((mesh as THREE.InstancedMesh).isInstancedMesh) (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
         }
 
         // B. Update Group Metadata (Logic)
@@ -411,27 +413,13 @@ export function processVertexSnap(
             }
         }
 
-        // C. Update Bundle/Queue Metadata (If moving a bundle not in active selection)
-        // If we moved items that were in the vertexQueue, their gizmoLocalPosition needs update
-        // (Though typically they are moved in world space, we must ensure they stay consistent)
-        if (targets.isBundleMove && containingBundle) {
-            // No action needed for localPositions because they are relative to world matrix which was updated.
-            // But we should invalidate caches.
+        // Swapping selection state
+        let targetSrc: SelectionSource | null = sprite2.userData.source ?? null;
+        if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
+            targetSrc = currentSelection.primary;
         }
 
-                        // Swapping selection state: Object A (Source) becomes selected, Object B (Target) goes to Vertex Queue
-
-                        let targetSrc = sprite2.userData.source;
-
-                        if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
-
-                            targetSrc = currentSelection.primary;
-
-                        }
-
-                
-
-                        performSelectionSwap(src, targetSrc, {
+        performSelectionSwap(src, targetSrc, {
             currentSelection,
             getGroups,
             getGroupWorldMatrixWithFallback,
@@ -441,11 +429,11 @@ export function processVertexSnap(
             SelectionCenter,
             vertexQueue
         }, { preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle });
-        
+
         selectedVertexKeys.clear();
         updateHelperPosition();
         updateSelectionOverlay();
-    } // End Case 2
+    }
 
     return true;
 }

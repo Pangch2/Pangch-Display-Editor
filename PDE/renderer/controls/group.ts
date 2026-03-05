@@ -1,25 +1,66 @@
 import * as THREE from 'three/webgpu';
 
+// Types
+export interface GroupChildObject {
+    type: 'object';
+    mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh;
+    instanceId: number;
+}
+
+export interface GroupChildGroup {
+    type: 'group';
+    id: string;
+}
+
+export type GroupChild = GroupChildObject | GroupChildGroup;
+
+export interface GroupData {
+    id: string;
+    isCollection: boolean;
+    children: GroupChild[];
+    parent: string | null;
+    name: string;
+    position: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+    scale: THREE.Vector3;
+    pivot?: THREE.Vector3;
+    isCustomPivot?: boolean;
+    matrix?: THREE.Matrix4;
+}
+
+export interface CloneJobEntry {
+    mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh;
+    instanceId: number;
+    targetGroupId: string;
+    coveredByGroup: boolean;
+}
+
+export interface CollectCloneContext {
+    planBatchCallback?: (mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, instanceId: number, targetGroupId: string) => void;
+    _groupIdMap?: Map<string, string>;
+}
+
+type PivotInput = THREE.Vector3 | [number, number, number] | { x: number; y: number; z: number } | null | undefined;
+
 // Constants
 export const DEFAULT_GROUP_PIVOT = new THREE.Vector3(0.5, 0.5, 0.5);
-const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0); // Used internally if needed, or export if needed
 
 // Utils
-function _nearlyEqual(a, b, eps = 1e-6) {
+function _nearlyEqual(a: number, b: number, eps: number = 1e-6): boolean {
     return Math.abs(a - b) <= eps;
 }
 
-export function normalizePivotToVector3(pivot, out = new THREE.Vector3()) {
+export function normalizePivotToVector3(pivot: PivotInput, out: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 | null {
     if (!pivot) return null;
-    if (pivot.isVector3) return out.copy(pivot);
+    if ((pivot as THREE.Vector3).isVector3) return out.copy(pivot as THREE.Vector3);
     if (Array.isArray(pivot) && pivot.length >= 3) return out.set(pivot[0], pivot[1], pivot[2]);
-    if (typeof pivot === 'object' && pivot.x !== undefined && pivot.y !== undefined && pivot.z !== undefined) {
+    if (typeof pivot === 'object' && 'x' in pivot && 'y' in pivot && 'z' in pivot) {
         return out.set(pivot.x, pivot.y, pivot.z);
     }
     return null;
 }
 
-export function isCustomGroupPivot(pivot) {
+export function isCustomGroupPivot(pivot: PivotInput): boolean {
     const v = normalizePivotToVector3(pivot, new THREE.Vector3());
     if (!v) return false;
     return !(
@@ -29,53 +70,53 @@ export function isCustomGroupPivot(pivot) {
     );
 }
 
-export function shouldUseGroupPivot(group) {
+export function shouldUseGroupPivot(group: GroupData | null | undefined): boolean {
     if (!group) return false;
     if (group.isCustomPivot) return true;
-    return isCustomGroupPivot(group.pivot);
+    return isCustomGroupPivot(group.pivot ?? null);
 }
 
 // Accessors
-export function getGroups(loadedObjectGroup) {
+export function getGroups(loadedObjectGroup: THREE.Group): Map<string, GroupData> {
     if (!loadedObjectGroup || !loadedObjectGroup.userData) return new Map();
     if (!loadedObjectGroup.userData.groups) {
-        loadedObjectGroup.userData.groups = new Map();
+        loadedObjectGroup.userData.groups = new Map<string, GroupData>();
     }
     return loadedObjectGroup.userData.groups;
 }
 
-export function getObjectToGroup(loadedObjectGroup) {
+export function getObjectToGroup(loadedObjectGroup: THREE.Group): Map<string, string> {
     if (!loadedObjectGroup || !loadedObjectGroup.userData) return new Map();
     if (!loadedObjectGroup.userData.objectToGroup) {
-        loadedObjectGroup.userData.objectToGroup = new Map();
+        loadedObjectGroup.userData.objectToGroup = new Map<string, string>();
     }
     return loadedObjectGroup.userData.objectToGroup;
 }
 
-export function getGroupKey(mesh, instanceId) {
+export function getGroupKey(mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, instanceId: number): string {
     return `${mesh.uuid}_${instanceId}`;
 }
 
-export function getGroupChain(loadedObjectGroup, startGroupId) {
+export function getGroupChain(loadedObjectGroup: THREE.Group, startGroupId: string): string[] {
     const groups = getGroups(loadedObjectGroup);
-    const chain = [];
-    let currentId = startGroupId;
+    const chain: string[] = [];
+    let currentId: string | null = startGroupId;
     while (currentId) {
         const group = groups.get(currentId);
         if (!group) break;
-        chain.unshift(currentId); // [Root, ..., Parent]
+        chain.unshift(currentId);
         currentId = group.parent;
     }
     return chain;
 }
 
-export function getAllGroupChildren(loadedObjectGroup, groupId) {
+export function getAllGroupChildren(loadedObjectGroup: THREE.Group, groupId: string): GroupChildObject[] {
     const groups = getGroups(loadedObjectGroup);
     const group = groups.get(groupId);
     if (!group) return [];
 
-    const out = [];
-    const stack = Array.isArray(group.children) ? group.children.slice().reverse() : [];
+    const out: GroupChildObject[] = [];
+    const stack: GroupChild[] = Array.isArray(group.children) ? group.children.slice().reverse() : [];
     while (stack.length > 0) {
         const child = stack.pop();
         if (!child) continue;
@@ -94,13 +135,13 @@ export function getAllGroupChildren(loadedObjectGroup, groupId) {
     return out;
 }
 
-export function getAllDescendantGroups(loadedObjectGroup, groupId) {
+export function getAllDescendantGroups(loadedObjectGroup: THREE.Group, groupId: string): string[] {
     const groups = getGroups(loadedObjectGroup);
     const group = groups.get(groupId);
     if (!group) return [];
 
-    const out = [];
-    const stack = [];
+    const out: string[] = [];
+    const stack: string[] = [];
     if (Array.isArray(group.children)) {
         for (let i = group.children.length - 1; i >= 0; i--) {
             const child = group.children[i];
@@ -122,7 +163,7 @@ export function getAllDescendantGroups(loadedObjectGroup, groupId) {
     return out;
 }
 
-export function getGroupWorldMatrix(group, out = new THREE.Matrix4()) {
+export function getGroupWorldMatrix(group: GroupData | null | undefined, out: THREE.Matrix4 = new THREE.Matrix4()): THREE.Matrix4 {
     out.identity();
     if (!group) return out;
     if (group.matrix) return out.copy(group.matrix);
@@ -134,26 +175,30 @@ export function getGroupWorldMatrix(group, out = new THREE.Matrix4()) {
 }
 
 // Structure Modification
-export function updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, oldInstanceId, newInstanceId) {
+export function updateGroupReferenceForMovedInstance(
+    loadedObjectGroup: THREE.Group,
+    mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh,
+    oldInstanceId: number,
+    newInstanceId: number
+): void {
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
     const groups = getGroups(loadedObjectGroup);
-    
+
     const oldKey = getGroupKey(mesh, oldInstanceId);
     const newKey = getGroupKey(mesh, newInstanceId);
-    
+
     const groupId = objectToGroup.get(oldKey);
-    
-    // Always clean up the old key
+
     objectToGroup.delete(oldKey);
 
     if (groupId) {
-        // Update map to new key
         objectToGroup.set(newKey, groupId);
 
-        // Update parent group's children list
         const group = groups.get(groupId);
         if (group && Array.isArray(group.children)) {
-            const childEntry = group.children.find(c => c.type === 'object' && c.mesh === mesh && c.instanceId === oldInstanceId);
+            const childEntry = group.children.find(
+                (c): c is GroupChildObject => c.type === 'object' && c.mesh === mesh && c.instanceId === oldInstanceId
+            );
             if (childEntry) {
                 childEntry.instanceId = newInstanceId;
             }
@@ -161,12 +206,17 @@ export function updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, ol
     }
 }
 
-export function createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition) {
+export function createGroupStructure(
+    loadedObjectGroup: THREE.Group,
+    selectedGroupIds: string[],
+    selectedObjects: { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number }[],
+    initialPosition: THREE.Vector3
+): string {
     const groups = getGroups(loadedObjectGroup);
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
 
     const newGroupId = THREE.MathUtils.generateUUID();
-    const newGroup = {
+    const newGroup: GroupData = {
         id: newGroupId,
         isCollection: true,
         children: [],
@@ -177,11 +227,10 @@ export function createGroupStructure(loadedObjectGroup, selectedGroupIds, select
         scale: new THREE.Vector3(1, 1, 1)
     };
 
-    // Determine common parent group for all selected roots (groups + objects)
-    let commonParentId = undefined;
-    const considerParentId = (gid) => {
-        if (commonParentId === undefined) commonParentId = gid;
-        else if (commonParentId !== gid) commonParentId = null;
+    let commonParentId: string | null | undefined = undefined;
+    const considerParentId = (gid: string | null | undefined): void => {
+        if (commonParentId === undefined) commonParentId = gid ?? null;
+        else if (commonParentId !== (gid ?? null)) commonParentId = null;
     };
 
     for (const gid of selectedGroupIds) {
@@ -206,7 +255,6 @@ export function createGroupStructure(loadedObjectGroup, selectedGroupIds, select
         }
     }
 
-    // Attach selected groups
     for (const childGroupId of selectedGroupIds) {
         const childGroup = groups.get(childGroupId);
         if (!childGroup) continue;
@@ -214,7 +262,7 @@ export function createGroupStructure(loadedObjectGroup, selectedGroupIds, select
         if (childGroup.parent) {
             const oldParent = groups.get(childGroup.parent);
             if (oldParent && Array.isArray(oldParent.children)) {
-                oldParent.children = oldParent.children.filter(c => !(c && c.type === 'group' && c.id === childGroupId));
+                oldParent.children = oldParent.children.filter(c => !(c && c.type === 'group' && (c as GroupChildGroup).id === childGroupId));
             }
         }
 
@@ -222,15 +270,14 @@ export function createGroupStructure(loadedObjectGroup, selectedGroupIds, select
         newGroup.children.push({ type: 'group', id: childGroupId });
     }
 
-    // Attach selected objects
     for (const { mesh, instanceId } of selectedObjects) {
-        if (!mesh && mesh !== 0) continue;
+        if (!mesh && (mesh as unknown) !== 0) continue;
         const key = getGroupKey(mesh, instanceId);
         const oldGroupId = objectToGroup.get(key);
         if (oldGroupId) {
             const oldGroup = groups.get(oldGroupId);
             if (oldGroup && Array.isArray(oldGroup.children)) {
-                oldGroup.children = oldGroup.children.filter(c => !(c && c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
+                oldGroup.children = oldGroup.children.filter(c => !(c && c.type === 'object' && (c as GroupChildObject).mesh === mesh && (c as GroupChildObject).instanceId === instanceId));
             }
         }
         newGroup.children.push({ type: 'object', mesh, instanceId });
@@ -241,7 +288,10 @@ export function createGroupStructure(loadedObjectGroup, selectedGroupIds, select
     return newGroupId;
 }
 
-export function ungroupGroupStructure(loadedObjectGroup, groupId) {
+export function ungroupGroupStructure(
+    loadedObjectGroup: THREE.Group,
+    groupId: string
+): { parentId: string | null; children: GroupChild[] } | null {
     const groups = getGroups(loadedObjectGroup);
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
     const group = groups.get(groupId);
@@ -252,7 +302,6 @@ export function ungroupGroupStructure(loadedObjectGroup, groupId) {
 
     const children = Array.isArray(group.children) ? group.children.slice() : [];
 
-    // Re-parent children to the parent group (or to root when no parent)
     for (const child of children) {
         if (!child) continue;
         if (child.type === 'group') {
@@ -265,10 +314,9 @@ export function ungroupGroupStructure(loadedObjectGroup, groupId) {
         }
     }
 
-    // Replace this group in parent's children list, or just drop it if it's root.
     if (parentGroup) {
         if (!Array.isArray(parentGroup.children)) parentGroup.children = [];
-        const idx = parentGroup.children.findIndex(c => c && c.type === 'group' && c.id === groupId);
+        const idx = parentGroup.children.findIndex(c => c && c.type === 'group' && (c as GroupChildGroup).id === groupId);
         if (idx !== -1) {
             parentGroup.children.splice(idx, 1, ...children);
         } else {
@@ -280,7 +328,12 @@ export function ungroupGroupStructure(loadedObjectGroup, groupId) {
     return { parentId, children };
 }
 
-export function cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap) {
+export function cloneGroupStructure(
+    loadedObjectGroup: THREE.Group,
+    groupId: string,
+    parentId: string | null,
+    idMap?: Map<string, string>
+): string | null {
     const groups = getGroups(loadedObjectGroup);
     const sourceGroup = groups.get(groupId);
     if (!sourceGroup) return null;
@@ -288,12 +341,12 @@ export function cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap)
     const newGroupId = THREE.MathUtils.generateUUID();
     if (idMap) idMap.set(groupId, newGroupId);
 
-    let newPivot = undefined;
+    let newPivot: THREE.Vector3 | undefined = undefined;
     if (sourceGroup.pivot) {
-        newPivot = normalizePivotToVector3(sourceGroup.pivot, new THREE.Vector3());
+        newPivot = normalizePivotToVector3(sourceGroup.pivot, new THREE.Vector3()) ?? undefined;
     }
 
-    const newGroup = {
+    const newGroup: GroupData = {
         id: newGroupId,
         isCollection: true,
         children: [],
@@ -305,12 +358,11 @@ export function cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap)
         pivot: newPivot,
         isCustomPivot: sourceGroup.isCustomPivot
     };
-    
+
     if (sourceGroup.matrix) newGroup.matrix = sourceGroup.matrix.clone();
 
     groups.set(newGroupId, newGroup);
 
-    // Add to parent
     if (parentId) {
         const parentGroup = groups.get(parentId);
         if (parentGroup) {
@@ -319,7 +371,6 @@ export function cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap)
         }
     }
 
-    // Clone Children (structure only)
     if (Array.isArray(sourceGroup.children)) {
         for (const child of sourceGroup.children) {
             if (!child) continue;
@@ -328,20 +379,21 @@ export function cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap)
             }
         }
     }
-    
+
     return newGroupId;
 }
 
-export function collectCloneJobsFromGroup(loadedObjectGroup, groupId, newGroupId, ctx, outJobs) {
+export function collectCloneJobsFromGroup(
+    loadedObjectGroup: THREE.Group,
+    groupId: string,
+    newGroupId: string,
+    ctx: CollectCloneContext | null,
+    outJobs: CloneJobEntry[]
+): void {
     const groups = getGroups(loadedObjectGroup);
     const sourceGroup = groups.get(groupId);
     if (!sourceGroup || !Array.isArray(sourceGroup.children)) return;
 
-    // We used to pass `_planWritableBatchFor` function or run it inline.
-    // The planner logic is not part of group structure, but object resource management.
-    // So this function should only TRAVERSE structure and return the objects found.
-    // The calling code (gizmo) should inject the planning logic callback.
-    
     for (const child of sourceGroup.children) {
         if (!child) continue;
         if (child.type === 'object') {

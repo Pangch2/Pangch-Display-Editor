@@ -1,48 +1,56 @@
 import * as THREE from 'three/webgpu';
 
+interface SelectionElement {
+    type: 'group' | 'object';
+    id?: string;
+    mesh?: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh;
+    instanceId?: number;
+}
+
+interface CurrentSelection {
+    primary?: SelectionElement;
+    groups?: Set<string>;
+    objects?: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>;
+}
+
+interface PivotFlags {
+    isCustomPivot: boolean;
+    multiExplicitPivot: boolean;
+    multiAnchorValid: boolean;
+    multiAnchorInitialValid: boolean;
+    multiAnchorInitialLocalValid: boolean;
+    gizmoAnchorValid: boolean;
+    selectionAnchorMode: 'default' | 'center';
+}
+
+interface PivotDeps {
+    isMultiSelection: () => boolean;
+    revertEphemeralPivotUndoIfAny: () => void;
+    resolveMultiAnchorInitialWorld: (out: THREE.Vector3) => THREE.Vector3 | null;
+    setMultiAnchorInitial: (worldPos: THREE.Vector3) => void;
+    getGroups: () => Map<string, any>;
+    getGroupOriginWorld: (groupId: string, out: THREE.Vector3) => THREE.Vector3;
+    shouldUseGroupPivot: (group: any) => boolean;
+    normalizePivotToVector3: (pivot: any, out: THREE.Vector3) => THREE.Vector3 | null;
+    getGroupWorldMatrix: (group: any, out: THREE.Matrix4) => THREE.Matrix4;
+    getDisplayType: (mesh: any, instanceId?: number) => string;
+    getInstanceLocalBoxMin: (mesh: any, instanceId: number | undefined, out: THREE.Vector3) => THREE.Vector3 | null;
+    getInstanceWorldMatrixForOrigin: (mesh: any, instanceId: number | undefined, out: THREE.Matrix4) => THREE.Matrix4;
+    isItemDisplayHatEnabled: (mesh: any, instanceId?: number) => boolean;
+    DEFAULT_GROUP_PIVOT: THREE.Vector3;
+}
+
 /**
  * Resets the custom pivot for the current selection (triggered by Alt+Ctrl).
- *
- * @param {object} currentSelection - The current selection state (groups, objects, primary).
- * @param {THREE.Vector3} pivotOffset - Mutated in-place: reset to (0,0,0).
- * @param {THREE.Vector3} multiAnchorPos - _multiSelectionOriginAnchorPosition, mutated in-place.
- * @param {THREE.Vector3} gizmoAnchorPos - _gizmoAnchorPosition, mutated in-place.
- * @param {object} flags - Mutable flag state:
- *   {
- *     isCustomPivot,                 // boolean (read/write)
- *     multiExplicitPivot,            // boolean (read/write) — _multiSelectionExplicitPivot
- *     multiAnchorValid,              // boolean (write) — _multiSelectionOriginAnchorValid
- *     multiAnchorInitialValid,       // boolean (write) — _multiSelectionOriginAnchorInitialValid
- *     multiAnchorInitialLocalValid,  // boolean (write) — _multiSelectionOriginAnchorInitialLocalValid
- *     gizmoAnchorValid,              // boolean (write) — _gizmoAnchorValid
- *     selectionAnchorMode,           // string  (write) — _selectionAnchorMode
- *   }
- * @param {object} deps - Dependencies / callbacks:
- *   {
- *     isMultiSelection,           // () => bool
- *     revertEphemeralPivotUndoIfAny, // () => void
- *     resolveMultiAnchorInitialWorld, // (out: THREE.Vector3) => THREE.Vector3 | null
- *     setMultiAnchorInitial,      // (worldPos: THREE.Vector3) => void
- *     getGroups,                  // () => Map
- *     getGroupOriginWorld,        // (groupId, out) => THREE.Vector3
- *     shouldUseGroupPivot,        // (group) => bool
- *     normalizePivotToVector3,    // (pivot, out) => THREE.Vector3 | null
- *     getGroupWorldMatrix,        // (group, out) => THREE.Matrix4
- *     getDisplayType,             // (mesh, instanceId) => string
- *     getInstanceLocalBoxMin,     // (mesh, instanceId, out) => THREE.Vector3 | null
- *     getInstanceWorldMatrixForOrigin, // (mesh, instanceId, out) => THREE.Matrix4
- *     isItemDisplayHatEnabled,    // (mesh, instanceId) => bool
- *     DEFAULT_GROUP_PIVOT,        // THREE.Vector3
- *   }
  */
 export function resetCustomPivot(
-    currentSelection,
-    pivotOffset,
-    multiAnchorPos,
-    gizmoAnchorPos,
-    flags,
-    deps
-) {
+    currentSelection: CurrentSelection,
+    pivotOffset: THREE.Vector3,
+    multiAnchorPos: THREE.Vector3,
+    gizmoAnchorPos: THREE.Vector3,
+    flags: PivotFlags,
+    deps: PivotDeps
+): void {
     const {
         isMultiSelection,
         revertEphemeralPivotUndoIfAny,
@@ -61,8 +69,6 @@ export function resetCustomPivot(
     } = deps;
 
     const isMultiReset = isMultiSelection();
-    // Use the dedicated flag — not isCustomPivot, which can be inherited from
-    // single-object context via preserveMultiCustomPivot and cause a two-press bug.
     const hadExplicitMultiPivot = isMultiReset && flags.multiExplicitPivot;
 
     // Reset should also drop any ephemeral multi-selection pivot edits.
@@ -74,10 +80,6 @@ export function resetCustomPivot(
 
     if (isMultiReset) {
         if (hadExplicitMultiPivot) {
-            // Had an explicitly created multi-selection custom pivot → revert it.
-            // Individual object/group pivots are preserved.
-            // Gizmo restores to the initial anchor recomputed from primary-local coords
-            // so it correctly follows the object after moves (not a stale world snapshot).
             const _resolvedInitial = resolveMultiAnchorInitialWorld(new THREE.Vector3());
             if (_resolvedInitial) {
                 multiAnchorPos.copy(_resolvedInitial);
@@ -86,12 +88,11 @@ export function resetCustomPivot(
                 flags.gizmoAnchorValid = true;
                 flags.selectionAnchorMode = 'default';
             } else {
-                // Fallback: live-compute from primary's current transform (with its own pivot respected).
                 const targetPos = new THREE.Vector3();
                 let found = false;
                 if (currentSelection.primary) {
                     const prim = currentSelection.primary;
-                    if (prim.type === 'group') {
+                    if (prim.type === 'group' && prim.id) {
                         const groups = getGroups();
                         const group = groups.get(prim.id);
                         if (group) {
@@ -109,12 +110,13 @@ export function resetCustomPivot(
                         const { mesh, instanceId } = prim;
                         const tempMat = new THREE.Matrix4();
                         let custom = null;
-                        if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                        if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
                             if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId))
                                 custom = mesh.userData.customPivots.get(instanceId);
                         } else { if (mesh.userData.customPivot) custom = mesh.userData.customPivot; }
+                        
                         if (custom) {
-                            mesh.getMatrixAt(instanceId, tempMat);
+                            (mesh as any).getMatrixAt(instanceId, tempMat);
                             tempMat.premultiply(mesh.matrixWorld);
                             targetPos.copy(custom.clone().applyMatrix4(tempMat)); found = true;
                         }
@@ -139,7 +141,7 @@ export function resetCustomPivot(
                 if (found) {
                     multiAnchorPos.copy(targetPos);
                     flags.multiAnchorValid = true;
-                    setMultiAnchorInitial(targetPos); // also sets multiAnchorInitialValid / LocalValid
+                    setMultiAnchorInitial(targetPos);
                     gizmoAnchorPos.copy(targetPos);
                     flags.gizmoAnchorValid = true;
                     flags.selectionAnchorMode = 'default';
@@ -152,7 +154,6 @@ export function resetCustomPivot(
                 }
             }
         } else {
-            // No explicit custom pivot was active: clear ALL per-object/group pivots.
             if (currentSelection.groups && currentSelection.groups.size > 0) {
                 const groups = getGroups();
                 for (const groupId of currentSelection.groups) {
@@ -165,7 +166,7 @@ export function resetCustomPivot(
             if (currentSelection.objects && currentSelection.objects.size > 0) {
                 for (const [mesh, ids] of currentSelection.objects) {
                     if (!mesh) continue;
-                    if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
+                    if (((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) && mesh.userData.customPivots) {
                         for (const id of ids) mesh.userData.customPivots.delete(id);
                     }
                     delete mesh.userData.customPivot;
@@ -173,15 +174,12 @@ export function resetCustomPivot(
                 }
             }
 
-            // Recompute gizmo from primary's CURRENT live transform (pivots now cleared).
             const targetPos = new THREE.Vector3();
             let found = false;
 
             if (currentSelection.primary) {
                 const prim = currentSelection.primary;
-
-                if (prim.type === 'group') {
-                    // Pivots cleared above → shouldUseGroupPivot is false → getGroupOriginWorld.
+                if (prim.type === 'group' && prim.id) {
                     getGroupOriginWorld(prim.id, targetPos);
                     found = true;
                 } else if (prim.type === 'object' && prim.mesh) {
@@ -208,7 +206,7 @@ export function resetCustomPivot(
             if (found) {
                 multiAnchorPos.copy(targetPos);
                 flags.multiAnchorValid = true;
-                setMultiAnchorInitial(targetPos); // also sets multiAnchorInitialValid / LocalValid
+                setMultiAnchorInitial(targetPos);
                 gizmoAnchorPos.copy(targetPos);
                 flags.gizmoAnchorValid = true;
                 flags.selectionAnchorMode = 'default';
@@ -221,7 +219,6 @@ export function resetCustomPivot(
             }
         }
     } else {
-        // Single selection: clear ALL individual pivots and reset to geometric origin.
         if (currentSelection.groups && currentSelection.groups.size > 0) {
             const groups = getGroups();
             for (const groupId of currentSelection.groups) {
@@ -235,7 +232,7 @@ export function resetCustomPivot(
         if (currentSelection.objects && currentSelection.objects.size > 0) {
             for (const [mesh, ids] of currentSelection.objects) {
                 if (!mesh) continue;
-                if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData.customPivots) {
+                if (((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) && mesh.userData.customPivots) {
                     for (const id of ids) mesh.userData.customPivots.delete(id);
                 }
                 delete mesh.userData.customPivot;
