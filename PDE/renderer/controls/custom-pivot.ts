@@ -247,6 +247,27 @@ export function SelectionCenter(
     if (pivotMode === 'center') {
         const singleGroupId = getSingleSelectedGroupId();
         if (singleGroupId) {
+            const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, any>;
+            const group = groups.get(singleGroupId);
+            const box = getGroupLocalBoundingBox(singleGroupId) as THREE.Box3;
+            if (!box.isEmpty()) {
+                const groupMatrix = getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
+                box.getCenter(center);
+                center.applyMatrix4(groupMatrix);
+            } else if (group && group.position) {
+                center.copy(group.position);
+            } else {
+                center.copy(calculateAvgOrigin());
+            }
+        } else {
+            const box = getSelectionBoundingBox();
+            if (box && !box.isEmpty()) box.getCenter(center);
+            else center.copy(calculateAvgOrigin());
+        }
+    } else {
+        // Origin Mode
+        const singleGroupId = getSingleSelectedGroupId();
+        if (singleGroupId) {
             const groups = GroupUtils.getGroups(loadedObjectGroup);
             const group = groups.get(singleGroupId);
 
