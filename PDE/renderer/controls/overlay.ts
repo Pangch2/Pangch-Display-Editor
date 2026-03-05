@@ -1,7 +1,10 @@
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
+import type { GroupChildObject } from './group';
 
 // --- Types & Interfaces ---
+
+type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
 
 export interface SelectionState {
     groups: Set<string>;
@@ -178,19 +181,20 @@ export function isInstanceValid(mesh: THREE.Mesh | THREE.InstancedMesh | THREE.B
 
 export function disposeThreeObjectTree(root: THREE.Object3D): void {
     if (!root) return;
-    root.traverse((child: any) => {
-        if (child.geometry) child.geometry.dispose();
-        if (child.material) {
-            if (Array.isArray(child.material)) {
-                child.material.forEach((m: THREE.Material) => m.dispose());
+    root.traverse((child: THREE.Object3D) => {
+        const mesh = child as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        if (mesh.material) {
+            if (Array.isArray(mesh.material)) {
+                (mesh.material as THREE.Material[]).forEach((m: THREE.Material) => m.dispose());
             } else {
-                child.material.dispose();
+                (mesh.material as THREE.Material).dispose();
             }
         }
     });
 }
 
-export function getDisplayType(mesh: any, instanceId: number): string | undefined {
+export function getDisplayType(mesh: PdeMesh, instanceId: number): string | undefined {
     if (!mesh) return undefined;
     if (mesh.isBatchedMesh && mesh.userData?.displayTypes) {
         return mesh.userData.displayTypes.get(instanceId);
@@ -198,17 +202,17 @@ export function getDisplayType(mesh: any, instanceId: number): string | undefine
     return mesh.userData?.displayType;
 }
 
-export function isItemDisplayHatEnabled(mesh: any, instanceId: number): boolean {
+export function isItemDisplayHatEnabled(mesh: PdeMesh, instanceId: number): boolean {
     return !!(getDisplayType(mesh, instanceId) === 'item_display' && mesh?.userData?.hasHat && mesh.userData.hasHat[instanceId]);
 }
 
-export function getInstanceLocalBoxMin(mesh: any, instanceId: number, out = new THREE.Vector3()): THREE.Vector3 | null {
+export function getInstanceLocalBoxMin(mesh: PdeMesh, instanceId: number, out = new THREE.Vector3()): THREE.Vector3 | null {
     const box = getInstanceLocalBox(mesh, instanceId);
     if (!box) return null;
     return out.copy(box.min);
 }
 
-export function getInstanceWorldMatrixForOrigin(mesh: any, instanceId: number, outMatrix: THREE.Matrix4): THREE.Matrix4 {
+export function getInstanceWorldMatrixForOrigin(mesh: PdeMesh, instanceId: number, outMatrix: THREE.Matrix4): THREE.Matrix4 {
     outMatrix.identity();
     if (!mesh) return outMatrix;
 
@@ -221,7 +225,7 @@ export function getInstanceWorldMatrixForOrigin(mesh: any, instanceId: number, o
     return outMatrix;
 }
 
-export function calculateAvgOriginForChildren(children: any[], out = new THREE.Vector3()): THREE.Vector3 {
+export function calculateAvgOriginForChildren(children: GroupChildObject[], out = new THREE.Vector3()): THREE.Vector3 {
     out.set(0, 0, 0);
     if (!Array.isArray(children) || children.length === 0) return out;
 
@@ -266,7 +270,7 @@ export function unionTransformedBox3(targetBox: THREE.Box3, localBox: THREE.Box3
     targetBox.union(tempBox);
 }
 
-export function getInstanceLocalBox(mesh: any, instanceId: number): THREE.Box3 | null {
+export function getInstanceLocalBox(mesh: PdeMesh, instanceId: number): THREE.Box3 | null {
     if (!mesh) return null;
 
     if (mesh.isBatchedMesh) {
@@ -294,7 +298,7 @@ export function getInstanceLocalBox(mesh: any, instanceId: number): THREE.Box3 |
     return box;
 }
 
-export function getInstanceWorldMatrix(mesh: any, instanceId: number, outMatrix: THREE.Matrix4): THREE.Matrix4 {
+export function getInstanceWorldMatrix(mesh: PdeMesh, instanceId: number, outMatrix: THREE.Matrix4): THREE.Matrix4 {
     outMatrix.identity();
     if (!mesh) return outMatrix;
     mesh.getMatrixAt(instanceId, outMatrix);
@@ -496,7 +500,7 @@ export function updateSelectionOverlay(
     currentSelection: SelectionState, 
     vertexQueue: QueueItem[], 
     isVertexMode: boolean, 
-    selectionHelper: any, 
+    selectionHelper: THREE.Mesh,
     selectedVertexKeys: Set<string>
 ): void {
     if (selectionOverlay) {
@@ -511,8 +515,9 @@ export function updateSelectionOverlay(
 
     if (selectionPointsOverlay) {
         scene.remove(selectionPointsOverlay);
-        selectionPointsOverlay.traverse((child: any) => {
-            if (child.material) child.material.dispose();
+        selectionPointsOverlay.traverse((child: THREE.Object3D) => {
+            const s = child as THREE.Sprite;
+            if (s.material) s.material.dispose();
         });
         selectionPointsOverlay = null;
     }
@@ -613,7 +618,7 @@ export function updateSelectionOverlay(
             mesh.renderOrder = 1;
             mesh.matrixAutoUpdate = false;
             mesh.frustumCulled = false;
-            (mesh.userData as any).items = items;
+            mesh.userData['items'] = items;
             const colorObj = new THREE.Color();
             items.forEach((item, index) => {
                 mesh.setMatrixAt(index, item.matrix);
@@ -693,7 +698,7 @@ export function updateSelectionOverlay(
                     queueSprite.position.copy(item.gizmoPosition);
                     const posForKey = item.gizmoLocalPosition || item.gizmoPosition;
                     const src = item.source;
-                    const idStr = src.type === 'group' ? `G_${src.id}` : `O_${(src.mesh as any).uuid}_${src.instanceId}`;
+                    const idStr = src.type === 'group' ? `G_${src.id}` : `O_${src.mesh!.uuid}_${src.instanceId}`;
                     const qKey = `QUEUE_${idStr}_${posForKey.x.toFixed(4)}_${posForKey.y.toFixed(4)}_${posForKey.z.toFixed(4)}`;
                     queueSprite.userData = { isCenter: true, key: qKey, source: src };
                     if (selectedVertexKeys.has(qKey)) queueSprite.material.color.setHex(0x437FD0);
@@ -778,7 +783,7 @@ export function syncSelectionOverlay(deltaMatrix: THREE.Matrix4): void {
     if (!selectionOverlay && !selectionPointsOverlay) return;
     if (selectionOverlay) {
         const updateMesh = (mesh: THREE.InstancedMesh) => {
-            const items = (mesh.userData as any).items as OverlayItem[];
+            const items = mesh.userData['items'] as OverlayItem[];
             for (let i = 0; i < mesh.count; i++) {
                 const src = items[i]?.source;
                 if (!src) continue;
@@ -809,7 +814,7 @@ export function findClosestVertexForSnapping(gizmoWorldPos: THREE.Vector3, camer
     const gx = (gScreen.x * 0.5 + 0.5) * rect.width, gy = (1 - (gScreen.y * 0.5 + 0.5)) * rect.height;
     let minDSq = snapThreshold * snapThreshold, target: THREE.Vector3 | null = null;
     selectionPointsOverlay.children.forEach(c => {
-        if (!(c as THREE.Sprite).isSprite || (c.userData as any).isCenter) return;
+        if (!(c as THREE.Sprite).isSprite || c.userData['isCenter']) return;
         const vS = _TMP_VEC3_A.copy(c.position).project(camera);
         const vx = (vS.x * 0.5 + 0.5) * rect.width, vy = (1 - (vS.y * 0.5 + 0.5)) * rect.height;
         const dSq = (vx-gx)**2 + (vy-gy)**2;
@@ -840,7 +845,7 @@ export function updateVertexHoverHighlight(hoveredSprite: THREE.Sprite | null, s
     selectionPointsOverlay.children.forEach(c => {
         if (c.name === 'VertexHoverLine') { existingLine = c as THREE.Line; return; }
         if (!(c as THREE.Sprite).isSprite) return;
-        const s = c as THREE.Sprite, key = (s.userData as any).key;
+        const s = c as THREE.Sprite, key = s.userData['key'] as string | undefined;
         const isSel = key && selectedVertexKeys.has(key);
         if (isSel) selected = s;
         s.material.color.setHex((s === hoveredSprite || isSel) ? 0x437FD0 : 0x30333D);
@@ -850,15 +855,15 @@ export function updateVertexHoverHighlight(hoveredSprite: THREE.Sprite | null, s
             const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([selected.position, hoveredSprite.position]), new THREE.LineBasicMaterial({ color: 0x437FD0, depthTest: false, transparent: true }));
             l.name = 'VertexHoverLine'; selectionPointsOverlay.add(l);
         } else existingLine.geometry.setFromPoints([selected.position, hoveredSprite.position]);
-    } else if (existingLine) { selectionPointsOverlay.remove(existingLine); (existingLine as any).geometry.dispose(); (existingLine as any).material.dispose(); }
+    } else if (existingLine) { selectionPointsOverlay.remove(existingLine); existingLine.geometry.dispose(); (existingLine.material as THREE.Material).dispose(); }
 }
 
 export function findSpritesByKeys(keys: string[]): Record<string, THREE.Sprite> {
     const res: Record<string, THREE.Sprite> = {}, set = new Set(keys);
-    selectionPointsOverlay?.children.forEach(c => { if ((c as THREE.Sprite).isSprite && (c.userData as any).key && set.has((c.userData as any).key)) res[(c.userData as any).key] = c as THREE.Sprite; });
+    selectionPointsOverlay?.children.forEach(c => { if ((c as THREE.Sprite).isSprite && c.userData['key'] && set.has(c.userData['key'])) res[c.userData['key'] as string] = c as THREE.Sprite; });
     return res;
 }
 
 export function refreshSelectionPointColors(selectedVertexKeys: Set<string>): void {
-    selectionPointsOverlay?.children.forEach(s => { if ((s as THREE.Sprite).isSprite && (s.userData as any).key) (s as THREE.Sprite).material.color.setHex(selectedVertexKeys.has((s.userData as any).key) ? 0x437FD0 : 0x30333D); });
+    selectionPointsOverlay?.children.forEach(s => { if ((s as THREE.Sprite).isSprite && s.userData['key']) (s as THREE.Sprite).material.color.setHex(selectedVertexKeys.has(s.userData['key'] as string) ? 0x437FD0 : 0x30333D); });
 }

@@ -1,4 +1,7 @@
 import * as THREE from 'three/webgpu';
+import type { GroupData } from './group';
+
+type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
 
 interface SelectionElement {
     type: 'group' | 'object';
@@ -28,15 +31,15 @@ interface PivotDeps {
     revertEphemeralPivotUndoIfAny: () => void;
     resolveMultiAnchorInitialWorld: (out: THREE.Vector3) => THREE.Vector3 | null;
     setMultiAnchorInitial: (worldPos: THREE.Vector3) => void;
-    getGroups: () => Map<string, any>;
+    getGroups: () => Map<string, GroupData>;
     getGroupOriginWorld: (groupId: string, out: THREE.Vector3) => THREE.Vector3;
-    shouldUseGroupPivot: (group: any) => boolean;
-    normalizePivotToVector3: (pivot: any, out: THREE.Vector3) => THREE.Vector3 | null;
-    getGroupWorldMatrix: (group: any, out: THREE.Matrix4) => THREE.Matrix4;
-    getDisplayType: (mesh: any, instanceId?: number) => string;
-    getInstanceLocalBoxMin: (mesh: any, instanceId: number | undefined, out: THREE.Vector3) => THREE.Vector3 | null;
-    getInstanceWorldMatrixForOrigin: (mesh: any, instanceId: number | undefined, out: THREE.Matrix4) => THREE.Matrix4;
-    isItemDisplayHatEnabled: (mesh: any, instanceId?: number) => boolean;
+    shouldUseGroupPivot: (group: GroupData) => boolean;
+    normalizePivotToVector3: (pivot: THREE.Vector3 | undefined, out: THREE.Vector3) => THREE.Vector3 | null;
+    getGroupWorldMatrix: (group: GroupData, out: THREE.Matrix4) => THREE.Matrix4;
+    getDisplayType: (mesh: PdeMesh, instanceId?: number) => string | undefined;
+    getInstanceLocalBoxMin: (mesh: PdeMesh, instanceId: number | undefined, out: THREE.Vector3) => THREE.Vector3 | null;
+    getInstanceWorldMatrixForOrigin: (mesh: PdeMesh, instanceId: number | undefined, out: THREE.Matrix4) => THREE.Matrix4;
+    isItemDisplayHatEnabled: (mesh: PdeMesh, instanceId?: number) => boolean;
     DEFAULT_GROUP_PIVOT: THREE.Vector3;
 }
 
@@ -110,13 +113,13 @@ export function resetCustomPivot(
                         const { mesh, instanceId } = prim;
                         const tempMat = new THREE.Matrix4();
                         let custom = null;
-                        if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
-                            if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId))
-                                custom = mesh.userData.customPivots.get(instanceId);
-                        } else { if (mesh.userData.customPivot) custom = mesh.userData.customPivot; }
+                        if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                            if (mesh.userData['customPivots'] && (mesh.userData['customPivots'] as Map<number, THREE.Vector3>).has(instanceId!))
+                                custom = (mesh.userData['customPivots'] as Map<number, THREE.Vector3>).get(instanceId!);
+                        } else { if (mesh.userData['customPivot']) custom = mesh.userData['customPivot']; }
                         
                         if (custom) {
-                            (mesh as any).getMatrixAt(instanceId, tempMat);
+                            (mesh as THREE.InstancedMesh).getMatrixAt(instanceId!, tempMat);
                             tempMat.premultiply(mesh.matrixWorld);
                             targetPos.copy(custom.clone().applyMatrix4(tempMat)); found = true;
                         }
@@ -166,11 +169,11 @@ export function resetCustomPivot(
             if (currentSelection.objects && currentSelection.objects.size > 0) {
                 for (const [mesh, ids] of currentSelection.objects) {
                     if (!mesh) continue;
-                    if (((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) && mesh.userData.customPivots) {
-                        for (const id of ids) mesh.userData.customPivots.delete(id);
+                    if (((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) && mesh.userData['customPivots']) {
+                        for (const id of ids) (mesh.userData['customPivots'] as Map<number, THREE.Vector3>).delete(id);
                     }
-                    delete mesh.userData.customPivot;
-                    delete mesh.userData.isCustomPivot;
+                    delete mesh.userData['customPivot'];
+                    delete mesh.userData['isCustomPivot'];
                 }
             }
 
@@ -232,11 +235,11 @@ export function resetCustomPivot(
         if (currentSelection.objects && currentSelection.objects.size > 0) {
             for (const [mesh, ids] of currentSelection.objects) {
                 if (!mesh) continue;
-                if (((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) && mesh.userData.customPivots) {
-                    for (const id of ids) mesh.userData.customPivots.delete(id);
+                if (((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) && mesh.userData['customPivots']) {
+                    for (const id of ids) (mesh.userData['customPivots'] as Map<number, THREE.Vector3>).delete(id);
                 }
-                delete mesh.userData.customPivot;
-                delete mesh.userData.isCustomPivot;
+                delete mesh.userData['customPivot'];
+                delete mesh.userData['isCustomPivot'];
             }
         }
 

@@ -3,6 +3,7 @@ import * as GroupUtils from './group';
 import * as Overlay from './overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
 import type { GroupData } from './group';
+import type { GizmoState } from './gizmo';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_MAT4_B = new THREE.Matrix4();
@@ -24,8 +25,8 @@ interface VertexRotateContext {
     loadedObjectGroup: THREE.Group;
     selectionHelper: THREE.Mesh;
 
-    getGizmoState: () => any;
-    setGizmoState: (updates: any) => void;
+    getGizmoState: () => GizmoState;
+    setGizmoState: (updates: Partial<GizmoState>) => void;
 
     getGroups: () => Map<string, GroupData>;
     getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
@@ -247,7 +248,7 @@ export function processVertexRotate(
 
             // Update Gizmo State anchors
             const state = getGizmoState();
-            const updates: Record<string, any> = {};
+            const updates: Partial<GizmoState> = {};
             if (state._gizmoAnchorValid && state._gizmoAnchorPosition) {
                 updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().applyMatrix4(transformMat);
             }

@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import * as Overlay from './overlay';
 import { GroupData } from './group';
+import type { GizmoState } from './gizmo';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
@@ -33,8 +34,8 @@ export interface SwapContext {
     };
     getGroups: () => Map<string, GroupData>;
     getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
-    setGizmoState: (state: any) => void;
-    getGizmoState: () => any;
+    setGizmoState: (state: Partial<GizmoState>) => void;
+    getGizmoState: () => GizmoState;
     updateHelperPosition: () => void;
     SelectionCenter: (mode: string, useOffset: boolean, target: THREE.Vector3) => THREE.Vector3;
     vertexQueue: QueueItem[];
@@ -63,10 +64,12 @@ export function performSelectionSwap(
 
     if (!targetSrc) return;
 
-    const matchesSource = (a: any, b: SelectionSource): boolean => {
+    const matchesSource = (a: QueueEntry | SelectionSource | null | undefined, b: SelectionSource): boolean => {
         if (!a || !b || a.type !== b.type) return false;
-        if (a.type === 'group') return a.id === (b as any).id;
-        return a.mesh === (b as any).mesh && a.instanceId === (b as any).instanceId;
+        if (a.type === 'group') return (a as { type: 'group'; id?: string }).id === (b.type === 'group' ? b.id : undefined);
+        return a.type === 'object' && b.type === 'object'
+            && (a as { type: 'object'; mesh?: THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh }).mesh === b.mesh
+            && (a as { type: 'object'; instanceId?: number }).instanceId === b.instanceId;
     };
 
     const toSelectionSource = (source: SelectionSource | null): SelectionSource | null => {
@@ -95,7 +98,7 @@ export function performSelectionSwap(
                 }
                 continue;
             }
-            if (matchesSource(qItem, source)) {
+            if (matchesSource(qItem as QueueEntry, source)) {
                 return { kind: 'direct', itemIndex: i };
             }
         }
@@ -121,8 +124,8 @@ export function performSelectionSwap(
                 }
                 if (local) {
                     const m = _TMP_MAT4_A;
-                    if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
-                        (mesh as any).getMatrixAt(id, m);
+                    if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                        (mesh as THREE.InstancedMesh).getMatrixAt(id, m);
                     } else {
                         m.copy(mesh.matrix);
                     }
@@ -132,7 +135,7 @@ export function performSelectionSwap(
                 return null;
             };
 
-            if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
+            if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
                 pivotWorld = getWorldPivot(instanceId);
             } else if (mesh.userData.customPivot) {
                 pivotWorld = mesh.userData.customPivot.clone().applyMatrix4(mesh.matrixWorld);
@@ -162,7 +165,7 @@ export function performSelectionSwap(
         if (state.pivotMode !== 'center') {
             if (source.type === 'object') {
                 const { mesh, instanceId } = source;
-                if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
+                if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
                     let pivot: THREE.Vector3 | null = null;
                     if (mesh.userData.customPivots) {
                         pivot = mesh.userData.customPivots.get(instanceId);
@@ -270,7 +273,7 @@ export function performSelectionSwap(
             }
             if (currentSelection.objects) {
                 for (const [mesh, ids] of currentSelection.objects) {
-                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as any, instanceId: id });
+                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh, instanceId: id });
                 }
             }
 

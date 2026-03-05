@@ -1,16 +1,19 @@
 import * as THREE from 'three/webgpu';
 import * as Select from './select';
+import type { SelectionCallbacks } from './select';
 import * as Overlay from './overlay.js';
 import * as GroupUtils from './group';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
-// Helper aliases for untyped modules
-const getInstanceCount = (Overlay as any).getInstanceCount;
-const isInstanceValid = (Overlay as any).isInstanceValid;
-const getInstanceWorldMatrixForOrigin = (Overlay as any).getInstanceWorldMatrixForOrigin;
-const isItemDisplayHatEnabled = (Overlay as any).isItemDisplayHatEnabled;
-const getGroupKey = (GroupUtils as any).getGroupKey;
-const getGroupChain = (GroupUtils as any).getGroupChain;
-const getObjectToGroup = (GroupUtils as any).getObjectToGroup;
+// Helper aliases
+const { getInstanceCount, isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled } = Overlay;
+const { getGroupKey, getGroupChain, getObjectToGroup } = GroupUtils;
+
+interface OrbitControlsLike {
+    enabled: boolean;
+    target: THREE.Vector3;
+    update(): void;
+}
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_CORNERS = new Array(8).fill(0).map(() => new THREE.Vector3());
@@ -18,10 +21,10 @@ const _TMP_CORNERS = new Array(8).fill(0).map(() => new THREE.Vector3());
 export interface DragInitOptions {
     renderer: THREE.Renderer;
     camera: THREE.Camera;
-    getControls: () => any; // OrbitControls instance
-    transformControls: any; // TransformControls instance
+    getControls: () => OrbitControlsLike;
+    transformControls: TransformControls;
     loadedObjectGroup: THREE.Group;
-    getSelectionCallbacks: () => any; // Selection callbacks from gizmo
+    getSelectionCallbacks: () => SelectionCallbacks;
 }
 
 export interface DragInterface {
@@ -97,12 +100,12 @@ export function initDrag({
         getControls().enabled = marqueePrevControlsEnabled;
     };
 
-    function _replaceSelectionWithObjectsMap(meshToIds: Map<THREE.Mesh, Set<number>>, options: any) {
-        (Select as any).replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
+    function _replaceSelectionWithObjectsMap(meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
+        Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
     }
 
-    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<THREE.Mesh, Set<number>>, options: any) {
-        (Select as any).replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, getSelectionCallbacks(), options);
+    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
+        Select.replaceSelectionWithGroupsAndObjects(groupIds!, meshToIds, getSelectionCallbacks(), options);
     }
 
     return {
@@ -185,27 +188,27 @@ export function initDrag({
                 const maxY = bottom - canvasRect.top;
 
                 const groupIds = ignoreGroups ? null : new Set<string>();
-                const meshToIds = new Map<THREE.Mesh, Set<number>>();
+                const meshToIds = new Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>();
                 const tmpMat = _TMP_MAT4_A;
 
                 const objectToGroup = ignoreGroups ? null : getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
-                loadedObjectGroup.traverse((obj: any) => {
-                    if (!obj || (!obj.isInstancedMesh && !obj.isBatchedMesh)) return;
+                loadedObjectGroup.traverse((obj: THREE.Object3D) => {
+                    if (!obj || (!(obj as THREE.InstancedMesh).isInstancedMesh && !(obj as THREE.BatchedMesh).isBatchedMesh)) return;
                     if (obj.visible === false) return;
 
-                    if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
-                    const bbox = obj.geometry.boundingBox;
+                    if (!(obj as THREE.Mesh).geometry?.boundingBox) (obj as THREE.Mesh).geometry?.computeBoundingBox();
+                    const bbox = (obj as THREE.Mesh).geometry?.boundingBox;
                     if (!bbox) return;
 
-                    const instanceCount = getInstanceCount(obj);
+                    const instanceCount = getInstanceCount(obj as THREE.InstancedMesh | THREE.BatchedMesh);
                     if (instanceCount <= 0) return;
 
                     for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                        if (!isInstanceValid(obj, instanceId)) continue;
+                        if (!isInstanceValid(obj as THREE.InstancedMesh | THREE.BatchedMesh, instanceId)) continue;
 
-                        getInstanceWorldMatrixForOrigin(obj, instanceId, tmpMat);
-                        const localYOffset = isItemDisplayHatEnabled(obj, instanceId) ? 0.03125 : 0;
+                        getInstanceWorldMatrixForOrigin(obj as THREE.InstancedMesh | THREE.BatchedMesh, instanceId, tmpMat);
+                        const localYOffset = isItemDisplayHatEnabled(obj as THREE.InstancedMesh | THREE.BatchedMesh, instanceId) ? 0.03125 : 0;
 
                         // 투영된 바운딩 박스 계산을 위한 코너 좌표
                         _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y + localYOffset, bbox.min.z);
@@ -242,7 +245,7 @@ export function initDrag({
                         if (minSx > maxX || maxSx < minX || minSy > maxY || maxSy < minY) continue;
 
                         if (!ignoreGroups && objectToGroup) {
-                            const key = getGroupKey(obj, instanceId);
+                            const key = getGroupKey(obj as THREE.InstancedMesh | THREE.BatchedMesh, instanceId);
                             const immediateGroupId = objectToGroup.get(key);
                             if (immediateGroupId) {
                                 const chain = getGroupChain(loadedObjectGroup, immediateGroupId) as string[];
@@ -252,10 +255,10 @@ export function initDrag({
                             }
                         }
 
-                        let set = meshToIds.get(obj);
+                        let set = meshToIds.get(obj as THREE.InstancedMesh | THREE.BatchedMesh);
                         if (!set) {
                             set = new Set<number>();
-                            meshToIds.set(obj, set);
+                            meshToIds.set(obj as THREE.InstancedMesh | THREE.BatchedMesh, set);
                         }
                         set.add(instanceId);
                     }

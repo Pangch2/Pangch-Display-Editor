@@ -1,6 +1,13 @@
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
 
+/** 커스텀 opacity 저장을 위한 기즈모 머티리얼 인터페이스 */
+export type GizmoMaterial = THREE.Material & {
+    transparent: boolean;
+    opacity: number;
+    _opacity?: number;
+};
+
 /**
  * 기즈모 축별 원본 및 음수 방향 라인 세트
  */
@@ -34,7 +41,7 @@ export function setupGizmo(
     renderer: THREE.Renderer,
     scene: THREE.Scene
 ): GizmoSetupResult {
-    const transformControls = new TransformControls(camera, (renderer as any).domElement || (renderer as any).canvas);
+    const transformControls = new TransformControls(camera, renderer.domElement);
     transformControls.setMode('translate');
     transformControls.setSpace('world');
     transformControls.setColors(0xEF3751, 0x6FA21C, 0x437FD0, 0xfeff3e);
@@ -79,9 +86,9 @@ export function setupGizmo(
 
                     // 재질 독립성 확보를 위해 클론
                     originalLine.material = (originalLine.material as THREE.Material).clone();
-                    const originalMaterial = originalLine.material as any;
+                    const originalMaterial = originalLine.material as GizmoMaterial;
 
-                    const negativeMaterial = originalMaterial.clone();
+                    const negativeMaterial = originalMaterial.clone() as GizmoMaterial;
                     negativeMaterial.transparent = true;
                     negativeMaterial._opacity = 0.001; // 초기 투명 상태
                     negativeMaterial.opacity = 0.001;
@@ -93,7 +100,7 @@ export function setupGizmo(
                     const negativeLine = new THREE.Mesh(negativeGeometry, negativeMaterial);
                     negativeLine.name = originalLine.name;
                     // 커스텀 불투명도 속성 동기화
-                    (negativeLine.material as any)._opacity = (negativeLine.material as any)._opacity || (negativeLine.material as any).opacity;
+                    (negativeLine.material as GizmoMaterial)._opacity = (negativeLine.material as GizmoMaterial)._opacity ?? (negativeLine.material as GizmoMaterial).opacity;
                     negativeLine.renderOrder = originalLine.renderOrder + 1;
                     
                     if (originalLine.parent) {

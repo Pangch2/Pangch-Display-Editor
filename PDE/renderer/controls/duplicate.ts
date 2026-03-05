@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
+import type { CloneJobEntry } from './group';
 import * as Overlay from './overlay.js';
 import { createEntityMaterial } from '../entityMaterial.js';
 
@@ -86,7 +87,7 @@ function _headPoolKey(sourceMesh: THREE.InstancedMesh): string {
     return `head|${matKey}`;
 }
 
-function _isPlayerHeadMesh(obj: any): obj is THREE.InstancedMesh {
+function _isPlayerHeadMesh(obj: THREE.Object3D): obj is THREE.InstancedMesh {
     return !!(obj && obj.isInstancedMesh && obj.geometry && obj.geometry.attributes && obj.geometry.attributes.instancedUvOffset && obj.userData && obj.userData.displayType === 'item_display');
 }
 
@@ -224,7 +225,7 @@ function _batchHasSpace(batch: THREE.BatchedMesh): boolean {
     return _getBatchCurrentInstances(batch) < max;
 }
 
-function _planWritableBatchFor(mesh: any, instanceId: number, targetGroupId: string | null, ctx: DuplicationContext): void {
+function _planWritableBatchFor(mesh: THREE.InstancedMesh | THREE.BatchedMesh, instanceId: number, targetGroupId: string | null, ctx: DuplicationContext): void {
     if (!ctx || !mesh) return;
 
     // Player heads are handled by a dedicated bulk path (InstancedMesh with instancedUvOffset)
@@ -475,7 +476,7 @@ function getOrCreateWritableBatch(loadedObjectGroup: THREE.Group, targetGroupId:
     return batch;
 }
 
-function cloneInstance(loadedObjectGroup: THREE.Group, mesh: any, instanceId: number, targetGroupId: string | null, ctx: DuplicationContext, coveredByGroup: boolean = false): CloneResult | null {
+function cloneInstance(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh | THREE.BatchedMesh, instanceId: number, targetGroupId: string | null, ctx: DuplicationContext, coveredByGroup: boolean = false): CloneResult | null {
     if (!mesh) return null;
 
     // Detect Player Head (InstancedMesh with instancedUvOffset) for Bulk Cloning
@@ -589,8 +590,8 @@ function cloneInstance(loadedObjectGroup: THREE.Group, mesh: any, instanceId: nu
                 targetGeomId = id;
             }
             break;
-        } catch (e: any) {
-            const msg = e ? (e.message || String(e)) : '';
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
             if (ctx && attempts < 100 && msg && (msg.includes('Reserved space request exceeds') || msg.includes('maximum buffer size'))) {
                 const key = _batchPoolKey(material);
                 if (ctx.fullBatches) ctx.fullBatches.add(targetBatch);
@@ -612,8 +613,8 @@ function cloneInstance(loadedObjectGroup: THREE.Group, mesh: any, instanceId: nu
     let usedGeomId = targetGeomId;
     try {
         newInstanceId = targetBatch.addInstance(targetGeomId);
-    } catch (e: any) {
-        const msg = (e && e.message) ? String(e.message) : '';
+    } catch (e: unknown) {
+        const msg = (e instanceof Error && e.message) ? String(e.message) : '';
         if (ctx && msg.includes('Maximum item count reached')) {
             const key = _batchPoolKey(material);
             ctx.fullBatches && ctx.fullBatches.add(targetBatch);
@@ -706,7 +707,7 @@ function cloneGroup(loadedObjectGroup: THREE.Group, groupId: string, parentId: s
     return GroupUtils.cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap);
 }
 
-function _collectCloneJobsFromGroup(loadedObjectGroup: THREE.Group, groupId: string, newGroupId: string, ctx: DuplicationContext, outJobs: any[]): void {
+function _collectCloneJobsFromGroup(loadedObjectGroup: THREE.Group, groupId: string, newGroupId: string, ctx: DuplicationContext, outJobs: CloneJobEntry[]): void {
     // Inject planning callback
     const ctxWithCallback: DuplicationContext = {
         ...ctx,
@@ -722,7 +723,7 @@ export function duplicateGroupsAndObjects(loadedObjectGroup: THREE.Group, groupI
     const newSelection: DuplicationSelection = { groups: new Set(), objects: new Map() };
     const idMap = new Map<string, string>(); // OldGroupID -> NewGroupID
     const groups = GroupUtils.getGroups(loadedObjectGroup);
-    const jobs: any[] = [];
+    const jobs: CloneJobEntry[] = [];
     ctx._groupIdMap = idMap;
 
     // 1. Duplicate Groups

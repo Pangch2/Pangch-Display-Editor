@@ -1,13 +1,15 @@
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
+import type { GroupData, GroupChild } from './group';
 
 /**
  * Three.js BatchedMesh의 확장 인터페이스 (userData 및 메서드 포함)
  */
 interface ExtendedBatchedMesh extends THREE.BatchedMesh {
+    isBatchedMesh: boolean;
+    userData: { [key: string]: unknown };
     deleteInstance?(instanceId: number): void;
     setVisibleAt?(instanceId: number, visible: boolean): void;
-    userData: any;
 }
 
 // 성능을 위한 임시 변수
@@ -17,7 +19,7 @@ const _TMP_MAT4_A = new THREE.Matrix4();
  * BatchedMesh 인스턴스 삭제 및 관련 데이터 정리
  */
 function _deleteBatchedMeshInstances(mesh: ExtendedBatchedMesh, instanceIds: number[]): void {
-    if (!mesh || !(mesh as any).isBatchedMesh) return;
+    if (!mesh || !mesh.isBatchedMesh) return;
 
     for (const instanceId of instanceIds) {
         // 1. 실제 인스턴스 삭제 또는 숨김
@@ -49,7 +51,7 @@ function _deleteBatchedMeshInstances(mesh: ExtendedBatchedMesh, instanceIds: num
  * InstancedMesh에서 swap-pop 발생 시 그룹 내 인스턴스 ID 참조 업데이트
  */
 function _updateGroupReferenceForMovedInstance(loadedObjectGroup: THREE.Group, mesh: THREE.Mesh, oldInstanceId: number, newInstanceId: number): void {
-    (GroupUtils as any).updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, oldInstanceId, newInstanceId);
+    GroupUtils.updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, oldInstanceId, newInstanceId);
 }
 
 /**
@@ -112,7 +114,7 @@ export function deleteSelectedItems(
 
     const collectItem = (mesh: THREE.Mesh, instanceId: number) => {
         if (!mesh) return;
-        const k = (GroupUtils as any).getGroupKey(mesh, instanceId);
+        const k = GroupUtils.getGroupKey(mesh, instanceId);
         if (!itemsToDelete.has(k)) {
             itemsToDelete.set(k, { mesh, instanceId });
         }
@@ -124,14 +126,14 @@ export function deleteSelectedItems(
         for (const gid of currentSelection.groups) {
             if (gid) {
                 allGroupsToDelete.add(gid);
-                const descendants = (GroupUtils as any).getAllDescendantGroups(loadedObjectGroup, gid);
+                const descendants = GroupUtils.getAllDescendantGroups(loadedObjectGroup, gid);
                 for (const d of descendants) allGroupsToDelete.add(d);
             }
         }
     }
 
-    const groups = (GroupUtils as any).getGroups(loadedObjectGroup) as Map<string, any>;
-    const objectToGroup = (GroupUtils as any).getObjectToGroup(loadedObjectGroup) as Map<string, string>;
+    const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, GroupData>;
+    const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
     for (const gid of allGroupsToDelete) {
         const g = groups.get(gid);
@@ -164,7 +166,7 @@ export function deleteSelectedItems(
              const parent = groups.get(g.parent);
              if (parent && !allGroupsToDelete.has(g.parent)) {
                  if (Array.isArray(parent.children)) {
-                     parent.children = parent.children.filter((c: any) => !(c && c.type === 'group' && c.id === gid));
+                     parent.children = parent.children.filter((c: GroupChild) => !(c.type === 'group' && c.id === gid));
                  }
              }
          }
@@ -178,14 +180,14 @@ export function deleteSelectedItems(
     const byMesh = new Map<THREE.Mesh, Set<number>>();
 
     for (const { mesh, instanceId } of itemsToDelete.values()) {
-        const key = (GroupUtils as any).getGroupKey(mesh, instanceId);
+        const key = GroupUtils.getGroupKey(mesh, instanceId);
         
         if (objectToGroup.has(key)) {
             const parentGroupId = objectToGroup.get(key)!;
             if (groups.has(parentGroupId)) {
                 const pg = groups.get(parentGroupId);
                 if (pg && Array.isArray(pg.children)) {
-                     pg.children = pg.children.filter((c: any) => !(c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
+                     pg.children = pg.children.filter((c: GroupChild) => !(c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
                 }
             }
             objectToGroup.delete(key);
@@ -200,7 +202,7 @@ export function deleteSelectedItems(
 
     // 5. 실제 메쉬 인스턴스 제거 실행
     for (const [mesh, idSet] of byMesh) {
-        if ((mesh as any).isBatchedMesh) {
+        if ((mesh as THREE.BatchedMesh).isBatchedMesh) {
             _deleteBatchedMeshInstances(mesh as ExtendedBatchedMesh, Array.from(idSet));
         } else if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
             const sortedIds = Array.from(idSet).sort((a, b) => b - a);

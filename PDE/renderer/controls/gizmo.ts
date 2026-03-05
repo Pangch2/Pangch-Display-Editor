@@ -1,5 +1,5 @@
 import { setupGizmo } from './gizmo-setup';
-import type { GizmoLines } from './gizmo-setup';
+import type { GizmoLines, GizmoMaterial } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
 import {
@@ -26,9 +26,19 @@ import { processVertexScale } from './vertex-scale';
 import * as Select from './select';
 import type { SelectionState, SelectedItem } from './select';
 import type { GroupData } from './group';
-import type { QueueItem, QueueBundle } from './vertex-swap';
+import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
+
+type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+
+interface OrbitControlsLike {
+    enabled: boolean;
+    target: THREE.Vector3;
+    screenSpacePanning: boolean;
+    dispose(): void;
+    update(): boolean;
+}
 
 export interface GizmoState {
     pivotMode: string;
@@ -56,9 +66,9 @@ export interface InitGizmoParams {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     renderer: THREE.Renderer;
-    controls: any;
+    controls: OrbitControlsLike;
     loadedObjectGroup: THREE.Group;
-    setControls?: (c: any) => void;
+    setControls?: (c: OrbitControlsLike) => void;
 }
 
 export interface InitGizmoResult {
@@ -100,7 +110,7 @@ const _TMP_VEC3_B = new THREE.Vector3();
 
 // ─── Selection state ────────────────────────────────────────────────────────
 
-function _beginSelectionReplace(options?: any): void {
+function _beginSelectionReplace(options?: { anchorMode?: string; detachTransform?: boolean; preserveAnchors?: boolean }): void {
     Select.beginSelectionReplace({
         revertEphemeralPivotUndoIfAny: _revertEphemeralPivotUndoIfAny,
         detachTransformControls: () => { if (transformControls) transformControls.detach(); },
@@ -128,7 +138,7 @@ function getObjectToGroup(): Map<string, string> {
 }
 
 function getGroupKey(mesh: THREE.Object3D, instanceId: number): string {
-    return GroupUtils.getGroupKey(mesh as any, instanceId);
+    return GroupUtils.getGroupKey(mesh, instanceId);
 }
 
 function getGroupChain(startGroupId: string): string[] {
@@ -152,11 +162,11 @@ function _nearlyEqual(a: number, b: number, eps = 1e-6): boolean {
     return Math.abs(a - b) <= eps;
 }
 
-function normalizePivotToVector3(pivot: any, out = new THREE.Vector3()): THREE.Vector3 | null {
+function normalizePivotToVector3(pivot: THREE.Vector3 | undefined, out = new THREE.Vector3()): THREE.Vector3 | null {
     return GroupUtils.normalizePivotToVector3(pivot, out);
 }
 
-function isCustomGroupPivot(pivot: any): boolean {
+function isCustomGroupPivot(pivot: THREE.Vector3 | undefined): boolean {
     return GroupUtils.isCustomGroupPivot(pivot);
 }
 
@@ -211,8 +221,8 @@ function getGroupOriginWorld(groupId: string, out = new THREE.Vector3()): THREE.
 
 // ─── Selection caches ────────────────────────────────────────────────────────
 
-let _selectedItemsCacheKey: any = null;
-let _selectedItemsCache: any = null;
+let _selectedItemsCacheKey: string | null = null;
+let _selectedItemsCache: SelectedItem[] | null = null;
 let _ephemeralPivotUndo: (() => void) | null = null;
 let _pivotEditUndoCapture: (() => void) | null = null;
 
@@ -226,7 +236,7 @@ function _revertEphemeralPivotUndoIfAny(): void {
     CustomPivot.revertEphemeralPivotUndoIfAny();
 }
 
-function _capturePivotUndoForCurrentSelection(): any {
+function _capturePivotUndoForCurrentSelection(): (() => void) | null {
     return CustomPivot.capturePivotUndoForCurrentSelection(currentSelection);
 }
 
@@ -263,8 +273,8 @@ const getSelectedItems = Select.getSelectedItems;
 
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
-let renderer: any;
-let controls: any;
+let renderer: THREE.Renderer;
+let controls: OrbitControlsLike;
 let loadedObjectGroup: THREE.Group;
 let transformControls: TransformControls | null = null;
 let selectionHelper: THREE.Mesh | null = null;
@@ -322,7 +332,7 @@ function _pushToVertexQueue(): void {
         selectedVertexKeys.delete(centerKey);
     }
 
-    const itemsToAdd: Array<{ type: string; id?: string; mesh?: any; instanceId?: number }> = [];
+    const itemsToAdd: Array<{ type: 'group' | 'object'; id?: string; mesh?: PdeMesh; instanceId?: number }> = [];
     if (currentSelection.groups.size > 0) {
         for (const gid of currentSelection.groups) {
             itemsToAdd.push({ type: 'group', id: gid });
@@ -339,7 +349,7 @@ function _pushToVertexQueue(): void {
     const tempMat = _TMP_MAT4_A;
     const tempInv = _TMP_MAT4_B;
 
-    const bundleItems: any[] = [];
+    const bundleItems: QueueEntry[] = [];
     for (const item of itemsToAdd) {
         let localPos: THREE.Vector3 | null = null;
         let localQuat: THREE.Quaternion | null = null;
@@ -378,7 +388,7 @@ function _pushToVertexQueue(): void {
     while (vertexQueue.length > VERTEX_QUEUE_MAX_SIZE) {
         const removedItem = vertexQueue.shift()!;
 
-        const removeKeysForSubItem = (sub: any) => {
+        const removeKeysForSubItem = (sub: QueueEntry) => {
             const idStr = sub.type === 'group'
                 ? `G_${sub.id}`
                 : `O_${sub.mesh.uuid}_${sub.instanceId}`;
@@ -436,7 +446,7 @@ function _pushToVertexQueue(): void {
         if ((removedItem as QueueBundle).type === 'bundle') {
             (removedItem as QueueBundle).items.forEach(removeKeysForSubItem);
         } else {
-            removeKeysForSubItem(removedItem);
+            removeKeysForSubItem(removedItem as QueueEntry);
         }
     }
 }
@@ -528,7 +538,7 @@ function _getSelectionCenterWorld(out = new THREE.Vector3()): THREE.Vector3 {
     return out.copy(calculateAvgOrigin());
 }
 
-function getSelectionCallbacks(): any {
+function getSelectionCallbacks(): Select.SelectionCallbacks {
     return {
         revertEphemeralPivotUndoIfAny: () => _revertEphemeralPivotUndoIfAny(),
         detachTransformControls: () => transformControls!.detach(),
@@ -544,20 +554,19 @@ function getSelectionCallbacks(): any {
             vertexQueue.length = 0;
             selectedVertexKeys.clear();
         },
-        hasVertexQueue: () => vertexQueue.length > 0,
-        getLoadedObjectGroup: () => loadedObjectGroup
+        hasVertexQueue: () => vertexQueue.length > 0
     };
 }
 
-function _replaceSelectionWithObjectsMap(meshToIds: any, options?: any): void {
+function _replaceSelectionWithObjectsMap(meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string }): void {
     Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
 }
 
-function _replaceSelectionWithGroupsAndObjects(groupIds: any, meshToIds: any, options?: any): void {
+function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string>, meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string; preserveAnchors?: boolean }): void {
     Select.replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, getSelectionCallbacks(), options);
 }
 
-function _selectAllObjectsVisibleInScene(): Map<any, Set<number>> {
+function _selectAllObjectsVisibleInScene(): Map<PdeMesh, Set<number>> {
     return Select.selectAllObjectsVisibleInScene(loadedObjectGroup);
 }
 
@@ -697,7 +706,7 @@ function updateHelperPosition(): void {
             const { mesh, instanceId } = prim;
             if (mesh) {
                 let custom: THREE.Vector3 | null = null;
-                if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
+                if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
                     if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
                         custom = mesh.userData.customPivots.get(instanceId);
                     }
@@ -849,8 +858,8 @@ function applySelection(mesh: THREE.Object3D | null, instanceIds: number[], grou
         currentSelection.primary = { type: 'group', id: groupId };
     } else if (mesh && Array.isArray(instanceIds) && instanceIds.length > 0) {
         const idSet = new Set(instanceIds);
-        currentSelection.objects.set(mesh as any, idSet);
-        currentSelection.primary = { type: 'object', mesh: mesh as any, instanceId: instanceIds[0] };
+        currentSelection.objects.set(mesh as PdeMesh, idSet);
+        currentSelection.primary = { type: 'object', mesh: mesh as PdeMesh, instanceId: instanceIds[0] };
     }
 
     invalidateSelectionCaches();
@@ -885,7 +894,7 @@ function _promoteVertexQueueBundleOnExit(): boolean {
     if (!bundle || !bundle.items || bundle.items.length === 0) return false;
 
     const groupIds = new Set<string>();
-    const meshToIds = new Map<any, Set<number>>();
+    const meshToIds = new Map<PdeMesh, Set<number>>();
 
     for (const sub of bundle.items) {
         if (!sub) continue;
@@ -934,7 +943,7 @@ function createGroup(): string | undefined {
     }
 
     const selectedGroupIds = currentSelection.groups ? Array.from(currentSelection.groups).filter(Boolean) : [];
-    const selectedObjects: Array<{ mesh: any; instanceId: number }> = [];
+    const selectedObjects: Array<{ mesh: PdeMesh; instanceId: number }> = [];
     if (currentSelection.objects && currentSelection.objects.size > 0) {
         for (const [mesh, ids] of currentSelection.objects) {
             if (!mesh || !ids) continue;
@@ -1004,7 +1013,7 @@ function duplicateSelected(): void {
         const hadPrimary = !!currentSelection.primary;
 
         const selectedGroupIds = currentSelection.groups;
-        const selectedObjects: Array<{ mesh: any; instanceId: number }> = [];
+        const selectedObjects: Array<{ mesh: PdeMesh; instanceId: number }> = [];
         if (currentSelection.objects) {
             for (const [mesh, ids] of currentSelection.objects) {
                 for (const id of ids) selectedObjects.push({ mesh, instanceId: id });
@@ -1103,7 +1112,7 @@ export function initGizmo({
     transformControls = setupResult.transformControls;
     gizmoLines = setupResult.gizmoLines;
 
-    transformControls.addEventListener('dragging-changed', (event: any) => {
+    transformControls.addEventListener('dragging-changed', (event: { value: boolean }) => {
         controls.enabled = !event.value;
         if (event.value) {
             Overlay.prepareMultiSelectionDrag(currentSelection);
@@ -1113,10 +1122,10 @@ export function initGizmo({
             _meshToInstanceIds.clear();
             for (const { mesh, instanceId } of items) {
                 if (!mesh) continue;
-                let list = _meshToInstanceIds.get(mesh as any);
+                let list = _meshToInstanceIds.get(mesh);
                 if (!list) {
                     list = [];
-                    _meshToInstanceIds.set(mesh as any, list);
+                    _meshToInstanceIds.set(mesh, list);
                 }
                 list.push(instanceId);
             }
@@ -1207,8 +1216,7 @@ export function initGizmo({
                             const invWorldMatrix = worldMatrix.clone().invert();
                             const localPivot = pivotWorld.clone().applyMatrix4(invWorldMatrix);
 
-                            if ((mesh as any).isBatchedMesh || (mesh as any).isInstancedMesh) {
-                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, THREE.Vector3>();
+                            if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
                                 for (const id of ids) {
                                     mesh.userData.customPivots.set(id, localPivot.clone());
                                 }
@@ -1282,7 +1290,7 @@ export function initGizmo({
 
             if (currentSelection.objects && currentSelection.objects.size > 0) {
                 for (const [mesh] of currentSelection.objects) {
-                    if (mesh) (mesh as any).boundingSphere = null;
+                    if (mesh) (mesh as THREE.Mesh).boundingSphere = null;
                 }
             }
 
@@ -1294,7 +1302,7 @@ export function initGizmo({
         }
     });
 
-    transformControls.addEventListener('change', (_event: any) => {
+    transformControls.addEventListener('change', (_event: object) => {
         if (transformControls!.dragging && _hasAnySelection()) {
 
             if (isPivotEditMode && transformControls!.mode === 'translate') {
@@ -1330,10 +1338,10 @@ export function initGizmo({
             _meshToInstanceIds.clear();
             for (const { mesh, instanceId } of items) {
                 if (!mesh) continue;
-                let list = _meshToInstanceIds.get(mesh as any);
+                let list = _meshToInstanceIds.get(mesh);
                 if (!list) {
                     list = [];
-                    _meshToInstanceIds.set(mesh as any, list);
+                    _meshToInstanceIds.set(mesh, list);
                 }
                 list.push(instanceId);
             }
@@ -1537,19 +1545,19 @@ export function initGizmo({
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
             event.preventDefault();
             const groupIds = new Set<string>();
-            const meshToIds = new Map<any, Set<number>>();
+            const meshToIds = new Map<PdeMesh, Set<number>>();
 
             if (loadedObjectGroup) {
                 const objectToGroup = getObjectToGroup();
                 loadedObjectGroup.traverse((obj: THREE.Object3D) => {
-                    if (!obj || (!(obj as any).isInstancedMesh && !(obj as any).isBatchedMesh)) return;
+                    if (!obj || (!(obj as THREE.InstancedMesh).isInstancedMesh && !(obj as THREE.BatchedMesh).isBatchedMesh)) return;
                     if (obj.visible === false) return;
 
-                    const instanceCount = getInstanceCount(obj as any);
+                    const instanceCount = getInstanceCount(obj as PdeMesh);
                     if (instanceCount <= 0) return;
 
                     for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                        if (!isInstanceValid(obj as any, instanceId)) continue;
+                        if (!isInstanceValid(obj as PdeMesh, instanceId)) continue;
 
                         const key = getGroupKey(obj, instanceId);
                         const immediateGroupId = objectToGroup.get(key);
@@ -1560,10 +1568,10 @@ export function initGizmo({
                             continue;
                         }
 
-                        let set = meshToIds.get(obj);
+                        let set = meshToIds.get(obj as PdeMesh);
                         if (!set) {
                             set = new Set();
-                            meshToIds.set(obj, set);
+                            meshToIds.set(obj as PdeMesh, set);
                         }
                         set.add(instanceId);
                     }
@@ -1813,13 +1821,13 @@ export function initGizmo({
     });
 
     loadedObjectGroup.userData.resetSelection = resetSelectionAndDeselect;
-    loadedObjectGroup.userData.replaceSelectionWithObjectsMap = (meshToIds: any, options?: any) => {
+    loadedObjectGroup.userData.replaceSelectionWithObjectsMap = (meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string }) => {
         _replaceSelectionWithObjectsMap(meshToIds, options);
     };
-    loadedObjectGroup.userData.replaceSelectionWithGroupsAndObjects = (groupIds: any, meshToIds: any, options?: any) => {
+    loadedObjectGroup.userData.replaceSelectionWithGroupsAndObjects = (groupIds: Set<string>, meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string; preserveAnchors?: boolean }) => {
         _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, options);
     };
-    loadedObjectGroup.userData.addOrToggleInSelection = (groupIds: Set<string> | null, meshToIds: Map<any, Set<number>> | null) => {
+    loadedObjectGroup.userData.addOrToggleInSelection = (groupIds: Set<string> | null, meshToIds: Map<PdeMesh, Set<number>> | null) => {
         _revertEphemeralPivotUndoIfAny();
 
         if (groupIds) {
@@ -2021,11 +2029,11 @@ export function initGizmo({
                     if (currentDirection !== lastDirections[axis]) {
                         lastDirections[axis] = currentDirection;
                         if (isPositive) {
-                            originalLines.forEach(line => { if (line.material) { (line.material as any).transparent = true; (line.material as any).opacity = 1; (line.material as any)._opacity = 1; } });
-                            negativeLines.forEach(line => { if (line.material) { (line.material as any).transparent = true; (line.material as any).opacity = 0.001; (line.material as any)._opacity = 0.001; } });
+                            originalLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 1; (line.material as GizmoMaterial)._opacity = 1; } });
+                            negativeLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 0.001; (line.material as GizmoMaterial)._opacity = 0.001; } });
                         } else {
-                            negativeLines.forEach(line => { if (line.material) { (line.material as any).transparent = true; (line.material as any).opacity = 1; (line.material as any)._opacity = 1; } });
-                            originalLines.forEach(line => { if (line.material) { (line.material as any).transparent = true; (line.material as any).opacity = 0.001; (line.material as any)._opacity = 0.001; } });
+                            negativeLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 1; (line.material as GizmoMaterial)._opacity = 1; } });
+                            originalLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 0.001; (line.material as GizmoMaterial)._opacity = 0.001; } });
                         }
                     }
                 }

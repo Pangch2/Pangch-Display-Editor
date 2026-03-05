@@ -4,6 +4,7 @@ import * as Overlay from './overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
 import { removeShearFromSelection } from './shear-remove';
 import type { GroupData } from './group';
+import type { GizmoState } from './gizmo';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_MAT4_B = new THREE.Matrix4();
@@ -27,8 +28,8 @@ interface VertexScaleContext {
     };
     loadedObjectGroup: THREE.Group;
     selectionHelper: THREE.Mesh;
-    getGizmoState: () => any;
-    setGizmoState: (updates: any) => void;
+    getGizmoState: () => GizmoState;
+    setGizmoState: (updates: Partial<GizmoState>) => void;
     getGroups: () => Map<string, GroupData>;
     getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
     updateHelperPosition: () => void;
@@ -269,7 +270,7 @@ export function processVertexScale(
         currentSelection.objects?.forEach((ids, mesh) => ids.forEach(id => addInstance(mesh as MeshType, id)));
 
         const state = getGizmoState();
-        const updates: Record<string, any> = {};
+        const updates: Partial<GizmoState> = {};
         if (state._gizmoAnchorValid) updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().applyMatrix4(transformMatrix);
         if (state._multiSelectionOriginAnchorValid) updates._multiSelectionOriginAnchorPosition = state._multiSelectionOriginAnchorPosition.clone().applyMatrix4(transformMatrix);
         setGizmoState(updates);
