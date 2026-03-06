@@ -1,3 +1,32 @@
+/**
+ * gizmo.ts — controls/ 레이어의 중앙 오케스트레이터
+ *
+ * 이 파일은 모든 하위 controls 모듈을 통합하여 사용자 입력(키보드/마우스)을
+ * 각 전담 모듈로 라우팅하는 진입점 역할을 한다.
+ *
+ * ── 주요 의존 관계 (이 파일 → 각 모듈) ──
+ *   gizmo-setup.ts  : setupGizmo() — TransformControls 초기화 및 음수 기즈모 라인 패치.
+ *                     initGizmo() 내부에서 단 한 번 호출.
+ *   group.ts        : GroupUtils.* — 그룹 CRUD/트리 탐색 유틸. createGroup/ungroupGroup/
+ *                     deleteSelectedItems/duplicateSelected 등에서 직접 호출.
+ *   overlay.ts      : Overlay.* — 선택 강조(BBox), 버텍스 스프라이트 렌더링.
+ *                     initGizmo()에서 setLoadedObjectGroup 후 updateSelectionOverlay()로 매 프레임 갱신.
+ *   select.ts       : Select.* — currentSelection 싱글턴 공유 및 선택 상태 조작 API.
+ *                     SelectionCallbacks 인터페이스를 통해 역참조 없이 콜백 주입.
+ *   custom-pivot.ts : CustomPivot.* — 피벗 위치 계산 및 SelectionCenter().
+ *                     _recomputePivotStateForSelection()과 SelectionCenter()에서 위임.
+ *   custom-pivot-remove.ts : resetCustomPivot() — Alt+Ctrl 단축키로 커스텀 피벗 초기화.
+ *   duplicate.ts    : Duplicate.duplicateGroupsAndObjects() — D 키 복제 처리.
+ *   delete.ts       : Delete.deleteSelectedItems() — Delete/Backspace 키 삭제 처리.
+ *   shear-remove.ts : removeShearFromSelection() — Alt+S 단축키로 Shear 제거.
+ *   camera.ts       : focusCameraOnSelection() — F 키 카메라 포커스.
+ *   drag.ts         : initDrag() — 마우스 드래그/Marquee 선택 초기화.
+ *   blockbench-scale.ts : computeBlockbenchPivotFrame/detectBlockbenchScaleAxes 등 —
+ *                         B 키 스케일 모드 전환 및 drag 핸들러 내 블록벤치 스케일 계산.
+ *   vertex-translate.ts : processVertexSnap() — 버텍스 모드 translate 클릭 처리.
+ *   vertex-rotate.ts    : processVertexRotate() — 버텍스 모드 rotate 클릭 처리.
+ *   vertex-scale.ts     : processVertexScale() — 버텍스 모드 scale 클릭 처리.
+ */
 import { setupGizmo } from './gizmo-setup';
 import type { GizmoLines, GizmoMaterial } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
@@ -81,7 +110,8 @@ export interface InitGizmoResult {
 }
 
 // ─── Aliases ────────────────────────────────────────────────────────────────
-
+// overlay.ts의 인스턴스/박스 유틸을 gizmo 내부에서 직접 호출하기 위한 로컬 별칭.
+// 각 함수는 select.ts, drag.ts, vertex-*.ts 에서도 동일하게 사용된다.
 const getInstanceCount = Overlay.getInstanceCount;
 const isInstanceValid = Overlay.isInstanceValid;
 const getDisplayType = Overlay.getDisplayType;
@@ -107,6 +137,10 @@ const _TMP_VEC3_B = new THREE.Vector3();
 // ─── Selection state ────────────────────────────────────────────────────────
 
 function _beginSelectionReplace(options?: { anchorMode?: string; detachTransform?: boolean; preserveAnchors?: boolean }): void {
+    // select.ts::beginSelectionReplace()를 호출하면서 gizmo 내부 콜백을 주입.
+    // → custom-pivot.ts::revertEphemeralPivotUndoIfAny 로 임시 피벗 되돌리기
+    // → transformControls.detach()으로 기즈모 해제
+    // → _clearGizmoAnchor()로 멀티셀렉션 앵커 초기화
     Select.beginSelectionReplace({
         revertEphemeralPivotUndoIfAny: _revertEphemeralPivotUndoIfAny,
         detachTransformControls: () => { if (transformControls) transformControls.detach(); },
@@ -228,6 +262,9 @@ function _clearSelectionState(): void {
 }
 
 function _recomputePivotStateForSelection(): void {
+    // custom-pivot.ts::recomputePivotStateForSelection()에 현재 선택 상태를 넘겨
+    // pivotOffset / isCustomPivot 플래그를 재계산한다.
+    // 선택 변경 시 항상 _commitSelectionChange() → 이 함수 순으로 호출된다.
     isCustomPivot = CustomPivot.recomputePivotStateForSelection(
         pivotMode,
         _isMultiSelection(),
@@ -906,6 +943,8 @@ function createGroup(): string | undefined {
         return;
     }
 
+    // group.ts::createGroupStructure()에 현재 선택된 그룹/객체 목록과 초기 위치를 전달.
+    // 반환된 newGroupId로 applySelection()을 호출해 신규 그룹을 즉시 선택 상태로 만든다.
     const groups = getGroups();
 
     let initialPosition = new THREE.Vector3();
@@ -929,6 +968,7 @@ function createGroup(): string | undefined {
         }
     }
 
+    // group.ts::createGroupStructure → 그룹 데이터 구조 생성 및 objectToGroup 맵 갱신
     const newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition);
 
     invalidateSelectionCaches();
@@ -945,6 +985,8 @@ function ungroupGroup(groupId: string): void {
 
     if (!groupId) { suppressVertexQueue = false; return; }
 
+    // group.ts::ungroupGroupStructure → 그룹을 해체하고 자식들을 부모 레벨로 올린다.
+    // 반환된 parentId가 있으면 부모 그룹을 선택, 없으면 전체 선택 해제.
     const result = GroupUtils.ungroupGroupStructure(loadedObjectGroup, groupId);
     if (!result) { suppressVertexQueue = false; return; }
 
@@ -972,6 +1014,10 @@ function deleteSelectedItems(): void {
     }
 
     try {
+        // delete.ts::deleteSelectedItems()에 현재 선택(currentSelection)과
+        // 선택 해제 콜백(resetSelectionAndDeselect)을 전달한다.
+        // 실제 메쉬 인스턴스 삭제(BatchedMesh/InstancedMesh 처리) 및
+        // GroupUtils 구조 정리는 delete.ts 내부에서 수행된다.
         Delete.deleteSelectedItems(loadedObjectGroup, currentSelection, { resetSelectionAndDeselect });
     } finally {
         suppressVertexQueue = false;
@@ -984,6 +1030,7 @@ function duplicateSelected(): void {
     try {
         if (!_hasAnySelection()) return;
 
+        // 복제 전 피벗 상태 저장: duplicate 후 선택이 교체되더라도 피벗 오프셋을 복원.
         const savedIsCustomPivot = isCustomPivot;
         const savedPivotOffset = pivotOffset.clone();
         const hadPrimary = !!currentSelection.primary;
@@ -1038,6 +1085,8 @@ export function initGizmo({
     setControls
 }: InitGizmoParams): InitGizmoResult {
     scene = s; camera = cam; renderer = rend; controls = orbitControls; loadedObjectGroup = lg;
+    // overlay.ts와 select.ts가 loadedObjectGroup을 직접 참조하도록 주입.
+    // 이 두 모듈은 독립적으로 동작하지만 그룹 데이터는 loadedObjectGroup.userData에서 읽는다.
     Overlay.setLoadedObjectGroup(lg);
     Select.setLoadedObjectGroup(lg);
 
@@ -1084,6 +1133,8 @@ export function initGizmo({
         }
     }, true);
 
+    // gizmo-setup.ts::setupGizmo → TransformControls 초기화 및 음수 방향 보조 라인 패치.
+    // 반환된 gizmoLines는 이후 drag 시작 시 방향 감지(detectBlockbenchScaleAxes)에 사용된다.
     const setupResult = setupGizmo(camera, renderer as THREE.Renderer, scene);
     transformControls = setupResult.transformControls;
     gizmoLines = setupResult.gizmoLines;
@@ -1457,6 +1508,9 @@ export function initGizmo({
             case 'q': {
                 const items = getSelectedItems();
                 if (items.length > 0) {
+                    // shear-remove.ts::removeShearFromSelection() —
+                    // 선택된 인스턴스들의 Gram-Schmidt 직교화로 Shear 성분 제거.
+                    // 성공 후 updateHelperPosition / updateSelectionOverlay 콜백으로 화면 갱신.
                     removeShearFromSelection(
                         items,
                         selectionHelper!,
@@ -1497,6 +1551,10 @@ export function initGizmo({
 
         if (event.key.toLowerCase() === 'f') {
             event.preventDefault();
+            // camera.ts::focusCameraOnSelection() — 선택 영역의 AABB를 계산해 콴주를
+            // 적절한 거리로 이동시키는 포커스 연산.
+            // getSelectionBoundingBox / _getSelectionCenterWorld는 overlay.ts 기반
+            // 함수로 gizmo.ts에서 주입한다.
             focusCameraOnSelection(camera, controls, _hasAnySelection(), getSelectionBoundingBox, _getSelectionCenterWorld);
             return;
         }
@@ -1591,6 +1649,10 @@ export function initGizmo({
             if (event.key === 'Alt' || event.key === 'Control') {
                 event.preventDefault();
 
+                // custom-pivot-remove.ts::resetCustomPivot() — Alt+Ctrl 조합으로
+                // 커스텀 피벗을 원점으로 품뢬설정(reset)한다.
+                // 플래그(PivotResetFlags)와 의존성(PivotDeps)을 주입하고
+                // 함수 실행 후 바냈는 플래그 값을 gizmo 지역 변수에 다시 돌려 쓴다.
                 const _pivotResetFlags: PivotResetFlags = {
                     isCustomPivot,
                     multiExplicitPivot:          _multiSelectionExplicitPivot,
@@ -1767,6 +1829,9 @@ export function initGizmo({
         return Overlay.getHoveredVertex(mouseNDC, camera, renderer);
     }
 
+    // drag.ts::initDrag() — Marquee 영역 선택 초기화.
+    // 리턴된 dragControls는 pointerdown/move/up 이벤트를 위임 처리하며,
+    // 내부에서 Select.replaceSelectionWithGroupsAndObjects를 콜백으로 호출한다.
     const dragControls: DragInterface = initDrag({
         renderer,
         camera,
@@ -1862,6 +1927,9 @@ export function initGizmo({
                     selectedVertexKeys.add(key);
 
                     if (selectedVertexKeys.size === 2) {
+                        // vertex 점 2개 선택 시 현재 gizmo 모드에 따라
+                        // vertex-translate.ts / vertex-rotate.ts / vertex-scale.ts 측으로 라우팅.
+                        // getGizmoState/setGizmoState를 통해 gizmo 내부 상태를 라이브 동기화한다.
                         const getGizmoState = (): GizmoState => ({
                             pivotMode, isCustomPivot, pivotOffset,
                             _gizmoAnchorValid, _gizmoAnchorPosition,

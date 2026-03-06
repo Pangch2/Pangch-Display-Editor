@@ -1,3 +1,15 @@
+/**
+ * select.ts — 선택 상태(SelectionState) 관리 및 레이쾐스팅 픽킹
+ *
+ * ── 호출 관계 ──
+ *   currentSelection: gizmo.ts가 직접 import해 생상태로 공유하는 싱글턴 선택 상태
+ *   SelectionCallbacks: gizmo.ts::getSelectionCallbacks()에서 생성해 주입 —
+ *                       역참조 없이 콜백 패턴으로 기즈모/피벗 상태를 업데이트
+ *   높이 사용 : gizmo.ts에서 beginSelectionReplace / replaceSelection* 등 API 호출
+ *   의존    : group.ts::getAllGroupChildren — 그룹 선택 시 하위 인스턴스 향산 (getSelectedItems)
+ *              : overlay.ts — pickInstanceByOverlayBox에서 AABB 레이쾐스팅
+ *   출력    : drag.ts — marquee 선택 후 replaceSelectionWithGroupsAndObjects 호출
+ */
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 import * as Overlay from './overlay';
@@ -43,6 +55,9 @@ export const currentSelection: SelectionState = {
     primary: null
 };
 
+// loadedObjectGroupForSelect: overlay.ts와 공유되는 루트 그룹.
+// gizmo.ts::initGizmo에서 setLoadedObjectGroup()로 주입되며,
+// getSelectedItems()가 그룹 한조 ID를 인스턴스 목록으로 포함(flatten)할 때 참조한다.
 let loadedObjectGroupForSelect: THREE.Group | null = null;
 let _selectedItemsCacheKey: string | null = null;
 let _selectedItemsCache: SelectedItem[] | null = null;
@@ -84,6 +99,8 @@ export function getSelectedItems(): SelectedItem[] {
     if (currentSelection.groups && currentSelection.groups.size > 0) {
         if (loadedObjectGroupForSelect) {
             for (const groupId of currentSelection.groups) {
+                // group.ts::getAllGroupChildren → 그룹 트리를 재귀 향산해
+                // 모든 맵 인스턴스를 { mesh, instanceId } 형태로 반환한다.
                 const children = GroupUtils.getAllGroupChildren(loadedObjectGroupForSelect, groupId);
                 children.forEach((child) => {
                     const uniqueKey = `${child.mesh.uuid}_${child.instanceId}`;
@@ -121,6 +138,8 @@ export function pickInstanceByOverlayBox(
     raycaster: THREE.Raycaster, 
     rootGroup: THREE.Group
 ): { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number } | null {
+    // overlay.ts의 getInstanceCount / isInstanceValid / getInstanceLocalBox / getInstanceWorldMatrix를 사용해
+    // 레이쾐스팅 대신 인스턴스별 AABB로 픽킹한다. (인스턴스마다 원래(geometry)는 다를 수 있어 직접 Raycaster.intersectObjects는 안정적이지 않음)
     const rayWorld = raycaster.ray.clone();
     const best: { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh | null; instanceId: number | undefined; distance: number } = { 
         mesh: null, 
@@ -202,6 +221,11 @@ export function beginSelectionReplace(
     callbacks: SelectionCallbacks, 
     { anchorMode = 'default', detachTransform = false, preserveAnchors = false } = {}
 ): void {
+    // gizmo.ts에서 주입한 SelectionCallbacks를 순서대로 실행:
+    // 1. custom-pivot.ts::revertEphemeralPivotUndoIfAny (임시 피벗 되돌리기)
+    // 2. transformControls.detach() (기즈모 해제)
+    // 3. clearSelectionState() (선택 상태 초기화)
+    // 4. _clearGizmoAnchor() (얕커 좌표 완전 초기화)
     if (callbacks.revertEphemeralPivotUndoIfAny) callbacks.revertEphemeralPivotUndoIfAny();
     if (detachTransform && callbacks.detachTransformControls) callbacks.detachTransformControls();
     
@@ -367,6 +391,9 @@ export function handleSelectionClick(
     loadedObjectGroup: THREE.Group,
     callbacks: SelectionCallbacks
 ): void {
+    // overlay.ts 기반 AABB 피킹으로 클릭한 인스턴스를 결정.
+    // Shift: 토글 추가, Ctrl/Meta: 그룹 계층 우회 (개별 오브젝트 선택).
+    // 그룹 선택 드릴다운: GroupUtils.getGroupChain으로 루트→하위 순차 선택을 지원.
     const picked = pickInstanceByOverlayBox(raycaster, loadedObjectGroup);
     
     if (!picked) {

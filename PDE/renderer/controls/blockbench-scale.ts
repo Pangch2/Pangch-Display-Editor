@@ -1,3 +1,17 @@
+/**
+ * blockbench-scale.ts — 블록벤치 방식 스케일 계산 및 피벗 프레임 변환
+ *
+ * ── 호출 관계 ──
+ *   입력 : gizmo.ts 키 B         — toggleBlockbenchScaleMode()
+ *          gizmo.ts dragging 시작 — computeBlockbenchPivotFrame(), detectBlockbenchScaleAxes()
+ *          gizmo.ts 'change' 이벤트 — computeBlockbenchScaleShift()
+ *   의존 : 없음 (Three.js 전용, 시스템 독립성 유지)
+ *
+ * ── 핵심 내용 ──
+ *   - 피벗 프레임(PivotFrame): 선택헬퍼의 월드 변환행렬로 로컬 주축 표준화
+ *   - detectBlockbenchScaleAxes: 스케일 드래그 전 gizmoLines 클릭 방향을 감지
+ *   - computeBlockbenchScaleShift: 스케일 중 피벗 기준 위치 보정 받환리팅
+ */
 import * as THREE from 'three/webgpu';
 
 export let blockbenchScaleMode: boolean = false;

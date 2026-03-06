@@ -1,3 +1,15 @@
+/**
+ * custom-pivot.ts — 커스텀 피벗 계산 및 선택 중심점(SelectionCenter) 로직
+ *
+ * ── 호출 관계 ──
+ *   입력 : gizmo.ts에서 _recomputePivotStateForSelection()으로 선택 변경 시 호출
+ *            : gizmo.ts에서 SelectionCenter()를 통해 타넷 위치 계산
+ *            : gizmo.ts에서 capturePivotUndoForCurrentSelection()으로 피벗 편집 실행 취소
+ *   의존 : overlay.ts  — getInstanceWorldMatrixForOrigin, getDisplayType, isItemDisplayHatEnabled,
+ *                           getInstanceLocalBoxMin, getGroupLocalBoundingBox, getGroupWorldMatrixWithFallback
+ *            : group.ts   — 직접 import 없이 Overlay를 경유해 그룹 메타데이터 접근
+ *   모듈 상태: _ephemeralPivotUndo, _pivotEditUndoCapture — 단일 편집 단위 취소/재실행 스택
+ */
 import * as THREE from 'three/webgpu';
 // @ts-ignore
 import * as GroupUtils from './group';

@@ -1,3 +1,12 @@
+/**
+ * custom-pivot-remove.ts — 커스텀 피벗 초기화 로직
+ *
+ * ── 호출 관계 ──
+ *   입력 : gizmo.ts keydown (Alt+Ctrl) — resetCustomPivot() 호출
+ *   파라미터: 모든 상태/플래그/의존성이 gizmo.ts에서 주입됨
+ *              PivotFlags 객체를 직접 수정하며 gizmo.ts가 다시 읽는다.
+ *   의존 : group.ts (GroupData 타입)
+ */
 import * as THREE from 'three/webgpu';
 import type { GroupData } from './group';
 

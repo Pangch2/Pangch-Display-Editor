@@ -1,3 +1,18 @@
+/**
+ * gizmo-setup.ts — TransformControls 초기화 및 음수 방향 보조 기즈모 라인 패치
+ *
+ * ── 호출 관계 ──
+ *   입력 : gizmo.ts::initGizmo() — setupGizmo()를 단 한 번 호출
+ *   출력 : 반환된 { transformControls, gizmoLines }가 gizmo.ts 전체에서 사용됨
+ *             gizmoLines: 드래그 시작 시 blockbench-scale.ts::detectBlockbenchScaleAxes에 전달
+ *
+ * ── 패치 내용 ──
+ *   - translate/scale 모드의 X/Y/Z 각 축 mesh를 복제하여 음수 방향 보조 라인 생성
+ *   - 각 복제된 라인 material의 opacity 제어로 화면에서 카맸라와 가까운 쪽 표시
+ *
+ * TransformControls 싔에 추가 시 반드시 scene.add(controls.getHelper()) 호출
+ * (setupGizmo 내부에서 처리됨)
+ */
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
 

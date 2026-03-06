@@ -1,3 +1,19 @@
+/**
+ * vertex-swap.ts — 버텍스 모드에서 선택 대상 교체(Swap) 로직
+ *
+ * ── 호출 관계 ──
+ *   입력 : vertex-translate.ts, vertex-rotate.ts, vertex-scale.ts에서
+ *              performSelectionSwap()를 직접 호출
+ *   타입 내보내기: QueueItem, QueueBundle, QueueEntry, SelectionSource
+ *              → gizmo.ts, overlay.ts에서 사용
+ *   의존 : overlay.ts — 스프라이트 조작
+ *            : gizmo.ts (GizmoState 타입) — 리직엵 잡지 않음, 컨텍스트로만 연결
+ *
+ * ── 핵심 로직 ──
+ *   - currentSelection의 primary를 targetSrc로 교체
+ *   - vertexQueue에서 해당 상신 팈쾼 포지션을 갱신
+ *   - preserveSelection 옵션 시 선택 유지 상태로 피벗만 이동
+ */
 import * as THREE from 'three/webgpu';
 import * as Overlay from './overlay';
 import { GroupData } from './group';
