@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from './group';
+import * as GroupUtils from '../structure/group';
 import * as Overlay from './overlay';
 
 // --- Types ---

@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from './group';
+import * as GroupUtils from '../structure/group';
 
 export interface ShearItem {
     mesh: THREE.InstancedMesh | THREE.BatchedMesh;

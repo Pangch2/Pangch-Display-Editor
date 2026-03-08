@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 // @ts-ignore
-import * as GroupUtils from './group';
+import * as GroupUtils from '../structure/group';
 // @ts-ignore
-import * as Overlay from './overlay.js';
+import * as Overlay from '../selection/overlay.js';
 
 /**
  * Interface representing an element in the selection (either a group or a specific object instance).

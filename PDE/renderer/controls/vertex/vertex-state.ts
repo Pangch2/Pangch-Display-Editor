@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import type { SelectionState } from './select';
+import type { SelectionState } from '../selection/select';
 import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 
 // ─── Types ──────────────────────────────────────────────────────────────────

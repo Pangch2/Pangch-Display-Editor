@@ -5,21 +5,19 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import * as THREE from 'three/webgpu';
 import {
     blockbenchScaleMode,
-    computeBlockbenchPivotFrame,
-    transformBoxToPivotFrame,
-    detectBlockbenchScaleAxes,
     computeBlockbenchScaleShift
-} from './blockbench-scale';
-import * as GroupUtils from './group';
-import * as Overlay from './overlay';
-import * as CustomPivot from './custom-pivot';
-import * as Duplicate from './duplicate';
-import * as Delete from './delete';
-import * as Select from './select';
-import * as VertexState from './vertex-state';
-import type { SelectionState, SelectedItem } from './select';
-import type { GroupData } from './group';
+} from './transform/blockbench-scale';
+import * as GroupUtils from './structure/group';
+import * as Overlay from './selection/overlay';
+import * as CustomPivot from './custom-pivot/custom-pivot';
+import * as Duplicate from './structure/duplicate';
+import * as Delete from './structure/delete';
+import * as Select from './selection/select';
+import * as VertexState from './vertex/vertex-state';
+import type { SelectionState, SelectedItem } from './selection/select';
+import type { GroupData } from './structure/group';
 import { initInputHandler } from './input-handler';
+import * as DragTransform from './transform/drag-transform';
 
 const { selectedVertexKeys, vertexQueue } = VertexState;
 
@@ -84,7 +82,6 @@ const getInstanceLocalBoxMin = Overlay.getInstanceLocalBoxMin;
 const getInstanceWorldMatrixForOrigin = Overlay.getInstanceWorldMatrixForOrigin;
 const calculateAvgOriginForChildren = Overlay.calculateAvgOriginForChildren;
 const getGroupWorldMatrixWithFallback = Overlay.getGroupWorldMatrixWithFallback;
-const unionTransformedBox3 = Overlay.unionTransformedBox3;
 const getInstanceLocalBox = Overlay.getInstanceLocalBox;
 const getInstanceWorldMatrix = Overlay.getInstanceWorldMatrix;
 const getGroupLocalBoundingBox = Overlay.getGroupLocalBoundingBox;
@@ -419,11 +416,7 @@ let isUniformScale = false;
 let isCustomPivot = false;
 let pivotOffset = new THREE.Vector3(0, 0, 0);
 
-const _tmpPrevInvMatrix = new THREE.Matrix4();
 const _tmpDeltaMatrix = new THREE.Matrix4();
-const _tmpInstanceMatrix = new THREE.Matrix4();
-const _tmpMeshWorldInverse = new THREE.Matrix4();
-const _tmpLocalDelta = new THREE.Matrix4();
 const _meshToInstanceIds = new Map<THREE.Object3D, number[]>();
 
 // ─── Selection helpers ───────────────────────────────────────────────────────
@@ -873,17 +866,7 @@ export function initGizmo({
             Overlay.prepareMultiSelectionDrag(currentSelection);
             draggingMode = transformControls!.mode;
 
-            const items = getSelectedItems();
-            _meshToInstanceIds.clear();
-            for (const { mesh, instanceId } of items) {
-                if (!mesh) continue;
-                let list = _meshToInstanceIds.get(mesh);
-                if (!list) {
-                    list = [];
-                    _meshToInstanceIds.set(mesh, list);
-                }
-                list.push(instanceId);
-            }
+            DragTransform.buildMeshToInstanceIds(getSelectedItems(), _meshToInstanceIds);
 
             if (transformControls!.axis === 'XYZ') isUniformScale = true;
 
@@ -899,39 +882,17 @@ export function initGizmo({
             }
 
             if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
-                dragInitialBoundingBox.makeEmpty();
-
-                selectionHelper!.updateMatrixWorld();
-                computeBlockbenchPivotFrame(selectionHelper!, currentSpace);
-
-                const singleGroupId = _getSingleSelectedGroupId();
-                if (singleGroupId) {
-                    const groupLocalBox = getGroupLocalBoundingBox(singleGroupId);
-                    if (!groupLocalBox.isEmpty()) {
-                        const groupWorldMat = getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
-                        const combinedMat = transformBoxToPivotFrame(groupWorldMat, _TMP_MAT4_B);
-                        unionTransformedBox3(dragInitialBoundingBox, groupLocalBox, combinedMat);
-                    }
-                } else {
-                    const items = getSelectedItems();
-                    if (items.length > 0) {
-                        const tempMat = new THREE.Matrix4();
-                        items.forEach(({ mesh, instanceId }: SelectedItem) => {
-                            const localBox = getInstanceLocalBox(mesh, instanceId);
-                            if (!localBox) return;
-                            getInstanceWorldMatrix(mesh, instanceId, tempMat);
-                            const combinedMat = transformBoxToPivotFrame(tempMat, _TMP_MAT4_A);
-                            unionTransformedBox3(dragInitialBoundingBox, localBox, combinedMat);
-                        });
-                    }
-                }
-
-                // inputHandler's updateDetectedAnchorDirections and detectBlockbenchScaleAxes will be called via inputHandler
-                const mouseInput = inputHandler.getMouseInput();
-                const detectedAnchorDirections = inputHandler.getDetectedAnchorDirections();
-                const newDirections = detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper!, currentSpace, detectedAnchorDirections);
-                inputHandler.updateDetectedAnchorDirections(newDirections.x, newDirections.y, newDirections.z);
-                dragAnchorDirections = newDirections;
+                const result = DragTransform.initBlockbenchDragState({
+                    selectionHelper: selectionHelper!, currentSpace,
+                    singleGroupId: _getSingleSelectedGroupId(),
+                    items: getSelectedItems(), dragInitialBoundingBox,
+                    getGroupLocalBoundingBox, getGroupWorldMatrixWithFallback,
+                    getInstanceLocalBox, getInstanceWorldMatrix, camera,
+                    mouseInput: inputHandler.getMouseInput(),
+                    detectedAnchorDirections: inputHandler.getDetectedAnchorDirections(),
+                    updateDetectedAnchorDirections: (x, y, z) => inputHandler.updateDetectedAnchorDirections(x, y, z)
+                });
+                dragAnchorDirections = result.dragAnchorDirections;
             }
 
         } else {
@@ -1092,66 +1053,17 @@ export function initGizmo({
             }
 
             selectionHelper!.updateMatrixWorld();
-            _tmpPrevInvMatrix.copy(previousHelperMatrix).invert();
-            _tmpDeltaMatrix.multiplyMatrices(selectionHelper!.matrixWorld, _tmpPrevInvMatrix);
-
-            const items = getSelectedItems();
-            _meshToInstanceIds.clear();
-            for (const { mesh, instanceId } of items) {
-                if (!mesh) continue;
-                let list = _meshToInstanceIds.get(mesh);
-                if (!list) {
-                    list = [];
-                    _meshToInstanceIds.set(mesh, list);
-                }
-                list.push(instanceId);
-            }
-
-            for (const [mesh, instanceIds] of _meshToInstanceIds) {
-                _tmpMeshWorldInverse.copy((mesh as THREE.Object3D).matrixWorld).invert();
-                _tmpLocalDelta.multiplyMatrices(_tmpMeshWorldInverse, _tmpDeltaMatrix);
-                _tmpLocalDelta.multiply((mesh as THREE.Object3D).matrixWorld);
-
-                for (let i = 0; i < instanceIds.length; i++) {
-                    const instanceId = instanceIds[i];
-                    (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, _tmpInstanceMatrix);
-                    _tmpInstanceMatrix.premultiply(_tmpLocalDelta);
-                    (mesh as THREE.InstancedMesh).setMatrixAt(instanceId, _tmpInstanceMatrix);
-                }
-
-                if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
-                    (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
-                }
-            }
+            DragTransform.computeDeltaMatrix(selectionHelper!.matrixWorld, previousHelperMatrix, _tmpDeltaMatrix);
+            DragTransform.buildMeshToInstanceIds(getSelectedItems(), _meshToInstanceIds);
+            DragTransform.applyDeltaToInstances(_meshToInstanceIds, _tmpDeltaMatrix);
 
             if (currentSelection.groups && currentSelection.groups.size > 0) {
-                const groups = getGroups();
-                const toUpdate = new Set<string>();
-
-                for (const rootId of currentSelection.groups) {
-                    if (!rootId) continue;
-                    toUpdate.add(rootId);
-                    const descendants = getAllDescendantGroups(rootId);
-                    for (const subId of descendants) toUpdate.add(subId);
-                }
-
-                for (const id of toUpdate) {
-                    const g = groups.get(id);
-                    if (!g) continue;
-
-                    if (!g.matrix) {
-                        const gPos = g.position || new THREE.Vector3();
-                        const gQuat = g.quaternion || new THREE.Quaternion();
-                        const gScale = g.scale || new THREE.Vector3(1, 1, 1);
-                        g.matrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
-                    }
-
-                    g.matrix.premultiply(_tmpDeltaMatrix);
-                    if (!g.position) g.position = new THREE.Vector3();
-                    if (!g.quaternion) g.quaternion = new THREE.Quaternion();
-                    if (!g.scale) g.scale = new THREE.Vector3(1, 1, 1);
-                    g.matrix.decompose(g.position, g.quaternion, g.scale);
-                }
+                DragTransform.applyDeltaToGroups({
+                    groups: getGroups(),
+                    selectedRootGroupIds: currentSelection.groups,
+                    deltaMatrix: _tmpDeltaMatrix,
+                    getAllDescendantGroups
+                });
             }
 
             previousHelperMatrix.copy(selectionHelper!.matrixWorld);

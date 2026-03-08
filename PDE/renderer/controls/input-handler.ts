@@ -1,17 +1,17 @@
 import * as THREE from 'three/webgpu';
 import type { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import * as VertexState from './vertex-state';
-import * as Overlay from './overlay';
-import * as Select from './select';
-import { resetCustomPivot } from './custom-pivot-remove';
-import { removeShearFromSelection } from './shear-remove';
+import * as VertexState from './vertex/vertex-state';
+import * as Overlay from './selection/overlay';
+import * as Select from './selection/select';
+import { resetCustomPivot } from './custom-pivot/custom-pivot-remove';
+import { removeShearFromSelection } from './transform/shear-remove';
 import { focusCameraOnSelection } from './camera';
-import { initDrag } from './drag';
-import type { DragInterface } from './drag';
-import { processVertexSnap } from './vertex-translate';
-import { processVertexRotate } from './vertex-rotate';
-import { processVertexScale } from './vertex-scale';
-import { toggleBlockbenchScaleMode } from './blockbench-scale';
+import { initDrag } from './selection/drag';
+import type { DragInterface } from './selection/drag';
+import { processVertexSnap } from './vertex/vertex-translate';
+import { processVertexRotate } from './vertex/vertex-rotate';
+import { processVertexScale } from './vertex/vertex-scale';
+import { toggleBlockbenchScaleMode } from './transform/blockbench-scale';
 import type { PdeMesh, OrbitControlsLike, GizmoLines, GizmoState, PivotResetFlags } from './gizmo';
 
 const { selectedVertexKeys, vertexQueue } = VertexState;

@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from './group';
-import type { GroupChildObject } from './group';
+import * as GroupUtils from '../structure/group';
+import type { GroupChildObject } from '../structure/group';
 
 // --- Types & Interfaces ---
 
