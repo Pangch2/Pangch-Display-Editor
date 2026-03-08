@@ -1,15 +1,3 @@
-/**
- * shear-remove.ts — 선택 대상의 Shear(전단 변형) 제거 및 행렬 정규화
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts keydown Q — getSelectedItems()로 수집한 항목과 함께 removeShearFromSelection() 호출
- *          vertex-scale.ts    — 스케일 후 Shear 제거에서도 호출
- *   파라미터: ShearCallbacks (SelectionCenter, updateHelperPosition, updateSelectionOverlay)를 gizmo.ts가 주입
- *   의존 : group.ts — getAllDescendantGroups, getGroups (Shear 제거 후 그룹 캐시드 행렬 파기)
- *
- * ── 알고리즘 ──
- *   Gram-Schmidt 직교화로 행렬에서 Shear 성분을 수학적으로 1패스에서 완전 제거
- */
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 

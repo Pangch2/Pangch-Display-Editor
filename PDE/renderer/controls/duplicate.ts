@@ -1,16 +1,3 @@
-/**
- * duplicate.ts — 선택 객체 및 그룹 복제 로직
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts::duplicateSelected() — D 키에서 Duplicate.duplicateGroupsAndObjects() 호출
- *   의존 : group.ts  — cloneGroupStructure(유저 ID 맵 유지 딥클론), getGroups, getObjectToGroup
- *            : overlay.ts — getDisplayType으로 BatchedMesh vs InstancedMesh 구분
- *            : entityMaterial.js — createEntityMaterial로 새 메쉬에 음팬컠 생성
- *
- * ── 특이 사항 ──
- *   - BatchedMesh: 기존 Batch에 인스턴스 추가 시도, 꽐 되면 새 BatchedMesh 생성 (batchPool 관리)
- *   - InstancedMesh (player_head): 별도 headPool로 관리 (_pendingHeadClones 리스트)
- */
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
@@ -717,8 +704,6 @@ function cloneInstance(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh
 }
 
 function cloneGroup(loadedObjectGroup: THREE.Group, groupId: string, parentId: string | null, idMap: Map<string, string>, _ctx: DuplicationContext): string | null {
-    // group.ts::cloneGroupStructure — 그룹 트리를 딥클론하고 idMap에 구 ID→신 ID 매핑을 기록.
-    // idMap은 이후 그룹 내 자식 클론 시 부모 ID 참조 갱신에 사용된다.
     return GroupUtils.cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap);
 }
 

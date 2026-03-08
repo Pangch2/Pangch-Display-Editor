@@ -1,18 +1,3 @@
-/**
- * vertex-scale.ts — 버텍스 모드에서의 스케일 및 박스 변형
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts pointerdown — 버텍스 2치클릭 + translate/rotate 첨패 시 scale 모드일 때 processVertexScale() 호출
- *   의존 : overlay.ts       — findSpritesByKeys
- *            : vertex-swap.ts   — performSelectionSwap 로 타겟 창 매칭
- *            : shear-remove.ts  — removeShearFromSelection — 스케일 후 Shear 성분 제거 (Ctrl 활성화시)
- *            : group.ts         — 그룹 행렬 계산
- *   컨텍스트: VertexScaleContext — gizmo.ts에서 getGizmoState/setGizmoState로 상태 동기화
- *
- * ── 로직 ──
- *   sprite1 → 스케일 대상 버텍스, sprite2 → 복사할 타겟 위치
- *   기준 코너(반대측)을 피벗으로 하는 비례 스케일 적용
- */
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 import * as Overlay from './overlay';
@@ -177,8 +162,6 @@ export function processVertexScale(
             try {
                 const items = isSrcEffectiveSelected ? getSelectedItems() : [{ mesh: src.mesh as THREE.InstancedMesh | THREE.BatchedMesh, instanceId: src.instanceId }];
                 const state = getGizmoState();
-                // Ctrl 누른 상태: 스케일 전 shear-remove.ts::removeShearFromSelection으로
-                // 행렬에서 Shear를 먼저 제거해 정확한 비례 스케일을 보장한다.
                 removeShearFromSelection(
                     items, selectionHelper, currentSelection, loadedObjectGroup,
                     state.pivotMode, state.isCustomPivot, state.pivotOffset,

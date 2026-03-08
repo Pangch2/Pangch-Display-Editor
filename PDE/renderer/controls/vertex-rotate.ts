@@ -1,18 +1,3 @@
-/**
- * vertex-rotate.ts — 버텍스 모드에서의 회전 및 피벗 기준 변환
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts pointerdown — 버텍스 2치클릭 + translate 처리 첨패 시 rotate 모드일 때 processVertexRotate() 호출
- *   의존 : overlay.ts   — findSpritesByKeys
- *            : vertex-swap.ts — performSelectionSwap
- *            : group.ts      — 그룹 회전 중심 행렬 계산
- *   컨텍스트: VertexRotateContext — gizmo.ts에서 getGizmoState/setGizmoState로 상태 동기화
- *
- * ── 로직 ──
- *   CASE 1: sprite1 = 기즘모(중심) → 회전 방향 무효, 선택 초기화
- *   CASE 2: sprite1 = 오브젝트 버텍스, sprite2 = 기즘모 또는 다른 버텍스
- *           → 반대 코너(pivot)를 기준으로 회전 적용
- */
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 import * as Overlay from './overlay';

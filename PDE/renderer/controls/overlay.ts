@@ -1,17 +1,3 @@
-/**
- * overlay.ts — 선택 강조(Bounding Box), 버텍스 포인트, 가이드라인 렌더링 + 인스턴스 유틸
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts::initGizmo()에서 setLoadedObjectGroup 후 updateSelectionOverlay()로 매 프레임 갱신
- *   의존 : group.ts — getGroups / getAllGroupChildren (그룹 뽔조에서 BBox 계산)
- *
- * ── 주요 소비자 ──
- *   select.ts      : pickInstanceByOverlayBox에서 getInstanceCount/isInstanceValid/getInstanceLocalBox/getInstanceWorldMatrix 사용
- *   drag.ts        : getInstanceCount/isInstanceValid/getInstanceWorldMatrixForOrigin 사용
- *   vertex-*.ts    : findSpritesByKeys — 클릭된 버텍스 키로 스프라이트 검색
- *   custom-pivot.ts: getGroupLocalBoundingBox, getGroupWorldMatrixWithFallback, getInstanceLocalBoxMin 사용
- *   gizmo.ts       : prepareMultiSelectionDrag / updateMultiSelectionOverlayDuringDrag / syncSelectionOverlay
- */
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { GroupChildObject } from './group';
@@ -72,8 +58,6 @@ let _dragCacheWorldMat3 = new Float32Array(0);
 let _dragCacheCount = 0;
 
 export function setLoadedObjectGroup(group: THREE.Group | null): void {
-    // gizmo.ts::initGizmo()가 호출하여 overlay와 루트 그룹을 동기화시킴다.
-    // select.ts도 별도로 setLoadedObjectGroup을 호출한다는 점에 주의.
     loadedObjectGroup = group;
 }
 

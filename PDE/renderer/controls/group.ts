@@ -1,22 +1,3 @@
-/**
- * group.ts — 그룹 뽔조 데이터 구조 전담 유틸
- *
- * 실제 렌더링 로직이 없는 순수 데이터 조작 모듈.
- * loadedObjectGroup.userData에 groups(Map) 및 objectToGroup(Map)을 데이터로 저장한다.
- *
- * ── 사용 모듈 ──
- *   gizmo.ts    : createGroupStructure, ungroupGroupStructure — G 키 그룹/해제
- *   delete.ts   : getAllDescendantGroups, updateGroupReferenceForMovedInstance, getGroups, getObjectToGroup
- *   select.ts   : getAllGroupChildren — getSelectedItems()에서 그룹 향산
- *   overlay.ts  : getAllGroupChildren, getGroups — BBox 계산
- *   duplicate.ts: cloneGroupStructure — 복제 시 그룹 트리 딥클론
- *   drag.ts     : getGroupChain, getObjectToGroup — Marquee 선택 시 루트 그룹 탐색
- *   vertex-*.ts : getGroupWorldMatrix, getAllGroupChildren — 주요 행렬 계산
- *
- * ── 핵심 데이터 구조 ──
- *   groups        : Map<groupId, GroupData>        - 전체 그룹 는트리
- *   objectToGroup : Map<"유제아uuid_instanceId", groupId"> - 맵 인스턴스 → 그룹 맵핑
- */
 import * as THREE from 'three/webgpu';
 
 // Types
@@ -203,9 +184,6 @@ export function updateGroupReferenceForMovedInstance(
     oldInstanceId: number,
     newInstanceId: number
 ): void {
-    // 호출자: delete.ts::_deleteInstancedMeshInstances()
-    // InstancedMesh Swap-Pop 단계에서 마지막 인스턴스가 삭제 위치로 이동할 때
-    // objectToGroup Map과 그룹의 children 내 instanceId를 갱신한다.
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
     const groups = getGroups(loadedObjectGroup);
 
@@ -237,9 +215,6 @@ export function createGroupStructure(
     selectedObjects: { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number }[],
     initialPosition: THREE.Vector3
 ): string {
-    // 호출자: gizmo.ts::createGroup()
-    // 새 그룹을 groups Map에 등록하고,
-    // 선택된 그룹/객체들을 새 그룹의 children에 이동시킨 후 newGroupId를 반환한다.
     const groups = getGroups(loadedObjectGroup);
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
 
@@ -320,8 +295,6 @@ export function ungroupGroupStructure(
     loadedObjectGroup: THREE.Group,
     groupId: string
 ): { parentId: string | null; children: GroupChild[] } | null {
-    // 호출자: gizmo.ts::ungroupGroup()
-    // 그룹을 해체하고 자식들을 부모 그룹 또는 최상위로 올린다.
     const groups = getGroups(loadedObjectGroup);
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
     const group = groups.get(groupId);

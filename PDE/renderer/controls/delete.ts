@@ -1,18 +1,3 @@
-/**
- * delete.ts — 선택 객체의 영구 삭제 로직
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts::deleteSelectedItems()가 Delete.deleteSelectedItems()를 호출
- *   의존 : group.ts (GroupUtils) — 그룹 트리 탐색 및 데이터 제거
- *
- * ── 내부 로직 흐름 ──
- *   1. 선택된 그룹의 모든 하위 그룹/인스턴스를 GroupUtils.getAllDescendantGroups로 수집
- *   2. objectToGroup Map에서 포인터 제거 (GroupUtils.getObjectToGroup)
- *   3. 실제 메쉬 인스턴스 삭제:
- *      - BatchedMesh  : _deleteBatchedMeshInstances()
- *      - InstancedMesh: _deleteInstancedMeshInstances() (Swap-Pop 방식)
- *   4. Swap-Pop 후 이동된 인스턴스 ID를 GroupUtils.updateGroupReferenceForMovedInstance로 동기화
- */
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { GroupData, GroupChild } from './group';
@@ -136,8 +121,6 @@ export function deleteSelectedItems(
         }
     };
 
-    // 1. 삭제할 그룹 및 하위 요소 식별
-    // group.ts::getAllDescendantGroups → 선택된 그룹의 모든 하위 그룹 ID를 재귀 탐색
     const allGroupsToDelete = new Set<string>();
     if (currentSelection.groups && currentSelection.groups.size > 0) {
         for (const gid of currentSelection.groups) {
@@ -149,7 +132,6 @@ export function deleteSelectedItems(
         }
     }
 
-    // group.ts::getGroups / getObjectToGroup → 실제 데이터: loadedObjectGroup.userData에 저장된 Map을 가져온다.
     const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, GroupData>;
     const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
@@ -215,9 +197,6 @@ export function deleteSelectedItems(
         byMesh.get(mesh)!.add(instanceId);
     }
 
-    // 인덱스 변경 전 선택 해제
-    // gizmo.ts에서 주입한 resetSelectionAndDeselect 콜백으로
-    // currentSelection 상태를 먼저 정리하고 기즈모를 해제한다.
     resetSelectionAndDeselect();
 
     // 5. 실제 메쉬 인스턴스 제거 실행

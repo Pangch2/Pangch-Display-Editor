@@ -1,14 +1,3 @@
-/**
- * camera.ts — 카메라 포커스 및 뷰 제어 로직
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts keydown F — focusCameraOnSelection() 호출
- *   파라미터:
- *     - hasAnySelection: select.ts::hasAnySelection()의 결과값을 gizmo가 주입
- *     - getSelectionBoundingBox: overlay.ts 기반으로 gizmo에서 생성한 람다
- *     - getSelectionCenterWorld: overlay.ts::calculateAvgOriginForChildren 기반 함수
- *   의존 : 없음 (Three.js 전용)
- */
 import * as THREE from 'three/webgpu';
 
 interface OrbitControlsLike {

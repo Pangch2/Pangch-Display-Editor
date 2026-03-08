@@ -1,18 +1,3 @@
-/**
- * vertex-translate.ts — 버텍스 모드에서의 Snap(이동) 및 객체 위치 조정
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts pointerdown — 버텍스 2치클릭 시 translate 모드일 때 processVertexSnap() 호출
- *   의존 : overlay.ts   — findSpritesByKeys 로 클릭된 스프라이트 검색
- *            : vertex-swap.ts — performSelectionSwap 로 타겟 객체 교체
- *            : group.ts      — 그룹 행렬으로 로컬 좌표 계산
- *   컨텍스트: VertexTranslateContext — gizmo.ts가 getGizmoState/setGizmoState를 통해 상태 동기화
- *
- * ── 로직 ──
- *   sprite1 = 원본 선택 포인트, sprite2 = 복사할 타겟 선택 포인트
- *   CASE 1: 선택 타겟 = 기즈모(중심) → 선택을 타겟 객체를 기준으로 찌음
- *   CASE 2: 선택 타겟 = 다른 객체의 버텍스 → snap(위치 정렬)
- */
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 import * as Overlay from './overlay';
@@ -167,8 +152,6 @@ export function processVertexSnap(
             if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
                 targetSrc = currentSelection.primary;
             }
-            // vertex-swap.ts::performSelectionSwap — 현재 선택의 primary를 targetSrc로 교체.
-            // preserveSelection: true 시 선택은 유지하고 기즈모 위치(피벗)만 이동한다.
             performSelectionSwap(sprite1.userData.source, targetSrc, {
                 currentSelection,
                 getGroups,

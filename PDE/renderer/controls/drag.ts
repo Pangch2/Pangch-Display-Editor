@@ -1,14 +1,3 @@
-/**
- * drag.ts — 마우스 드래그 및 Marquee 영역 선택 로직
- *
- * ── 호출 관계 ──
- *   입력 : gizmo.ts::initGizmo() — initDrag()로 등록, pointerdown/move/up 이벤트를 위임
- *   의존 : select.ts  — replaceSelectionWithGroupsAndObjects / replaceSelectionWithObjectsMap
- *              : overlay.ts  — getInstanceCount, isInstanceValid, getInstanceWorldMatrixForOrigin,
- *                              isItemDisplayHatEnabled (화면 AABB 특성사)
- *              : group.ts   — getGroupChain, getObjectToGroup (루트 그룹 탐색)
- *   getSelectionCallbacks: gizmo.ts가 주입한 콜백 세트 (피벗 리셋/작업전환 포함)
- */
 import * as THREE from 'three/webgpu';
 import * as Select from './select';
 import type { SelectionCallbacks } from './select';
@@ -276,12 +265,8 @@ export function initDrag({
                 });
 
                 if (ignoreGroups) {
-                    // Ctrl 키 누른 상태: 그룹 계층 무시하고 개별 인스턴스만 선택.
-                    // select.ts::replaceSelectionWithObjectsMap (getSelectionCallbacks 내 _replaceSelection... 래퍼)
                     _replaceSelectionWithObjectsMap(meshToIds, { anchorMode: 'center' });
                 } else {
-                    // 일반 Marquee: 루트 그룹 우선 선택.
-                    // select.ts::replaceSelectionWithGroupsAndObjects
                     _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'center' });
                 }
                 return true;
