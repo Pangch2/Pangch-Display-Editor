@@ -9,7 +9,8 @@
     "dev": "concurrently --kill-others-on-fail -n \"main,renderer\" \"npm:dev:main\" \"npm:dev:renderer\"",
     "build": "vite build",
     "pack": "electron-builder --dir",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "type-check": "tsc --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

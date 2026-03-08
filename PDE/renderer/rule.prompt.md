@@ -3,8 +3,7 @@
 - 모든 응답은 한국어로 작성하며, 요구사항이 모호할 경우 질문할 것.
 
 # 핵심 기술 원칙 (절대 기준)
-- Three.js r183+ 필수. 반드시 `import * as THREE from 'three/webgpu'`를 사용할 것.
-- Vanilla JS & TS & CSS3만 사용 (프레임워크 금지).
+- Three.js r183+ 필수.
 - TypeScript는 명확한 타입 정의와 인터페이스 사용을 엄격히 준수할 것.
 - TransformControls 사용 시 반드시 `scene.add(controls.getHelper())` 호출.
 

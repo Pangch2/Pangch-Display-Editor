@@ -940,7 +940,7 @@ function createGroup(): string | undefined {
     const items = getSelectedItems();
     if (items.length === 0 && !_hasAnySelection()) {
         suppressVertexQueue = false;
-        return;
+        return undefined;
     }
 
     // group.ts::createGroupStructure()에 현재 선택된 그룹/객체 목록과 초기 위치를 전달.
