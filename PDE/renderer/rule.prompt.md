@@ -18,7 +18,8 @@
 - `renderer/controls/`: 조작 핵심 로직 (기능별 파일 분리 엄수)
   - `group.ts`: 그룹 구조 관리 유틸리티. 그룹 CRUD, 피벗 판별, 트리 탐색, 클론 등 그룹 데이터 조작 전담.
   - `duplicate.ts`: 선택된 객체 및 그룹의 복제 로직 (Batch/Instanced 대응)
-  - `gizmo.ts`: renderer/controls/의 중앙 오케스트레이터. 트랜스폼 기즈모 관리, 선택(Select), 그룹(Group), 드래그(Drag) 등 개별 제어 로직을 통합하고 사용자 단축키 및 입력을 총괄함.
+  - `gizmo.ts`: renderer/controls/의 중앙 오케스트레이터. 트랜스폼 기즈모 관리, 선택(Select), 그룹(Group), 드래그(Drag) 등 개별 제어 로직을 통합함.
+  - `input-handler.ts`: Gizmo의 입력 핸들링 및 단축키 바인딩 (Input & Key Bindings) 로직 전담.
   - `camera.ts`: 카메라 포커스 및 뷰 제어 로직
   - `delete.ts`: 선택된 그룹 및 객체(Batched/Instanced)의 영구 삭제 로직
   - `drag.ts`: 드래그 및 영역 선택(Marquee Selection) 로직 관리
@@ -31,6 +32,7 @@
   - `shear-remove.ts`: 선택된 대상의 Shear(전단 변형) 제거 및 행렬 정규화 로직 전담
   - `vertex-rotate.ts`: 버텍스 모드에서의 회전 및 피벗 기준 변환 로직 전담
   - `vertex-scale.ts`: 버텍스 모드에서의 스케일 및 박스 변형 로직 전담 (Snap/Rotate/Scale 연동)
+  - `vertex-state.ts`: 버텍스 선택 상태(Vertex Selection State) 및 큐(Queue) 관리 로직 전담
   - `vertex-swap.ts`: 버텍스 모드에서 선택 대상을 교체하거나 큐에 추가하는 로직 전담 (Snap/Rotate/Scale 연동)
   - `vertex-translate.ts`: 버텍스 모드에서의 Snap(이동) 및 객체 위치 조정 로직 전담
 

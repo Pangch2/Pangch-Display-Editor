@@ -1,10 +1,10 @@
 import { setupGizmo } from './gizmo-setup';
 import type { GizmoLines, GizmoMaterial } from './gizmo-setup';
+export type { GizmoLines, GizmoMaterial };
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
 import {
     blockbenchScaleMode,
-    toggleBlockbenchScaleMode,
     computeBlockbenchPivotFrame,
     transformBoxToPivotFrame,
     detectBlockbenchScaleAxes,
@@ -13,26 +13,21 @@ import {
 import * as GroupUtils from './group';
 import * as Overlay from './overlay';
 import * as CustomPivot from './custom-pivot';
-import { resetCustomPivot } from './custom-pivot-remove';
 import * as Duplicate from './duplicate';
 import * as Delete from './delete';
-import { removeShearFromSelection } from './shear-remove';
-import { focusCameraOnSelection } from './camera';
-import { initDrag } from './drag';
-import type { DragInterface } from './drag';
-import { processVertexSnap } from './vertex-translate';
-import { processVertexRotate } from './vertex-rotate';
-import { processVertexScale } from './vertex-scale';
 import * as Select from './select';
+import * as VertexState from './vertex-state';
 import type { SelectionState, SelectedItem } from './select';
 import type { GroupData } from './group';
-import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
+import { initInputHandler } from './input-handler';
+
+const { selectedVertexKeys, vertexQueue } = VertexState;
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
-type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+export type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
 
-interface OrbitControlsLike {
+export interface OrbitControlsLike {
     enabled: boolean;
     target: THREE.Vector3;
     screenSpacePanning: boolean;
@@ -52,7 +47,7 @@ export interface GizmoState {
     _multiSelectionOriginAnchorInitialPosition: THREE.Vector3;
 }
 
-interface PivotResetFlags {
+export interface PivotResetFlags {
     isCustomPivot: boolean;
     multiExplicitPivot: boolean;
     multiAnchorValid: boolean;
@@ -258,172 +253,27 @@ let previousHelperMatrix = new THREE.Matrix4();
 // ─── Selection state ────────────────────────────────────────────────────────
 
 const currentSelection: SelectionState = Select.currentSelection;
-const selectedVertexKeys = new Set<string>();
-const vertexQueue: QueueItem[] = [];
-let suppressVertexQueue = false;
-
-const VERTEX_QUEUE_MAX_SIZE = 1;
-
-const _unitCubeCorners: THREE.Vector3[] = [
-    new THREE.Vector3(-0.5, -0.5, -0.5),
-    new THREE.Vector3( 0.5, -0.5, -0.5),
-    new THREE.Vector3( 0.5,  0.5, -0.5),
-    new THREE.Vector3(-0.5,  0.5, -0.5),
-    new THREE.Vector3(-0.5, -0.5,  0.5),
-    new THREE.Vector3( 0.5, -0.5,  0.5),
-    new THREE.Vector3( 0.5,  0.5,  0.5),
-    new THREE.Vector3(-0.5,  0.5,  0.5)
-];
 
 function _pushToVertexQueue(): void {
-    if (suppressVertexQueue || !isVertexMode) return;
+    VertexState.pushToVertexQueue({
+        isVertexMode,
+        currentSelection,
+        selectionHelper,
+        getSelectionCenterWorld: _getSelectionCenterWorld,
+        getGroupWorldMatrixWithFallback,
+        getInstanceWorldMatrix,
+        getRotationFromMatrix,
+        getGroupWorldAABB,
+        isInstanceValid,
+        getInstanceLocalBox
+    });
+}
 
-    let totalCount = 0;
-    if (currentSelection.groups) totalCount += currentSelection.groups.size;
-    if (currentSelection.objects) {
-        for (const ids of currentSelection.objects.values()) totalCount += ids.size;
-    }
-
-    let currentGizmoPos: THREE.Vector3 | null = null;
-    let currentGizmoQuat: THREE.Quaternion | null = null;
-    if ((currentSelection.groups.size > 0 || currentSelection.objects.size > 0)) {
-        currentGizmoPos = new THREE.Vector3();
-        currentGizmoQuat = new THREE.Quaternion();
-        if (selectionHelper) {
-            currentGizmoPos.copy(selectionHelper.position);
-            currentGizmoQuat.copy(selectionHelper.quaternion);
-        } else {
-            _getSelectionCenterWorld(currentGizmoPos);
-            currentGizmoQuat.identity();
-        }
-    }
-
-    const centerKey = currentGizmoPos
-        ? `CENTER_${currentGizmoPos.x.toFixed(4)}_${currentGizmoPos.y.toFixed(4)}_${currentGizmoPos.z.toFixed(4)}`
-        : null;
-    const isCenterSelected = centerKey ? selectedVertexKeys.has(centerKey) : false;
-
-    if (isCenterSelected && centerKey) {
-        selectedVertexKeys.delete(centerKey);
-    }
-
-    const itemsToAdd: Array<{ type: 'group' | 'object'; id?: string; mesh?: PdeMesh; instanceId?: number }> = [];
-    if (currentSelection.groups.size > 0) {
-        for (const gid of currentSelection.groups) {
-            itemsToAdd.push({ type: 'group', id: gid });
-        }
-    }
-    if (currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            for (const id of ids) {
-                itemsToAdd.push({ type: 'object', mesh, instanceId: id });
-            }
-        }
-    }
-
-    const tempMat = _TMP_MAT4_A;
-    const tempInv = _TMP_MAT4_B;
-
-    const bundleItems: QueueEntry[] = [];
-    for (const item of itemsToAdd) {
-        let localPos: THREE.Vector3 | null = null;
-        let localQuat: THREE.Quaternion | null = null;
-
-        if (currentGizmoPos) {
-            if (item.type === 'group') {
-                getGroupWorldMatrixWithFallback(item.id!, tempMat);
-            } else {
-                getInstanceWorldMatrix(item.mesh, item.instanceId, tempMat);
-            }
-
-            tempInv.copy(tempMat).invert();
-            localPos = currentGizmoPos.clone().applyMatrix4(tempInv);
-
-            if (currentGizmoQuat) {
-                const objQuat = getRotationFromMatrix(tempMat);
-                localQuat = objQuat.invert().multiply(currentGizmoQuat);
-            }
-        }
-
-        bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat });
-
-        if (isCenterSelected && localPos) {
-            const idStr = item.type === 'group'
-                ? `G_${item.id}`
-                : `O_${item.mesh.uuid}_${item.instanceId}`;
-            const qKey = `QUEUE_${idStr}_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
-            selectedVertexKeys.add(qKey);
-        }
-    }
-
-    if (bundleItems.length > 0) {
-        vertexQueue.push({ type: 'bundle', items: bundleItems } as QueueBundle);
-    }
-
-    while (vertexQueue.length > VERTEX_QUEUE_MAX_SIZE) {
-        const removedItem = vertexQueue.shift()!;
-
-        const removeKeysForSubItem = (sub: QueueEntry) => {
-            const idStr = sub.type === 'group'
-                ? `G_${sub.id}`
-                : `O_${sub.mesh.uuid}_${sub.instanceId}`;
-            const prefix = `QUEUE_${idStr}_`;
-
-            for (const key of selectedVertexKeys) {
-                if (key.startsWith(prefix)) {
-                    selectedVertexKeys.delete(key);
-                }
-            }
-
-            let matrix: THREE.Matrix4 | null = null;
-            const tempSize = _TMP_VEC3_A;
-            const tempCenter = _TMP_VEC3_B;
-
-            if (sub.type === 'group') {
-                const groupId = sub.id as string;
-                const worldBox = getGroupWorldAABB(groupId);
-                if (worldBox && !worldBox.isEmpty()) {
-                    worldBox.getSize(tempSize);
-                    worldBox.getCenter(tempCenter);
-                    matrix = _TMP_MAT4_B;
-                    matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                    matrix.scale(tempSize);
-                }
-            } else if (sub.type === 'object') {
-                const { mesh, instanceId } = sub;
-                if (isInstanceValid(mesh, instanceId)) {
-                    const localBox = getInstanceLocalBox(mesh, instanceId);
-                    if (localBox) {
-                        localBox.getSize(tempSize);
-                        localBox.getCenter(tempCenter);
-
-                        const worldMat = getInstanceWorldMatrix(mesh, instanceId, _TMP_MAT4_A);
-                        matrix = _TMP_MAT4_B;
-                        matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
-                        matrix.scale(tempSize);
-                        matrix.premultiply(worldMat);
-                    }
-                }
-            }
-
-            if (matrix) {
-                const v = new THREE.Vector3();
-                for (const corner of _unitCubeCorners) {
-                    v.copy(corner).applyMatrix4(matrix);
-                    const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
-                    if (selectedVertexKeys.has(key)) {
-                        selectedVertexKeys.delete(key);
-                    }
-                }
-            }
-        };
-
-        if ((removedItem as QueueBundle).type === 'bundle') {
-            (removedItem as QueueBundle).items.forEach(removeKeysForSubItem);
-        } else {
-            removeKeysForSubItem(removedItem as QueueEntry);
-        }
-    }
+function _promoteVertexQueueBundleOnExit(): boolean {
+    return VertexState.promoteVertexQueueBundleOnExit({
+        isInstanceValid,
+        replaceSelectionWithGroupsAndObjects: _replaceSelectionWithGroupsAndObjects
+    });
 }
 
 // ─── Pivot / anchor state ────────────────────────────────────────────────────
@@ -526,8 +376,7 @@ function getSelectionCallbacks(): Select.SelectionCallbacks {
         updateHelperPosition: () => updateHelperPosition(),
         updateSelectionOverlay: () => updateSelectionOverlay(),
         pushToVertexQueue: () => {
-            vertexQueue.length = 0;
-            selectedVertexKeys.clear();
+            VertexState.clearVertexState();
         },
         hasVertexQueue: () => vertexQueue.length > 0
     };
@@ -637,8 +486,7 @@ function resetSelectionAndDeselect(): void {
         _revertEphemeralPivotUndoIfAny();
         transformControls!.detach();
         _clearSelectionState();
-        vertexQueue.length = 0;
-        selectedVertexKeys.clear();
+        VertexState.clearVertexState();
         _clearGizmoAnchor();
 
         pivotOffset.set(0, 0, 0);
@@ -860,48 +708,13 @@ function _commitSelectionChange(): void {
     updateSelectionOverlay();
 }
 
-function _promoteVertexQueueBundleOnExit(): boolean {
-    if (!Array.isArray(vertexQueue) || vertexQueue.length === 0) return false;
-
-    const bundle = vertexQueue.find((item): item is QueueBundle =>
-        item != null && item.type === 'bundle' && Array.isArray((item as QueueBundle).items)
-    );
-    if (!bundle || !bundle.items || bundle.items.length === 0) return false;
-
-    const groupIds = new Set<string>();
-    const meshToIds = new Map<PdeMesh, Set<number>>();
-
-    for (const sub of bundle.items) {
-        if (!sub) continue;
-        if (sub.type === 'group' && sub.id) {
-            groupIds.add(sub.id);
-            continue;
-        }
-        if (sub.type === 'object' && sub.mesh && Number.isInteger(sub.instanceId) && isInstanceValid(sub.mesh, sub.instanceId!)) {
-            let ids = meshToIds.get(sub.mesh);
-            if (!ids) {
-                ids = new Set();
-                meshToIds.set(sub.mesh, ids);
-            }
-            ids.add(sub.instanceId!);
-        }
-    }
-
-    let total = groupIds.size;
-    for (const ids of meshToIds.values()) total += ids.size;
-    if (total <= 1) return false;
-
-    _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'default', preserveAnchors: true });
-    return true;
-}
-
 function createGroup(): string | undefined {
-    suppressVertexQueue = true;
+    VertexState.setSuppressVertexQueue(true);
     vertexQueue.length = 0;
 
     const items = getSelectedItems();
     if (items.length === 0 && !_hasAnySelection()) {
-        suppressVertexQueue = false;
+        VertexState.setSuppressVertexQueue(false);
         return undefined;
     }
 
@@ -932,20 +745,20 @@ function createGroup(): string | undefined {
 
     invalidateSelectionCaches();
     applySelection(null, [], newGroupId);
-    suppressVertexQueue = false;
+    VertexState.setSuppressVertexQueue(false);
 
     console.log(`Group created: ${newGroupId}`);
     return newGroupId;
 }
 
 function ungroupGroup(groupId: string): void {
-    suppressVertexQueue = true;
+    VertexState.setSuppressVertexQueue(true);
     vertexQueue.length = 0;
 
-    if (!groupId) { suppressVertexQueue = false; return; }
+    if (!groupId) { VertexState.setSuppressVertexQueue(false); return; }
 
     const result = GroupUtils.ungroupGroupStructure(loadedObjectGroup, groupId);
-    if (!result) { suppressVertexQueue = false; return; }
+    if (!result) { VertexState.setSuppressVertexQueue(false); return; }
 
     const { parentId } = result;
 
@@ -957,28 +770,28 @@ function ungroupGroup(groupId: string): void {
         resetSelectionAndDeselect();
     }
 
-    suppressVertexQueue = false;
+    VertexState.setSuppressVertexQueue(false);
     console.log(`Group removed: ${groupId}`);
 }
 
 function deleteSelectedItems(): void {
-    suppressVertexQueue = true;
+    VertexState.setSuppressVertexQueue(true);
     vertexQueue.length = 0;
 
     if (!_hasAnySelection()) {
-        suppressVertexQueue = false;
+        VertexState.setSuppressVertexQueue(false);
         return;
     }
 
     try {
         Delete.deleteSelectedItems(loadedObjectGroup, currentSelection, { resetSelectionAndDeselect });
     } finally {
-        suppressVertexQueue = false;
+        VertexState.setSuppressVertexQueue(false);
     }
 }
 
 function duplicateSelected(): void {
-    suppressVertexQueue = true;
+    VertexState.setSuppressVertexQueue(true);
     vertexQueue.length = 0;
     try {
         if (!_hasAnySelection()) return;
@@ -1023,7 +836,7 @@ function duplicateSelected(): void {
 
         console.log('Duplication complete');
     } finally {
-        suppressVertexQueue = false;
+        VertexState.setSuppressVertexQueue(false);
     }
 }
 
@@ -1049,40 +862,6 @@ export function initGizmo({
         new THREE.MeshBasicMaterial({ visible: false })
     );
     scene.add(selectionHelper);
-
-    const mouseInput = new THREE.Vector2();
-    let detectedAnchorDirections: { x: boolean | null; y: boolean | null; z: boolean | null } = { x: null, y: null, z: null };
-
-    renderer.domElement.addEventListener('pointerdown', (event: PointerEvent) => {
-        const rect = renderer.domElement.getBoundingClientRect();
-        mouseInput.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-        mouseInput.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-        detectedAnchorDirections = { x: null, y: null, z: null };
-
-        if (!transformControls!.dragging) {
-            raycaster.setFromCamera(mouseInput, camera);
-            const gizmo = transformControls!.getHelper();
-            const intersects = raycaster.intersectObject(gizmo, true);
-
-            if (intersects.length > 0) {
-                const object = intersects[0].object;
-                if (object.name === 'XYZ') {
-                    isUniformScale = true;
-                } else {
-                    isUniformScale = false;
-                    const check = (axis: string): boolean | null => {
-                        if (gizmoLines[axis as keyof GizmoLines].negative.includes(object as THREE.Mesh)) return false;
-                        if (gizmoLines[axis as keyof GizmoLines].original.includes(object as THREE.Mesh)) return true;
-                        return null;
-                    };
-                    detectedAnchorDirections.x = check('X');
-                    detectedAnchorDirections.y = check('Y');
-                    detectedAnchorDirections.z = check('Z');
-                }
-            }
-        }
-    }, true);
 
     const setupResult = setupGizmo(camera, renderer as THREE.Renderer, scene);
     transformControls = setupResult.transformControls;
@@ -1147,7 +926,12 @@ export function initGizmo({
                     }
                 }
 
-                dragAnchorDirections = detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper!, currentSpace, detectedAnchorDirections);
+                // inputHandler's updateDetectedAnchorDirections and detectBlockbenchScaleAxes will be called via inputHandler
+                const mouseInput = inputHandler.getMouseInput();
+                const detectedAnchorDirections = inputHandler.getDetectedAnchorDirections();
+                const newDirections = detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper!, currentSpace, detectedAnchorDirections);
+                inputHandler.updateDetectedAnchorDirections(newDirections.x, newDirections.y, newDirections.z);
+                dragAnchorDirections = newDirections;
             }
 
         } else {
@@ -1376,424 +1160,80 @@ export function initGizmo({
         }
     });
 
-    const handleKeyPress = (key: string): void => {
-        const resetHelperRotationForWorldSpace = () => {
-            if (currentSpace !== 'world') return;
-            const items = getSelectedItems();
-            if (items.length > 0) {
-                selectionHelper!.quaternion.set(0, 0, 0, 1);
-                selectionHelper!.updateMatrixWorld();
-                previousHelperMatrix.copy(selectionHelper!.matrixWorld);
-            }
-        };
-
-        switch (key) {
-            case 'v':
-                isVertexMode = !isVertexMode;
-                console.log(isVertexMode ? 'Vertex mode activated' : 'Vertex mode deactivated');
-
-                if (isVertexMode) {
-                    transformControls!.detach();
-                } else {
-                    _promoteVertexQueueBundleOnExit();
-                    vertexQueue.length = 0;
-                    selectedVertexKeys.clear();
-                    updateHelperPosition();
-                }
-                updateSelectionOverlay();
-                break;
-
-            case 't':
-                transformControls!.setMode('translate');
-                resetHelperRotationForWorldSpace();
-                break;
-            case 'r':
-                transformControls!.setMode('rotate');
-                resetHelperRotationForWorldSpace();
-                break;
-            case 's':
-                transformControls!.setMode('scale');
-                resetHelperRotationForWorldSpace();
-                break;
-            case 'd':
-                duplicateSelected();
-                break;
-            case 'x': {
-                currentSpace = currentSpace === 'world' ? 'local' : 'world';
-                transformControls!.setSpace(currentSpace);
-                updateHelperPosition();
-                updateSelectionOverlay();
-                console.log('TransformControls Space:', currentSpace);
-                break;
-            }
-            case 'z': {
-                const oldPos = selectionHelper!.position.clone();
-                const oldKey = `CENTER_${oldPos.x.toFixed(4)}_${oldPos.y.toFixed(4)}_${oldPos.z.toFixed(4)}`;
-                const wasCenterSelected = selectedVertexKeys.has(oldKey);
-
-                if (pivotMode === 'center') {
-                    const prevPos = selectionHelper!.position.clone();
-                    updateHelperPosition();
-                    if (prevPos.distanceTo(selectionHelper!.position) < 0.001) {
-                        pivotMode = 'origin';
-                        updateHelperPosition();
-                    }
-                } else {
-                    pivotMode = 'center';
-                    updateHelperPosition();
-                }
-
-                if (wasCenterSelected) {
-                    selectedVertexKeys.delete(oldKey);
-                    const newPos = selectionHelper!.position;
-                    const newKey = `CENTER_${newPos.x.toFixed(4)}_${newPos.y.toFixed(4)}_${newPos.z.toFixed(4)}`;
-                    selectedVertexKeys.add(newKey);
-                }
-
-                updateSelectionOverlay();
-                console.log('Pivot Mode:', pivotMode);
-                break;
-            }
-            case 'q': {
-                const items = getSelectedItems();
-                if (items.length > 0) {
-                    removeShearFromSelection(
-                        items,
-                        selectionHelper!,
-                        currentSelection,
-                        loadedObjectGroup,
-                        pivotMode,
-                        isCustomPivot,
-                        pivotOffset,
-                        { SelectionCenter, updateHelperPosition, updateSelectionOverlay }
-                    );
-                }
-                break;
-            }
-            case 'b': {
-                toggleBlockbenchScaleMode();
-                break;
-            }
-            case 'g': {
-                const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
-                const hasObjects = currentSelection.objects && currentSelection.objects.size > 0;
-
-                if (groupCount === 1 && !hasObjects) {
-                    const gid = Array.from(currentSelection.groups)[0];
-                    if (gid) ungroupGroup(gid);
-                    resetSelectionAndDeselect();
-                    break;
-                }
-
-                const items = getSelectedItems();
-                if (items.length > 0) createGroup();
-                break;
-            }
-        }
-    };
-
-    window.addEventListener('keydown', (event: KeyboardEvent) => {
-        if ((event.target as HTMLElement).tagName === 'INPUT' || (event.target as HTMLElement).tagName === 'TEXTAREA') return;
-
-        if (event.key.toLowerCase() === 'f') {
-            event.preventDefault();
-            focusCameraOnSelection(camera, controls, _hasAnySelection(), getSelectionBoundingBox, _getSelectionCenterWorld);
-            return;
-        }
-
-        if (event.key === 'Delete' || event.key === 'Backspace') {
-            event.preventDefault();
-            deleteSelectedItems();
-            return;
-        }
-
-        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'a') {
-            event.preventDefault();
-            const all = _selectAllObjectsVisibleInScene();
-
-            let totalCount = 0;
-            for (const [, ids] of all) totalCount += ids.size;
-
-            const mode = (totalCount > 1) ? 'center' : 'default';
-            _replaceSelectionWithObjectsMap(all, { anchorMode: mode });
-            return;
-        }
-
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
-            event.preventDefault();
-            const groupIds = new Set<string>();
-            const meshToIds = new Map<PdeMesh, Set<number>>();
-
-            if (loadedObjectGroup) {
-                const objectToGroup = getObjectToGroup();
-                loadedObjectGroup.traverse((obj: THREE.Object3D) => {
-                    if (!obj || (!(obj as THREE.InstancedMesh).isInstancedMesh && !(obj as THREE.BatchedMesh).isBatchedMesh)) return;
-                    if (obj.visible === false) return;
-
-                    const instanceCount = getInstanceCount(obj as PdeMesh);
-                    if (instanceCount <= 0) return;
-
-                    for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                        if (!isInstanceValid(obj as PdeMesh, instanceId)) continue;
-
-                        const key = getGroupKey(obj, instanceId);
-                        const immediateGroupId = objectToGroup.get(key);
-                        if (immediateGroupId) {
-                            const chain = getGroupChain(immediateGroupId);
-                            const root = chain && chain.length > 0 ? chain[0] : immediateGroupId;
-                            if (root) groupIds.add(root);
-                            continue;
-                        }
-
-                        let set = meshToIds.get(obj as PdeMesh);
-                        if (!set) {
-                            set = new Set();
-                            meshToIds.set(obj as PdeMesh, set);
-                        }
-                        set.add(instanceId);
-                    }
-                });
-            }
-
-            let objectCount = 0;
-            for (const [, ids] of meshToIds) objectCount += ids.size;
-
-            const totalCount = groupIds.size + objectCount;
-            const mode = (totalCount > 1) ? 'center' : 'default';
-
-            _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: mode });
-            return;
-        }
-
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') {
-            event.preventDefault();
-            const hasGroups = currentSelection.groups && currentSelection.groups.size > 0;
-            if (hasGroups) {
-                const ids = Array.from(currentSelection.groups);
-                ids.sort((a, b) => getGroupChain(a).length - getGroupChain(b).length).reverse();
-                ids.forEach(id => ungroupGroup(id));
-                resetSelectionAndDeselect();
-            }
-            return;
-        }
-
-        if (event.key === 'Alt') {
-            event.preventDefault();
-            if (!isPivotEditMode) {
-                isPivotEditMode = true;
-                previousGizmoMode = transformControls!.mode;
-                _pivotEditPreviousPivotMode = pivotMode;
-                transformControls!.setMode('translate');
-            }
-        }
-
-        if (event.altKey && event.ctrlKey) {
-            if (event.key === 'Alt' || event.key === 'Control') {
-                event.preventDefault();
-
-                const _pivotResetFlags: PivotResetFlags = {
-                    isCustomPivot,
-                    multiExplicitPivot:          _multiSelectionExplicitPivot,
-                    multiAnchorValid:             _multiSelectionOriginAnchorValid,
-                    multiAnchorInitialValid:      _multiSelectionOriginAnchorInitialValid,
-                    multiAnchorInitialLocalValid: _multiSelectionOriginAnchorInitialLocalValid,
-                    gizmoAnchorValid:             _gizmoAnchorValid,
-                    selectionAnchorMode:          _selectionAnchorMode,
-                };
-
-                resetCustomPivot(
-                    currentSelection,
-                    pivotOffset,
-                    _multiSelectionOriginAnchorPosition,
-                    _gizmoAnchorPosition,
-                    _pivotResetFlags,
-                    {
-                        isMultiSelection:               _isMultiSelection,
-                        revertEphemeralPivotUndoIfAny:  _revertEphemeralPivotUndoIfAny,
-                        resolveMultiAnchorInitialWorld:  _resolveMultiAnchorInitialWorld,
-                        setMultiAnchorInitial:           _setMultiAnchorInitial,
-                        getGroups,
-                        getGroupOriginWorld,
-                        shouldUseGroupPivot,
-                        normalizePivotToVector3,
-                        getGroupWorldMatrix,
-                        getDisplayType,
-                        getInstanceLocalBoxMin,
-                        getInstanceWorldMatrixForOrigin,
-                        isItemDisplayHatEnabled,
-                        DEFAULT_GROUP_PIVOT: _DEFAULT_GROUP_PIVOT,
-                    }
-                );
-
-                isCustomPivot                               = _pivotResetFlags.isCustomPivot;
-                _multiSelectionExplicitPivot                = _pivotResetFlags.multiExplicitPivot;
-                _multiSelectionOriginAnchorValid            = _pivotResetFlags.multiAnchorValid;
-                _multiSelectionOriginAnchorInitialValid     = _pivotResetFlags.multiAnchorInitialValid;
-                _multiSelectionOriginAnchorInitialLocalValid = _pivotResetFlags.multiAnchorInitialLocalValid;
-                _gizmoAnchorValid                           = _pivotResetFlags.gizmoAnchorValid;
-                _selectionAnchorMode                        = _pivotResetFlags.selectionAnchorMode;
-
-                _recomputePivotStateForSelection();
-                updateHelperPosition();
-
-                if (transformControls!.dragging) {
-                    Overlay.prepareMultiSelectionDrag(currentSelection);
-                    dragInitialMatrix.copy(selectionHelper!.matrixWorld);
-                    dragInitialPosition.copy(selectionHelper!.position);
-                    dragInitialQuaternion.copy(selectionHelper!.quaternion);
-                    dragInitialScale.copy(selectionHelper!.scale);
-                }
-
-                if (isVertexMode) _pushToVertexQueue();
-                updateSelectionOverlay();
-
-                console.log('Pivot reset to origin');
-            }
-        }
-
-        if (isGizmoBusy) return;
-        const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'q', 'b', 'g', 'd', 'v'];
-        if (transformControls!.dragging && keysToHandle.includes(key)) {
-            isGizmoBusy = true;
-            const attachedObject = transformControls!.object;
-            transformControls!.pointerUp({ button: 0 } as PointerEvent);
-            const oldTarget = controls.target.clone();
-            controls.dispose();
-            const newControls = new (controls.constructor as any)(camera, renderer.domElement);
-            newControls.screenSpacePanning = true;
-            newControls.target.copy(oldTarget);
-            newControls.update();
-            if (setControls) setControls(newControls);
-            controls = newControls;
-            setTimeout(() => {
-                if (attachedObject) {
-                    transformControls!.detach();
-                    transformControls!.attach(attachedObject);
-                }
-                handleKeyPress(key);
-                isGizmoBusy = false;
-            }, 0);
-            return;
-        }
-        if (keysToHandle.includes(key)) {
-            isGizmoBusy = true;
-            handleKeyPress(key);
-            setTimeout(() => { isGizmoBusy = false; }, 50);
-        }
-    });
-
-    window.addEventListener('keyup', (event: KeyboardEvent) => {
-        if (event.key === 'Alt') {
-            if (isPivotEditMode) {
-                if (transformControls!.dragging) {
-                    selectionHelper!.updateMatrixWorld();
-                    previousHelperMatrix.copy(selectionHelper!.matrixWorld);
-                }
-
-                isPivotEditMode = false;
-                transformControls!.setMode(previousGizmoMode);
-                _pivotEditPreviousPivotMode = null;
-
-                if (transformControls!.dragging) {
-                    Overlay.prepareMultiSelectionDrag(currentSelection);
-                    dragInitialMatrix.copy(selectionHelper!.matrixWorld);
-                    dragInitialPosition.copy(selectionHelper!.position);
-                    dragInitialQuaternion.copy(selectionHelper!.quaternion);
-                    dragInitialScale.copy(selectionHelper!.scale);
-                    updateSelectionOverlay();
-                }
-            }
-        }
-    });
-
-    const clearAltState = () => {
-        if (isPivotEditMode) {
-            isPivotEditMode = false;
-            try {
-                transformControls!.setMode(previousGizmoMode);
-            } catch (err) {
-                console.warn('Failed to restore transformControls mode on blur/visibility change', err);
-            }
-        }
-        isGizmoBusy = false;
-        try {
-            if (transformControls && transformControls.dragging) {
-                transformControls.pointerUp({ button: 0 } as PointerEvent);
-            }
-        } catch (_err) {}
-    };
-
-    const resetOrbitControls = () => {
-        if (controls && setControls) {
-            const oldTarget = controls.target.clone();
-            const oldScreenSpacePanning = controls.screenSpacePanning;
-            controls.dispose();
-
-            const newControls = new (controls.constructor as any)(camera, renderer.domElement);
-            newControls.screenSpacePanning = oldScreenSpacePanning;
-            newControls.target.copy(oldTarget);
-            newControls.update();
-
-            setControls(newControls);
-            controls = newControls;
-        }
-    };
-
-    window.addEventListener('blur', () => {
-        clearAltState();
-        resetOrbitControls();
-    });
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-            clearAltState();
-            resetOrbitControls();
-        }
-    });
-    window.addEventListener('focus', () => {
-        clearAltState();
-    });
-
-    // ── Raycaster & pointer handling ──────────────────────────────────────────
-
-    const raycaster = new THREE.Raycaster();
-    raycaster.layers.enable(2);
-    const mouse = new THREE.Vector2();
-    let mouseDownPos: { x: number; y: number } | null = null;
-    const cameraMatrixOnPointerDown = new THREE.Matrix4();
-
-    function getHoveredVertex(mouseNDC: THREE.Vector2): THREE.Sprite | null {
-        if (!isVertexMode) return null;
-        return Overlay.getHoveredVertex(mouseNDC, camera, renderer);
-    }
-
-    const dragControls: DragInterface = initDrag({
-        renderer,
-        camera,
-        getControls: () => controls,
-        transformControls: transformControls!,
-        loadedObjectGroup,
-        getSelectionCallbacks: () => getSelectionCallbacks()
-    });
-
-    renderer.domElement.addEventListener('pointermove', (event: PointerEvent) => {
-        if (transformControls!.dragging || dragControls.isMarqueeActiveOrCandidate()) return;
-
-        if (isVertexMode) {
-            const rect = renderer.domElement.getBoundingClientRect();
-            const m = new THREE.Vector2(
-                ((event.clientX - rect.left) / rect.width) * 2 - 1,
-                -((event.clientY - rect.top) / rect.height) * 2 + 1
-            );
-
-            const hovered = getHoveredVertex(m);
-            Overlay.updateVertexHoverHighlight(hovered, selectedVertexKeys);
-
-            if (hovered) {
-                renderer.domElement.style.cursor = 'pointer';
-            } else if (isVertexMode) {
-                renderer.domElement.style.cursor = '';
-            }
+    const inputHandler = initInputHandler({
+        scene, camera, renderer, controls, loadedObjectGroup, transformControls, selectionHelper: selectionHelper!, gizmoLines,
+        setControls: (c) => { if (setControls) setControls(c); controls = c; },
+        isVertexMode: () => isVertexMode,
+        setVertexMode: (v) => { isVertexMode = v; },
+        currentSpace: () => currentSpace,
+        setCurrentSpace: (s) => { currentSpace = s; },
+        pivotMode: () => pivotMode,
+        setPivotMode: (m) => { pivotMode = m; },
+        isPivotEditMode: () => isPivotEditMode,
+        setIsPivotEditMode: (v) => { isPivotEditMode = v; },
+        isGizmoBusy: () => isGizmoBusy,
+        setIsGizmoBusy: (v) => { isGizmoBusy = v; },
+        isUniformScale: () => isUniformScale,
+        setIsUniformScale: (v) => { isUniformScale = v; },
+        pivotOffset,
+        isCustomPivot: () => isCustomPivot,
+        setIsCustomPivot: (v) => { isCustomPivot = v; },
+        updateHelperPosition, updateSelectionOverlay, resetSelectionAndDeselect,
+        duplicateSelected, deleteSelectedItems, createGroup, ungroupGroup, SelectionCenter,
+        _pushToVertexQueue, _promoteVertexQueueBundleOnExit, _replaceSelectionWithObjectsMap,
+        _replaceSelectionWithGroupsAndObjects, _selectAllObjectsVisibleInScene, _getSingleSelectedGroupId,
+        _getSelectionCenterWorld, _recomputePivotStateForSelection, _revertEphemeralPivotUndoIfAny,
+        _isMultiSelection, _getSelectionBoundingBox: getSelectionBoundingBox, _clearGizmoAnchor,
+        _setSelectionAnchorMode: (mode) => { _selectionAnchorMode = mode; },
+        _commitSelectionChange, _getPrimaryWorldMatrix,
+        _getGizmoState: () => ({
+            pivotMode, isCustomPivot, pivotOffset,
+            _gizmoAnchorValid, _gizmoAnchorPosition,
+            _multiSelectionOriginAnchorValid, _multiSelectionOriginAnchorPosition,
+            _multiSelectionOriginAnchorInitialValid, _multiSelectionOriginAnchorInitialPosition
+        }),
+        _setGizmoState: (updates) => {
+            if (updates.pivotMode !== undefined) pivotMode = updates.pivotMode;
+            if (updates.isCustomPivot !== undefined) isCustomPivot = updates.isCustomPivot;
+            if (updates.pivotOffset !== undefined) pivotOffset.copy(updates.pivotOffset);
+            if (updates._gizmoAnchorValid !== undefined) _gizmoAnchorValid = updates._gizmoAnchorValid;
+            if (updates._gizmoAnchorPosition !== undefined) _gizmoAnchorPosition.copy(updates._gizmoAnchorPosition);
+            if (updates._multiSelectionOriginAnchorValid !== undefined) _multiSelectionOriginAnchorValid = updates._multiSelectionOriginAnchorValid;
+            if (updates._multiSelectionOriginAnchorPosition !== undefined) _multiSelectionOriginAnchorPosition.copy(updates._multiSelectionOriginAnchorPosition);
+            if (updates._multiSelectionOriginAnchorInitialValid !== undefined) _multiSelectionOriginAnchorInitialValid = updates._multiSelectionOriginAnchorInitialValid;
+            if (updates._multiSelectionOriginAnchorInitialPosition !== undefined) _multiSelectionOriginAnchorInitialPosition.copy(updates._multiSelectionOriginAnchorInitialPosition);
+        },
+        _getGroups: getGroups, _getGroupOriginWorld: getGroupOriginWorld,
+        _shouldUseGroupPivot: shouldUseGroupPivot, _normalizePivotToVector3: normalizePivotToVector3,
+        _getGroupWorldMatrix: getGroupWorldMatrix, getGroupWorldMatrixWithFallback,
+        _getDisplayType: getDisplayType, _getInstanceLocalBoxMin: getInstanceLocalBoxMin,
+        _getInstanceWorldMatrixForOrigin: getInstanceWorldMatrixForOrigin,
+        _isItemDisplayHatEnabled: isItemDisplayHatEnabled, _DEFAULT_GROUP_PIVOT,
+        _resolveMultiAnchorInitialWorld, _setMultiAnchorInitial, _getObjectToGroup: getObjectToGroup,
+        _getGroupKey: getGroupKey, _getGroupChain: getGroupChain, _getInstanceCount: getInstanceCount,
+        _isInstanceValid: isInstanceValid, _getSelectionCallbacks: getSelectionCallbacks,
+        _getAnchorState: () => ({
+            multiExplicitPivot: _multiSelectionExplicitPivot,
+            multiAnchorValid: _multiSelectionOriginAnchorValid,
+            multiAnchorInitialValid: _multiSelectionOriginAnchorInitialValid,
+            multiAnchorInitialLocalValid: _multiSelectionOriginAnchorInitialLocalValid,
+            gizmoAnchorValid: _gizmoAnchorValid,
+            selectionAnchorMode: _selectionAnchorMode,
+            gizmoAnchorPosition: _gizmoAnchorPosition,
+            multiOriginAnchorPosition: _multiSelectionOriginAnchorPosition
+        }),
+        _setAnchorState: (updates: any) => {
+            if (updates.multiExplicitPivot !== undefined) _multiSelectionExplicitPivot = updates.multiExplicitPivot;
+            if (updates.multiAnchorValid !== undefined) _multiSelectionOriginAnchorValid = updates.multiAnchorValid;
+            if (updates.multiAnchorInitialValid !== undefined) _multiSelectionOriginAnchorInitialValid = updates.multiAnchorInitialValid;
+            if (updates.multiAnchorInitialLocalValid !== undefined) _multiSelectionOriginAnchorInitialLocalValid = updates.multiAnchorInitialLocalValid;
+            if (updates.gizmoAnchorValid !== undefined) _gizmoAnchorValid = updates.gizmoAnchorValid;
+            if (updates.selectionAnchorMode !== undefined) _selectionAnchorMode = updates.selectionAnchorMode;
+        },
+        _draggingState: {
+            previousGizmoMode,
+            _pivotEditPreviousPivotMode,
+            dragStartPivotBaseWorld
         }
     });
 
@@ -1841,150 +1281,6 @@ export function initGizmo({
         _commitSelectionChange();
     };
 
-    renderer.domElement.addEventListener('pointerdown', (event: PointerEvent) => {
-        if (isGizmoBusy) return;
-        if (event.button !== 0) return;
-
-        if (isVertexMode) {
-            const rect = renderer.domElement.getBoundingClientRect();
-            const m = new THREE.Vector2(
-                ((event.clientX - rect.left) / rect.width) * 2 - 1,
-                -((event.clientY - rect.top) / rect.height) * 2 + 1
-            );
-
-            const v = getHoveredVertex(m);
-            if (v && v.userData && v.userData.key) {
-                const key = v.userData.key as string;
-
-                if (selectedVertexKeys.has(key)) {
-                    selectedVertexKeys.delete(key);
-                } else {
-                    selectedVertexKeys.add(key);
-
-                    if (selectedVertexKeys.size === 2) {
-                        // vertex 점 2개 선택 시 현재 gizmo 모드에 따라
-                        // vertex-translate.ts / vertex-rotate.ts / vertex-scale.ts 측으로 라우팅.
-                        // getGizmoState/setGizmoState를 통해 gizmo 내부 상태를 라이브 동기화한다.
-                        const getGizmoState = (): GizmoState => ({
-                            pivotMode, isCustomPivot, pivotOffset,
-                            _gizmoAnchorValid, _gizmoAnchorPosition,
-                            _multiSelectionOriginAnchorValid, _multiSelectionOriginAnchorPosition,
-                            _multiSelectionOriginAnchorInitialValid, _multiSelectionOriginAnchorInitialPosition
-                        });
-                        const setGizmoState = (updates: Partial<GizmoState>): void => {
-                            if (updates.pivotMode !== undefined) pivotMode = updates.pivotMode;
-                            if (updates.isCustomPivot !== undefined) isCustomPivot = updates.isCustomPivot;
-                            if (updates.pivotOffset !== undefined) pivotOffset.copy(updates.pivotOffset);
-                            if (updates._gizmoAnchorValid !== undefined) _gizmoAnchorValid = updates._gizmoAnchorValid;
-                            if (updates._gizmoAnchorPosition !== undefined) _gizmoAnchorPosition.copy(updates._gizmoAnchorPosition);
-                            if (updates._multiSelectionOriginAnchorValid !== undefined) _multiSelectionOriginAnchorValid = updates._multiSelectionOriginAnchorValid;
-                            if (updates._multiSelectionOriginAnchorPosition !== undefined) _multiSelectionOriginAnchorPosition.copy(updates._multiSelectionOriginAnchorPosition);
-                            if (updates._multiSelectionOriginAnchorInitialValid !== undefined) _multiSelectionOriginAnchorInitialValid = updates._multiSelectionOriginAnchorInitialValid;
-                            if (updates._multiSelectionOriginAnchorInitialPosition !== undefined) _multiSelectionOriginAnchorInitialPosition.copy(updates._multiSelectionOriginAnchorInitialPosition);
-                        };
-
-                        const handled = processVertexSnap(selectedVertexKeys, {
-                            isVertexMode,
-                            gizmoMode: transformControls!.mode,
-                            currentSelection, loadedObjectGroup, selectionHelper: selectionHelper!,
-                            getGizmoState, setGizmoState,
-                            getGroups, getGroupWorldMatrixWithFallback, getGroupWorldMatrix,
-                            updateHelperPosition, updateSelectionOverlay,
-                            _isMultiSelection, _getSingleSelectedGroupId, SelectionCenter,
-                            vertexQueue
-                        });
-
-                        if (!handled && transformControls!.mode === 'rotate') {
-                            processVertexRotate(selectedVertexKeys, {
-                                isVertexMode,
-                                gizmoMode: transformControls!.mode,
-                                currentSelection, loadedObjectGroup, selectionHelper: selectionHelper!,
-                                getGizmoState, setGizmoState,
-                                getGroups, getGroupWorldMatrixWithFallback,
-                                updateHelperPosition, updateSelectionOverlay,
-                                SelectionCenter,
-                                vertexQueue
-                            });
-                        }
-
-                        if (!handled && transformControls!.mode === 'scale') {
-                            processVertexScale(selectedVertexKeys, {
-                                isVertexMode,
-                                gizmoMode: transformControls!.mode,
-                                isCtrlDown: event.ctrlKey || event.metaKey,
-                                currentSelection, loadedObjectGroup, selectionHelper: selectionHelper!,
-                                getGizmoState, setGizmoState,
-                                getGroups, getGroupWorldMatrixWithFallback,
-                                updateHelperPosition, updateSelectionOverlay,
-                                SelectionCenter,
-                                vertexQueue,
-                                getSelectedItems
-                            });
-                        }
-                    }
-                }
-
-                Overlay.refreshSelectionPointColors(selectedVertexKeys);
-                mouseDownPos = null;
-                return;
-            }
-        }
-
-        if (dragControls.onPointerDown(event)) {
-            mouseDownPos = { x: event.clientX, y: event.clientY };
-            cameraMatrixOnPointerDown.copy(camera.matrixWorld);
-            return;
-        }
-
-        mouseDownPos = { x: event.clientX, y: event.clientY };
-        cameraMatrixOnPointerDown.copy(camera.matrixWorld);
-    }, true);
-
-    renderer.domElement.addEventListener('pointermove', (event: PointerEvent) => {
-        dragControls.onPointerMove(event);
-    });
-
-    renderer.domElement.addEventListener('pointerup', (event: PointerEvent) => {
-        if (dragControls.onPointerUp(event)) {
-            mouseDownPos = null;
-            return;
-        }
-
-        if (!mouseDownPos) return;
-
-        if (!camera.matrixWorld.equals(cameraMatrixOnPointerDown)) {
-            mouseDownPos = null;
-            return;
-        }
-
-        const dist = Math.sqrt((event.clientX - mouseDownPos.x) ** 2 + (event.clientY - mouseDownPos.y) ** 2);
-        if (dist > 5) { mouseDownPos = null; return; }
-        mouseDownPos = null;
-
-        const rect = renderer.domElement.getBoundingClientRect();
-        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-        raycaster.setFromCamera(mouse, camera);
-
-        Select.handleSelectionClick(raycaster, event, loadedObjectGroup, {
-            onDeselect: resetSelectionAndDeselect,
-            recomputePivotState: _recomputePivotStateForSelection,
-            updateHelperPosition: updateHelperPosition,
-            updateSelectionOverlay: updateSelectionOverlay,
-            pushToVertexQueue: _pushToVertexQueue,
-            hasVertexQueue: () => vertexQueue.length > 0,
-            revertEphemeralPivotUndoIfAny: _revertEphemeralPivotUndoIfAny,
-            detachTransformControls: () => { if (transformControls) transformControls.detach(); },
-            clearGizmoAnchor: _clearGizmoAnchor,
-            setSelectionAnchorMode: (mode: 'default' | 'center') => { _selectionAnchorMode = mode; },
-            resetPivotState: () => {
-                pivotOffset.set(0, 0, 0);
-                isCustomPivot = false;
-            },
-            isVertexMode: isVertexMode
-        });
-    });
-
     return {
         getTransformControls: () => transformControls!,
         updateGizmo: () => {
@@ -2006,6 +1302,9 @@ export function initGizmo({
                     const { originalLines, negativeLines, getDirection } = axesConfig[axis];
                     const isPositive = getDirection();
                     const currentDirection = isPositive ? 'positive' : 'negative';
+                    // We can't access lastDirections from gizmo scope easily if it's in inputHandler now,
+                    // but we can just update it here since we are in updateGizmo.
+                    // Actually lastDirections was a module level variable in gizmo.ts.
                     if (currentDirection !== lastDirections[axis]) {
                         lastDirections[axis] = currentDirection;
                         if (isPositive) {
