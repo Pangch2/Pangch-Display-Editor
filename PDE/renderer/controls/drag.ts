@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import * as Select from './select';
 import type { SelectionCallbacks } from './select';
 import * as Overlay from './overlay.js';
-import * as GroupUtils from '../structure/group';
+import * as GroupUtils from './group';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
 // Helper aliases
@@ -33,6 +33,68 @@ export interface DragInterface {
     onPointerDown: (event: PointerEvent | MouseEvent) => boolean;
     onPointerMove: (event: PointerEvent | MouseEvent) => boolean;
     onPointerUp: (event: PointerEvent | MouseEvent) => boolean;
+}
+
+export interface ApplyDeltaParams {
+    deltaMatrix: THREE.Matrix4;
+    meshToInstanceIds: Map<THREE.Object3D, number[]>;
+    selectedGroupIds: Set<string>;
+    loadedObjectGroup: THREE.Group;
+}
+
+export function applyDeltaToSelection(params: ApplyDeltaParams): void {
+    const { deltaMatrix, meshToInstanceIds, selectedGroupIds, loadedObjectGroup } = params;
+
+    const tmpMeshWorldInverse = new THREE.Matrix4();
+    const tmpLocalDelta = new THREE.Matrix4();
+    const tmpInstanceMatrix = new THREE.Matrix4();
+
+    for (const [mesh, instanceIds] of meshToInstanceIds) {
+        tmpMeshWorldInverse.copy((mesh as THREE.Object3D).matrixWorld).invert();
+        tmpLocalDelta.multiplyMatrices(tmpMeshWorldInverse, deltaMatrix);
+        tmpLocalDelta.multiply((mesh as THREE.Object3D).matrixWorld);
+
+        for (let i = 0; i < instanceIds.length; i++) {
+            const instanceId = instanceIds[i];
+            (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, tmpInstanceMatrix);
+            tmpInstanceMatrix.premultiply(tmpLocalDelta);
+            (mesh as THREE.InstancedMesh).setMatrixAt(instanceId, tmpInstanceMatrix);
+        }
+
+        if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
+            (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+        }
+    }
+
+    if (selectedGroupIds && selectedGroupIds.size > 0) {
+        const groups = GroupUtils.getGroups(loadedObjectGroup);
+        const toUpdate = new Set<string>();
+
+        for (const rootId of selectedGroupIds) {
+            if (!rootId) continue;
+            toUpdate.add(rootId);
+            const descendants = GroupUtils.getAllDescendantGroups(loadedObjectGroup, rootId);
+            for (const subId of descendants) toUpdate.add(subId);
+        }
+
+        for (const id of toUpdate) {
+            const g = groups.get(id);
+            if (!g) continue;
+
+            if (!g.matrix) {
+                const gPos = g.position || new THREE.Vector3();
+                const gQuat = g.quaternion || new THREE.Quaternion();
+                const gScale = g.scale || new THREE.Vector3(1, 1, 1);
+                g.matrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
+            }
+
+            g.matrix.premultiply(deltaMatrix);
+            if (!g.position) g.position = new THREE.Vector3();
+            if (!g.quaternion) g.quaternion = new THREE.Quaternion();
+            if (!g.scale) g.scale = new THREE.Vector3(1, 1, 1);
+            g.matrix.decompose(g.position, g.quaternion, g.scale);
+        }
+    }
 }
 
 /**

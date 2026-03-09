@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
-import * as Overlay from '../selection/overlay';
-import { GroupData } from '../structure/group';
-import type { GizmoState } from '../gizmo';
+import * as Overlay from './overlay';
+import { GroupData } from './group';
+import type { GizmoState } from './gizmo';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0);

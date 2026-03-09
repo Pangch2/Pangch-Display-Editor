@@ -219,7 +219,6 @@ function animate() {
     
     // Update gizmo: overlay and axis orientation
     if (gizmoModule) gizmoModule.updateGizmo();
-    
     if (renderer && scene && camera) {
         renderer.render(scene, camera);
     }

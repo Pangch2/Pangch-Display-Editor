@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
-import * as Overlay from '../selection/overlay.js';
-import { createEntityMaterial } from '../../entityMaterial.js';
+import * as Overlay from './overlay.js';
+import { createEntityMaterial } from '../entityMaterial.js';
 
 const getDisplayType = Overlay.getDisplayType;
 

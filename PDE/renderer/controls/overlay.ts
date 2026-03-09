@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from '../structure/group';
-import type { GroupChildObject } from '../structure/group';
+import * as GroupUtils from './group';
+import type { GroupChildObject } from './group';
 
 // --- Types & Interfaces ---
 
@@ -353,6 +353,25 @@ export function getGroupLocalBoundingBox(groupId: string): THREE.Box3 {
         box.union(tempBox);
     });
     return box;
+}
+
+export function getGroupOriginWorld(groupId: string, out = new THREE.Vector3()): THREE.Vector3 {
+    const groups = getGroups();
+    const group = groups.get(groupId);
+    if (!group) return out.set(0, 0, 0);
+
+    const box = getGroupLocalBoundingBox(groupId);
+    if (!box.isEmpty()) {
+        const m = GroupUtils.getGroupWorldMatrix(group, new THREE.Matrix4());
+        return out.copy(box.min).applyMatrix4(m);
+    }
+    if (group.position) return out.copy(group.position);
+
+    const children = getAllGroupChildren(groupId);
+    if (children.length > 0) {
+        return calculateAvgOriginForChildren(children, out);
+    }
+    return out.set(0, 0, 0);
 }
 
 export function getRotationFromMatrix(matrix: THREE.Matrix4): THREE.Quaternion {

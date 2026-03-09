@@ -1,10 +1,10 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from '../structure/group';
-import * as Overlay from '../selection/overlay';
+import * as GroupUtils from './group';
+import * as Overlay from './overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
-import { removeShearFromSelection } from '../transform/shear-remove';
-import type { GroupData } from '../structure/group';
-import type { GizmoState } from '../gizmo';
+import { removeShearFromSelection } from './shear-remove';
+import type { GroupData } from './group';
+import type { GizmoState } from './gizmo';
 
 const _TMP_MAT4_A = new THREE.Matrix4();
 const _TMP_MAT4_B = new THREE.Matrix4();

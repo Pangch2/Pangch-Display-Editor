@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 // @ts-ignore
-import * as GroupUtils from '../structure/group';
+import * as GroupUtils from './group';
 // @ts-ignore
-import * as Overlay from '../selection/overlay.js';
+import * as Overlay from './overlay.js';
 
 /**
  * Interface representing an element in the selection (either a group or a specific object instance).
@@ -330,4 +330,112 @@ export function setPivotEditUndoCapture(undoFn: (() => void) | null): void {
 
 export function getPivotEditUndoCapture(): (() => void) | null {
     return _pivotEditUndoCapture;
+}
+
+export interface CommitPivotEditParams {
+    pivotWorldPos: THREE.Vector3;
+    isMultiPivotEdit: boolean;
+    singleGroupId: string | null;
+    currentSelection: {
+        primary?: { type: string; id?: string; mesh?: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId?: number } | null;
+        objects?: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>;
+    };
+    loadedObjectGroup: THREE.Group;
+}
+
+export interface CommitPivotEditResult {
+    newPivotOffset: THREE.Vector3;
+    newIsCustomPivot: boolean;
+    setMultiExplicitPivot: boolean;
+}
+
+export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): CommitPivotEditResult {
+    const { pivotWorldPos, isMultiPivotEdit, singleGroupId, currentSelection, loadedObjectGroup } = params;
+
+    const newPivotOffset = new THREE.Vector3();
+    let newIsCustomPivot = false;
+    let setMultiExplicitPivot = false;
+
+    // @ts-ignore
+    const groups = GroupUtils.getGroups(loadedObjectGroup);
+
+    if (singleGroupId) {
+        const group = groups.get(singleGroupId);
+        if (group) {
+            const groupMatrix = GroupUtils.getGroupWorldMatrix(group, new THREE.Matrix4());
+            const invGroupMatrix = groupMatrix.clone().invert();
+            const localPivot = pivotWorldPos.clone().applyMatrix4(invGroupMatrix);
+
+            group.pivot = localPivot.clone();
+            group.isCustomPivot = true;
+
+            // @ts-ignore
+            const baseWorld = Overlay.getGroupOriginWorld(singleGroupId);
+            const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
+            newPivotOffset.subVectors(targetWorld, baseWorld);
+            newIsCustomPivot = true;
+        }
+    } else if (!isMultiPivotEdit) {
+        if (currentSelection.objects && currentSelection.objects.size > 0) {
+            const instanceMatrix = new THREE.Matrix4();
+            for (const [mesh, ids] of currentSelection.objects) {
+                if (!mesh || !ids || ids.size === 0) continue;
+
+                const firstId = Array.from(ids)[0];
+                (mesh as THREE.InstancedMesh).getMatrixAt(firstId, instanceMatrix);
+                const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
+                const invWorldMatrix = worldMatrix.clone().invert();
+                const localPivot = pivotWorldPos.clone().applyMatrix4(invWorldMatrix);
+
+                if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, THREE.Vector3>();
+                    for (const id of ids) {
+                        mesh.userData.customPivots.set(id, localPivot.clone());
+                    }
+                } else {
+                    mesh.userData.customPivot = localPivot.clone();
+                }
+                mesh.userData.isCustomPivot = true;
+            }
+        }
+    } else {
+        if (currentSelection.primary) {
+            const prim = currentSelection.primary;
+
+            if (!_ephemeralPivotUndo && !_pivotEditUndoCapture && prim.type === 'group' && prim.id) {
+                const group = groups.get(prim.id);
+                if (group) {
+                    const prevPivot = group.pivot
+                        ? (group.pivot.clone ? group.pivot.clone() : new THREE.Vector3().copy(group.pivot as THREE.Vector3))
+                        : undefined;
+                    const prevIsCustom = group.isCustomPivot;
+                    _pivotEditUndoCapture = () => {
+                        group.pivot = prevPivot;
+                        if (prevIsCustom) group.isCustomPivot = true;
+                        else delete group.isCustomPivot;
+                    };
+                }
+            }
+
+            if (prim.type === 'group' && prim.id) {
+                const group = groups.get(prim.id);
+                if (group) {
+                    const groupMatrix = GroupUtils.getGroupWorldMatrix(group, new THREE.Matrix4());
+                    const invGroupMatrix = groupMatrix.invert();
+                    const localPivot = pivotWorldPos.clone().applyMatrix4(invGroupMatrix);
+                    group.pivot = localPivot;
+                    group.isCustomPivot = true;
+                }
+            }
+
+            setMultiExplicitPivot = true;
+        }
+    }
+
+    if (_pivotEditUndoCapture) {
+        _ephemeralPivotUndo = _pivotEditUndoCapture;
+    }
+    _pivotEditUndoCapture = null;
+
+    return { newPivotOffset, newIsCustomPivot, setMultiExplicitPivot };
 }

@@ -1,18 +1,20 @@
 import * as THREE from 'three/webgpu';
-import type { SelectionState } from '../selection/select';
+import * as Overlay from './overlay';
+import type { SelectionState } from './select';
 import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
-
-// ─── Types ──────────────────────────────────────────────────────────────────
 
 type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
 
-// ─── State ──────────────────────────────────────────────────────────────────
+// ─── Shared temporaries ──────────────────────────────────────────────────────
 
-export const selectedVertexKeys = new Set<string>();
-export const vertexQueue: QueueItem[] = [];
-let suppressVertexQueue = false;
+const _TMP_MAT4_A = new THREE.Matrix4();
+const _TMP_MAT4_B = new THREE.Matrix4();
+const _TMP_VEC3_A = new THREE.Vector3();
+const _TMP_VEC3_B = new THREE.Vector3();
 
-const VERTEX_QUEUE_MAX_SIZE = 1;
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+export const VERTEX_QUEUE_MAX_SIZE = 1;
 
 const _unitCubeCorners: THREE.Vector3[] = [
     new THREE.Vector3(-0.5, -0.5, -0.5),
@@ -25,53 +27,52 @@ const _unitCubeCorners: THREE.Vector3[] = [
     new THREE.Vector3(-0.5,  0.5,  0.5)
 ];
 
-// ─── Accessors ──────────────────────────────────────────────────────────────
+// ─── Local helper: world AABB for a group ─────────────────────────────────────
 
-export function getSuppressVertexQueue(): boolean {
-    return suppressVertexQueue;
+function getGroupWorldAABB(groupId: string): THREE.Box3 | null {
+    const localBox = Overlay.getGroupLocalBoundingBox(groupId);
+    if (!localBox || localBox.isEmpty()) return null;
+    const worldMat = Overlay.getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
+    const worldBox = new THREE.Box3();
+    const corners = [
+        new THREE.Vector3(localBox.min.x, localBox.min.y, localBox.min.z),
+        new THREE.Vector3(localBox.max.x, localBox.min.y, localBox.min.z),
+        new THREE.Vector3(localBox.min.x, localBox.max.y, localBox.min.z),
+        new THREE.Vector3(localBox.max.x, localBox.max.y, localBox.min.z),
+        new THREE.Vector3(localBox.min.x, localBox.min.y, localBox.max.z),
+        new THREE.Vector3(localBox.max.x, localBox.min.y, localBox.max.z),
+        new THREE.Vector3(localBox.min.x, localBox.max.y, localBox.max.z),
+        new THREE.Vector3(localBox.max.x, localBox.max.y, localBox.max.z),
+    ];
+    for (const corner of corners) {
+        worldBox.expandByPoint(corner.applyMatrix4(worldMat));
+    }
+    return worldBox;
 }
 
-export function setSuppressVertexQueue(value: boolean): void {
-    suppressVertexQueue = value;
-}
+// ─── pushToVertexQueue ────────────────────────────────────────────────────────
 
-export function clearVertexState(): void {
-    vertexQueue.length = 0;
-    selectedVertexKeys.clear();
-}
-
-// ─── Logic ───────────────────────────────────────────────────────────────────
-
-export function pushToVertexQueue(params: {
+export interface PushVertexQueueParams {
+    suppressVertexQueue: boolean;
     isVertexMode: boolean;
     currentSelection: SelectionState;
+    selectedVertexKeys: Set<string>;
+    vertexQueue: QueueItem[];
     selectionHelper: THREE.Mesh | null;
-    getSelectionCenterWorld: (out: THREE.Vector3) => THREE.Vector3;
-    getGroupWorldMatrixWithFallback: (groupId: string, out: THREE.Matrix4) => THREE.Matrix4;
-    getInstanceWorldMatrix: (mesh: PdeMesh, instanceId: number, out: THREE.Matrix4) => THREE.Matrix4;
-    getRotationFromMatrix: (m: THREE.Matrix4) => THREE.Quaternion;
-    getGroupWorldAABB: (groupId: string) => THREE.Box3 | null;
-    isInstanceValid: (mesh: PdeMesh, instanceId: number) => boolean;
-    getInstanceLocalBox: (mesh: PdeMesh, instanceId: number) => THREE.Box3 | null;
-}): void {
+    getSelectionCenterWorld(out?: THREE.Vector3): THREE.Vector3;
+}
+
+export function pushToVertexQueue(params: PushVertexQueueParams): void {
     const {
-        isVertexMode,
-        currentSelection,
-        selectionHelper,
-        getSelectionCenterWorld,
-        getGroupWorldMatrixWithFallback,
-        getInstanceWorldMatrix,
-        getRotationFromMatrix,
-        getGroupWorldAABB,
-        isInstanceValid,
-        getInstanceLocalBox
+        suppressVertexQueue, isVertexMode, currentSelection,
+        selectedVertexKeys, vertexQueue, selectionHelper, getSelectionCenterWorld
     } = params;
 
     if (suppressVertexQueue || !isVertexMode) return;
 
     let currentGizmoPos: THREE.Vector3 | null = null;
     let currentGizmoQuat: THREE.Quaternion | null = null;
-    if ((currentSelection.groups.size > 0 || currentSelection.objects.size > 0)) {
+    if (currentSelection.groups.size > 0 || currentSelection.objects.size > 0) {
         currentGizmoPos = new THREE.Vector3();
         currentGizmoQuat = new THREE.Quaternion();
         if (selectionHelper) {
@@ -106,8 +107,8 @@ export function pushToVertexQueue(params: {
         }
     }
 
-    const tempMat = new THREE.Matrix4();
-    const tempInv = new THREE.Matrix4();
+    const tempMat = _TMP_MAT4_A;
+    const tempInv = _TMP_MAT4_B;
 
     const bundleItems: QueueEntry[] = [];
     for (const item of itemsToAdd) {
@@ -116,21 +117,21 @@ export function pushToVertexQueue(params: {
 
         if (currentGizmoPos) {
             if (item.type === 'group') {
-                getGroupWorldMatrixWithFallback(item.id!, tempMat);
+                Overlay.getGroupWorldMatrixWithFallback(item.id!, tempMat);
             } else {
-                getInstanceWorldMatrix(item.mesh!, item.instanceId!, tempMat);
+                Overlay.getInstanceWorldMatrix(item.mesh, item.instanceId, tempMat);
             }
 
             tempInv.copy(tempMat).invert();
             localPos = currentGizmoPos.clone().applyMatrix4(tempInv);
 
             if (currentGizmoQuat) {
-                const objQuat = getRotationFromMatrix(tempMat);
+                const objQuat = Overlay.getRotationFromMatrix(tempMat);
                 localQuat = objQuat.invert().multiply(currentGizmoQuat);
             }
         }
 
-        bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat });
+        bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat } as QueueEntry);
 
         if (isCenterSelected && localPos) {
             const idStr = item.type === 'group'
@@ -161,8 +162,8 @@ export function pushToVertexQueue(params: {
             }
 
             let matrix: THREE.Matrix4 | null = null;
-            const tempSize = new THREE.Vector3();
-            const tempCenter = new THREE.Vector3();
+            const tempSize = _TMP_VEC3_A;
+            const tempCenter = _TMP_VEC3_B;
 
             if (sub.type === 'group') {
                 const groupId = sub.id as string;
@@ -170,20 +171,20 @@ export function pushToVertexQueue(params: {
                 if (worldBox && !worldBox.isEmpty()) {
                     worldBox.getSize(tempSize);
                     worldBox.getCenter(tempCenter);
-                    matrix = new THREE.Matrix4();
+                    matrix = _TMP_MAT4_B;
                     matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
                     matrix.scale(tempSize);
                 }
             } else if (sub.type === 'object') {
                 const { mesh, instanceId } = sub;
-                if (mesh && instanceId !== undefined && isInstanceValid(mesh, instanceId)) {
-                    const localBox = getInstanceLocalBox(mesh, instanceId);
+                if (Overlay.isInstanceValid(mesh, instanceId)) {
+                    const localBox = Overlay.getInstanceLocalBox(mesh, instanceId);
                     if (localBox) {
                         localBox.getSize(tempSize);
                         localBox.getCenter(tempCenter);
 
-                        const worldMat = getInstanceWorldMatrix(mesh, instanceId, new THREE.Matrix4());
-                        matrix = new THREE.Matrix4();
+                        const worldMat = Overlay.getInstanceWorldMatrix(mesh, instanceId, _TMP_MAT4_A);
+                        matrix = _TMP_MAT4_B;
                         matrix.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z);
                         matrix.scale(tempSize);
                         matrix.premultiply(worldMat);
@@ -211,11 +212,19 @@ export function pushToVertexQueue(params: {
     }
 }
 
-export function promoteVertexQueueBundleOnExit(params: {
-    isInstanceValid: (mesh: PdeMesh, instanceId: number) => boolean;
-    replaceSelectionWithGroupsAndObjects: (groupIds: Set<string>, meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string; preserveAnchors?: boolean }) => void;
-}): boolean {
-    const { isInstanceValid, replaceSelectionWithGroupsAndObjects } = params;
+// ─── promoteVertexQueueBundleOnExit ──────────────────────────────────────────
+
+export interface PromoteVertexQueueParams {
+    vertexQueue: QueueItem[];
+    replaceSelectionWithGroupsAndObjects(
+        groupIds: Set<string>,
+        meshToIds: Map<PdeMesh, Set<number>>,
+        options?: { anchorMode?: string; preserveAnchors?: boolean }
+    ): void;
+}
+
+export function promoteVertexQueueBundleOnExit(params: PromoteVertexQueueParams): boolean {
+    const { vertexQueue, replaceSelectionWithGroupsAndObjects } = params;
 
     if (!Array.isArray(vertexQueue) || vertexQueue.length === 0) return false;
 
@@ -233,7 +242,7 @@ export function promoteVertexQueueBundleOnExit(params: {
             groupIds.add(sub.id);
             continue;
         }
-        if (sub.type === 'object' && sub.mesh && Number.isInteger(sub.instanceId) && isInstanceValid(sub.mesh, sub.instanceId!)) {
+        if (sub.type === 'object' && sub.mesh && Number.isInteger(sub.instanceId) && Overlay.isInstanceValid(sub.mesh, sub.instanceId!)) {
             let ids = meshToIds.get(sub.mesh);
             if (!ids) {
                 ids = new Set();

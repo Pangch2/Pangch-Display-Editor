@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import type { GroupData } from '../structure/group';
+import type { GroupData } from './group';
 
 type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
 

@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import * as GroupUtils from '../structure/group';
+import * as GroupUtils from './group';
 import * as Overlay from './overlay';
 
 // --- Types ---
@@ -115,6 +115,25 @@ export function getSelectedItems(): SelectedItem[] {
 
 export function setLoadedObjectGroup(group: THREE.Group): void {
     loadedObjectGroupForSelect = group;
+}
+
+export function calculateAvgOrigin(): THREE.Vector3 {
+    const center = new THREE.Vector3();
+    const items = getSelectedItems();
+    if (items.length === 0) return center;
+
+    const tempPos = new THREE.Vector3();
+    const tempMat = new THREE.Matrix4();
+
+    items.forEach(({ mesh, instanceId }) => {
+        Overlay.getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+        const localY = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
+        tempPos.set(0, localY, 0).applyMatrix4(tempMat);
+        center.add(tempPos);
+    });
+
+    center.divideScalar(items.length);
+    return center;
 }
 
 export function pickInstanceByOverlayBox(
