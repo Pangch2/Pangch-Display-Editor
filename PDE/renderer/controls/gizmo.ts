@@ -483,11 +483,18 @@ function updateHelperPosition(): void {
     if (pivotMode === 'origin' && isMulti && !_multiSelectionOriginAnchorValid && _gizmoAnchorValid) {
         _multiSelectionOriginAnchorPosition.copy(_gizmoAnchorPosition);
         _multiSelectionOriginAnchorValid = true;
-        _captureMultiAnchorInitialIfNeeded(_gizmoAnchorPosition);
+        // NOTE: _gizmoAnchorPosition 은 이전 모드의 world 좌표일 수 있으므로
+        // _captureMultiAnchorInitialIfNeeded 를 호출하지 않음.
+        // 로컬 초기값 캡처는 Block 1(primaryPivotWorld)에서만 수행.
     }
 
     const lockMultiOrigin = (pivotMode === 'origin') && isMulti && _multiSelectionOriginAnchorValid;
     if (lockMultiOrigin) {
+        // 로컬 좌표에서 world 위치 재계산: center 모드에서 이동 후 world 앵커가 stale 되는 문제 원천 차단
+        const refreshedFromLocal = _resolveMultiAnchorInitialWorld(new THREE.Vector3());
+        if (refreshedFromLocal) {
+            _multiSelectionOriginAnchorPosition.copy(refreshedFromLocal);
+        }
         selectionHelper!.position.copy(_multiSelectionOriginAnchorPosition);
         _gizmoAnchorPosition.copy(_multiSelectionOriginAnchorPosition);
         _gizmoAnchorValid = true;
@@ -502,7 +509,9 @@ function updateHelperPosition(): void {
         if (pivotMode === 'origin' && isMulti) {
             _multiSelectionOriginAnchorPosition.copy(center);
             _multiSelectionOriginAnchorValid = true;
-            _captureMultiAnchorInitialIfNeeded(center);
+            // NOTE: center 는 SelectionCenter 계산값(world 평균)이므로
+            // primary 로컬 초기값 캡처에 사용하지 않음.
+            // 로컬 초기값 캡처는 Block 1(primaryPivotWorld)에서만 수행.
         }
     }
 
@@ -914,7 +923,10 @@ export function initGizmo({
                 if (_isMultiSelection()) {
                     _multiSelectionOriginAnchorPosition.copy(selectionHelper!.position);
                     _multiSelectionOriginAnchorValid = true;
-                    _captureMultiAnchorInitialIfNeeded(selectionHelper!.position);
+                    // 커스텀 피벗이 새로 커밋되었으므로 로컬 초기값을 강제 갱신.
+                    // _captureMultiAnchorInitialIfNeeded(already-valid 시 무시) 대신
+                    // _setMultiAnchorInitial을 써서 항상 덮어씀.
+                    _setMultiAnchorInitial(selectionHelper!.position);
                 }
             } else {
                 _recomputePivotStateForSelection();

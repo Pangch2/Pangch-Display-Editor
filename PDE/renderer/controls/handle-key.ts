@@ -210,10 +210,12 @@ export function initHandleKey(p: HandleKeyParams): void {
                     p.updateHelperPosition();
                     if (prevPos.distanceTo(p.getSelectionHelper().position) < 0.001) {
                         p.setPivotMode('origin');
+                        p.recomputePivotStateForSelection();
                         p.updateHelperPosition();
                     }
                 } else {
                     p.setPivotMode('center');
+                    p.recomputePivotStateForSelection();
                     p.updateHelperPosition();
                 }
 
@@ -396,13 +398,9 @@ export function initHandleKey(p: HandleKeyParams): void {
                     {
                         isMultiSelection:               p.isMultiSelection,
                         revertEphemeralPivotUndoIfAny:  p.revertEphemeralPivotUndoIfAny,
-                        resolveMultiAnchorInitialWorld:  (out) => p.resolveMultiAnchorInitialWorld(out),
                         setMultiAnchorInitial:           p.setMultiAnchorInitial,
                         getGroups:                       p.getGroups,
                         getGroupOriginWorld:             (id, out) => p.getGroupOriginWorld(id, out),
-                        shouldUseGroupPivot:             p.shouldUseGroupPivot,
-                        normalizePivotToVector3:         (pivot, out) => p.normalizePivotToVector3(pivot, out),
-                        getGroupWorldMatrix:             (g, out) => p.getGroupWorldMatrix(g, out),
                         getDisplayType:                  (mesh, id) => p.getDisplayType(mesh, id),
                         getInstanceLocalBoxMin:          (mesh, id, out) => p.getInstanceLocalBoxMin(mesh, id, out),
                         getInstanceWorldMatrixForOrigin: (mesh, id, out) => p.getInstanceWorldMatrixForOrigin(mesh, id, out),

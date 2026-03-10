@@ -29,13 +29,9 @@ interface PivotFlags {
 interface PivotDeps {
     isMultiSelection: () => boolean;
     revertEphemeralPivotUndoIfAny: () => void;
-    resolveMultiAnchorInitialWorld: (out: THREE.Vector3) => THREE.Vector3 | null;
     setMultiAnchorInitial: (worldPos: THREE.Vector3) => void;
     getGroups: () => Map<string, GroupData>;
     getGroupOriginWorld: (groupId: string, out: THREE.Vector3) => THREE.Vector3;
-    shouldUseGroupPivot: (group: GroupData) => boolean;
-    normalizePivotToVector3: (pivot: THREE.Vector3 | undefined, out: THREE.Vector3) => THREE.Vector3 | null;
-    getGroupWorldMatrix: (group: GroupData, out: THREE.Matrix4) => THREE.Matrix4;
     getDisplayType: (mesh: PdeMesh, instanceId?: number) => string | undefined;
     getInstanceLocalBoxMin: (mesh: PdeMesh, instanceId: number | undefined, out: THREE.Vector3) => THREE.Vector3 | null;
     getInstanceWorldMatrixForOrigin: (mesh: PdeMesh, instanceId: number | undefined, out: THREE.Matrix4) => THREE.Matrix4;
@@ -57,13 +53,9 @@ export function resetCustomPivot(
     const {
         isMultiSelection,
         revertEphemeralPivotUndoIfAny,
-        resolveMultiAnchorInitialWorld,
         setMultiAnchorInitial,
         getGroups,
         getGroupOriginWorld,
-        shouldUseGroupPivot,
-        normalizePivotToVector3,
-        getGroupWorldMatrix,
         getDisplayType,
         getInstanceLocalBoxMin,
         getInstanceWorldMatrixForOrigin,
@@ -83,79 +75,14 @@ export function resetCustomPivot(
 
     if (isMultiReset) {
         if (hadExplicitMultiPivot) {
-            const _resolvedInitial = resolveMultiAnchorInitialWorld(new THREE.Vector3());
-            if (_resolvedInitial) {
-                multiAnchorPos.copy(_resolvedInitial);
-                flags.multiAnchorValid = true;
-                gizmoAnchorPos.copy(_resolvedInitial);
-                flags.gizmoAnchorValid = true;
-                flags.selectionAnchorMode = 'default';
-            } else {
-                const targetPos = new THREE.Vector3();
-                let found = false;
-                if (currentSelection.primary) {
-                    const prim = currentSelection.primary;
-                    if (prim.type === 'group' && prim.id) {
-                        const groups = getGroups();
-                        const group = groups.get(prim.id);
-                        if (group) {
-                            if (shouldUseGroupPivot(group)) {
-                                const localPivot = normalizePivotToVector3(group.pivot, new THREE.Vector3());
-                                if (localPivot) {
-                                    const groupMatrix = getGroupWorldMatrix(group, new THREE.Matrix4());
-                                    targetPos.copy(localPivot.applyMatrix4(groupMatrix));
-                                    found = true;
-                                }
-                            }
-                            if (!found) { getGroupOriginWorld(prim.id, targetPos); found = true; }
-                        }
-                    } else if (prim.type === 'object' && prim.mesh) {
-                        const { mesh, instanceId } = prim;
-                        const tempMat = new THREE.Matrix4();
-                        let custom = null;
-                        if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
-                            if (mesh.userData['customPivots'] && (mesh.userData['customPivots'] as Map<number, THREE.Vector3>).has(instanceId!))
-                                custom = (mesh.userData['customPivots'] as Map<number, THREE.Vector3>).get(instanceId!);
-                        } else { if (mesh.userData['customPivot']) custom = mesh.userData['customPivot']; }
-                        
-                        if (custom) {
-                            (mesh as THREE.InstancedMesh).getMatrixAt(instanceId!, tempMat);
-                            tempMat.premultiply(mesh.matrixWorld);
-                            targetPos.copy(custom.clone().applyMatrix4(tempMat)); found = true;
-                        }
-                        if (!found) {
-                            const displayType = getDisplayType(mesh, instanceId);
-                            if (displayType === 'block_display') {
-                                const localPivot = getInstanceLocalBoxMin(mesh, instanceId, new THREE.Vector3());
-                                if (localPivot) {
-                                    const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
-                                    targetPos.copy(localPivot.applyMatrix4(worldMatrix)); found = true;
-                                }
-                            }
-                            if (!found) {
-                                getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
-                                const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
-                                targetPos.set(0, localY, 0).applyMatrix4(tempMat); found = true;
-                            }
-                        }
-                    }
-                }
-
-                if (found) {
-                    multiAnchorPos.copy(targetPos);
-                    flags.multiAnchorValid = true;
-                    setMultiAnchorInitial(targetPos);
-                    gizmoAnchorPos.copy(targetPos);
-                    flags.gizmoAnchorValid = true;
-                    flags.selectionAnchorMode = 'default';
-                } else {
-                    flags.multiAnchorValid = false;
-                    flags.multiAnchorInitialValid = false;
-                    flags.multiAnchorInitialLocalValid = false;
-                    flags.gizmoAnchorValid = false;
-                    flags.selectionAnchorMode = 'center';
-                }
-            }
+            // 다중선택 커스텀 피벗만 제거. 개별 오브젝트 userData 커스텀 피벗은 건드리지 않음.
+            // 앵커를 전부 초기화하여 updateHelperPosition Block 1이
+            // primary의 실제 피벗(개별 커스텀 피벗 포함)에서 재계산하도록 위임.
+            flags.multiAnchorValid = false;
+            flags.multiAnchorInitialValid = false;
+            flags.multiAnchorInitialLocalValid = false;
+            flags.gizmoAnchorValid = false;
+            flags.selectionAnchorMode = 'default';
         } else {
             if (currentSelection.groups && currentSelection.groups.size > 0) {
                 const groups = getGroups();
