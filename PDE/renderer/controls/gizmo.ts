@@ -1195,9 +1195,6 @@ export function initGizmo({
                     selectedVertexKeys.add(key);
 
                     if (selectedVertexKeys.size === 2) {
-                        // vertex ??2媛??좏깮 ???꾩옱 gizmo 紐⑤뱶???곕씪
-                        // vertex-translate.ts / vertex-rotate.ts / vertex-scale.ts 痢≪쑝濡??쇱슦??
-                        // getGizmoState/setGizmoState瑜??듯빐 gizmo ?대? ?곹깭瑜??쇱씠釉??숆린?뷀븳??
                         const getGizmoState = (): GizmoState => ({
                             pivotMode, isCustomPivot, pivotOffset,
                             _gizmoAnchorValid, _gizmoAnchorPosition,

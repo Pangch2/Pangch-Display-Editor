@@ -33,7 +33,7 @@
   - `shear-remove.ts`: 선택된 대상의 Shear(전단 변형) 제거 및 행렬 정규화 로직 전담
   - `vertex-rotate.ts`: 버텍스 모드에서의 회전 및 피벗 기준 변환 로직 전담
   - `vertex-scale.ts`: 버텍스 모드에서의 스케일 및 박스 변형 로직 전담 (Snap/Rotate/Scale 연동)
-  - `vertex-swap.ts`: 버텍스 모드에서 선택 대상을 교체하거나 큐에 추가하는 로직 전담 (Snap/Rotate/Scale 연동)
+  - `vertex-swap.ts`: 버텍스 모드에서 선택 대상(Primary)을 교체하거나, 선택 대상을 큐(Queue)와 Swap(맞교체)하는 로직 전담.
   - `vertex-translate.ts`: 버텍스 모드에서의 Snap(이동) 및 객체 위치 조정 로직 전담
   - `vertex-queue.ts`: 버텍스 큐(Vertex Queue) 상태 관리 로직 전담. `pushToVertexQueue` (큐 항목 추가·정리, 키 동기화) 및 `promoteVertexQueueBundleOnExit` (큐 번들 → 다중 선택 승격) 구현.
 
