@@ -418,7 +418,7 @@ function updateHelperPosition(): void {
 
     const isMulti = _isMultiSelection();
 
-    if (!isCustomPivot && !_multiSelectionOriginAnchorValid && _isMultiSelection() && currentSelection.primary) {
+    if (!isCustomPivot && !_multiSelectionOriginAnchorValid && _isMultiSelection() && currentSelection.primary && _selectionAnchorMode !== 'center') {
         let primaryPivotWorld: THREE.Vector3 | null = null;
         const prim = currentSelection.primary;
 
@@ -509,9 +509,11 @@ function updateHelperPosition(): void {
         if (pivotMode === 'origin' && isMulti) {
             _multiSelectionOriginAnchorPosition.copy(center);
             _multiSelectionOriginAnchorValid = true;
-            // NOTE: center 는 SelectionCenter 계산값(world 평균)이므로
-            // primary 로컬 초기값 캡처에 사용하지 않음.
-            // 로컬 초기값 캡처는 Block 1(primaryPivotWorld)에서만 수행.
+            // drag 선택처럼 primary가 없는 경우: 첫 번째 오브젝트를 primary로 설정하고
+            // center를 그 primary의 로컬 좌표에 저장. 이후 이동 후 pivot mode 전환 시
+            // _resolveMultiAnchorInitialWorld()가 올바른 현재 중앙을 반환하게 됨.
+            if (!currentSelection.primary) _setPrimaryToFirstAvailable();
+            _captureMultiAnchorInitialIfNeeded(center);
         }
     }
 
@@ -918,7 +920,9 @@ export function initGizmo({
 
                 _gizmoAnchorPosition.copy(selectionHelper!.position);
                 _gizmoAnchorValid = true;
-                _selectionAnchorMode = 'default';
+                // _selectionAnchorMode 는 변경하지 않음:
+                // drag 선택('center') → reset 시 bbox 중심으로 복귀 보장
+                // 수동 선택('default') → reset 시 primary origin 유지
 
                 if (_isMultiSelection()) {
                     _multiSelectionOriginAnchorPosition.copy(selectionHelper!.position);

@@ -398,13 +398,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                     {
                         isMultiSelection:               p.isMultiSelection,
                         revertEphemeralPivotUndoIfAny:  p.revertEphemeralPivotUndoIfAny,
-                        setMultiAnchorInitial:           p.setMultiAnchorInitial,
                         getGroups:                       p.getGroups,
-                        getGroupOriginWorld:             (id, out) => p.getGroupOriginWorld(id, out),
-                        getDisplayType:                  (mesh, id) => p.getDisplayType(mesh, id),
-                        getInstanceLocalBoxMin:          (mesh, id, out) => p.getInstanceLocalBoxMin(mesh, id, out),
-                        getInstanceWorldMatrixForOrigin: (mesh, id, out) => p.getInstanceWorldMatrixForOrigin(mesh, id, out),
-                        isItemDisplayHatEnabled:         (mesh, id) => p.isItemDisplayHatEnabled(mesh, id),
                         DEFAULT_GROUP_PIVOT:             p.DEFAULT_GROUP_PIVOT,
                     }
                 );

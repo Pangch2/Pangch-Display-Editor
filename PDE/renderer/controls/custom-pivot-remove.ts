@@ -1,8 +1,6 @@
 import * as THREE from 'three/webgpu';
 import type { GroupData } from './group';
 
-type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
-
 interface SelectionElement {
     type: 'group' | 'object';
     id?: string;
@@ -29,13 +27,7 @@ interface PivotFlags {
 interface PivotDeps {
     isMultiSelection: () => boolean;
     revertEphemeralPivotUndoIfAny: () => void;
-    setMultiAnchorInitial: (worldPos: THREE.Vector3) => void;
     getGroups: () => Map<string, GroupData>;
-    getGroupOriginWorld: (groupId: string, out: THREE.Vector3) => THREE.Vector3;
-    getDisplayType: (mesh: PdeMesh, instanceId?: number) => string | undefined;
-    getInstanceLocalBoxMin: (mesh: PdeMesh, instanceId: number | undefined, out: THREE.Vector3) => THREE.Vector3 | null;
-    getInstanceWorldMatrixForOrigin: (mesh: PdeMesh, instanceId: number | undefined, out: THREE.Matrix4) => THREE.Matrix4;
-    isItemDisplayHatEnabled: (mesh: PdeMesh, instanceId?: number) => boolean;
     DEFAULT_GROUP_PIVOT: THREE.Vector3;
 }
 
@@ -53,13 +45,7 @@ export function resetCustomPivot(
     const {
         isMultiSelection,
         revertEphemeralPivotUndoIfAny,
-        setMultiAnchorInitial,
         getGroups,
-        getGroupOriginWorld,
-        getDisplayType,
-        getInstanceLocalBoxMin,
-        getInstanceWorldMatrixForOrigin,
-        isItemDisplayHatEnabled,
         DEFAULT_GROUP_PIVOT,
     } = deps;
 
@@ -76,13 +62,12 @@ export function resetCustomPivot(
     if (isMultiReset) {
         if (hadExplicitMultiPivot) {
             // 다중선택 커스텀 피벗만 제거. 개별 오브젝트 userData 커스텀 피벗은 건드리지 않음.
-            // 앵커를 전부 초기화하여 updateHelperPosition Block 1이
-            // primary의 실제 피벗(개별 커스텀 피벗 포함)에서 재계산하도록 위임.
+            // 앵커 초기화 후 updateHelperPosition에 재계산 위임.
+            // selectionAnchorMode는 유지: drag='center' → bbox 중심, manual='default' → primary 원점.
             flags.multiAnchorValid = false;
             flags.multiAnchorInitialValid = false;
             flags.multiAnchorInitialLocalValid = false;
             flags.gizmoAnchorValid = false;
-            flags.selectionAnchorMode = 'default';
         } else {
             if (currentSelection.groups && currentSelection.groups.size > 0) {
                 const groups = getGroups();
@@ -104,49 +89,14 @@ export function resetCustomPivot(
                 }
             }
 
-            const targetPos = new THREE.Vector3();
-            let found = false;
-
-            if (currentSelection.primary) {
-                const prim = currentSelection.primary;
-                if (prim.type === 'group' && prim.id) {
-                    getGroupOriginWorld(prim.id, targetPos);
-                    found = true;
-                } else if (prim.type === 'object' && prim.mesh) {
-                    const { mesh, instanceId } = prim;
-                    const tempMat = new THREE.Matrix4();
-                    const displayType = getDisplayType(mesh, instanceId);
-                    if (displayType === 'block_display') {
-                        const localPivot = getInstanceLocalBoxMin(mesh, instanceId, new THREE.Vector3());
-                        if (localPivot) {
-                            const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
-                            targetPos.copy(localPivot.applyMatrix4(worldMatrix));
-                            found = true;
-                        }
-                    }
-                    if (!found) {
-                        getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
-                        const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
-                        targetPos.set(0, localY, 0).applyMatrix4(tempMat);
-                        found = true;
-                    }
-                }
-            }
-
-            if (found) {
-                multiAnchorPos.copy(targetPos);
-                flags.multiAnchorValid = true;
-                setMultiAnchorInitial(targetPos);
-                gizmoAnchorPos.copy(targetPos);
-                flags.gizmoAnchorValid = true;
-                flags.selectionAnchorMode = 'default';
-            } else {
-                flags.multiAnchorValid = false;
-                flags.multiAnchorInitialValid = false;
-                flags.multiAnchorInitialLocalValid = false;
-                flags.gizmoAnchorValid = false;
-                flags.selectionAnchorMode = 'center';
-            }
+            // 앵커 완전 초기화: updateHelperPosition에 재계산 위임.
+            // selectionAnchorMode 유지 - drag='center' → bbox 중심, manual='default' → primary 원점.
+            multiAnchorPos.set(0, 0, 0);
+            gizmoAnchorPos.set(0, 0, 0);
+            flags.multiAnchorValid = false;
+            flags.multiAnchorInitialValid = false;
+            flags.multiAnchorInitialLocalValid = false;
+            flags.gizmoAnchorValid = false;
         }
     } else {
         if (currentSelection.groups && currentSelection.groups.size > 0) {

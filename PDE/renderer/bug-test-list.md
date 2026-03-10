@@ -7,7 +7,7 @@
 - Alt로 커스텀 피벗 생성 후 Pivot Mode: center -> Pivot Mode: origin 작동 여부 확인
 - Alt로 커스텀 피벗 생성 후 위치 이동 후 Pivot Mode: center -> Pivot Mode: origin 작동 여부 확인
 - player_head, group이 커스텀 피벗 기억하는지 검증
-- 다중선택이 기준점을 기억하는가
+- 다중선택이 기준점을 기억하는가 | 기준이 없어도 기준이 있는거임
 
 
 `중요도 낮음`
