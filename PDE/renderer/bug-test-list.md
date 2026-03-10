@@ -1,6 +1,6 @@
 # 조작
 `중요도 높음(많은 요소와 상호작용을 함)`
-- 
+- 다중선택의 커스텀 피벗을 초기화 할 때 기준점이 있는것과 없는것 똑같이 작용하는지 확인
 
 `중요도 평범`
 - Pivot Mode: center -> Pivot Mode: origin 작동 여부 확인 | block_display, item_display, group

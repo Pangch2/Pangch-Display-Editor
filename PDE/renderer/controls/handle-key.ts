@@ -216,6 +216,17 @@ export function initHandleKey(p: HandleKeyParams): void {
                 } else {
                     p.setPivotMode('center');
                     p.recomputePivotStateForSelection();
+                    // center 모드 진입 시 origin 앵커 초기값 무효화:
+                    // 이후 이동 → origin 복귀 시 Block 1이 현재 primary 위치로 재캡처하게 함.
+                    // (초기값이 살아있으면 _resolveMultiAnchorInitialWorld가 이동 전 위치를 반환)
+                    // 단, explicit multi-selection pivot이 있는 경우는 앵커를 보존:
+                    //   보존해야 _resolveMultiAnchorInitialWorld가 커스텀 피벗 위치로 복귀 가능.
+                    //   explicit pivot은 local 좌표 추적이므로 이동 후에도 올바른 world 위치 반환.
+                    if (p.isMultiSelection() && !p.getMultiSelectionExplicitPivot()) {
+                        p.setMultiSelectionOriginAnchorValid(false);
+                        p.setMultiSelectionOriginAnchorInitialValid(false);
+                        p.setMultiSelectionOriginAnchorInitialLocalValid(false);
+                    }
                     p.updateHelperPosition();
                 }
 
