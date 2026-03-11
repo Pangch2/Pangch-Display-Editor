@@ -68,11 +68,11 @@ function handleSceneItemClick(e, el) {
             }
             
             // To properly preserve the primary object, we will rely on the `primaryIsRangeStart` flag we added
-            // to select.js, and we'll let handleSceneItemClick's `replaceSelectionWithGroupsAndObjects` handle it.
+            // to select.ts, and we'll let handleSceneItemClick's `replaceSelectionWithGroupsAndObjects` handle it.
             // When multiple selections are passed into this function, `firstGroupId` or `firstObjectMesh` 
-            // inside select.js gets set to whatever was iterated first. To guarantee lastClickedItem becomes `primary`,
+            // inside select.ts gets set to whatever was iterated first. To guarantee lastClickedItem becomes `primary`,
             // we will find its specific id/mesh and inject it into the API call natively if needed, but 
-            // currently select.js loops `rangeGroups` and `rangeObjects` as they were added.
+            // currently select.ts loops `rangeGroups` and `rangeObjects` as they were added.
             
             // Let's ensure the `lastClickedItem` is at the FRONT of the Iterator.
             const sortedRangeGroups = new Set();

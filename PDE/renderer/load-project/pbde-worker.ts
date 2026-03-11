@@ -65,7 +65,7 @@ interface GroupData {
 // tintColor 모듈을 워커에서 직접 불러올 수 없으므로 여기에서 구현을 포함한다.
 // 아래 getTextureColor 함수는 메인 스레드와 동일하게 동작하도록 수동으로 삽입한다.
 
-// --- tintColor.js에서 가져온 색상 계산 로직 ---
+// --- 색상 계산 로직 ---
 const blocksUsingDefaultGrassColors = [
   'grass_block',
   'short_grass',
@@ -211,7 +211,7 @@ const workerAssetProvider = {
     }
 };
 
-// --- block-processor.js를 바탕으로 한 블록 처리 로직 ---
+// --- block-processor를 바탕으로 한 블록 처리 로직 ---
 
 let assetProvider;
 

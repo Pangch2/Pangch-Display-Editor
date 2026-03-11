@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 // @ts-ignore
 import * as GroupUtils from './group';
 // @ts-ignore
-import * as Overlay from './overlay.js';
+import * as Overlay from './overlay';
 
 /**
  * Interface representing an element in the selection (either a group or a specific object instance).
@@ -34,7 +34,7 @@ export interface CustomPivotCallbacks {
     calculateAvgOrigin: () => THREE.Vector3;
 }
 
-// --- Imports from Overlay (mirrors gizmo.js aliases) ---
+// --- Imports from Overlay (mirrors gizmo.ts aliases) ---
 const getInstanceWorldMatrixForOrigin = Overlay.getInstanceWorldMatrixForOrigin;
 const getDisplayType = Overlay.getDisplayType;
 const isItemDisplayHatEnabled = Overlay.isItemDisplayHatEnabled;

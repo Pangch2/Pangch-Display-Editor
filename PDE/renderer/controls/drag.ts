@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import * as Select from './select';
 import type { SelectionCallbacks } from './select';
-import * as Overlay from './overlay.js';
+import * as Overlay from './overlay';
 import * as GroupUtils from './group';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
