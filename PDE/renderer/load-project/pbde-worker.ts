@@ -2038,7 +2038,7 @@ self.onmessage = async (e) => {
         const indicesByteOffset = uvByteOffset + uvByteLength;
         const totalByteLength = indicesByteOffset + indicesByteLength;
 
-        const geometryBuffer = new SharedArrayBuffer(totalByteLength);
+        const geometryBuffer = new ArrayBuffer(totalByteLength);
         const metadata = [];
 
         const posView = new Float32Array(geometryBuffer, 0, totalPositions);
@@ -2119,12 +2119,16 @@ self.onmessage = async (e) => {
             sceneOrder: sceneOrder.map(({ type, id }) => ({ type, id }))
         };
 
-        // 메타데이터와 지오메트리 버퍼를 메인 스레드로 전송한다.
+        // 메타데이터와 지오메트리 버퍼를 메인 스레드로 제로카피 전송한다.
+        // ArrayBuffer는 소유권이 이전(transfer)되므로 구조적 클론 비용이 없다.
+        // 아틀라스 버퍼도 함께 전송해 Uint8ClampedArray 복사를 방지한다.
+        const transferList: Transferable[] = [geometryBuffer];
+        if (atlasInfo) transferList.push(atlasInfo.data.buffer);
         self.postMessage({
             success: true,
             metadata: metadataPayload,
-            geometryBuffer: geometryBuffer
-        });
+            geometryBuffer
+        }, transferList);
 
     } catch (error) {
         self.postMessage({

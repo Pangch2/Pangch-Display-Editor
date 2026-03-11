@@ -67,7 +67,7 @@ interface WorkerMetadata {
     geometries: GeometryMeta[];
     otherItems: OtherItem[];
     useUint32Indices?: boolean;
-    atlas?: { width: number; height: number; data: Uint8ClampedArray };
+    atlas?: { width: number; height: number; data: Uint8ClampedArray<ArrayBuffer> };
     groups?: Map<string, GroupData>;
     sceneOrder?: { type: 'group' | 'object', id: string }[];
 }
@@ -151,9 +151,6 @@ const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPaylo
 let worker: Worker | null = null;
 // 로드된 모든 객체를 담을 그룹
 const loadedObjectGroup = new THREE.Group();
-
-// 텍스처 로더 및 캐시
-const textureCache = new Map<string, THREE.Texture>();
 
 // --- 블록 텍스처 및 머티리얼 캐시(중복 로드 제거 + 재사용) ---
 const blockTextureCache = new Map<string, THREE.Texture>(); // 텍스처 경로별 THREE.Texture 매핑
@@ -342,12 +339,14 @@ function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
 }
 
 async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number): Promise<THREE.Material> {
-    const key = `${texPath}|${(tintHex >>> 0)}`;
+    // undefined는 흰색(0xffffff)으로 정규화하여 캐시 키 불일치를 방지한다.
+    const effectiveTint = (tintHex ?? 0xffffff) >>> 0;
+    const key = `${texPath}|${effectiveTint}`;
     if (blockMaterialCache.has(key) && gen === currentLoadGen) {
         const mat = blockMaterialCache.get(key)!;
-        // 아틀라스 텍스처가 변경되었는지 확인 (프로젝트 병합 시 발생 가능)
+        // 아틀라스 텍스처가 변경되었으면 stale 항목을 캐시에서 제거하고 재생성한다.
         if (texPath.includes('__ATLAS__') && mat.map !== currentAtlasTexture) {
-            // 캐시된 머티리얼이 이전 아틀라스를 사용 중이므로 무시하고 새로 생성
+            blockMaterialCache.delete(key);
         } else {
             return mat;
         }
@@ -357,7 +356,7 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
 
     const p = (async () => {
         const tex = await loadBlockTexture(texPath, gen);
-        const { material } = createEntityMaterial(tex, tintHex ?? 0xffffff);
+        const { material } = createEntityMaterial(tex, effectiveTint);
         material.toneMapped = false;
         material.fog = false;
         material.flatShading = true;
@@ -411,10 +410,6 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
 
 // --- 최적화: 지오메트리 미리 생성 ---
 let headGeometries: HeadGeometrySet | null = null;
-
-// 🚀 최적화 3: 지오메트리 공유 - 동일한 블록 모델 재사용
-const geometryCache = new Map<string, THREE.BufferGeometry>();
-const geometryCachePromises = new Map<string, Promise<THREE.BufferGeometry>>();
 
 export { loadedObjectGroup };
 
@@ -627,13 +622,6 @@ function _clearSceneAndCaches(): void {
         currentAtlasTexture.dispose();
         currentAtlasTexture = null;
     }
-    textureCache.forEach(cachedItem => {
-        if (cachedItem && cachedItem instanceof THREE.Texture) {
-            cachedItem.dispose();
-        }
-    });
-    textureCache.clear();
-
     // 1-1-b. 블럭 텍스처/머티리얼 캐시 해제 및 초기화
     blockMaterialCache.forEach((mat) => { try { mat.dispose(); } catch {} });
     blockMaterialCache.clear();
@@ -642,12 +630,6 @@ function _clearSceneAndCaches(): void {
     blockTextureCache.clear();
     blockTexturePromiseCache.clear();
 
-
-
-    // 1-1-d. 지오메트리 캐시 해제
-    geometryCache.forEach((geo) => { try { geo.dispose(); } catch {} });
-    geometryCache.clear();
-    geometryCachePromises.clear();
 
     // 공유 플레이스홀더 머티리얼이 누적되지 않도록 폐기한다.
     if (sharedPlaceholderMaterial) { try { sharedPlaceholderMaterial.dispose(); } catch {} }
@@ -795,13 +777,20 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
             if (msg.type === 'requestAsset') {
                 mainThreadAssetProvider.getAsset(msg.path)
                     .then(content => {
+                        // PNG 바이트 배열은 소유권을 이전(transfer)해 구조적 클론 비용을 없앤다.
+                        const transfer: Transferable[] = [];
+                        if (content instanceof Uint8Array) {
+                            transfer.push(content.buffer);
+                        } else if (content instanceof ArrayBuffer) {
+                            transfer.push(content);
+                        }
                         worker?.postMessage({ 
                             type: 'assetResponse', 
                             requestId: msg.requestId, 
                             path: msg.path, 
                             content: content, 
                             success: true 
-                        });
+                        }, transfer);
                     })
                     .catch(error => {
                         worker?.postMessage({ 
@@ -817,14 +806,14 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
 
             if (msg.success) {
                 const { metadata, geometryBuffer } = msg;
-                if (!(geometryBuffer instanceof SharedArrayBuffer)) {
-                    console.error('[Debug] geometryBuffer is not a SharedArrayBuffer. Aborting render pipeline.');
+                if (!(geometryBuffer instanceof ArrayBuffer)) {
+                    console.error('[Debug] geometryBuffer is not an ArrayBuffer. Aborting render pipeline.');
                     worker?.terminate();
                     worker = null;
                     resolve(new Set());
                     return;
                 }
-                const sharedBuffer = geometryBuffer as SharedArrayBuffer;
+                const sharedBuffer = geometryBuffer as ArrayBuffer;
                 if (!metadata || typeof metadata !== 'object') {
                     console.error('[Debug] Invalid metadata payload from worker.');
                     worker?.terminate();
@@ -940,7 +929,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
 
                 if (atlas) {
                     try {
-                        const imageData = new ImageData(new Uint8ClampedArray(atlas.data), atlas.width, atlas.height);
+                        const imageData = new ImageData(atlas.data, atlas.width, atlas.height);
                         const tex = new THREE.Texture(await createImageBitmap(imageData));
                         tex.magFilter = THREE.NearestFilter;
                         tex.minFilter = THREE.NearestFilter;
@@ -1019,7 +1008,6 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                 
                 // Grouping structure: GeometryId -> InstanceTransformString -> PartMeta[]
                 const blocks = new Map<string, Map<string, GeometryMeta[]>>();
-                const partsToMerge = new Map<string, { type: 'opaque' | 'translucent', parts: GeometryMeta[] }>();
 
                 ensureSharedPlaceholder();
                 const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
@@ -1051,14 +1039,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                         else if (meta.texPath === '__ATLAS_TRANSLUCENT__') type = 'translucent';
                     }
 
-                    if (type) {
-                        const instanceKey = String(meta.itemId);
-                        const key = `${instanceKey}|${type}|${meta.tintHex ?? 0xffffff}`;
-                        if (!partsToMerge.has(key)) {
-                            partsToMerge.set(key, { type, parts: [] });
-                        }
-                        partsToMerge.get(key)!.parts.push(meta);
-                    } else {
+                    if (!type) {
                         const geomId = meta.geometryId;
                         const instanceKey = String(meta.itemId);
                         
