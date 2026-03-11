@@ -86,6 +86,7 @@ export function getSelectedItems(): SelectedItem[] {
             for (const groupId of currentSelection.groups) {
                 const children = GroupUtils.getAllGroupChildren(loadedObjectGroupForSelect, groupId);
                 children.forEach((child) => {
+                    if (!child.mesh) return;
                     const uniqueKey = `${child.mesh.uuid}_${child.instanceId}`;
                     if (!seen.has(uniqueKey)) {
                         seen.add(uniqueKey);
@@ -98,6 +99,7 @@ export function getSelectedItems(): SelectedItem[] {
 
     if (currentSelection.objects && currentSelection.objects.size > 0) {
         for (const [mesh, ids] of currentSelection.objects) {
+            if (!mesh) continue;
             for (const id of ids) {
                 const uniqueKey = `${mesh.uuid}_${id}`;
                 if (!seen.has(uniqueKey)) {
