@@ -241,7 +241,11 @@ export function SelectionCenter(
     const center = new THREE.Vector3();
     const items = getSelectedItems();
     
-    if (items.length === 0) return center;
+    // Check if we have ANY selection (groups or objects)
+    const hasGroups = currentSelection.groups && currentSelection.groups.size > 0;
+    const hasObjects = currentSelection.objects && currentSelection.objects.size > 0;
+
+    if (items.length === 0 && !hasGroups && !hasObjects) return center;
 
     if (pivotMode === 'center') {
         const singleGroupId = getSingleSelectedGroupId();
