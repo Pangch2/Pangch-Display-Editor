@@ -131,7 +131,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
             }
         }
 
-        bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat } as QueueEntry);
+        bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat, promoteOnExit: false } as QueueEntry);
 
         if (isCenterSelected && localPos) {
             const idStr = item.type === 'group'
@@ -143,7 +143,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
     }
 
     if (bundleItems.length > 0) {
-        vertexQueue.push({ type: 'bundle', items: bundleItems } as QueueBundle);
+        vertexQueue.push({ type: 'bundle', items: bundleItems, promoteOnExit: false } as QueueBundle);
     }
 
     while (vertexQueue.length > VERTEX_QUEUE_MAX_SIZE) {
@@ -228,15 +228,19 @@ export function promoteVertexQueueBundleOnExit(params: PromoteVertexQueueParams)
 
     if (!Array.isArray(vertexQueue) || vertexQueue.length === 0) return false;
 
-    const bundle = vertexQueue.find((item): item is QueueBundle =>
-        item != null && item.type === 'bundle' && Array.isArray((item as QueueBundle).items)
-    );
-    if (!bundle || !bundle.items || bundle.items.length === 0) return false;
+    const queuedItem = vertexQueue.find((item) => item != null && item.promoteOnExit === true);
+    if (!queuedItem) return false;
+
+    const queuedItems: QueueEntry[] = queuedItem.type === 'bundle'
+        ? (((queuedItem as QueueBundle).items || []).filter(Boolean) as QueueEntry[])
+        : [queuedItem as QueueEntry];
+
+    if (queuedItems.length === 0) return false;
 
     const groupIds = new Set<string>();
     const meshToIds = new Map<PdeMesh, Set<number>>();
 
-    for (const sub of bundle.items) {
+    for (const sub of queuedItems) {
         if (!sub) continue;
         if (sub.type === 'group' && sub.id) {
             groupIds.add(sub.id);
@@ -254,7 +258,7 @@ export function promoteVertexQueueBundleOnExit(params: PromoteVertexQueueParams)
 
     let total = groupIds.size;
     for (const ids of meshToIds.values()) total += ids.size;
-    if (total <= 1) return false;
+    if (total === 0) return false;
 
     replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'default', preserveAnchors: true });
     return true;

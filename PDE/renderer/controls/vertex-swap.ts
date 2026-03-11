@@ -17,11 +17,13 @@ export interface QueueEntry {
     instanceId?: number;
     gizmoLocalPosition: THREE.Vector3;
     gizmoLocalQuaternion: THREE.Quaternion;
+    promoteOnExit?: boolean;
 }
 
 export interface QueueBundle {
     type: 'bundle';
     items: QueueEntry[];
+    promoteOnExit?: boolean;
 }
 
 export type QueueItem = QueueEntry | QueueBundle;
@@ -158,7 +160,7 @@ export function performSelectionSwap(
         }
     };
 
-    const createQueueEntry = (source: SelectionSource): QueueEntry => {
+    const createQueueEntry = (source: SelectionSource, promoteOnExit = false): QueueEntry => {
         const targetLocalPivot = new THREE.Vector3(0, 0, 0);
         let hasCustomPivot = false;
 
@@ -224,8 +226,23 @@ export function performSelectionSwap(
             mesh: source.type === 'object' ? source.mesh : undefined,
             instanceId: source.type === 'object' ? source.instanceId : undefined,
             gizmoLocalPosition: targetLocalPivot,
-            gizmoLocalQuaternion: new THREE.Quaternion()
+            gizmoLocalQuaternion: new THREE.Quaternion(),
+            promoteOnExit
         };
+    };
+
+    const createQueueItem = (sources: SelectionSource[], promoteOnExit = false): QueueItem | null => {
+        if (sources.length === 1) {
+            return createQueueEntry(sources[0], promoteOnExit);
+        }
+        if (sources.length > 1) {
+            return {
+                type: 'bundle',
+                items: sources.map((item) => createQueueEntry(item, promoteOnExit)),
+                promoteOnExit
+            };
+        }
+        return null;
     };
 
     const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
@@ -239,7 +256,6 @@ export function performSelectionSwap(
     const hasActiveSelection = activeSelectionCount > 0;
     
     const isSwap = !!options.preserveSelection;
-    const shouldReplaceWithSrc = !!src && (!isSwap || !hasActiveSelection);
 
     if (isSwap && src) {
         const srcSelected = isSelectedSource(src);
@@ -247,7 +263,11 @@ export function performSelectionSwap(
         const srcInQueue = findQueueLocation(src);
         const targetSelected = isSelectedSource(targetSrc);
 
-        const executeFullSwap = (queuedLocation: { kind: 'direct' | 'bundle'; itemIndex: number; subIndex?: number }, newPrimarySrc: SelectionSource) => {
+        const executeFullSwap = (
+            queuedLocation: { kind: 'direct' | 'bundle'; itemIndex: number; subIndex?: number },
+            newPrimarySrc: SelectionSource,
+            queueSelectionOnExit: boolean
+        ) => {
             const qItem = vertexQueue[queuedLocation.itemIndex];
             const itemsToSelect: SelectionSource[] = [];
             
@@ -295,13 +315,7 @@ export function performSelectionSwap(
             }
             currentSelection.primary = toSelectionSource(newPrimarySrc);
 
-            let newQueueItem: QueueItem | null = null;
-            if (itemsToQueue.length === 1) {
-                newQueueItem = createQueueEntry(itemsToQueue[0]);
-            } else if (itemsToQueue.length > 1) {
-                const bundleItems = itemsToQueue.map(item => createQueueEntry(item));
-                newQueueItem = { type: 'bundle', items: bundleItems };
-            }
+            const newQueueItem = createQueueItem(itemsToQueue, queueSelectionOnExit);
 
             if (newQueueItem) {
                 vertexQueue[queuedLocation.itemIndex] = newQueueItem;
@@ -312,16 +326,71 @@ export function performSelectionSwap(
         };
 
         if (srcSelected && targetInQueue) {
-            executeFullSwap(targetInQueue, targetSrc);
-            return;
+            // queue bundle의 items가 현재 선택과 완전히 일치하면(pushToVertexQueue 자기 번들),
+            // executeFullSwap를 건너뜀:
+            //   no-op 스왑으로 selection·queue 양쪽에 gizmo점이 생기는 현상 방지.
+            // 자기 번들은 큐에서 제거하고, target이 미선택 오브젝트면 정상 큐 추가로 fall-through.
+            const _qItem = vertexQueue[targetInQueue.itemIndex];
+            const _bundleItems =
+                ('items' in _qItem && Array.isArray((_qItem as QueueBundle).items))
+                    ? (_qItem as QueueBundle).items
+                    : [_qItem as QueueEntry];
+            const isSelfBundle =
+                _bundleItems.length === activeSelectionCount &&
+                _bundleItems.every(item => isSelectedSource(item as SelectionSource));
+            if (!isSelfBundle) {
+                executeFullSwap(targetInQueue, targetSrc, true);
+                return;
+            }
+            // 자기 번들 제거 후 fall-through
+            vertexQueue.splice(targetInQueue.itemIndex, 1);
         }
 
         if (targetSelected && srcInQueue) {
-            executeFullSwap(srcInQueue, src);
+            executeFullSwap(srcInQueue, src, false);
+            return;
+        }
+
+        // src 미선택 + target 선택됨 + src가 큐에도 없는 경우:
+        // src를 selection으로, 기존 selection을 queue로 이동.
+        // (다중선택에서 visible 오브젝트를 선택 안의 vertex로 snap하는 경우)
+        if (!srcSelected && targetSelected) {
+            const itemsToQueue: SelectionSource[] = [];
+            for (const gid of currentSelection.groups) itemsToQueue.push({ type: 'group', id: gid });
+            for (const [mesh, ids] of currentSelection.objects) {
+                for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh, instanceId: id });
+            }
+
+            currentSelection.groups.clear();
+            currentSelection.objects.clear();
+            currentSelection.primary = null;
+
+            if (src.type === 'group') {
+                currentSelection.groups.add(src.id);
+                currentSelection.primary = { type: 'group', id: src.id };
+            } else {
+                const ids = new Set<number>();
+                ids.add(src.instanceId);
+                currentSelection.objects.set(src.mesh, ids);
+                currentSelection.primary = { type: 'object', mesh: src.mesh, instanceId: src.instanceId };
+            }
+
+            vertexQueue.length = 0;
+            const newQueueItem = createQueueItem(itemsToQueue, false);
+            if (newQueueItem) {
+                vertexQueue.push(newQueueItem);
+            }
+
+            computeAndApplyPivotState(src);
+            updateHelperPosition();
             return;
         }
     }
 
+    // isSwap 블록에서 처리되지 않은 경우의 폴백.
+    // isSwap=false: src를 selection으로 교체 (단일선택 snap: src가 이동).  
+    // isSwap=true, selection이 비어있음: src를 selection으로 올림.
+    const shouldReplaceWithSrc = !!src && (!isSwap || !hasActiveSelection);
     if (shouldReplaceWithSrc && src) {
          currentSelection.groups.clear();
          currentSelection.objects.clear();
