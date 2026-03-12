@@ -27,6 +27,7 @@ interface VertexRotateContext {
 
     getGizmoState: () => GizmoState;
     setGizmoState: (updates: Partial<GizmoState>) => void;
+    setMultiAnchorInitial: (worldPos: THREE.Vector3) => void;
 
     getGroups: () => Map<string, GroupData>;
     getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
@@ -48,6 +49,7 @@ export function processVertexRotate(
         // State Interface
         getGizmoState,
         setGizmoState,
+        setMultiAnchorInitial,
         
         // Methods
         getGroups,
@@ -314,10 +316,14 @@ export function processVertexRotate(
             getGroupWorldMatrixWithFallback,
             setGizmoState,
             getGizmoState,
+            setMultiAnchorInitial,
             updateHelperPosition,
             SelectionCenter,
             vertexQueue
-        }, { preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle });
+        }, {
+            preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle,
+            targetAnchorWorld: p2.clone()
+        });
         
         selectedVertexKeys.clear();
         updateHelperPosition();

@@ -25,6 +25,7 @@ interface VertexTranslateContext {
 
     getGizmoState: () => GizmoState;
     setGizmoState: (updates: Partial<GizmoState>) => void;
+    setMultiAnchorInitial: (worldPos: THREE.Vector3) => void;
 
     getGroups: () => Map<string, GroupData>;
     getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
@@ -49,6 +50,7 @@ export function processVertexSnap(
         // State Interface
         getGizmoState,
         setGizmoState,
+        setMultiAnchorInitial,
 
         // Methods
         getGroups,
@@ -158,10 +160,11 @@ export function processVertexSnap(
                 getGroupWorldMatrixWithFallback,
                 setGizmoState,
                 getGizmoState,
+                setMultiAnchorInitial,
                 updateHelperPosition,
                 SelectionCenter,
                 vertexQueue
-            }, { preserveSelection: preserveSelectionOnSnap });
+            }, { preserveSelection: preserveSelectionOnSnap, targetAnchorWorld: targetPos.clone() });
 
             if (state.pivotMode === 'center') {
                 setGizmoState({ pivotMode: 'origin' });
@@ -202,13 +205,7 @@ export function processVertexSnap(
                     _multiSelectionOriginAnchorPosition: selectionHelper.position,
                     _multiSelectionOriginAnchorValid: true
                 });
-
-                if (!state._multiSelectionOriginAnchorInitialValid) {
-                    setGizmoState({
-                        _multiSelectionOriginAnchorInitialPosition: selectionHelper.position.clone(),
-                        _multiSelectionOriginAnchorInitialValid: true
-                    });
-                }
+                setMultiAnchorInitial(selectionHelper.position.clone());
             } else {
                 if (currentSelection.groups && currentSelection.groups.size > 0) {
                     const groups = getGroups();
@@ -254,10 +251,11 @@ export function processVertexSnap(
                 getGroupWorldMatrixWithFallback,
                 setGizmoState,
                 getGizmoState,
+                setMultiAnchorInitial,
                 updateHelperPosition,
                 SelectionCenter,
                 vertexQueue
-            }, { preserveSelection: preserveSelectionOnSnap });
+            }, { preserveSelection: preserveSelectionOnSnap, targetAnchorWorld: targetPos.clone() });
 
             selectedVertexKeys.clear();
             updateHelperPosition();
@@ -360,13 +358,22 @@ export function processVertexSnap(
 
             const state = getGizmoState();
             const updates: Partial<GizmoState> = {};
+            let nextMultiAnchorWorld: THREE.Vector3 | null = null;
             if (state._gizmoAnchorValid && state._gizmoAnchorPosition) {
                 updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().add(delta);
             }
             if (state._multiSelectionOriginAnchorValid && state._multiSelectionOriginAnchorPosition) {
-                updates._multiSelectionOriginAnchorPosition = state._multiSelectionOriginAnchorPosition.clone().add(delta);
+                nextMultiAnchorWorld = state._multiSelectionOriginAnchorPosition.clone().add(delta);
+                updates._multiSelectionOriginAnchorPosition = nextMultiAnchorWorld;
+            } else if (_isMultiSelection() && state._gizmoAnchorValid && state._gizmoAnchorPosition) {
+                nextMultiAnchorWorld = state._gizmoAnchorPosition.clone().add(delta);
+                updates._multiSelectionOriginAnchorPosition = nextMultiAnchorWorld;
+                updates._multiSelectionOriginAnchorValid = true;
             }
             if (Object.keys(updates).length > 0) setGizmoState(updates);
+            if (_isMultiSelection() && nextMultiAnchorWorld) {
+                setMultiAnchorInitial(nextMultiAnchorWorld.clone());
+            }
 
         } else if (containingBundle) {
             addBundle(containingBundle);
@@ -426,10 +433,14 @@ export function processVertexSnap(
             getGroupWorldMatrixWithFallback,
             setGizmoState,
             getGizmoState,
+            setMultiAnchorInitial,
             updateHelperPosition,
             SelectionCenter,
             vertexQueue
-        }, { preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle });
+        }, {
+            preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle,
+            targetAnchorWorld: sprite2.position.clone()
+        });
 
         selectedVertexKeys.clear();
         updateHelperPosition();

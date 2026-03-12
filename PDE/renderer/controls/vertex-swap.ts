@@ -38,6 +38,7 @@ export interface SwapContext {
     getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
     setGizmoState: (state: Partial<GizmoState>) => void;
     getGizmoState: () => GizmoState;
+    setMultiAnchorInitial?: (worldPos: THREE.Vector3) => void;
     updateHelperPosition: () => void;
     SelectionCenter: (mode: string, useOffset: boolean, target: THREE.Vector3) => THREE.Vector3;
     vertexQueue: QueueItem[];
@@ -45,6 +46,7 @@ export interface SwapContext {
 
 export interface SwapOptions {
     preserveSelection?: boolean;
+    targetAnchorWorld?: THREE.Vector3;
 }
 
 export function performSelectionSwap(
@@ -59,6 +61,7 @@ export function performSelectionSwap(
         getGroupWorldMatrixWithFallback,
         setGizmoState,
         getGizmoState,
+        setMultiAnchorInitial,
         updateHelperPosition,
         SelectionCenter,
         vertexQueue
@@ -107,8 +110,6 @@ export function performSelectionSwap(
         return null;
     };
 
-    const state = getGizmoState();
-
     const computeAndApplyPivotState = (source: SelectionSource): void => {
         let pivotWorld: THREE.Vector3 | null = null;
 
@@ -151,6 +152,7 @@ export function performSelectionSwap(
             }
         }
 
+        const state = getGizmoState();
         if (pivotWorld) {
             const origin = SelectionCenter('origin', false, _ZERO_VEC3);
             const offset = new THREE.Vector3().subVectors(pivotWorld, origin);
@@ -160,11 +162,75 @@ export function performSelectionSwap(
         }
     };
 
-    const createQueueEntry = (source: SelectionSource, promoteOnExit = false): QueueEntry => {
+    const getSourceWorldMatrix = (source: SelectionSource, target: THREE.Matrix4): THREE.Matrix4 => {
+        if (source.type === 'group') {
+            return getGroupWorldMatrixWithFallback(source.id, target);
+        }
+
+        const { mesh, instanceId } = source;
+        if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+            (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, target);
+        } else {
+            target.copy(mesh.matrix);
+        }
+
+        return target.premultiply(mesh.matrixWorld);
+    };
+
+    const getQueueEntryAnchorWorld = (entry: QueueEntry | null | undefined): THREE.Vector3 | null => {
+        if (!entry || !entry.gizmoLocalPosition) return null;
+
+        const source: SelectionSource = entry.type === 'group'
+            ? { type: 'group', id: entry.id! }
+            : { type: 'object', mesh: entry.mesh!, instanceId: entry.instanceId! };
+
+        return entry.gizmoLocalPosition.clone().applyMatrix4(getSourceWorldMatrix(source, _TMP_MAT4_A));
+    };
+
+    const applySelectionAnchorFromQueue = (anchorWorld: THREE.Vector3 | null, selectionCount: number): void => {
+        if (!anchorWorld) return;
+
+        const updates: Partial<GizmoState> = {
+            _gizmoAnchorPosition: anchorWorld,
+            _gizmoAnchorValid: true
+        };
+
+        if (selectionCount > 1) {
+            updates._multiSelectionOriginAnchorPosition = anchorWorld;
+            updates._multiSelectionOriginAnchorValid = true;
+        }
+
+        setGizmoState(updates);
+
+        if (selectionCount > 1) {
+            setMultiAnchorInitial?.(anchorWorld.clone());
+        }
+    };
+
+    const state = getGizmoState();
+
+    const getCurrentSelectionAnchorWorld = (selectionCount: number): THREE.Vector3 | null => {
+        const state = getGizmoState();
+        if (selectionCount > 1 && state._multiSelectionOriginAnchorValid) {
+            return state._multiSelectionOriginAnchorPosition.clone();
+        }
+        if (state._gizmoAnchorValid) {
+            return state._gizmoAnchorPosition.clone();
+        }
+        return null;
+    };
+
+    const createQueueEntry = (source: SelectionSource, promoteOnExit = false, anchorWorld?: THREE.Vector3 | null): QueueEntry => {
         const targetLocalPivot = new THREE.Vector3(0, 0, 0);
         let hasCustomPivot = false;
 
-        if (state.pivotMode !== 'center') {
+        if (anchorWorld) {
+            const inverseWorld = getSourceWorldMatrix(source, _TMP_MAT4_A).clone().invert();
+            targetLocalPivot.copy(anchorWorld).applyMatrix4(inverseWorld);
+            hasCustomPivot = true;
+        }
+
+        if (!hasCustomPivot && state.pivotMode !== 'center') {
             if (source.type === 'object') {
                 const { mesh, instanceId } = source;
                 if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
@@ -208,7 +274,7 @@ export function performSelectionSwap(
             }
         }
 
-        if (state.pivotMode === 'center') {
+        if (!hasCustomPivot && state.pivotMode === 'center') {
             let localBox: THREE.Box3 | null = null;
             if (source.type === 'object') {
                 localBox = Overlay.getInstanceLocalBox(source.mesh, source.instanceId);
@@ -231,14 +297,14 @@ export function performSelectionSwap(
         };
     };
 
-    const createQueueItem = (sources: SelectionSource[], promoteOnExit = false): QueueItem | null => {
+    const createQueueItem = (sources: SelectionSource[], promoteOnExit = false, anchorWorld?: THREE.Vector3 | null): QueueItem | null => {
         if (sources.length === 1) {
-            return createQueueEntry(sources[0], promoteOnExit);
+            return createQueueEntry(sources[0], promoteOnExit, anchorWorld);
         }
         if (sources.length > 1) {
             return {
                 type: 'bundle',
-                items: sources.map((item) => createQueueEntry(item, promoteOnExit)),
+                items: sources.map((item) => createQueueEntry(item, promoteOnExit, anchorWorld)),
                 promoteOnExit
             };
         }
@@ -269,6 +335,10 @@ export function performSelectionSwap(
             queueSelectionOnExit: boolean
         ) => {
             const qItem = vertexQueue[queuedLocation.itemIndex];
+            const queuedAnchorEntry = ('items' in qItem && Array.isArray(qItem.items))
+                ? qItem.items[queuedLocation.subIndex ?? 0]
+                : qItem as QueueEntry;
+            const queuedAnchorWorld = getQueueEntryAnchorWorld(queuedAnchorEntry);
             const itemsToSelect: SelectionSource[] = [];
             
             if ('items' in qItem && Array.isArray(qItem.items)) {
@@ -296,6 +366,7 @@ export function performSelectionSwap(
                     for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh, instanceId: id });
                 }
             }
+            const currentSelectionAnchorWorld = getCurrentSelectionAnchorWorld(itemsToQueue.length);
 
             currentSelection.groups.clear();
             currentSelection.objects.clear();
@@ -315,12 +386,13 @@ export function performSelectionSwap(
             }
             currentSelection.primary = toSelectionSource(newPrimarySrc);
 
-            const newQueueItem = createQueueItem(itemsToQueue, queueSelectionOnExit);
+            const newQueueItem = createQueueItem(itemsToQueue, queueSelectionOnExit, currentSelectionAnchorWorld);
 
             if (newQueueItem) {
                 vertexQueue[queuedLocation.itemIndex] = newQueueItem;
             }
 
+            applySelectionAnchorFromQueue(queuedAnchorWorld, itemsToSelect.length);
             computeAndApplyPivotState(newPrimarySrc);
             updateHelperPosition();
         };
@@ -360,6 +432,7 @@ export function performSelectionSwap(
             for (const [mesh, ids] of currentSelection.objects) {
                 for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh, instanceId: id });
             }
+            const currentSelectionAnchorWorld = getCurrentSelectionAnchorWorld(itemsToQueue.length);
 
             currentSelection.groups.clear();
             currentSelection.objects.clear();
@@ -376,7 +449,7 @@ export function performSelectionSwap(
             }
 
             vertexQueue.length = 0;
-            const newQueueItem = createQueueItem(itemsToQueue, false);
+            const newQueueItem = createQueueItem(itemsToQueue, false, currentSelectionAnchorWorld);
             if (newQueueItem) {
                 vertexQueue.push(newQueueItem);
             }
@@ -435,6 +508,6 @@ export function performSelectionSwap(
         if (targetInBundle) return;
     }
 
-    vertexQueue.push(createQueueEntry(targetSrc));
+    vertexQueue.push(createQueueEntry(targetSrc, false, options.targetAnchorWorld ?? null));
     while (vertexQueue.length > 1) vertexQueue.shift();
 }

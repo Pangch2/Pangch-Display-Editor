@@ -30,6 +30,7 @@ interface VertexScaleContext {
     selectionHelper: THREE.Mesh;
     getGizmoState: () => GizmoState;
     setGizmoState: (updates: Partial<GizmoState>) => void;
+    setMultiAnchorInitial: (worldPos: THREE.Vector3) => void;
     getGroups: () => Map<string, GroupData>;
     getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
     updateHelperPosition: () => void;
@@ -50,6 +51,7 @@ export function processVertexScale(
         selectionHelper,
         getGizmoState,
         setGizmoState,
+        setMultiAnchorInitial,
         getGroups,
         getGroupWorldMatrixWithFallback,
         updateHelperPosition,
@@ -332,8 +334,11 @@ export function processVertexScale(
     // 6. Swap
     const targetSrc: SelectionSource | null = sprite2.userData.source ?? (sprite2.userData.isCenter ? currentSelection.primary : null);
     if (targetSrc) performSelectionSwap(src, targetSrc, {
-        currentSelection, getGroups, getGroupWorldMatrixWithFallback, setGizmoState, getGizmoState, updateHelperPosition, SelectionCenter, vertexQueue
-    }, { preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle });
+        currentSelection, getGroups, getGroupWorldMatrixWithFallback, setGizmoState, getGizmoState, setMultiAnchorInitial, updateHelperPosition, SelectionCenter, vertexQueue
+    }, {
+        preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle,
+        targetAnchorWorld: p2.clone()
+    });
 
     selectedVertexKeys.clear();
     updateHelperPosition();
