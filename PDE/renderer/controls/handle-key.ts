@@ -171,6 +171,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                     p.promoteVertexQueueBundleOnExit();
                     p.vertexQueue.length = 0;
                     p.selectedVertexKeys.clear();
+                    p.recomputePivotStateForSelection();
                     p.updateHelperPosition();
                 }
                 p.updateSelectionOverlay();
