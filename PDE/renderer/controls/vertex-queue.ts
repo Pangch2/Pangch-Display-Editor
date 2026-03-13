@@ -111,6 +111,8 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
     const tempInv = _TMP_MAT4_B;
 
     const bundleItems: QueueEntry[] = [];
+    let isBundleCenterAlreadySelected = false; // Multi-selection center selection fix
+
     for (const item of itemsToAdd) {
         let localPos: THREE.Vector3 | null = null;
         let localQuat: THREE.Quaternion | null = null;
@@ -133,12 +135,13 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
 
         bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat, promoteOnExit: false } as QueueEntry);
 
-        if (isCenterSelected && localPos) {
+        if (isCenterSelected && localPos && !isBundleCenterAlreadySelected) {
             const idStr = item.type === 'group'
                 ? `G_${item.id}`
                 : `O_${item.mesh!.uuid}_${item.instanceId}`;
             const qKey = `QUEUE_${idStr}_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
             selectedVertexKeys.add(qKey);
+            isBundleCenterAlreadySelected = true; // Only add the first one so selectedVertexKeys.size remains 1
         }
     }
 

@@ -94,14 +94,35 @@ export function processVertexSnap(
     // Helper to update gizmoLocalPosition in vertexQueue
     const updateQueueItemPivot = (sourceItem: SelectionSource, newPivot: THREE.Vector3) => {
         if (!vertexQueue) return;
-        const target = vertexQueue.find(item => {
-            if (item.type !== sourceItem.type) return false;
-            if (item.type === 'group') return (item as QueueEntry).id === (sourceItem as { type: 'group'; id: string }).id;
-            return (item as QueueEntry).mesh === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).mesh
-                && (item as QueueEntry).instanceId === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).instanceId;
-        });
-        if (target) {
-            (target as QueueEntry).gizmoLocalPosition = newPivot;
+        
+        for (const item of vertexQueue) {
+            if (item.type === 'bundle' && item.items) {
+                const target = item.items.find(sub => {
+                    if (sub.type !== sourceItem.type) return false;
+                    if (sub.type === 'group') return sub.id === (sourceItem as { type: 'group'; id: string }).id;
+                    return sub.mesh === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).mesh
+                        && sub.instanceId === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).instanceId;
+                });
+                if (target) {
+                    target.gizmoLocalPosition = newPivot;
+                    return;
+                }
+            } else {
+                const target = item as QueueEntry;
+                if (target.type !== sourceItem.type) continue;
+                if (target.type === 'group') {
+                    if (target.id === (sourceItem as { type: 'group'; id: string }).id) {
+                        target.gizmoLocalPosition = newPivot;
+                        return;
+                    }
+                } else {
+                    if (target.mesh === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).mesh
+                        && target.instanceId === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).instanceId) {
+                        target.gizmoLocalPosition = newPivot;
+                        return;
+                    }
+                }
+            }
         }
     };
 
@@ -153,6 +174,24 @@ export function processVertexSnap(
             if (state.pivotMode === 'center') {
                 setGizmoState({ pivotMode: 'origin' });
             }
+
+            let targetSrc: SelectionSource | null = sprite2.userData.source ?? null;
+            if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
+                targetSrc = currentSelection.primary;
+            }
+            performSelectionSwap(src, targetSrc, {
+                currentSelection,
+                getGroups,
+                getGroupWorldMatrixWithFallback,
+                setGizmoState,
+                getGizmoState,
+                setMultiAnchorInitial,
+                updateHelperPosition,
+                SelectionCenter,
+                vertexQueue
+            }, {
+                preserveSelection: true
+            });
 
             selectedVertexKeys.clear();
             updateHelperPosition();

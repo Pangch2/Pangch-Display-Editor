@@ -721,9 +721,13 @@ export function updateSelectionOverlay(
 
             queueItemsToRender.forEach(item => {
                 if (item.gizmoPosition) {
+                    const posForKey = item.gizmoLocalPosition || item.gizmoPosition;
+                    const centerPosKey = `CENTER_QUEUE_${item.gizmoPosition.x.toFixed(4)}_${item.gizmoPosition.y.toFixed(4)}_${item.gizmoPosition.z.toFixed(4)}`;
+                    if (existingPoints.has(centerPosKey)) return;
+                    existingPoints.add(centerPosKey);
+
                     const queueSprite = new THREE.Sprite(baseSpriteMat.clone());
                     queueSprite.position.copy(item.gizmoPosition);
-                    const posForKey = item.gizmoLocalPosition || item.gizmoPosition;
                     const src = item.source;
                     const idStr = src.type === 'group' ? `G_${src.id}` : `O_${src.mesh!.uuid}_${src.instanceId}`;
                     const qKey = `QUEUE_${idStr}_${posForKey.x.toFixed(4)}_${posForKey.y.toFixed(4)}_${posForKey.z.toFixed(4)}`;
