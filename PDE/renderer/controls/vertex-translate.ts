@@ -150,22 +150,6 @@ export function processVertexSnap(
                 }
             }
 
-            let targetSrc: SelectionSource | null = sprite2.userData.source ?? null;
-            if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
-                targetSrc = currentSelection.primary;
-            }
-            performSelectionSwap(sprite1.userData.source, targetSrc, {
-                currentSelection,
-                getGroups,
-                getGroupWorldMatrixWithFallback,
-                setGizmoState,
-                getGizmoState,
-                setMultiAnchorInitial,
-                updateHelperPosition,
-                SelectionCenter,
-                vertexQueue
-            }, { preserveSelection: preserveSelectionOnSnap });
-
             if (state.pivotMode === 'center') {
                 setGizmoState({ pivotMode: 'origin' });
             }
@@ -244,18 +228,6 @@ export function processVertexSnap(
                     }
                 }
             }
-
-            performSelectionSwap(null, sprite2.userData.source, {
-                currentSelection,
-                getGroups,
-                getGroupWorldMatrixWithFallback,
-                setGizmoState,
-                getGizmoState,
-                setMultiAnchorInitial,
-                updateHelperPosition,
-                SelectionCenter,
-                vertexQueue
-            }, { preserveSelection: preserveSelectionOnSnap });
 
             selectedVertexKeys.clear();
             updateHelperPosition();

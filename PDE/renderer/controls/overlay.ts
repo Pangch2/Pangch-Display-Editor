@@ -695,6 +695,7 @@ export function updateSelectionOverlay(
             centerSprite.userData = { isCenter: true, key: centerKey };
             if (selectedVertexKeys.has(centerKey)) centerSprite.material.color.setHex(0x437FD0);
             centerSprite.scale.set(scaleX, scaleY, 1);
+            centerSprite.renderOrder = 110;
             selectionPointsOverlay.add(centerSprite);
 
             const createAxisHelper = (pos: THREE.Vector3, quat: THREE.Quaternion) => {
@@ -729,6 +730,7 @@ export function updateSelectionOverlay(
                     queueSprite.userData = { isCenter: true, key: qKey, source: src };
                     if (selectedVertexKeys.has(qKey)) queueSprite.material.color.setHex(0x437FD0);
                     queueSprite.scale.set(scaleX, scaleY, 1);
+                    queueSprite.renderOrder = 110;
                     selectionPointsOverlay!.add(queueSprite);
                     if (item.gizmoQuaternion) selectionPointsOverlay!.add(createAxisHelper(item.gizmoPosition, item.gizmoQuaternion));
                 }
