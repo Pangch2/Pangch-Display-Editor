@@ -164,7 +164,7 @@ export function processVertexSnap(
                 updateHelperPosition,
                 SelectionCenter,
                 vertexQueue
-            }, { preserveSelection: preserveSelectionOnSnap, targetAnchorWorld: targetPos.clone() });
+            }, { preserveSelection: preserveSelectionOnSnap });
 
             if (state.pivotMode === 'center') {
                 setGizmoState({ pivotMode: 'origin' });
@@ -255,7 +255,7 @@ export function processVertexSnap(
                 updateHelperPosition,
                 SelectionCenter,
                 vertexQueue
-            }, { preserveSelection: preserveSelectionOnSnap, targetAnchorWorld: targetPos.clone() });
+            }, { preserveSelection: preserveSelectionOnSnap });
 
             selectedVertexKeys.clear();
             updateHelperPosition();
@@ -438,8 +438,7 @@ export function processVertexSnap(
             SelectionCenter,
             vertexQueue
         }, {
-            preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle,
-            targetAnchorWorld: sprite2.position.clone()
+            preserveSelection: preserveSelectionOnSnap || isSrcEffectiveSelected || !!containingBundle
         });
 
         selectedVertexKeys.clear();

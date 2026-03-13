@@ -515,7 +515,7 @@ export function getSelectionPointsOverlay(): THREE.Group | null {
 export function updateSelectionOverlay(
     scene: THREE.Scene, 
     renderer: THREE.Renderer, 
-    _camera: THREE.Camera, 
+    camera: THREE.Camera, 
     currentSelection: SelectionState, 
     vertexQueue: QueueItem[], 
     isVertexMode: boolean, 
@@ -701,10 +701,17 @@ export function updateSelectionOverlay(
                 const axes = new THREE.LineSegments(_axisUnitGeo, _axisMat);
                 axes.position.copy(pos);
                 axes.quaternion.copy(quat);
-                axes.renderOrder = 100;
+                axes.renderOrder = 100
+
+                // Set initial scale immediately to prevent jump/flicker on load
+                const distance = pos.distanceTo(camera.position);
+                const initialScale = distance * 0.15;
+                axes.scale.set(initialScale, initialScale, initialScale);
+                axes.updateMatrix();
+
                 axes.onBeforeRender = function(this: THREE.LineSegments, _renderer, _scene, cam) {
-                    const distance = this.getWorldPosition(_TMP_VEC3_A).distanceTo(cam.position);
-                    const s = distance * 0.15; 
+                    const d = this.getWorldPosition(_TMP_VEC3_A).distanceTo(cam.position);
+                    const s = d * 0.15; 
                     this.scale.set(s, s, s);
                     this.updateMatrix();
                 };

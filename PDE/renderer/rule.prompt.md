@@ -42,7 +42,7 @@
   - `vertex-rotate.ts`: 버텍스 모드에서의 회전 및 피벗 기준 변환 로직 전담
   - `vertex-scale.ts`: 버텍스 모드에서의 스케일 및 박스 변형 로직 전담 (Snap/Rotate/Scale 연동)
   - `vertex-swap.ts`: 버텍스 모드에서 선택 대상(Primary)을 교체하거나, 선택 대상을 큐(Queue)와 Swap(맞교체)하는 로직 전담.
-  - `vertex-translate.ts`: 버텍스 모드에서의 Snap(이동) 및 객체 위치 조정 로직 전담
+  - `vertex-translate.ts`: 버텍스 모드에서의 객체 위치 조정 및 피벗(기준점) 스냅 로직 전담
   - `vertex-queue.ts`: 버텍스 큐(Vertex Queue) 상태 관리 로직 전담. `pushToVertexQueue` (큐 항목 추가·정리, 키 동기화) 및 `promoteVertexQueueBundleOnExit` (큐 번들 → 다중 선택 승격) 구현.
 
 - `ui/main.css`: 전체 스타일시트
@@ -52,6 +52,6 @@
 
 
 # 응답 및 스타일 가이드
-- 변수/함수는 camelCase, 파일명은 kebab-case.ts.
+- 변수/함수는 camelCase, 파일명은 kebab-case
 - 설명보다 동작하는 코드 우선 제시, 변경된 부분만 명확히 노출.
 - 코드를 작성할 때 위 프로젝트 구조의 관심사 분리(SoC)를 엄격히 준수할 것.
