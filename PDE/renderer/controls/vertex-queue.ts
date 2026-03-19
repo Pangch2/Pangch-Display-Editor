@@ -135,6 +135,16 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
 
         bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat, promoteOnExit: false } as QueueEntry);
 
+        const currentPrimary = currentSelection.primary;
+        if (currentPrimary) {
+            const isPrimary =
+                (item.type === 'group' && currentPrimary.type === 'group' && currentPrimary.id === item.id) ||
+                (item.type === 'object' && currentPrimary.type === 'object' && currentPrimary.mesh === item.mesh && currentPrimary.instanceId === item.instanceId);
+            if (isPrimary) {
+                bundleItems[bundleItems.length - 1].isPrimary = true;
+            }
+        }
+
         if (isCenterSelected && localPos && !isBundleCenterAlreadySelected) {
             const idStr = item.type === 'group'
                 ? `G_${item.id}`
@@ -222,7 +232,12 @@ export interface PromoteVertexQueueParams {
     replaceSelectionWithGroupsAndObjects(
         groupIds: Set<string>,
         meshToIds: Map<PdeMesh, Set<number>>,
-        options?: { anchorMode?: string; preserveAnchors?: boolean }
+        options?: {
+            anchorMode?: string;
+            preserveAnchors?: boolean;
+            primaryIsRangeStart?: boolean;
+            explicitPrimary?: SelectionState['primary'] | null;
+        }
     ): void;
 }
 
@@ -263,6 +278,26 @@ export function promoteVertexQueueBundleOnExit(params: PromoteVertexQueueParams)
     for (const ids of meshToIds.values()) total += ids.size;
     if (total === 0) return false;
 
-    replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: 'default', preserveAnchors: true });
+    let explicitPrimary: SelectionState['primary'] | null = null;
+    const primarySub = queuedItems.find((sub) => sub.isPrimary === true);
+    if (primarySub) {
+        if (primarySub.type === 'group' && primarySub.id && groupIds.has(primarySub.id)) {
+            explicitPrimary = { type: 'group', id: primarySub.id };
+        } else if (
+            primarySub.type === 'object' &&
+            primarySub.mesh &&
+            Number.isInteger(primarySub.instanceId) &&
+            !!meshToIds.get(primarySub.mesh)?.has(primarySub.instanceId!)
+        ) {
+            explicitPrimary = { type: 'object', mesh: primarySub.mesh, instanceId: primarySub.instanceId! };
+        }
+    }
+
+    replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, {
+        anchorMode: 'default',
+        preserveAnchors: true,
+        primaryIsRangeStart: !explicitPrimary,
+        explicitPrimary
+    });
     return true;
 }

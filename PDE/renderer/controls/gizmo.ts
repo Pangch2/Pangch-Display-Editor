@@ -320,7 +320,16 @@ function _replaceSelectionWithObjectsMap(meshToIds: Map<PdeMesh, Set<number>>, o
     Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
 }
 
-function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string>, meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string; preserveAnchors?: boolean }): void {
+function _replaceSelectionWithGroupsAndObjects(
+    groupIds: Set<string>,
+    meshToIds: Map<PdeMesh, Set<number>>,
+    options?: {
+        anchorMode?: string;
+        preserveAnchors?: boolean;
+        primaryIsRangeStart?: boolean;
+        explicitPrimary?: Select.PrimarySelection | null;
+    }
+): void {
     Select.replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, getSelectionCallbacks(), options);
 }
 
@@ -1150,7 +1159,16 @@ export function initGizmo({
     loadedObjectGroup.userData.replaceSelectionWithObjectsMap = (meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string }) => {
         _replaceSelectionWithObjectsMap(meshToIds, options);
     };
-    loadedObjectGroup.userData.replaceSelectionWithGroupsAndObjects = (groupIds: Set<string>, meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string; preserveAnchors?: boolean }) => {
+    loadedObjectGroup.userData.replaceSelectionWithGroupsAndObjects = (
+        groupIds: Set<string>,
+        meshToIds: Map<PdeMesh, Set<number>>,
+        options?: {
+            anchorMode?: string;
+            preserveAnchors?: boolean;
+            primaryIsRangeStart?: boolean;
+            explicitPrimary?: Select.PrimarySelection | null;
+        }
+    ) => {
         _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, options);
     };
     loadedObjectGroup.userData.addOrToggleInSelection = (groupIds: Set<string> | null, meshToIds: Map<PdeMesh, Set<number>> | null) => {

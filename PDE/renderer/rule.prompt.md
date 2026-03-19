@@ -9,7 +9,6 @@
 
 # 의존성 기반 컨텍스트 추적 (Dependency-Driven Context Rule)
 사용자가 특정 파일의 문제나 수정을 요청할 경우, 다음 프로세스를 엄격히 따를 것:
-
 1. Import 스캔: 제공된 파일의 최상단 `import` 구문을 가장 먼저 분석한다.
 2. 컨텍스트 매핑: `import`된 모듈 중 `프로젝트 구조 및 컨텍스트`에 명시된 파일(예: `controls/gizmo.ts`, `controls/select.ts` 등)이 있다면, 반드시 해당 파일들의 부여된 역할(SoC)을 현재 문제와 연관 지어 사고한다.
 3. 탐색 제한: 명시된 `import` 트리를 벗어난 임의의 파일(상위 `renderer.js`나 무관한 로직)은 절대 추측하여 탐색하거나 컨텍스트에 끌어들이지 않는다.
@@ -49,7 +48,6 @@
 - `ui/scene-panel.js`: 아웃라이너 및 씬 관리 UI
 
 - `../hardcoded/`: 리소스 데이터 (player_head 제외)
-
 
 # 응답 및 스타일 가이드
 - 변수/함수는 camelCase, 파일명은 kebab-case

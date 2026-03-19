@@ -288,7 +288,17 @@ export function replaceSelectionWithGroupsAndObjects(
     groupIds: Set<string>, 
     meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, 
     callbacks: SelectionCallbacks, 
-    { anchorMode = 'default', primaryIsRangeStart = false, preserveAnchors = false } = {}
+    {
+        anchorMode = 'default',
+        primaryIsRangeStart = false,
+        preserveAnchors = false,
+        explicitPrimary = null
+    }: {
+        anchorMode?: string;
+        primaryIsRangeStart?: boolean;
+        preserveAnchors?: boolean;
+        explicitPrimary?: PrimarySelection | null;
+    } = {}
 ): void {
     const hasGroups = groupIds && groupIds.size > 0;
     const hasObjects = meshToIds && meshToIds.size > 0;
@@ -322,7 +332,18 @@ export function replaceSelectionWithGroupsAndObjects(
         }
     }
 
-    if (primaryIsRangeStart) {
+    const isExplicitPrimaryValid = !!explicitPrimary && (
+        (explicitPrimary.type === 'group' && currentSelection.groups.has(explicitPrimary.id)) ||
+        (explicitPrimary.type === 'object' && !!currentSelection.objects.get(explicitPrimary.mesh)?.has(explicitPrimary.instanceId))
+    );
+
+    if (isExplicitPrimaryValid && explicitPrimary) {
+        if (explicitPrimary.type === 'group') {
+            currentSelection.primary = { type: 'group', id: explicitPrimary.id };
+        } else {
+            currentSelection.primary = { type: 'object', mesh: explicitPrimary.mesh, instanceId: explicitPrimary.instanceId };
+        }
+    } else if (primaryIsRangeStart) {
         if (firstGroupId) {
             currentSelection.primary = { type: 'group', id: firstGroupId };
         } else if (firstObjectMesh && firstObjectInstanceId !== null) {
