@@ -521,7 +521,51 @@ export function handleSelectionClick(
     } else {
         let performedSurgicalUpdate = false;
 
-        if (groupToDeselect) {
+        const isTargetAlreadySelected = target.type === 'group' 
+            ? currentSelection.groups.has(target.id) 
+            : !!currentSelection.objects.get(target.mesh)?.has(target.ids[0]);
+
+        if (callbacks.isVertexMode && (groupToDeselect || isTargetAlreadySelected)) {
+            if (groupToDeselect && currentSelection.groups.has(groupToDeselect)) {
+                currentSelection.groups.delete(groupToDeselect);
+                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
+                    currentSelection.primary = null;
+                }
+            } else if (isTargetAlreadySelected) {
+                if (target.type === 'group') {
+                    currentSelection.groups.delete(target.id);
+                    if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === target.id) {
+                        currentSelection.primary = null;
+                    }
+                } else {
+                    const set = currentSelection.objects.get(target.mesh);
+                    if (set) {
+                        for (const id of target.ids) set.delete(id);
+                        if (set.size === 0) currentSelection.objects.delete(target.mesh);
+                        if (currentSelection.primary && currentSelection.primary.type === 'object' && currentSelection.primary.mesh === target.mesh && target.ids.includes(currentSelection.primary.instanceId)) {
+                            currentSelection.primary = null;
+                        }
+                    }
+                }
+            }
+
+            invalidateSelectionCaches();
+            if (callbacks.recomputePivotState) callbacks.recomputePivotState();
+            if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
+
+            beginSelectionReplace(callbacks, { detachTransform: true });
+            
+            if (target.type === 'group') {
+                currentSelection.groups.add(target.id);
+                currentSelection.primary = { type: 'group', id: target.id };
+            } else {
+                const set = new Set(target.ids);
+                currentSelection.objects.set(target.mesh, set);
+                currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+            }
+
+            performedSurgicalUpdate = true;
+        } else if (groupToDeselect) {
             if (currentSelection.groups.has(groupToDeselect)) {
                 currentSelection.groups.delete(groupToDeselect);
                 if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
