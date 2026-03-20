@@ -1,48 +1,56 @@
-import * as THREE from 'three/webgpu';
+import {
+    InstancedMesh,
+    BatchedMesh,
+    Mesh,
+    Matrix4,
+    Vector3,
+    Box3,
+    Quaternion
+} from 'three/webgpu';
 import * as Overlay from './overlay';
 import type { SelectionState } from './select';
 import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 
-type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
 
 // ─── Shared temporaries ──────────────────────────────────────────────────────
 
-const _TMP_MAT4_A = new THREE.Matrix4();
-const _TMP_MAT4_B = new THREE.Matrix4();
-const _TMP_VEC3_A = new THREE.Vector3();
-const _TMP_VEC3_B = new THREE.Vector3();
+const _TMP_MAT4_A = new Matrix4();
+const _TMP_MAT4_B = new Matrix4();
+const _TMP_VEC3_A = new Vector3();
+const _TMP_VEC3_B = new Vector3();
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 export const VERTEX_QUEUE_MAX_SIZE = 1;
 
-const _unitCubeCorners: THREE.Vector3[] = [
-    new THREE.Vector3(-0.5, -0.5, -0.5),
-    new THREE.Vector3( 0.5, -0.5, -0.5),
-    new THREE.Vector3( 0.5,  0.5, -0.5),
-    new THREE.Vector3(-0.5,  0.5, -0.5),
-    new THREE.Vector3(-0.5, -0.5,  0.5),
-    new THREE.Vector3( 0.5, -0.5,  0.5),
-    new THREE.Vector3( 0.5,  0.5,  0.5),
-    new THREE.Vector3(-0.5,  0.5,  0.5)
+const _unitCubeCorners: Vector3[] = [
+    new Vector3(-0.5, -0.5, -0.5),
+    new Vector3( 0.5, -0.5, -0.5),
+    new Vector3( 0.5,  0.5, -0.5),
+    new Vector3(-0.5,  0.5, -0.5),
+    new Vector3(-0.5, -0.5,  0.5),
+    new Vector3( 0.5, -0.5,  0.5),
+    new Vector3( 0.5,  0.5,  0.5),
+    new Vector3(-0.5,  0.5,  0.5)
 ];
 
 // ─── Local helper: world AABB for a group ─────────────────────────────────────
 
-function getGroupWorldAABB(groupId: string): THREE.Box3 | null {
+function getGroupWorldAABB(groupId: string): Box3 | null {
     const localBox = Overlay.getGroupLocalBoundingBox(groupId);
     if (!localBox || localBox.isEmpty()) return null;
-    const worldMat = Overlay.getGroupWorldMatrixWithFallback(groupId, new THREE.Matrix4());
-    const worldBox = new THREE.Box3();
+    const worldMat = Overlay.getGroupWorldMatrixWithFallback(groupId, new Matrix4());
+    const worldBox = new Box3();
     const corners = [
-        new THREE.Vector3(localBox.min.x, localBox.min.y, localBox.min.z),
-        new THREE.Vector3(localBox.max.x, localBox.min.y, localBox.min.z),
-        new THREE.Vector3(localBox.min.x, localBox.max.y, localBox.min.z),
-        new THREE.Vector3(localBox.max.x, localBox.max.y, localBox.min.z),
-        new THREE.Vector3(localBox.min.x, localBox.min.y, localBox.max.z),
-        new THREE.Vector3(localBox.max.x, localBox.min.y, localBox.max.z),
-        new THREE.Vector3(localBox.min.x, localBox.max.y, localBox.max.z),
-        new THREE.Vector3(localBox.max.x, localBox.max.y, localBox.max.z),
+        new Vector3(localBox.min.x, localBox.min.y, localBox.min.z),
+        new Vector3(localBox.max.x, localBox.min.y, localBox.min.z),
+        new Vector3(localBox.min.x, localBox.max.y, localBox.min.z),
+        new Vector3(localBox.max.x, localBox.max.y, localBox.min.z),
+        new Vector3(localBox.min.x, localBox.min.y, localBox.max.z),
+        new Vector3(localBox.max.x, localBox.min.y, localBox.max.z),
+        new Vector3(localBox.min.x, localBox.max.y, localBox.max.z),
+        new Vector3(localBox.max.x, localBox.max.y, localBox.max.z),
     ];
     for (const corner of corners) {
         worldBox.expandByPoint(corner.applyMatrix4(worldMat));
@@ -57,16 +65,16 @@ export interface PushVertexQueueParams {
     isVertexMode: boolean;
     selectionAnchorMode: 'default' | 'center';
     isCustomPivot: boolean;
-    pivotOffset: THREE.Vector3;
+    pivotOffset: Vector3;
     multiSelectionExplicitPivot: boolean;
     multiSelectionOriginAnchorValid: boolean;
-    multiSelectionOriginAnchorPosition: THREE.Vector3;
+    multiSelectionOriginAnchorPosition: Vector3;
     currentSelection: SelectionState;
     selectedVertexKeys: Set<string>;
     vertexQueue: QueueItem[];
-    selectionHelper: THREE.Mesh | null;
-    getSelectionCenterWorld(out?: THREE.Vector3): THREE.Vector3;
-    getSelectionOriginWorld(out?: THREE.Vector3): THREE.Vector3;
+    selectionHelper: Mesh | null;
+    getSelectionCenterWorld(out?: Vector3): Vector3;
+    getSelectionOriginWorld(out?: Vector3): Vector3;
 }
 
 export function pushToVertexQueue(params: PushVertexQueueParams): void {
@@ -79,11 +87,11 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
 
     if (suppressVertexQueue || !isVertexMode) return;
 
-    let currentGizmoPos: THREE.Vector3 | null = null;
-    let currentGizmoQuat: THREE.Quaternion | null = null;
+    let currentGizmoPos: Vector3 | null = null;
+    let currentGizmoQuat: Quaternion | null = null;
     if (currentSelection.groups.size > 0 || currentSelection.objects.size > 0) {
-        currentGizmoPos = new THREE.Vector3();
-        currentGizmoQuat = new THREE.Quaternion();
+        currentGizmoPos = new Vector3();
+        currentGizmoQuat = new Quaternion();
         if (selectionHelper) {
             currentGizmoPos.copy(selectionHelper.position);
             currentGizmoQuat.copy(selectionHelper.quaternion);
@@ -123,8 +131,8 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
     let isBundleCenterAlreadySelected = false; // Multi-selection center selection fix
 
     for (const item of itemsToAdd) {
-        let localPos: THREE.Vector3 | null = null;
-        let localQuat: THREE.Quaternion | null = null;
+        let localPos: Vector3 | null = null;
+        let localQuat: Quaternion | null = null;
 
         if (currentGizmoPos) {
             if (item.type === 'group') {
@@ -208,7 +216,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
                 }
             }
 
-            let matrix: THREE.Matrix4 | null = null;
+            let matrix: Matrix4 | null = null;
             const tempSize = _TMP_VEC3_A;
             const tempCenter = _TMP_VEC3_B;
 
@@ -240,7 +248,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
             }
 
             if (matrix) {
-                const v = new THREE.Vector3();
+                const v = new Vector3();
                 for (const corner of _unitCubeCorners) {
                     v.copy(corner).applyMatrix4(matrix);
                     const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;

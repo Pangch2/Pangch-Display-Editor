@@ -1,4 +1,15 @@
-import * as THREE from 'three/webgpu';
+import {
+    BatchedMesh,
+    InstancedMesh,
+    BufferGeometry,
+    Matrix4,
+    Color,
+    Object3D,
+    Group,
+    InstancedBufferAttribute,
+    Mesh,
+    Material
+} from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
 import * as Overlay from './overlay';
@@ -14,40 +25,40 @@ interface BatchPlan {
     instanceCount: number;
     maxVerts: number;
     maxIndices: number;
-    geometries: Set<THREE.BufferGeometry>;
+    geometries: Set<BufferGeometry>;
 }
 
 interface DuplicationContext {
-    batchPool: Map<string, THREE.BatchedMesh>; // key -> BatchedMesh
-    batchWorldInv: WeakMap<THREE.BatchedMesh, THREE.Matrix4>; // BatchedMesh -> Matrix4
-    batchGeometryToId: WeakMap<THREE.BatchedMesh, Map<THREE.BufferGeometry, number>>; // BatchedMesh -> Map<BufferGeometry, number>
+    batchPool: Map<string, BatchedMesh>; // key -> BatchedMesh
+    batchWorldInv: WeakMap<BatchedMesh, Matrix4>; // BatchedMesh -> Matrix4
+    batchGeometryToId: WeakMap<BatchedMesh, Map<BufferGeometry, number>>; // BatchedMesh -> Map<BufferGeometry, number>
     batchPlans: Map<string, BatchPlan>; // key -> plan
-    fullBatches: WeakSet<THREE.BatchedMesh>; // BatchedMesh that hit max during this duplication pass
-    headPool: Map<string, THREE.InstancedMesh>; // key -> InstancedMesh (player_head)
-    tmpSourceWorld: THREE.Matrix4;
-    tmpTargetLocal: THREE.Matrix4;
-    tmpInv: THREE.Matrix4;
-    tmpColor: THREE.Color;
+    fullBatches: WeakSet<BatchedMesh>; // BatchedMesh that hit max during this duplication pass
+    headPool: Map<string, InstancedMesh>; // key -> InstancedMesh (player_head)
+    tmpSourceWorld: Matrix4;
+    tmpTargetLocal: Matrix4;
+    tmpInv: Matrix4;
+    tmpColor: Color;
     _groupIdMap?: Map<string, string>;
-    planBatchCallback?: (mesh: THREE.Mesh | THREE.InstancedMesh | THREE.BatchedMesh, instanceId: number, targetGroupId: string | null) => void;
+    planBatchCallback?: (mesh: Mesh | InstancedMesh | BatchedMesh, instanceId: number, targetGroupId: string | null) => void;
 }
 
 interface PendingHeadClone {
-    sourceMesh: THREE.InstancedMesh;
+    sourceMesh: InstancedMesh;
     sourceId: number;
     targetGroupId: string | null;
     coveredByGroup: boolean;
 }
 
 interface CloneResult {
-    mesh?: THREE.BatchedMesh | THREE.InstancedMesh;
+    mesh?: BatchedMesh | InstancedMesh;
     instanceId?: number;
     isPending?: boolean;
 }
 
 export interface DuplicationSelection {
     groups: Set<string>;
-    objects: Map<THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>;
+    objects: Map<BatchedMesh | InstancedMesh, Set<number>>;
 }
 
 let _pendingHeadClones: PendingHeadClone[] = [];
@@ -60,10 +71,10 @@ function createDuplicationContext(): DuplicationContext {
         batchPlans: new Map(),
         fullBatches: new WeakSet(),
         headPool: new Map(),
-        tmpSourceWorld: new THREE.Matrix4(),
-        tmpTargetLocal: new THREE.Matrix4(),
-        tmpInv: new THREE.Matrix4(),
-        tmpColor: new THREE.Color()
+        tmpSourceWorld: new Matrix4(),
+        tmpTargetLocal: new Matrix4(),
+        tmpInv: new Matrix4(),
+        tmpColor: new Color()
     };
 }
 
@@ -79,7 +90,7 @@ function _nextPow2(v: number): number {
     return x + 1;
 }
 
-function _headPoolKey(sourceMesh: THREE.InstancedMesh): string {
+function _headPoolKey(sourceMesh: InstancedMesh): string {
     if (!sourceMesh) return 'head|null';
     let material = sourceMesh.material;
     if (Array.isArray(material)) material = material[0];
@@ -87,17 +98,17 @@ function _headPoolKey(sourceMesh: THREE.InstancedMesh): string {
     return `head|${matKey}`;
 }
 
-function _isPlayerHeadMesh(obj: THREE.Object3D): obj is THREE.InstancedMesh {
-    return !!(obj && obj.isInstancedMesh && obj.geometry && obj.geometry.attributes && obj.geometry.attributes.instancedUvOffset && obj.userData && obj.userData.displayType === 'item_display');
+function _isPlayerHeadMesh(obj: Object3D): obj is InstancedMesh {
+    return !!(obj && (obj as InstancedMesh).isInstancedMesh && (obj as InstancedMesh).geometry && (obj as InstancedMesh).geometry.attributes && (obj as InstancedMesh).geometry.attributes.instancedUvOffset && obj.userData && obj.userData.displayType === 'item_display');
 }
 
-function _getHeadCapacity(mesh: THREE.InstancedMesh): number {
+function _getHeadCapacity(mesh: InstancedMesh): number {
     if (!mesh) return 0;
     const max = mesh.instanceMatrix && mesh.instanceMatrix.count ? mesh.instanceMatrix.count : 0;
     return mesh.userData && typeof mesh.userData._pdeHeadCapacity === 'number' ? mesh.userData._pdeHeadCapacity : max;
 }
 
-function _getHeadUsed(mesh: THREE.InstancedMesh): number {
+function _getHeadUsed(mesh: InstancedMesh): number {
     if (!mesh) return 0;
     if (mesh.userData && typeof mesh.userData._pdeHeadUsed === 'number') return mesh.userData._pdeHeadUsed;
     // Prefer render count if set.
@@ -105,17 +116,17 @@ function _getHeadUsed(mesh: THREE.InstancedMesh): number {
     return 0;
 }
 
-function _setHeadUsed(mesh: THREE.InstancedMesh, used: number): void {
+function _setHeadUsed(mesh: InstancedMesh, used: number): void {
     if (!mesh.userData) mesh.userData = {};
     mesh.userData._pdeHeadUsed = used;
     mesh.count = used;
 }
 
-function _createWritableHeadMeshFromSource(sourceMesh: THREE.InstancedMesh, capacity: number): THREE.InstancedMesh {
+function _createWritableHeadMeshFromSource(sourceMesh: InstancedMesh, capacity: number): InstancedMesh {
     const sourceGeometry = sourceMesh.geometry;
     const sourceMaterial = sourceMesh.material;
 
-    const geo = new THREE.BufferGeometry();
+    const geo = new BufferGeometry();
     if (sourceGeometry.index) geo.setIndex(sourceGeometry.index);
     if (sourceGeometry.attributes) {
         for (const name in sourceGeometry.attributes) {
@@ -134,9 +145,9 @@ function _createWritableHeadMeshFromSource(sourceMesh: THREE.InstancedMesh, capa
     if (sourceGeometry.boundingSphere) geo.boundingSphere = sourceGeometry.boundingSphere;
 
     const uvOffsets = new Float32Array(capacity * 2);
-    geo.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
+    geo.setAttribute('instancedUvOffset', new InstancedBufferAttribute(uvOffsets, 2));
 
-    const mesh = new THREE.InstancedMesh(geo, sourceMaterial, capacity);
+    const mesh = new InstancedMesh(geo, sourceMaterial, capacity);
     mesh.userData.displayType = 'item_display';
     mesh.userData.hasHat = {};
     mesh.userData.customPivots = new Map();
@@ -148,7 +159,7 @@ function _createWritableHeadMeshFromSource(sourceMesh: THREE.InstancedMesh, capa
     return mesh;
 }
 
-function _getOrCreateWritableHeadMesh(loadedObjectGroup: THREE.Group, sourceMesh: THREE.InstancedMesh, additionalCount: number, ctx: DuplicationContext): THREE.InstancedMesh | null {
+function _getOrCreateWritableHeadMesh(loadedObjectGroup: Group, sourceMesh: InstancedMesh, additionalCount: number, ctx: DuplicationContext): InstancedMesh | null {
     if (!sourceMesh || !ctx) return null;
 
     const key = _headPoolKey(sourceMesh);
@@ -164,7 +175,7 @@ function _getOrCreateWritableHeadMesh(loadedObjectGroup: THREE.Group, sourceMesh
         if (!_isPlayerHeadMesh(child)) continue;
         if (!child.userData || !child.userData.isWritableHead) continue;
 
-        let matA = child.material;
+        let matA = (child as InstancedMesh).material;
         let matB = sourceMesh.material;
         if (Array.isArray(matA)) matA = matA[0];
         if (Array.isArray(matB)) matB = matB[0];
@@ -172,11 +183,11 @@ function _getOrCreateWritableHeadMesh(loadedObjectGroup: THREE.Group, sourceMesh
 
         // We intentionally pool by material only to keep draw calls low.
 
-        const used = _getHeadUsed(child);
-        const cap = _getHeadCapacity(child);
+        const used = _getHeadUsed(child as InstancedMesh);
+        const cap = _getHeadCapacity(child as InstancedMesh);
         if (used + additionalCount <= cap) {
-            ctx.headPool.set(key, child);
-            return child;
+            ctx.headPool.set(key, child as InstancedMesh);
+            return child as InstancedMesh;
         }
     }
 
@@ -189,7 +200,7 @@ function _getOrCreateWritableHeadMesh(loadedObjectGroup: THREE.Group, sourceMesh
     return mesh;
 }
 
-function _getBatchMaxInstances(batch: THREE.BatchedMesh): number | null {
+function _getBatchMaxInstances(batch: BatchedMesh): number | null {
     if (!batch) return null;
     if (batch.userData && typeof batch.userData._pdeMaxInstances === 'number') return batch.userData._pdeMaxInstances;
     
@@ -210,7 +221,7 @@ function _getBatchMaxInstances(batch: THREE.BatchedMesh): number | null {
     return null;
 }
 
-function _getBatchCurrentInstances(batch: THREE.BatchedMesh): number {
+function _getBatchCurrentInstances(batch: BatchedMesh): number {
     if (!batch) return 0;
     if (batch.userData && Array.isArray(batch.userData.instanceGeometryIds)) return batch.userData.instanceGeometryIds.length;
     // @ts-ignore
@@ -219,13 +230,13 @@ function _getBatchCurrentInstances(batch: THREE.BatchedMesh): number {
     return 0;
 }
 
-function _batchHasSpace(batch: THREE.BatchedMesh): boolean {
+function _batchHasSpace(batch: BatchedMesh): boolean {
     const max = _getBatchMaxInstances(batch);
     if (!max) return true; // Unknown: allow and rely on retry path
     return _getBatchCurrentInstances(batch) < max;
 }
 
-function _planWritableBatchFor(mesh: THREE.InstancedMesh | THREE.BatchedMesh, instanceId: number, _targetGroupId: string | null, ctx: DuplicationContext): void {
+function _planWritableBatchFor(mesh: InstancedMesh | BatchedMesh, instanceId: number, _targetGroupId: string | null, ctx: DuplicationContext): void {
     if (!ctx || !mesh) return;
 
     // Player heads are handled by a dedicated bulk path (InstancedMesh with instancedUvOffset)
@@ -233,7 +244,7 @@ function _planWritableBatchFor(mesh: THREE.InstancedMesh | THREE.BatchedMesh, in
         return;
     }
 
-    let geometry: THREE.BufferGeometry | null = null;
+    let geometry: BufferGeometry | null = null;
     let material = mesh.material;
     if (Array.isArray(material)) material = material[0];
 
@@ -268,20 +279,20 @@ function _planWritableBatchFor(mesh: THREE.InstancedMesh | THREE.BatchedMesh, in
     }
 }
 
-function _batchPoolKey(material: THREE.Material): string {
+function _batchPoolKey(material: Material): string {
     const matKey = material && material.uuid ? material.uuid : String(material);
     return `${matKey}`;
 }
 
-function _getBatchWorldInverse(batch: THREE.BatchedMesh, ctx: DuplicationContext): THREE.Matrix4 {
+function _getBatchWorldInverse(batch: BatchedMesh, ctx: DuplicationContext): Matrix4 {
     const cached = ctx.batchWorldInv.get(batch);
     if (cached) return cached;
-    const inv = new THREE.Matrix4().copy(batch.matrixWorld).invert();
+    const inv = new Matrix4().copy(batch.matrixWorld).invert();
     ctx.batchWorldInv.set(batch, inv);
     return inv;
 }
 
-function _getOrCreateBatchGeometryId(batch: THREE.BatchedMesh, geometry: THREE.BufferGeometry, ctx: DuplicationContext): number {
+function _getOrCreateBatchGeometryId(batch: BatchedMesh, geometry: BufferGeometry, ctx: DuplicationContext): number {
     if (!batch || !geometry) return -1;
 
     let map = ctx.batchGeometryToId.get(batch);
@@ -311,11 +322,11 @@ function _getOrCreateBatchGeometryId(batch: THREE.BatchedMesh, geometry: THREE.B
     return newId;
 }
 
-export function flushPendingHeadClones(loadedObjectGroup: THREE.Group, ctx: DuplicationContext): Array<{ mesh: THREE.InstancedMesh, instanceId: number, targetGroupId: string | null, coveredByGroup: boolean }> {
+export function flushPendingHeadClones(loadedObjectGroup: Group, ctx: DuplicationContext): Array<{ mesh: InstancedMesh, instanceId: number, targetGroupId: string | null, coveredByGroup: boolean }> {
     if (_pendingHeadClones.length === 0) return [];
 
-    const newSelectionItems: Array<{ mesh: THREE.InstancedMesh, instanceId: number, targetGroupId: string | null, coveredByGroup: boolean }> = [];
-    const jobsByKey = new Map<string, { sourceMesh: THREE.InstancedMesh, jobs: PendingHeadClone[] }>();
+    const newSelectionItems: Array<{ mesh: InstancedMesh, instanceId: number, targetGroupId: string | null, coveredByGroup: boolean }> = [];
+    const jobsByKey = new Map<string, { sourceMesh: InstancedMesh, jobs: PendingHeadClone[] }>();
 
     // Group by pooling key (material) so we reuse a single InstancedMesh across repeated duplicates
     for (const job of _pendingHeadClones) {
@@ -331,7 +342,7 @@ export function flushPendingHeadClones(loadedObjectGroup: THREE.Group, ctx: Dupl
     _pendingHeadClones = []; // Clear global
 
     const parentInv = loadedObjectGroup.matrixWorld.clone().invert();
-    const sourceMatrix = new THREE.Matrix4();
+    const sourceMatrix = new Matrix4();
 
     for (const { sourceMesh, jobs } of jobsByKey.values()) {
         const count = jobs.length;
@@ -339,7 +350,7 @@ export function flushPendingHeadClones(loadedObjectGroup: THREE.Group, ctx: Dupl
         if (!targetMesh) continue;
 
         const start = _getHeadUsed(targetMesh);
-        const uvAttr = targetMesh.geometry && targetMesh.geometry.attributes ? targetMesh.geometry.attributes.instancedUvOffset as THREE.InstancedBufferAttribute : null;
+        const uvAttr = targetMesh.geometry && targetMesh.geometry.attributes ? targetMesh.geometry.attributes.instancedUvOffset as InstancedBufferAttribute : null;
         if (!uvAttr) continue;
         const uvArray = uvAttr.array as Float32Array;
 
@@ -354,7 +365,7 @@ export function flushPendingHeadClones(loadedObjectGroup: THREE.Group, ctx: Dupl
             targetMesh.setMatrixAt(dstId, targetLocal);
 
             // UV Offset
-            const sourceAttr = sm.geometry && sm.geometry.attributes ? sm.geometry.attributes.instancedUvOffset as THREE.InstancedBufferAttribute : null;
+            const sourceAttr = sm.geometry && sm.geometry.attributes ? sm.geometry.attributes.instancedUvOffset as InstancedBufferAttribute : null;
             if (sourceAttr) {
                 const u = sourceAttr.getX(sourceId);
                 const v = sourceAttr.getY(sourceId);
@@ -401,7 +412,7 @@ export function flushPendingHeadClones(loadedObjectGroup: THREE.Group, ctx: Dupl
     return newSelectionItems;
 }
 
-function getOrCreateWritableBatch(loadedObjectGroup: THREE.Group, _targetGroupId: string | null, material: THREE.Material, _geometry: THREE.BufferGeometry, ctx: DuplicationContext): THREE.BatchedMesh | null {
+function getOrCreateWritableBatch(loadedObjectGroup: Group, _targetGroupId: string | null, material: Material, _geometry: BufferGeometry, ctx: DuplicationContext): BatchedMesh | null {
     if (ctx) {
         const key = _batchPoolKey(material);
         const cached = ctx.batchPool.get(key);
@@ -417,12 +428,12 @@ function getOrCreateWritableBatch(loadedObjectGroup: THREE.Group, _targetGroupId
         }
     }
 
-    let candidateMesh: THREE.BatchedMesh | null = null;
+    let candidateMesh: BatchedMesh | null = null;
 
     // Always search globally for a reusable writable batch.
     // Group membership is tracked in the custom group maps, not in the Three.js scene graph.
     for (const child of loadedObjectGroup.children) {
-        if (!child || !(child instanceof THREE.BatchedMesh)) continue;
+        if (!child || !(child instanceof BatchedMesh)) continue;
         if (!child.userData || !child.userData.isWritable) continue;
         if (child.material !== material) continue;
         if (ctx && ctx.fullBatches && ctx.fullBatches.has(child)) continue;
@@ -458,7 +469,7 @@ function getOrCreateWritableBatch(loadedObjectGroup: THREE.Group, _targetGroupId
         maxIndices = Math.ceil(indices * 1.1) + 64;
     }
 
-    const batch = new THREE.BatchedMesh(maxInstances, maxVerts, maxIndices, material);
+    const batch = new BatchedMesh(maxInstances, maxVerts, maxIndices, material);
     batch.frustumCulled = false;
     batch.userData.isWritable = true;
     batch.userData._pdeMaxInstances = maxInstances;
@@ -476,7 +487,7 @@ function getOrCreateWritableBatch(loadedObjectGroup: THREE.Group, _targetGroupId
     return batch;
 }
 
-function cloneInstance(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh | THREE.BatchedMesh, instanceId: number, targetGroupId: string | null, ctx: DuplicationContext, coveredByGroup: boolean = false): CloneResult | null {
+function cloneInstance(loadedObjectGroup: Group, mesh: InstancedMesh | BatchedMesh, instanceId: number, targetGroupId: string | null, ctx: DuplicationContext, coveredByGroup: boolean = false): CloneResult | null {
     if (!mesh) return null;
 
     // Detect Player Head (InstancedMesh with instancedUvOffset) for Bulk Cloning
@@ -485,7 +496,7 @@ function cloneInstance(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh
         return { isPending: true };
     }
 
-    let geometry: THREE.BufferGeometry | null = null;
+    let geometry: BufferGeometry | null = null;
     let material = mesh.material;
 
     // Extract Geometry
@@ -634,12 +645,12 @@ function cloneInstance(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh
 
     // Copy Transforms
     // 1. World Matrix of source instance
-    const sourceWorld = ctx ? ctx.tmpSourceWorld : new THREE.Matrix4();
+    const sourceWorld = ctx ? ctx.tmpSourceWorld : new Matrix4();
     mesh.getMatrixAt(instanceId, sourceWorld);
     sourceWorld.premultiply(mesh.matrixWorld); // World space
 
     // 2. Target Local Matrix (Target Batch World Inverse * Source World)
-    const targetLocal = ctx ? ctx.tmpTargetLocal : new THREE.Matrix4();
+    const targetLocal = ctx ? ctx.tmpTargetLocal : new Matrix4();
     const invTargetWorld = ctx ? _getBatchWorldInverse(targetBatch, ctx) : targetBatch.matrixWorld.clone().invert();
     targetLocal.copy(sourceWorld).premultiply(invTargetWorld);
     targetBatch.setMatrixAt(newInstanceId, targetLocal);
@@ -657,7 +668,7 @@ function cloneInstance(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh
             // No instance colors to copy
         } else {
             try {
-                const c = ctx ? ctx.tmpColor : new THREE.Color();
+                const c = ctx ? ctx.tmpColor : new Color();
                 mesh.getColorAt(instanceId, c);
                 targetBatch.setColorAt(newInstanceId, c);
             } catch (e) {
@@ -703,11 +714,11 @@ function cloneInstance(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh
     return { mesh: targetBatch, instanceId: newInstanceId };
 }
 
-function cloneGroup(loadedObjectGroup: THREE.Group, groupId: string, parentId: string | null, idMap: Map<string, string>, _ctx: DuplicationContext): string | null {
+function cloneGroup(loadedObjectGroup: Group, groupId: string, parentId: string | null, idMap: Map<string, string>, _ctx: DuplicationContext): string | null {
     return GroupUtils.cloneGroupStructure(loadedObjectGroup, groupId, parentId, idMap);
 }
 
-function _collectCloneJobsFromGroup(loadedObjectGroup: THREE.Group, groupId: string, newGroupId: string, ctx: DuplicationContext, outJobs: CloneJobEntry[]): void {
+function _collectCloneJobsFromGroup(loadedObjectGroup: Group, groupId: string, newGroupId: string, ctx: DuplicationContext, outJobs: CloneJobEntry[]): void {
     // Inject planning callback
     const ctxWithCallback: DuplicationContext = {
         ...ctx,
@@ -716,7 +727,7 @@ function _collectCloneJobsFromGroup(loadedObjectGroup: THREE.Group, groupId: str
     GroupUtils.collectCloneJobsFromGroup(loadedObjectGroup, groupId, newGroupId, ctxWithCallback, outJobs);
 }
 
-export function duplicateGroupsAndObjects(loadedObjectGroup: THREE.Group, groupIds: Set<string> | null, objectEntries: Array<{ mesh: THREE.BatchedMesh | THREE.InstancedMesh, instanceId: number }> | null): DuplicationSelection {
+export function duplicateGroupsAndObjects(loadedObjectGroup: Group, groupIds: Set<string> | null, objectEntries: Array<{ mesh: BatchedMesh | InstancedMesh, instanceId: number }> | null): DuplicationSelection {
     const ctx = createDuplicationContext();
     _pendingHeadClones = [];
 

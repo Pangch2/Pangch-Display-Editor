@@ -1,7 +1,26 @@
-﻿﻿import { setupGizmo } from './gizmo-setup';
+﻿import { setupGizmo } from './gizmo-setup';
 import type { GizmoLines, GizmoMaterial } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import * as THREE from 'three/webgpu';
+import {
+    InstancedMesh,
+    BatchedMesh,
+    Mesh,
+    Vector3,
+    Scene,
+    PerspectiveCamera,
+    Renderer,
+    Group,
+    Object3D,
+    Matrix4,
+    Quaternion,
+    Box3,
+    Vector2,
+    Raycaster,
+    BoxGeometry,
+    MeshBasicMaterial,
+    Sprite,
+    Material
+} from 'three/webgpu';
 import {
     blockbenchScaleMode,
     computeBlockbenchPivotFrame,
@@ -28,11 +47,11 @@ import * as VertexQueue from './vertex-queue';
 
 // Interfaces 
 
-type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
 
 interface OrbitControlsLike {
     enabled: boolean;
-    target: THREE.Vector3;
+    target: Vector3;
     screenSpacePanning: boolean;
     dispose(): void;
     update(): boolean;
@@ -41,23 +60,23 @@ interface OrbitControlsLike {
 export interface GizmoState {
     pivotMode: string;
     isCustomPivot: boolean;
-    pivotOffset: THREE.Vector3;
+    pivotOffset: Vector3;
     _gizmoAnchorValid: boolean;
-    _gizmoAnchorPosition: THREE.Vector3;
+    _gizmoAnchorPosition: Vector3;
     _multiSelectionOriginAnchorValid: boolean;
-    _multiSelectionOriginAnchorPosition: THREE.Vector3;
+    _multiSelectionOriginAnchorPosition: Vector3;
     _multiSelectionOriginAnchorInitialValid: boolean;
-    _multiSelectionOriginAnchorInitialPosition: THREE.Vector3;
+    _multiSelectionOriginAnchorInitialPosition: Vector3;
     selectionAnchorMode?: 'default' | 'center';
     _multiSelectionExplicitPivot?: boolean;
 }
 
 export interface InitGizmoParams {
-    scene: THREE.Scene;
-    camera: THREE.PerspectiveCamera;
-    renderer: THREE.Renderer;
+    scene: Scene;
+    camera: PerspectiveCamera;
+    renderer: Renderer;
     controls: OrbitControlsLike;
-    loadedObjectGroup: THREE.Group;
+    loadedObjectGroup: Group;
     setControls?: (c: OrbitControlsLike) => void;
 }
 
@@ -65,7 +84,7 @@ export interface InitGizmoResult {
     getTransformControls: () => TransformControls;
     updateGizmo: () => void;
     resetSelection: () => void;
-    getSelectedObject: () => THREE.Object3D | null;
+    getSelectedObject: () => Object3D | null;
     createGroup: () => string | undefined;
     getGroups: () => Map<string, GroupData>;
 }
@@ -87,10 +106,10 @@ const getSelectionBoundingBox = () => Overlay.getSelectionBoundingBox(currentSel
 
 //  Shared temporaries 
 
-const _TMP_MAT4_A = new THREE.Matrix4();
-const _TMP_MAT4_B = new THREE.Matrix4();
-const _TMP_VEC3_A = new THREE.Vector3();
-const _TMP_VEC3_B = new THREE.Vector3();
+const _TMP_MAT4_A = new Matrix4();
+const _TMP_MAT4_B = new Matrix4();
+const _TMP_VEC3_A = new Vector3();
+const _TMP_VEC3_B = new Vector3();
 
 //  Selection state 
 
@@ -120,7 +139,7 @@ function getObjectToGroup(): Map<string, string> {
     return GroupUtils.getObjectToGroup(loadedObjectGroup);
 }
 
-function getGroupKey(mesh: THREE.Object3D, instanceId: number): string {
+function getGroupKey(mesh: Object3D, instanceId: number): string {
     return GroupUtils.getGroupKey(mesh, instanceId);
 }
 
@@ -131,13 +150,13 @@ function getGroupChain(startGroupId: string): string[] {
 //  Group pivot helpers 
 
 const _DEFAULT_GROUP_PIVOT = GroupUtils.DEFAULT_GROUP_PIVOT;
-const _ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
+const _ZERO_VEC3 = new Vector3(0, 0, 0);
 
-function normalizePivotToVector3(pivot: THREE.Vector3 | undefined, out = new THREE.Vector3()): THREE.Vector3 | null {
+function normalizePivotToVector3(pivot: Vector3 | undefined, out = new Vector3()): Vector3 | null {
     return GroupUtils.normalizePivotToVector3(pivot, out);
 }
 
-function getGroupWorldMatrix(group: GroupData, out = new THREE.Matrix4()): THREE.Matrix4 {
+function getGroupWorldMatrix(group: GroupData, out = new Matrix4()): Matrix4 {
     return GroupUtils.getGroupWorldMatrix(group, out);
 }
 
@@ -183,14 +202,14 @@ const getSelectedItems = Select.getSelectedItems;
 
 //  Module-level scene references 
 
-let scene: THREE.Scene;
-let camera: THREE.PerspectiveCamera;
-let renderer: THREE.Renderer;
+let scene: Scene;
+let camera: PerspectiveCamera;
+let renderer: Renderer;
 let controls: OrbitControlsLike;
-let loadedObjectGroup: THREE.Group;
+let loadedObjectGroup: Group;
 let transformControls: TransformControls | null = null;
-let selectionHelper: THREE.Mesh | null = null;
-let previousHelperMatrix = new THREE.Matrix4();
+let selectionHelper: Mesh | null = null;
+let previousHelperMatrix = new Matrix4();
 
 //  Selection state 
 
@@ -214,7 +233,7 @@ function _pushToVertexQueue(): void {
         vertexQueue,
         selectionHelper,
         getSelectionCenterWorld: _getSelectionCenterWorld,
-        getSelectionOriginWorld: (out = new THREE.Vector3()) => {
+        getSelectionOriginWorld: (out = new Vector3()) => {
             const origin = SelectionCenter('origin', false, _ZERO_VEC3);
             return out.copy(origin);
         }
@@ -227,19 +246,19 @@ let pivotMode = 'origin';
 let currentSpace: 'world' | 'local' = 'world';
 let lastDirections: Record<string, string | null> = { X: null, Y: null, Z: null };
 
-const _gizmoAnchorPosition = new THREE.Vector3();
+const _gizmoAnchorPosition = new Vector3();
 let _gizmoAnchorValid = false;
 
-const _multiSelectionOriginAnchorPosition = new THREE.Vector3();
+const _multiSelectionOriginAnchorPosition = new Vector3();
 let _multiSelectionOriginAnchorValid = false;
 
-const _multiSelectionOriginAnchorInitialPosition = new THREE.Vector3();
+const _multiSelectionOriginAnchorInitialPosition = new Vector3();
 let _multiSelectionOriginAnchorInitialValid = false;
-const _multiSelectionOriginAnchorInitialLocal = new THREE.Vector3();
+const _multiSelectionOriginAnchorInitialLocal = new Vector3();
 let _multiSelectionOriginAnchorInitialLocalValid = false;
 
 let _multiSelectionExplicitPivot = false;
-const _multiSelectionAccumulatedRotation = new THREE.Quaternion();
+const _multiSelectionAccumulatedRotation = new Quaternion();
 let _selectionAnchorMode: 'default' | 'center' = 'default';
 
 function _clearGizmoAnchor(): void {
@@ -258,7 +277,7 @@ function _clearGizmoAnchor(): void {
     _multiSelectionAccumulatedRotation.set(0, 0, 0, 1);
 }
 
-function _getPrimaryWorldMatrix(out = new THREE.Matrix4()): THREE.Matrix4 | null {
+function _getPrimaryWorldMatrix(out = new Matrix4()): Matrix4 | null {
     if (!currentSelection.primary) return null;
     const prim = currentSelection.primary;
     if (prim.type === 'group') {
@@ -268,14 +287,14 @@ function _getPrimaryWorldMatrix(out = new THREE.Matrix4()): THREE.Matrix4 | null
         getGroupWorldMatrix(group, out);
         return out;
     } else if (prim.type === 'object' && prim.mesh) {
-        (prim.mesh as THREE.InstancedMesh).getMatrixAt(prim.instanceId, out);
+        (prim.mesh as InstancedMesh).getMatrixAt(prim.instanceId, out);
         out.premultiply(prim.mesh.matrixWorld);
         return out;
     }
     return null;
 }
 
-function _setMultiAnchorInitial(worldPos: THREE.Vector3): void {
+function _setMultiAnchorInitial(worldPos: Vector3): void {
     _multiSelectionOriginAnchorInitialPosition.copy(worldPos);
     _multiSelectionOriginAnchorInitialValid = true;
     const mat = _getPrimaryWorldMatrix(_TMP_MAT4_B);
@@ -287,12 +306,12 @@ function _setMultiAnchorInitial(worldPos: THREE.Vector3): void {
     }
 }
 
-function _captureMultiAnchorInitialIfNeeded(worldPos: THREE.Vector3): void {
+function _captureMultiAnchorInitialIfNeeded(worldPos: Vector3): void {
     if (_multiSelectionOriginAnchorInitialValid) return;
     _setMultiAnchorInitial(worldPos);
 }
 
-function _resolveMultiAnchorInitialWorld(out = new THREE.Vector3()): THREE.Vector3 | null {
+function _resolveMultiAnchorInitialWorld(out = new Vector3()): Vector3 | null {
     if (_multiSelectionOriginAnchorInitialLocalValid) {
         const mat = _getPrimaryWorldMatrix(_TMP_MAT4_B);
         if (mat) return out.copy(_multiSelectionOriginAnchorInitialLocal).applyMatrix4(mat);
@@ -300,7 +319,7 @@ function _resolveMultiAnchorInitialWorld(out = new THREE.Vector3()): THREE.Vecto
     return null;
 }
 
-function _getSelectionCenterWorld(out = new THREE.Vector3()): THREE.Vector3 {
+function _getSelectionCenterWorld(out = new Vector3()): Vector3 {
     const box = getSelectionBoundingBox();
     if (box && !box.isEmpty()) {
         return box.getCenter(out);
@@ -357,13 +376,13 @@ let gizmoLines: GizmoLines = {
     Z: { original: [], negative: [] }
 };
 
-const dragInitialMatrix = new THREE.Matrix4();
-const dragInitialQuaternion = new THREE.Quaternion();
-const dragInitialScale = new THREE.Vector3();
-const dragInitialPosition = new THREE.Vector3();
-const dragInitialBoundingBox = new THREE.Box3();
-const dragStartAvgOrigin = new THREE.Vector3();
-const dragStartPivotBaseWorld = new THREE.Vector3();
+const dragInitialMatrix = new Matrix4();
+const dragInitialQuaternion = new Quaternion();
+const dragInitialScale = new Vector3();
+const dragInitialPosition = new Vector3();
+const dragInitialBoundingBox = new Box3();
+const dragStartAvgOrigin = new Vector3();
+const dragStartPivotBaseWorld = new Vector3();
 let draggingMode: string | null = null;
 let isGizmoBusy = false;
 let dragAnchorDirections: { x: boolean; y: boolean; z: boolean } = { x: true, y: true, z: true };
@@ -372,22 +391,22 @@ let isPivotEditMode = false;
 let isVertexMode = false;
 let isUniformScale = false;
 let isCustomPivot = false;
-let pivotOffset = new THREE.Vector3(0, 0, 0);
+let pivotOffset = new Vector3(0, 0, 0);
 
-const _tmpPrevInvMatrix = new THREE.Matrix4();
-const _tmpDeltaMatrix = new THREE.Matrix4();
-const _meshToInstanceIds = new Map<THREE.Object3D, number[]>();
+const _tmpPrevInvMatrix = new Matrix4();
+const _tmpDeltaMatrix = new Matrix4();
+const _meshToInstanceIds = new Map<Object3D, number[]>();
 
 //  Selection helpers 
 
-function getGroupRotationQuaternion(groupId: string | null, out = new THREE.Quaternion()): THREE.Quaternion {
+function getGroupRotationQuaternion(groupId: string | null, out = new Quaternion()): Quaternion {
     if (!groupId) return out.set(0, 0, 0, 1);
     const m = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
     const q = getRotationFromMatrix(m);
     return out.copy(q);
 }
 
-function SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset: THREE.Vector3): THREE.Vector3 {
+function SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset: Vector3): Vector3 {
     return CustomPivot.SelectionCenter(
         pivotMode,
         isCustomPivot,
@@ -440,7 +459,7 @@ function updateHelperPosition(): void {
     const isMulti = _isMultiSelection();
 
     if (!isCustomPivot && !_multiSelectionOriginAnchorValid && _isMultiSelection() && currentSelection.primary && _selectionAnchorMode !== 'center') {
-        let primaryPivotWorld: THREE.Vector3 | null = null;
+        let primaryPivotWorld: Vector3 | null = null;
         const prim = currentSelection.primary;
 
         if (prim.type === 'group') {
@@ -461,8 +480,8 @@ function updateHelperPosition(): void {
         } else if (prim.type === 'object') {
             const { mesh, instanceId } = prim;
             if (mesh) {
-                let custom: THREE.Vector3 | null = null;
-                if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
+                let custom: Vector3 | null = null;
+                if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
                     if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
                         custom = mesh.userData.customPivots.get(instanceId);
                     }
@@ -472,7 +491,7 @@ function updateHelperPosition(): void {
 
                 if (custom) {
                     const tempMat = _TMP_MAT4_A;
-                    (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, tempMat);
+                    (mesh as InstancedMesh).getMatrixAt(instanceId, tempMat);
                     tempMat.premultiply(mesh.matrixWorld);
                     primaryPivotWorld = custom.clone().applyMatrix4(tempMat);
                 } else {
@@ -517,7 +536,7 @@ function updateHelperPosition(): void {
         (_selectionAnchorMode !== 'center' || shouldPrioritizeMultiCustomPivot);
     if (lockMultiOrigin) {
         // 로컬 좌표에서 world 위치 재계산: center 모드에서 이동 후 world 앵커가 stale 되는 문제 원천 차단
-        const refreshedFromLocal = _resolveMultiAnchorInitialWorld(new THREE.Vector3());
+        const refreshedFromLocal = _resolveMultiAnchorInitialWorld(new Vector3());
         if (refreshedFromLocal) {
             _multiSelectionOriginAnchorPosition.copy(refreshedFromLocal);
         }
@@ -527,7 +546,7 @@ function updateHelperPosition(): void {
     } else {
         const useCenterAnchorMode = (_selectionAnchorMode === 'center') && !shouldPrioritizeMultiCustomPivot;
         const center = useCenterAnchorMode
-            ? _getSelectionCenterWorld(new THREE.Vector3())
+            ? _getSelectionCenterWorld(new Vector3())
             : SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
         selectionHelper!.position.copy(center);
         _gizmoAnchorPosition.copy(center);
@@ -546,7 +565,7 @@ function updateHelperPosition(): void {
 
     const gizmoPos = selectionHelper!.position;
 
-    let localPos: THREE.Vector3 | null = null;
+    let localPos: Vector3 | null = null;
     if (currentSelection.primary) {
         const prim = currentSelection.primary;
         const tempMat = _TMP_MAT4_A;
@@ -594,7 +613,7 @@ function updateHelperPosition(): void {
                     const { mesh, instanceId } = currentSelection.primary;
                     if (mesh) {
                         const instanceMatrix = _TMP_MAT4_A;
-                        (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, instanceMatrix);
+                        (mesh as InstancedMesh).getMatrixAt(instanceId, instanceMatrix);
                         const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                         selectionHelper!.quaternion.copy(getRotationFromMatrix(worldMatrix));
                     }
@@ -620,7 +639,7 @@ function updateHelperPosition(): void {
 
 let _pivotEditPreviousPivotMode: string | null = null;
 
-function applySelection(mesh: THREE.Object3D | null, instanceIds: number[], groupId: string | null = null): void {
+function applySelection(mesh: Object3D | null, instanceIds: number[], groupId: string | null = null): void {
     _revertEphemeralPivotUndoIfAny();
     _clearSelectionState();
     _clearGizmoAnchor();
@@ -677,7 +696,7 @@ function createGroup(): string | undefined {
 
     const groups = getGroups();
 
-    let initialPosition = new THREE.Vector3();
+    let initialPosition = new Vector3();
     const singleGroupId = _getSingleSelectedGroupId();
     if (singleGroupId) {
         const existingGroup = groups.get(singleGroupId);
@@ -814,13 +833,13 @@ export function initGizmo({
     if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map();
     if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map();
 
-    selectionHelper = new THREE.Mesh(
-        new THREE.BoxGeometry(0.1, 0.1, 0.1),
-        new THREE.MeshBasicMaterial({ visible: false })
+    selectionHelper = new Mesh(
+        new BoxGeometry(0.1, 0.1, 0.1),
+        new MeshBasicMaterial({ visible: false })
     );
     scene.add(selectionHelper);
 
-    const mouseInput = new THREE.Vector2();
+    const mouseInput = new Vector2();
     let detectedAnchorDirections: { x: boolean | null; y: boolean | null; z: boolean | null } = { x: null, y: null, z: null };
 
     renderer.domElement.addEventListener('pointerdown', (event: PointerEvent) => {
@@ -842,8 +861,8 @@ export function initGizmo({
                 } else {
                     isUniformScale = false;
                     const check = (axis: string): boolean | null => {
-                        if (gizmoLines[axis as keyof GizmoLines].negative.includes(object as THREE.Mesh)) return false;
-                        if (gizmoLines[axis as keyof GizmoLines].original.includes(object as THREE.Mesh)) return true;
+                        if (gizmoLines[axis as keyof GizmoLines].negative.includes(object as Mesh)) return false;
+                        if (gizmoLines[axis as keyof GizmoLines].original.includes(object as Mesh)) return true;
                         return null;
                     };
                     detectedAnchorDirections.x = check('X');
@@ -854,7 +873,7 @@ export function initGizmo({
         }
     }, true);
 
-    const setupResult = setupGizmo(camera, renderer as THREE.Renderer, scene);
+    const setupResult = setupGizmo(camera, renderer as Renderer, scene);
     transformControls = setupResult.transformControls;
     gizmoLines = setupResult.gizmoLines;
 
@@ -906,7 +925,7 @@ export function initGizmo({
                 } else {
                     const items = getSelectedItems();
                     if (items.length > 0) {
-                        const tempMat = new THREE.Matrix4();
+                        const tempMat = new Matrix4();
                         items.forEach(({ mesh, instanceId }) => {
                             const localBox = getInstanceLocalBox(mesh, instanceId);
                             if (!localBox) return;
@@ -970,7 +989,7 @@ export function initGizmo({
 
             if (currentSelection.objects && currentSelection.objects.size > 0) {
                 for (const [mesh] of currentSelection.objects) {
-                    if (mesh) (mesh as THREE.Mesh).boundingSphere = null;
+                    if (mesh) (mesh as Mesh).boundingSphere = null;
                 }
             }
 
@@ -1132,13 +1151,13 @@ export function initGizmo({
         prepareMultiSelectionDrag:                Overlay.prepareMultiSelectionDrag,
     });
 
-    const raycaster = new THREE.Raycaster();
+    const raycaster = new Raycaster();
     raycaster.layers.enable(2);
-    const mouse = new THREE.Vector2();
+    const mouse = new Vector2();
     let mouseDownPos: { x: number; y: number } | null = null;
-    const cameraMatrixOnPointerDown = new THREE.Matrix4();
+    const cameraMatrixOnPointerDown = new Matrix4();
 
-    function getHoveredVertex(mouseNDC: THREE.Vector2): THREE.Sprite | null {
+    function getHoveredVertex(mouseNDC: Vector2): Sprite | null {
         if (!isVertexMode) return null;
         return Overlay.getHoveredVertex(mouseNDC, camera, renderer);
     }
@@ -1157,7 +1176,7 @@ export function initGizmo({
 
         if (isVertexMode) {
             const rect = renderer.domElement.getBoundingClientRect();
-            const m = new THREE.Vector2(
+            const m = new Vector2(
                 ((event.clientX - rect.left) / rect.width) * 2 - 1,
                 -((event.clientY - rect.top) / rect.height) * 2 + 1
             );
@@ -1232,7 +1251,7 @@ export function initGizmo({
 
         if (isVertexMode) {
             const rect = renderer.domElement.getBoundingClientRect();
-            const m = new THREE.Vector2(
+            const m = new Vector2(
                 ((event.clientX - rect.left) / rect.width) * 2 - 1,
                 -((event.clientY - rect.top) / rect.height) * 2 + 1
             );
@@ -1382,7 +1401,7 @@ export function initGizmo({
                 const direction = camPos.clone().sub(gizmoPos).normalize();
                 if (currentSpace === 'local') direction.applyQuaternion(transformControls!.object.quaternion.clone().invert());
 
-                const axesConfig: Record<string, { originalLines: THREE.Mesh[]; negativeLines: THREE.Mesh[]; getDirection: () => boolean }> = {
+                const axesConfig: Record<string, { originalLines: Mesh[]; negativeLines: Mesh[]; getDirection: () => boolean }> = {
                     X: { originalLines: gizmoLines.X.original, negativeLines: gizmoLines.X.negative, getDirection: () => direction.x > 0 },
                     Y: { originalLines: gizmoLines.Y.original, negativeLines: gizmoLines.Y.negative, getDirection: () => direction.y > 0 },
                     Z: { originalLines: gizmoLines.Z.original, negativeLines: gizmoLines.Z.negative, getDirection: () => direction.z > 0 }

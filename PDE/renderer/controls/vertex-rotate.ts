@@ -1,39 +1,50 @@
-import * as THREE from 'three/webgpu';
+import {
+    Matrix4,
+    Vector3,
+    Quaternion,
+    InstancedMesh,
+    BatchedMesh,
+    Mesh,
+    Object3D,
+    Group,
+    Sprite,
+    Box3
+} from 'three/webgpu';
 import * as GroupUtils from './group';
 import * as Overlay from './overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
 import type { GroupData } from './group';
 import type { GizmoState } from './gizmo';
 
-const _TMP_MAT4_A = new THREE.Matrix4();
-const _TMP_MAT4_B = new THREE.Matrix4();
-const _TMP_INSTANCE_MATRIX = new THREE.Matrix4();
-const _TMP_VEC3_A = new THREE.Vector3();
-const _TMP_VEC3_B = new THREE.Vector3();
-const _TMP_QUAT = new THREE.Quaternion();
+const _TMP_MAT4_A = new Matrix4();
+const _TMP_MAT4_B = new Matrix4();
+const _TMP_INSTANCE_MATRIX = new Matrix4();
+const _TMP_VEC3_A = new Vector3();
+const _TMP_VEC3_B = new Vector3();
+const _TMP_QUAT = new Quaternion();
 
-type MeshType = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+type MeshType = InstancedMesh | BatchedMesh | Mesh;
 
 interface VertexRotateContext {
     isVertexMode: boolean;
     gizmoMode: string;
     currentSelection: {
         groups: Set<string>;
-        objects: Map<THREE.Object3D, Set<number>>;
+        objects: Map<Object3D, Set<number>>;
         primary: SelectionSource | null;
     };
-    loadedObjectGroup: THREE.Group;
-    selectionHelper: THREE.Mesh;
+    loadedObjectGroup: Group;
+    selectionHelper: Mesh;
 
     getGizmoState: () => GizmoState;
     setGizmoState: (updates: Partial<GizmoState>) => void;
-    setMultiAnchorInitial: (worldPos: THREE.Vector3) => void;
+    setMultiAnchorInitial: (worldPos: Vector3) => void;
 
     getGroups: () => Map<string, GroupData>;
-    getGroupWorldMatrixWithFallback: (id: string, target: THREE.Matrix4) => THREE.Matrix4;
+    getGroupWorldMatrixWithFallback: (id: string, target: Matrix4) => Matrix4;
     updateHelperPosition: () => void;
     updateSelectionOverlay: () => void;
-    SelectionCenter: (mode: string, useOffset: boolean, target: THREE.Vector3) => THREE.Vector3;
+    SelectionCenter: (mode: string, useOffset: boolean, target: Vector3) => Vector3;
     vertexQueue: QueueItem[];
 }
 
@@ -78,8 +89,8 @@ export function processVertexRotate(
     const k1 = keys[0];
     const k2 = keys[1];
     
-    let sprite1: THREE.Sprite | null = null;
-    let sprite2: THREE.Sprite | null = null;
+    let sprite1: Sprite | null = null;
+    let sprite2: Sprite | null = null;
     
     const foundSprites = Overlay.findSpritesByKeys([k1, k2]);
     sprite1 = foundSprites[k1];
@@ -100,14 +111,14 @@ export function processVertexRotate(
     // -> Rotate Object around Opposite Corner (Pivot) logic
     if (sprite1 && sprite2 && sprite1.userData.source && (sprite2.userData.isCenter || sprite2.userData.source)) {
         const src: SelectionSource = sprite1.userData.source;
-        let objectWorldMatrix = new THREE.Matrix4();
-        let localBox: THREE.Box3 | null = null;
+        let objectWorldMatrix = new Matrix4();
+        let localBox: Box3 | null = null;
 
         // 1. Resolve effective World Matrix and Local Bounding Box (similar to vertex-scale)
         if (src.type === 'object') {
             const { mesh, instanceId } = src;
-            if ((mesh as THREE.BatchedMesh).isBatchedMesh || (mesh as THREE.InstancedMesh).isInstancedMesh) {
-                (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, objectWorldMatrix);
+            if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+                (mesh as InstancedMesh).getMatrixAt(instanceId, objectWorldMatrix);
             } else {
                 objectWorldMatrix.copy(mesh.matrix);
             }
@@ -132,10 +143,10 @@ export function processVertexRotate(
 
         const min = localBox.min;
         const max = localBox.max;
-        const center = new THREE.Vector3().addVectors(min, max).multiplyScalar(0.5);
+        const center = new Vector3().addVectors(min, max).multiplyScalar(0.5);
         const eps = 1e-4;
 
-        const fixedLocal = new THREE.Vector3();
+        const fixedLocal = new Vector3();
         fixedLocal.x = (p1Local.x > center.x + eps) ? min.x : ((p1Local.x < center.x - eps) ? max.x : p1Local.x);
         fixedLocal.y = (p1Local.y > center.y + eps) ? min.y : ((p1Local.y < center.y - eps) ? max.y : p1Local.y);
         fixedLocal.z = (p1Local.z > center.z + eps) ? min.z : ((p1Local.z < center.z - eps) ? max.z : p1Local.z);
@@ -162,7 +173,7 @@ export function processVertexRotate(
         // Build Rotation Matrix around Pivot: T(P) * R(q) * T(-P)
         const tMat = _TMP_MAT4_A.makeTranslation(pivot.x, pivot.y, pivot.z);
         const rMat = _TMP_MAT4_B.makeRotationFromQuaternion(q);
-        const tInvMat = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
+        const tInvMat = new Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
 
         // Combine: M = T * R * T_inv
         const transformMat = tMat.multiply(rMat).multiply(tInvMat);
@@ -275,15 +286,15 @@ export function processVertexRotate(
         // A. Update Instances (Visuals)
         for (const [mesh, ids] of targets.instances) {
             const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
-            const localTransform = new THREE.Matrix4().multiplyMatrices(meshWorldInv, transformMat);
+            const localTransform = new Matrix4().multiplyMatrices(meshWorldInv, transformMat);
             localTransform.multiply(mesh.matrixWorld);
 
             for (const id of ids) {
-                (mesh as THREE.InstancedMesh).getMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                (mesh as InstancedMesh).getMatrixAt(id, _TMP_INSTANCE_MATRIX);
                 _TMP_INSTANCE_MATRIX.premultiply(localTransform);
-                (mesh as THREE.InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                (mesh as InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
             }
-            if ((mesh as THREE.InstancedMesh).isInstancedMesh) (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+            if ((mesh as InstancedMesh).isInstancedMesh) (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
         }
 
         // B. Update Group Metadata (Logic)
@@ -292,15 +303,15 @@ export function processVertexRotate(
             const group = groups.get(groupId);
             if (group) {
                 if (!group.matrix) {
-                    const gPos = group.position || new THREE.Vector3();
-                    const gQuat = group.quaternion || new THREE.Quaternion();
-                    const gScale = group.scale || new THREE.Vector3(1, 1, 1);
-                    group.matrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
+                    const gPos = group.position || new Vector3();
+                    const gQuat = group.quaternion || new Quaternion();
+                    const gScale = group.scale || new Vector3(1, 1, 1);
+                    group.matrix = new Matrix4().compose(gPos, gQuat, gScale);
                 }
                 group.matrix.premultiply(transformMat);
-                if (!group.position) group.position = new THREE.Vector3();
-                if (!group.quaternion) group.quaternion = new THREE.Quaternion();
-                if (!group.scale) group.scale = new THREE.Vector3(1, 1, 1);
+                if (!group.position) group.position = new Vector3();
+                if (!group.quaternion) group.quaternion = new Quaternion();
+                if (!group.scale) group.scale = new Vector3(1, 1, 1);
                 group.matrix.decompose(group.position, group.quaternion, group.scale);
             }
         }

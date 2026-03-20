@@ -1,4 +1,15 @@
-import * as THREE from 'three/webgpu';
+import {
+    Vector3,
+    Matrix4,
+    Renderer,
+    Camera,
+    Group,
+    Object3D,
+    InstancedMesh,
+    Quaternion,
+    Mesh,
+    BatchedMesh
+} from 'three/webgpu';
 import * as Select from './select';
 import type { SelectionCallbacks } from './select';
 import * as Overlay from './overlay';
@@ -11,19 +22,19 @@ const { getGroupKey, getGroupChain, getObjectToGroup } = GroupUtils;
 
 interface OrbitControlsLike {
     enabled: boolean;
-    target: THREE.Vector3;
+    target: Vector3;
     update(): void;
 }
 
-const _TMP_MAT4_A = new THREE.Matrix4();
-const _TMP_CORNERS = new Array(8).fill(0).map(() => new THREE.Vector3());
+const _TMP_MAT4_A = new Matrix4();
+const _TMP_CORNERS = new Array(8).fill(0).map(() => new Vector3());
 
 export interface DragInitOptions {
-    renderer: THREE.Renderer;
-    camera: THREE.Camera;
+    renderer: Renderer;
+    camera: Camera;
     getControls: () => OrbitControlsLike;
     transformControls: TransformControls;
-    loadedObjectGroup: THREE.Group;
+    loadedObjectGroup: Group;
     getSelectionCallbacks: () => SelectionCallbacks;
 }
 
@@ -36,33 +47,33 @@ export interface DragInterface {
 }
 
 export interface ApplyDeltaParams {
-    deltaMatrix: THREE.Matrix4;
-    meshToInstanceIds: Map<THREE.Object3D, number[]>;
+    deltaMatrix: Matrix4;
+    meshToInstanceIds: Map<Object3D, number[]>;
     selectedGroupIds: Set<string>;
-    loadedObjectGroup: THREE.Group;
+    loadedObjectGroup: Group;
 }
 
 export function applyDeltaToSelection(params: ApplyDeltaParams): void {
     const { deltaMatrix, meshToInstanceIds, selectedGroupIds, loadedObjectGroup } = params;
 
-    const tmpMeshWorldInverse = new THREE.Matrix4();
-    const tmpLocalDelta = new THREE.Matrix4();
-    const tmpInstanceMatrix = new THREE.Matrix4();
+    const tmpMeshWorldInverse = new Matrix4();
+    const tmpLocalDelta = new Matrix4();
+    const tmpInstanceMatrix = new Matrix4();
 
     for (const [mesh, instanceIds] of meshToInstanceIds) {
-        tmpMeshWorldInverse.copy((mesh as THREE.Object3D).matrixWorld).invert();
+        tmpMeshWorldInverse.copy((mesh as Object3D).matrixWorld).invert();
         tmpLocalDelta.multiplyMatrices(tmpMeshWorldInverse, deltaMatrix);
-        tmpLocalDelta.multiply((mesh as THREE.Object3D).matrixWorld);
+        tmpLocalDelta.multiply((mesh as Object3D).matrixWorld);
 
         for (let i = 0; i < instanceIds.length; i++) {
             const instanceId = instanceIds[i];
-            (mesh as THREE.InstancedMesh).getMatrixAt(instanceId, tmpInstanceMatrix);
+            (mesh as InstancedMesh).getMatrixAt(instanceId, tmpInstanceMatrix);
             tmpInstanceMatrix.premultiply(tmpLocalDelta);
-            (mesh as THREE.InstancedMesh).setMatrixAt(instanceId, tmpInstanceMatrix);
+            (mesh as InstancedMesh).setMatrixAt(instanceId, tmpInstanceMatrix);
         }
 
-        if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
-            (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+        if ((mesh as InstancedMesh).isInstancedMesh) {
+            (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
         }
     }
 
@@ -82,16 +93,16 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
             if (!g) continue;
 
             if (!g.matrix) {
-                const gPos = g.position || new THREE.Vector3();
-                const gQuat = g.quaternion || new THREE.Quaternion();
-                const gScale = g.scale || new THREE.Vector3(1, 1, 1);
-                g.matrix = new THREE.Matrix4().compose(gPos, gQuat, gScale);
+                const gPos = g.position || new Vector3();
+                const gQuat = g.quaternion || new Quaternion();
+                const gScale = g.scale || new Vector3(1, 1, 1);
+                g.matrix = new Matrix4().compose(gPos, gQuat, gScale);
             }
 
             g.matrix.premultiply(deltaMatrix);
-            if (!g.position) g.position = new THREE.Vector3();
-            if (!g.quaternion) g.quaternion = new THREE.Quaternion();
-            if (!g.scale) g.scale = new THREE.Vector3(1, 1, 1);
+            if (!g.position) g.position = new Vector3();
+            if (!g.quaternion) g.quaternion = new Quaternion();
+            if (!g.scale) g.scale = new Vector3(1, 1, 1);
             g.matrix.decompose(g.position, g.quaternion, g.scale);
         }
     }
@@ -162,11 +173,11 @@ export function initDrag({
         getControls().enabled = marqueePrevControlsEnabled;
     };
 
-    function _replaceSelectionWithObjectsMap(meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
+    function _replaceSelectionWithObjectsMap(meshToIds: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
         Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
     }
 
-    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
+    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
         Select.replaceSelectionWithGroupsAndObjects(groupIds!, meshToIds, getSelectionCallbacks(), options);
     }
 
@@ -250,27 +261,27 @@ export function initDrag({
                 const maxY = bottom - canvasRect.top;
 
                 const groupIds = ignoreGroups ? null : new Set<string>();
-                const meshToIds = new Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>();
+                const meshToIds = new Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>();
                 const tmpMat = _TMP_MAT4_A;
 
                 const objectToGroup = ignoreGroups ? null : getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
-                loadedObjectGroup.traverse((obj: THREE.Object3D) => {
-                    if (!obj || (!(obj as THREE.InstancedMesh).isInstancedMesh && !(obj as THREE.BatchedMesh).isBatchedMesh)) return;
+                loadedObjectGroup.traverse((obj: Object3D) => {
+                    if (!obj || (!(obj as InstancedMesh).isInstancedMesh && !(obj as BatchedMesh).isBatchedMesh)) return;
                     if (obj.visible === false) return;
 
-                    if (!(obj as THREE.Mesh).geometry?.boundingBox) (obj as THREE.Mesh).geometry?.computeBoundingBox();
-                    const bbox = (obj as THREE.Mesh).geometry?.boundingBox;
+                    if (!(obj as Mesh).geometry?.boundingBox) (obj as Mesh).geometry?.computeBoundingBox();
+                    const bbox = (obj as Mesh).geometry?.boundingBox;
                     if (!bbox) return;
 
-                    const instanceCount = getInstanceCount(obj as THREE.InstancedMesh | THREE.BatchedMesh);
+                    const instanceCount = getInstanceCount(obj as InstancedMesh | BatchedMesh);
                     if (instanceCount <= 0) return;
 
                     for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                        if (!isInstanceValid(obj as THREE.InstancedMesh | THREE.BatchedMesh, instanceId)) continue;
+                        if (!isInstanceValid(obj as InstancedMesh | BatchedMesh, instanceId)) continue;
 
-                        getInstanceWorldMatrixForOrigin(obj as THREE.InstancedMesh | THREE.BatchedMesh, instanceId, tmpMat);
-                        const localYOffset = isItemDisplayHatEnabled(obj as THREE.InstancedMesh | THREE.BatchedMesh, instanceId) ? 0.03125 : 0;
+                        getInstanceWorldMatrixForOrigin(obj as InstancedMesh | BatchedMesh, instanceId, tmpMat);
+                        const localYOffset = isItemDisplayHatEnabled(obj as InstancedMesh | BatchedMesh, instanceId) ? 0.03125 : 0;
 
                         // 투영된 바운딩 박스 계산을 위한 코너 좌표
                         _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y + localYOffset, bbox.min.z);
@@ -307,7 +318,7 @@ export function initDrag({
                         if (minSx > maxX || maxSx < minX || minSy > maxY || maxSy < minY) continue;
 
                         if (!ignoreGroups && objectToGroup) {
-                            const key = getGroupKey(obj as THREE.InstancedMesh | THREE.BatchedMesh, instanceId);
+                            const key = getGroupKey(obj as InstancedMesh | BatchedMesh, instanceId);
                             const immediateGroupId = objectToGroup.get(key);
                             if (immediateGroupId) {
                                 const chain = getGroupChain(loadedObjectGroup, immediateGroupId) as string[];
@@ -317,10 +328,10 @@ export function initDrag({
                             }
                         }
 
-                        let set = meshToIds.get(obj as THREE.InstancedMesh | THREE.BatchedMesh);
+                        let set = meshToIds.get(obj as InstancedMesh | BatchedMesh);
                         if (!set) {
                             set = new Set<number>();
-                            meshToIds.set(obj as THREE.InstancedMesh | THREE.BatchedMesh, set);
+                            meshToIds.set(obj as InstancedMesh | BatchedMesh, set);
                         }
                         set.add(instanceId);
                     }

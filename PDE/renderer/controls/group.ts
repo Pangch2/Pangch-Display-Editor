@@ -1,9 +1,18 @@
-import * as THREE from 'three/webgpu';
+import {
+    Mesh,
+    BatchedMesh,
+    InstancedMesh,
+    Vector3,
+    Quaternion,
+    Matrix4,
+    Group,
+    MathUtils
+} from 'three/webgpu';
 
 // Types
 export interface GroupChildObject {
     type: 'object';
-    mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh;
+    mesh: Mesh | BatchedMesh | InstancedMesh;
     instanceId: number;
 }
 
@@ -20,39 +29,39 @@ export interface GroupData {
     children: GroupChild[];
     parent: string | null;
     name: string;
-    position: THREE.Vector3;
-    quaternion: THREE.Quaternion;
-    scale: THREE.Vector3;
-    pivot?: THREE.Vector3;
+    position: Vector3;
+    quaternion: Quaternion;
+    scale: Vector3;
+    pivot?: Vector3;
     isCustomPivot?: boolean;
-    matrix?: THREE.Matrix4;
+    matrix?: Matrix4;
 }
 
 export interface CloneJobEntry {
-    mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh;
+    mesh: Mesh | BatchedMesh | InstancedMesh;
     instanceId: number;
     targetGroupId: string;
     coveredByGroup: boolean;
 }
 
 export interface CollectCloneContext {
-    planBatchCallback?: (mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, instanceId: number, targetGroupId: string) => void;
+    planBatchCallback?: (mesh: Mesh | BatchedMesh | InstancedMesh, instanceId: number, targetGroupId: string) => void;
     _groupIdMap?: Map<string, string>;
 }
 
-type PivotInput = THREE.Vector3 | [number, number, number] | { x: number; y: number; z: number } | null | undefined;
+type PivotInput = Vector3 | [number, number, number] | { x: number; y: number; z: number } | null | undefined;
 
 // Constants
-export const DEFAULT_GROUP_PIVOT = new THREE.Vector3(0.5, 0.5, 0.5);
+export const DEFAULT_GROUP_PIVOT = new Vector3(0.5, 0.5, 0.5);
 
 // Utils
 function _nearlyEqual(a: number, b: number, eps: number = 1e-6): boolean {
     return Math.abs(a - b) <= eps;
 }
 
-export function normalizePivotToVector3(pivot: PivotInput, out: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 | null {
+export function normalizePivotToVector3(pivot: PivotInput, out: Vector3 = new Vector3()): Vector3 | null {
     if (!pivot) return null;
-    if ((pivot as THREE.Vector3).isVector3) return out.copy(pivot as THREE.Vector3);
+    if ((pivot as Vector3).isVector3) return out.copy(pivot as Vector3);
     if (Array.isArray(pivot) && pivot.length >= 3) return out.set(pivot[0], pivot[1], pivot[2]);
     if (typeof pivot === 'object' && 'x' in pivot && 'y' in pivot && 'z' in pivot) {
         return out.set(pivot.x, pivot.y, pivot.z);
@@ -61,7 +70,7 @@ export function normalizePivotToVector3(pivot: PivotInput, out: THREE.Vector3 = 
 }
 
 export function isCustomGroupPivot(pivot: PivotInput): boolean {
-    const v = normalizePivotToVector3(pivot, new THREE.Vector3());
+    const v = normalizePivotToVector3(pivot, new Vector3());
     if (!v) return false;
     return !(
         _nearlyEqual(v.x, DEFAULT_GROUP_PIVOT.x) &&
@@ -77,7 +86,7 @@ export function shouldUseGroupPivot(group: GroupData | null | undefined): boolea
 }
 
 // Accessors
-export function getGroups(loadedObjectGroup: THREE.Group): Map<string, GroupData> {
+export function getGroups(loadedObjectGroup: Group): Map<string, GroupData> {
     // loadedObjectGroup.userData.groups를 lazy-init하여 반환.
     // 모든 모듈이 이 함수를 통해 그룹 데이터에 접근하므로
     // userData.groups Map을 직접 수정하지 말 것.
@@ -88,7 +97,7 @@ export function getGroups(loadedObjectGroup: THREE.Group): Map<string, GroupData
     return loadedObjectGroup.userData.groups;
 }
 
-export function getObjectToGroup(loadedObjectGroup: THREE.Group): Map<string, string> {
+export function getObjectToGroup(loadedObjectGroup: Group): Map<string, string> {
     if (!loadedObjectGroup || !loadedObjectGroup.userData) return new Map();
     if (!loadedObjectGroup.userData.objectToGroup) {
         loadedObjectGroup.userData.objectToGroup = new Map<string, string>();
@@ -96,11 +105,11 @@ export function getObjectToGroup(loadedObjectGroup: THREE.Group): Map<string, st
     return loadedObjectGroup.userData.objectToGroup;
 }
 
-export function getGroupKey(mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, instanceId: number): string {
+export function getGroupKey(mesh: Mesh | BatchedMesh | InstancedMesh, instanceId: number): string {
     return `${mesh.uuid}_${instanceId}`;
 }
 
-export function getGroupChain(loadedObjectGroup: THREE.Group, startGroupId: string): string[] {
+export function getGroupChain(loadedObjectGroup: Group, startGroupId: string): string[] {
     const groups = getGroups(loadedObjectGroup);
     const chain: string[] = [];
     let currentId: string | null = startGroupId;
@@ -113,7 +122,7 @@ export function getGroupChain(loadedObjectGroup: THREE.Group, startGroupId: stri
     return chain;
 }
 
-export function getAllGroupChildren(loadedObjectGroup: THREE.Group, groupId: string): GroupChildObject[] {
+export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): GroupChildObject[] {
     const groups = getGroups(loadedObjectGroup);
     const group = groups.get(groupId);
     if (!group) return [];
@@ -138,7 +147,7 @@ export function getAllGroupChildren(loadedObjectGroup: THREE.Group, groupId: str
     return out;
 }
 
-export function getAllDescendantGroups(loadedObjectGroup: THREE.Group, groupId: string): string[] {
+export function getAllDescendantGroups(loadedObjectGroup: Group, groupId: string): string[] {
     const groups = getGroups(loadedObjectGroup);
     const group = groups.get(groupId);
     if (!group) return [];
@@ -166,21 +175,21 @@ export function getAllDescendantGroups(loadedObjectGroup: THREE.Group, groupId: 
     return out;
 }
 
-export function getGroupWorldMatrix(group: GroupData | null | undefined, out: THREE.Matrix4 = new THREE.Matrix4()): THREE.Matrix4 {
+export function getGroupWorldMatrix(group: GroupData | null | undefined, out: Matrix4 = new Matrix4()): Matrix4 {
     out.identity();
     if (!group) return out;
     if (group.matrix) return out.copy(group.matrix);
 
-    const gPos = group.position || new THREE.Vector3();
-    const gQuat = group.quaternion || new THREE.Quaternion();
-    const gScale = group.scale || new THREE.Vector3(1, 1, 1);
+    const gPos = group.position || new Vector3();
+    const gQuat = group.quaternion || new Quaternion();
+    const gScale = group.scale || new Vector3(1, 1, 1);
     return out.compose(gPos, gQuat, gScale);
 }
 
 // Structure Modification
 export function updateGroupReferenceForMovedInstance(
-    loadedObjectGroup: THREE.Group,
-    mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh,
+    loadedObjectGroup: Group,
+    mesh: Mesh | BatchedMesh | InstancedMesh,
     oldInstanceId: number,
     newInstanceId: number
 ): void {
@@ -210,15 +219,15 @@ export function updateGroupReferenceForMovedInstance(
 }
 
 export function createGroupStructure(
-    loadedObjectGroup: THREE.Group,
+    loadedObjectGroup: Group,
     selectedGroupIds: string[],
-    selectedObjects: { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number }[],
-    initialPosition: THREE.Vector3
+    selectedObjects: { mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number }[],
+    initialPosition: Vector3
 ): string {
     const groups = getGroups(loadedObjectGroup);
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
 
-    const newGroupId = THREE.MathUtils.generateUUID();
+    const newGroupId = MathUtils.generateUUID();
     const newGroup: GroupData = {
         id: newGroupId,
         isCollection: true,
@@ -226,8 +235,8 @@ export function createGroupStructure(
         parent: null,
         name: 'Group',
         position: initialPosition.clone(),
-        quaternion: new THREE.Quaternion(),
-        scale: new THREE.Vector3(1, 1, 1)
+        quaternion: new Quaternion(),
+        scale: new Vector3(1, 1, 1)
     };
 
     let commonParentId: string | null | undefined = undefined;
@@ -292,7 +301,7 @@ export function createGroupStructure(
 }
 
 export function ungroupGroupStructure(
-    loadedObjectGroup: THREE.Group,
+    loadedObjectGroup: Group,
     groupId: string
 ): { parentId: string | null; children: GroupChild[] } | null {
     const groups = getGroups(loadedObjectGroup);
@@ -332,7 +341,7 @@ export function ungroupGroupStructure(
 }
 
 export function cloneGroupStructure(
-    loadedObjectGroup: THREE.Group,
+    loadedObjectGroup: Group,
     groupId: string,
     parentId: string | null,
     idMap?: Map<string, string>
@@ -341,12 +350,12 @@ export function cloneGroupStructure(
     const sourceGroup = groups.get(groupId);
     if (!sourceGroup) return null;
 
-    const newGroupId = THREE.MathUtils.generateUUID();
+    const newGroupId = MathUtils.generateUUID();
     if (idMap) idMap.set(groupId, newGroupId);
 
-    let newPivot: THREE.Vector3 | undefined = undefined;
+    let newPivot: Vector3 | undefined = undefined;
     if (sourceGroup.pivot) {
-        newPivot = normalizePivotToVector3(sourceGroup.pivot, new THREE.Vector3()) ?? undefined;
+        newPivot = normalizePivotToVector3(sourceGroup.pivot, new Vector3()) ?? undefined;
     }
 
     const newGroup: GroupData = {
@@ -355,9 +364,9 @@ export function cloneGroupStructure(
         children: [],
         parent: parentId,
         name: sourceGroup.name ? sourceGroup.name + " (Copy)" : "Group (Copy)",
-        position: sourceGroup.position ? sourceGroup.position.clone() : new THREE.Vector3(),
-        quaternion: sourceGroup.quaternion ? sourceGroup.quaternion.clone() : new THREE.Quaternion(),
-        scale: sourceGroup.scale ? sourceGroup.scale.clone() : new THREE.Vector3(1, 1, 1),
+        position: sourceGroup.position ? sourceGroup.position.clone() : new Vector3(),
+        quaternion: sourceGroup.quaternion ? sourceGroup.quaternion.clone() : new Quaternion(),
+        scale: sourceGroup.scale ? sourceGroup.scale.clone() : new Vector3(1, 1, 1),
         pivot: newPivot,
         isCustomPivot: sourceGroup.isCustomPivot
     };
@@ -387,7 +396,7 @@ export function cloneGroupStructure(
 }
 
 export function collectCloneJobsFromGroup(
-    loadedObjectGroup: THREE.Group,
+    loadedObjectGroup: Group,
     groupId: string,
     newGroupId: string,
     ctx: CollectCloneContext | null,

@@ -1,4 +1,12 @@
-import * as THREE from 'three/webgpu';
+import {
+    Mesh,
+    BatchedMesh,
+    InstancedMesh,
+    Group,
+    Vector3,
+    Matrix4,
+    Raycaster
+} from 'three/webgpu';
 import * as GroupUtils from './group';
 import * as Overlay from './overlay';
 
@@ -6,11 +14,11 @@ import * as Overlay from './overlay';
 
 export type PrimarySelection = 
     | { type: 'group'; id: string }
-    | { type: 'object'; mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number };
+    | { type: 'object'; mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number };
 
 export interface SelectionState {
     groups: Set<string>;
-    objects: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>;
+    objects: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>;
     primary: PrimarySelection | null;
 }
 
@@ -31,7 +39,7 @@ export interface SelectionCallbacks {
 
 export interface SelectedItem {
     type: 'object';
-    mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh;
+    mesh: Mesh | BatchedMesh | InstancedMesh;
     instanceId: number;
 }
 
@@ -39,11 +47,11 @@ export interface SelectedItem {
 
 export const currentSelection: SelectionState = {
     groups: new Set<string>(),
-    objects: new Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>(),
+    objects: new Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>(),
     primary: null
 };
 
-let loadedObjectGroupForSelect: THREE.Group | null = null;
+let loadedObjectGroupForSelect: Group | null = null;
 let _selectedItemsCacheKey: string | null = null;
 let _selectedItemsCache: SelectedItem[] | null = null;
 
@@ -115,17 +123,17 @@ export function getSelectedItems(): SelectedItem[] {
     return items;
 }
 
-export function setLoadedObjectGroup(group: THREE.Group): void {
+export function setLoadedObjectGroup(group: Group): void {
     loadedObjectGroupForSelect = group;
 }
 
-export function calculateAvgOrigin(): THREE.Vector3 {
-    const center = new THREE.Vector3();
+export function calculateAvgOrigin(): Vector3 {
+    const center = new Vector3();
     const items = getSelectedItems();
     if (items.length === 0) return center;
 
-    const tempPos = new THREE.Vector3();
-    const tempMat = new THREE.Matrix4();
+    const tempPos = new Vector3();
+    const tempMat = new Matrix4();
 
     items.forEach(({ mesh, instanceId }) => {
         Overlay.getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
@@ -139,11 +147,11 @@ export function calculateAvgOrigin(): THREE.Vector3 {
 }
 
 export function pickInstanceByOverlayBox(
-    raycaster: THREE.Raycaster, 
-    rootGroup: THREE.Group
-): { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number } | null {
+    raycaster: Raycaster, 
+    rootGroup: Group
+): { mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number } | null {
     const rayWorld = raycaster.ray.clone();
-    const best: { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh | null; instanceId: number | undefined; distance: number } = { 
+    const best: { mesh: Mesh | BatchedMesh | InstancedMesh | null; instanceId: number | undefined; distance: number } = { 
         mesh: null, 
         instanceId: undefined, 
         distance: Infinity 
@@ -154,7 +162,7 @@ export function pickInstanceByOverlayBox(
         if (obj.visible === false) return;
         if (!raycaster.layers.test(obj.layers)) return;
 
-        const mesh = obj as THREE.InstancedMesh | THREE.BatchedMesh;
+        const mesh = obj as InstancedMesh | BatchedMesh;
         const instanceCount = Overlay.getInstanceCount(mesh);
 
         if (instanceCount <= 0) return;
@@ -165,11 +173,11 @@ export function pickInstanceByOverlayBox(
             const box = Overlay.getInstanceLocalBox(mesh, instanceId);
             if (!box) continue;
 
-            const matrixWorld = Overlay.getInstanceWorldMatrix(mesh, instanceId, new THREE.Matrix4());
+            const matrixWorld = Overlay.getInstanceWorldMatrix(mesh, instanceId, new Matrix4());
             const invMatrix = matrixWorld.clone().invert();
             const localRay = rayWorld.clone().applyMatrix4(invMatrix);
             
-            const intersect = localRay.intersectBox(box, new THREE.Vector3());
+            const intersect = localRay.intersectBox(box, new Vector3());
             if (intersect) {
                 const hitPointWorld = intersect.clone().applyMatrix4(matrixWorld);
                 const dist = rayWorld.origin.distanceTo(hitPointWorld);
@@ -193,14 +201,14 @@ export function getSingleSelectedGroupId(): string | null {
     return Array.from(currentSelection.groups)[0] || null;
 }
 
-export function getSingleSelectedMeshEntry(): { mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; instanceId: number } | null {
+export function getSingleSelectedMeshEntry(): { mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number } | null {
     if (currentSelection.groups && currentSelection.groups.size > 0) return null;
     if (!currentSelection.objects || currentSelection.objects.size !== 1) return null;
     
     const entry = currentSelection.objects.entries().next().value;
     if (!entry) return null;
     
-    const [mesh, ids] = entry as [THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>];
+    const [mesh, ids] = entry as [Mesh | BatchedMesh | InstancedMesh, Set<number>];
     return (mesh && ids && ids.size === 1) ? { mesh, instanceId: Array.from(ids)[0] as number } : null;
 }
 
@@ -263,7 +271,7 @@ export function setPrimaryToFirstAvailable(): void {
 }
 
 export function replaceSelectionWithObjectsMap(
-    meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, 
+    meshToIds: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>, 
     callbacks: SelectionCallbacks, 
     { anchorMode = 'default' } = {}
 ): void {
@@ -286,7 +294,7 @@ export function replaceSelectionWithObjectsMap(
 
 export function replaceSelectionWithGroupsAndObjects(
     groupIds: Set<string>, 
-    meshToIds: Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>, 
+    meshToIds: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>, 
     callbacks: SelectionCallbacks, 
     {
         anchorMode = 'default',
@@ -310,7 +318,7 @@ export function replaceSelectionWithGroupsAndObjects(
     beginSelectionReplace(callbacks, { anchorMode, detachTransform: true, preserveAnchors });
 
     let firstGroupId: string | null = null;
-    let firstObjectMesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh | null = null;
+    let firstObjectMesh: Mesh | BatchedMesh | InstancedMesh | null = null;
     let firstObjectInstanceId: number | null = null;
 
     if (hasGroups) {
@@ -356,15 +364,15 @@ export function replaceSelectionWithGroupsAndObjects(
     if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
 }
 
-export function selectAllObjectsVisibleInScene(loadedObjectGroup: THREE.Group): Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>> {
-    const meshToIds = new Map<THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh, Set<number>>();
+export function selectAllObjectsVisibleInScene(loadedObjectGroup: Group): Map<Mesh | BatchedMesh | InstancedMesh, Set<number>> {
+    const meshToIds = new Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>();
     if (!loadedObjectGroup) return meshToIds;
 
     loadedObjectGroup.traverse((obj) => {
         if (!obj || (!('isInstancedMesh' in obj) && !('isBatchedMesh' in obj))) return;
         if (obj.visible === false) return;
 
-        const mesh = obj as THREE.InstancedMesh | THREE.BatchedMesh;
+        const mesh = obj as InstancedMesh | BatchedMesh;
         const instanceCount = Overlay.getInstanceCount(mesh);
         if (instanceCount <= 0) return;
 
@@ -404,9 +412,9 @@ export function commitSelectionChange(callbacks: SelectionCallbacks): void {
 }
 
 export function handleSelectionClick(
-    raycaster: THREE.Raycaster,
+    raycaster: Raycaster,
     event: MouseEvent | { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
-    loadedObjectGroup: THREE.Group,
+    loadedObjectGroup: Group,
     callbacks: SelectionCallbacks
 ): void {
     const picked = pickInstanceByOverlayBox(raycaster, loadedObjectGroup);
@@ -432,7 +440,7 @@ export function handleSelectionClick(
 
     const bypassGroupSelection = !!(event.ctrlKey || event.metaKey);
 
-    let target: { type: 'object'; mesh: THREE.Mesh | THREE.BatchedMesh | THREE.InstancedMesh; ids: number[] } | { type: 'group'; id: string } = { 
+    let target: { type: 'object'; mesh: Mesh | BatchedMesh | InstancedMesh; ids: number[] } | { type: 'group'; id: string } = { 
         type: 'object', mesh: object, ids: idsToSelect 
     };
     let groupToDeselect: string | null = null;

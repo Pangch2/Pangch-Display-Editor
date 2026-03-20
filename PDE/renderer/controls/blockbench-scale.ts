@@ -1,11 +1,19 @@
-import * as THREE from 'three/webgpu';
+import { 
+    Matrix4, 
+    Matrix3, 
+    Object3D, 
+    Camera, 
+    Vector2, 
+    Vector3, 
+    Box3 
+} from 'three/webgpu';
 
 export let blockbenchScaleMode: boolean = false;
 
 // Helpers to avoid allocations
-const _BB_PIVOT_FRAME_MAT4 = new THREE.Matrix4();
-const _BB_PIVOT_FRAME_MAT4_INV = new THREE.Matrix4();
-export const _BB_PIVOT_FRAME_MAT3 = new THREE.Matrix3();
+const _BB_PIVOT_FRAME_MAT4 = new Matrix4();
+const _BB_PIVOT_FRAME_MAT4_INV = new Matrix4();
+export const _BB_PIVOT_FRAME_MAT3 = new Matrix3();
 
 export function toggleBlockbenchScaleMode(): boolean {
     blockbenchScaleMode = !blockbenchScaleMode;
@@ -14,12 +22,12 @@ export function toggleBlockbenchScaleMode(): boolean {
 }
 
 interface PivotFrameMatrices {
-    mat4: THREE.Matrix4;
-    invMat4: THREE.Matrix4;
-    mat3: THREE.Matrix3;
+    mat4: Matrix4;
+    invMat4: Matrix4;
+    mat3: Matrix3;
 }
 
-export function computeBlockbenchPivotFrame(selectionHelper: THREE.Object3D, currentSpace: 'world' | 'local'): PivotFrameMatrices {
+export function computeBlockbenchPivotFrame(selectionHelper: Object3D, currentSpace: 'world' | 'local'): PivotFrameMatrices {
     // Default: use the current selectionHelper world matrix
     _BB_PIVOT_FRAME_MAT4.copy(selectionHelper.matrixWorld);
 
@@ -47,7 +55,7 @@ export function getBlockbenchPivotFrameMatrices(): PivotFrameMatrices {
     };
 }
 
-export function transformBoxToPivotFrame(worldMatrix: THREE.Matrix4, tempMat4: THREE.Matrix4 = new THREE.Matrix4()): THREE.Matrix4 {
+export function transformBoxToPivotFrame(worldMatrix: Matrix4, tempMat4: Matrix4 = new Matrix4()): Matrix4 {
     // Transform: Object Local -> World -> Pivot Frame
     // matrix = InvPivotFrame * WorldMatrix
     return tempMat4.copy(_BB_PIVOT_FRAME_MAT4_INV).multiply(worldMatrix);
@@ -66,14 +74,14 @@ interface DetectedKeys {
 }
 
 export function detectBlockbenchScaleAxes(
-    camera: THREE.Camera, 
-    mouseInput: THREE.Vector2, 
-    selectionHelper: THREE.Object3D, 
+    camera: Camera, 
+    mouseInput: Vector2, 
+    selectionHelper: Object3D, 
     currentSpace: 'world' | 'local', 
     defaultDetectedKeys: DetectedKeys
 ): AxisSelection {
     const checkAxis = (x: number, y: number, z: number): boolean => {
-        const axisVec = new THREE.Vector3(x, y, z);
+        const axisVec = new Vector3(x, y, z);
         if (currentSpace === 'local') {
             axisVec.applyQuaternion(selectionHelper.quaternion);
         }
@@ -84,8 +92,8 @@ export function detectBlockbenchScaleAxes(
         origin.project(camera);
         target.project(camera);
         
-        const dir = new THREE.Vector2(target.x - origin.x, target.y - origin.y);
-        const mouse = new THREE.Vector2(mouseInput.x - origin.x, mouseInput.y - origin.y);
+        const dir = new Vector2(target.x - origin.x, target.y - origin.y);
+        const mouse = new Vector2(mouseInput.x - origin.x, mouseInput.y - origin.y);
         
         return mouse.dot(dir) > 0;
     };
@@ -98,17 +106,17 @@ export function detectBlockbenchScaleAxes(
 }
 
 export function computeBlockbenchScaleShift(
-    selectionHelper: THREE.Object3D, 
-    dragInitialScale: THREE.Vector3, 
-    _dragInitialPosition: THREE.Vector3, 
-    dragInitialBoundingBox: THREE.Box3, 
+    selectionHelper: Object3D, 
+    dragInitialScale: Vector3, 
+    _dragInitialPosition: Vector3, 
+    dragInitialBoundingBox: Box3, 
     dragAnchorDirections: AxisSelection, 
     currentSpace: 'world' | 'local'
-): THREE.Vector3 | null {
+): Vector3 | null {
     if (dragInitialBoundingBox.isEmpty()) return null;
 
     const deltaScale = selectionHelper.scale; 
-    const shift = new THREE.Vector3();
+    const shift = new Vector3();
     let hasShift = false;
     
     if (Math.abs(deltaScale.x - dragInitialScale.x) > 0.0001) {

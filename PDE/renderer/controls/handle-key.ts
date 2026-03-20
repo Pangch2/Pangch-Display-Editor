@@ -1,4 +1,16 @@
-import * as THREE from 'three/webgpu';
+import {
+    InstancedMesh,
+    BatchedMesh,
+    Mesh,
+    Vector3,
+    Matrix4,
+    Quaternion,
+    Group,
+    PerspectiveCamera,
+    Renderer,
+    Object3D,
+    Box3
+} from 'three/webgpu';
 import type { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { resetCustomPivot } from './custom-pivot-remove';
 import { removeShearFromSelection } from './shear-remove';
@@ -10,11 +22,11 @@ import type { QueueItem } from './vertex-swap';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
-type PdeMesh = THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh;
+type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
 
 interface OrbitControlsLike {
     enabled: boolean;
-    target: THREE.Vector3;
+    target: Vector3;
     screenSpacePanning: boolean;
     dispose(): void;
     update(): boolean;
@@ -66,26 +78,26 @@ export interface HandleKeyParams {
     setInternalControls(v: OrbitControlsLike): void;
 
     // -- Object references (mutated in-place) --
-    pivotOffset: THREE.Vector3;
-    multiSelectionOriginAnchorPosition: THREE.Vector3;
-    gizmoAnchorPosition: THREE.Vector3;
-    previousHelperMatrix: THREE.Matrix4;
+    pivotOffset: Vector3;
+    multiSelectionOriginAnchorPosition: Vector3;
+    gizmoAnchorPosition: Vector3;
+    previousHelperMatrix: Matrix4;
     currentSelection: SelectionState;
     selectedVertexKeys: Set<string>;
     vertexQueue: QueueItem[];
-    dragInitialMatrix: THREE.Matrix4;
-    dragInitialPosition: THREE.Vector3;
-    dragInitialQuaternion: THREE.Quaternion;
-    dragInitialScale: THREE.Vector3;
-    loadedObjectGroup: THREE.Group;
+    dragInitialMatrix: Matrix4;
+    dragInitialPosition: Vector3;
+    dragInitialQuaternion: Quaternion;
+    dragInitialScale: Vector3;
+    loadedObjectGroup: Group;
 
     // -- Readonly references --
-    camera: THREE.PerspectiveCamera;
-    renderer: THREE.Renderer;
+    camera: PerspectiveCamera;
+    renderer: Renderer;
     getTransformControls(): TransformControls;
-    getSelectionHelper(): THREE.Mesh;
+    getSelectionHelper(): Mesh;
     setExternalControls?: (c: OrbitControlsLike) => void;
-    DEFAULT_GROUP_PIVOT: THREE.Vector3;
+    DEFAULT_GROUP_PIVOT: Vector3;
 
     // -- Selection / UI callbacks --
     updateHelperPosition(): void;
@@ -117,28 +129,28 @@ export interface HandleKeyParams {
     selectAllObjectsVisibleInScene(): Map<PdeMesh, Set<number>>;
 
     // -- Pivot callbacks --
-    SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset: THREE.Vector3): THREE.Vector3;
-    getSelectionBoundingBox(): THREE.Box3;
-    getSelectionCenterWorld(out?: THREE.Vector3): THREE.Vector3;
-    resolveMultiAnchorInitialWorld(out?: THREE.Vector3): THREE.Vector3 | null;
-    setMultiAnchorInitial(worldPos: THREE.Vector3): void;
+    SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset: Vector3): Vector3;
+    getSelectionBoundingBox(): Box3;
+    getSelectionCenterWorld(out?: Vector3): Vector3;
+    resolveMultiAnchorInitialWorld(out?: Vector3): Vector3 | null;
+    setMultiAnchorInitial(worldPos: Vector3): void;
 
     // -- Group callbacks --
     getGroupChain(id: string): string[];
     getObjectToGroup(): Map<string, string>;
-    getGroupKey(mesh: THREE.Object3D, instanceId: number): string;
+    getGroupKey(mesh: Object3D, instanceId: number): string;
     getGroups(): Map<string, GroupData>;
-    getGroupOriginWorld(id: string, out?: THREE.Vector3): THREE.Vector3;
-    getGroupWorldMatrix(g: GroupData, out?: THREE.Matrix4): THREE.Matrix4;
+    getGroupOriginWorld(id: string, out?: Vector3): Vector3;
+    getGroupWorldMatrix(g: GroupData, out?: Matrix4): Matrix4;
     shouldUseGroupPivot(g: GroupData): boolean;
-    normalizePivotToVector3(pivot: THREE.Vector3 | undefined, out?: THREE.Vector3): THREE.Vector3 | null;
+    normalizePivotToVector3(pivot: Vector3 | undefined, out?: Vector3): Vector3 | null;
 
     // -- Instance / overlay callbacks --
     getInstanceCount(mesh: PdeMesh): number;
     isInstanceValid(mesh: PdeMesh, instanceId: number): boolean;
     getDisplayType(mesh: PdeMesh, instanceId?: number): string | undefined;
-    getInstanceLocalBoxMin(mesh: PdeMesh, instanceId: number | undefined, out: THREE.Vector3): THREE.Vector3 | null;
-    getInstanceWorldMatrixForOrigin(mesh: PdeMesh, instanceId: number | undefined, out: THREE.Matrix4): THREE.Matrix4;
+    getInstanceLocalBoxMin(mesh: PdeMesh, instanceId: number | undefined, out: Vector3): Vector3 | null;
+    getInstanceWorldMatrixForOrigin(mesh: PdeMesh, instanceId: number | undefined, out: Matrix4): Matrix4;
     isItemDisplayHatEnabled(mesh: PdeMesh, instanceId?: number): boolean;
     prepareMultiSelectionDrag(selection: SelectionState): void;
 }
@@ -326,8 +338,8 @@ export function initHandleKey(p: HandleKeyParams): void {
 
             if (p.loadedObjectGroup) {
                 const objectToGroup = p.getObjectToGroup();
-                p.loadedObjectGroup.traverse((obj: THREE.Object3D) => {
-                    if (!obj || (!(obj as THREE.InstancedMesh).isInstancedMesh && !(obj as THREE.BatchedMesh).isBatchedMesh)) return;
+                p.loadedObjectGroup.traverse((obj: Object3D) => {
+                    if (!obj || (!(obj as InstancedMesh).isInstancedMesh && !(obj as BatchedMesh).isBatchedMesh)) return;
                     if (obj.visible === false) return;
 
                     const instanceCount = p.getInstanceCount(obj as PdeMesh);

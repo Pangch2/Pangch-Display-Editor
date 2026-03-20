@@ -1,11 +1,18 @@
-import * as THREE from 'three/webgpu';
+import {
+    BatchedMesh,
+    Matrix4,
+    Group,
+    Mesh,
+    InstancedMesh,
+    BufferAttribute
+} from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { GroupData, GroupChild } from './group';
 
 /**
  * Three.js BatchedMesh의 확장 인터페이스 (userData 및 메서드 포함)
  */
-interface ExtendedBatchedMesh extends THREE.BatchedMesh {
+interface ExtendedBatchedMesh extends BatchedMesh {
     isBatchedMesh: boolean;
     userData: { [key: string]: unknown };
     deleteInstance?(instanceId: number): void;
@@ -13,7 +20,7 @@ interface ExtendedBatchedMesh extends THREE.BatchedMesh {
 }
 
 // 성능을 위한 임시 변수
-const _TMP_MAT4_A = new THREE.Matrix4();
+const _TMP_MAT4_A = new Matrix4();
 
 /**
  * BatchedMesh 인스턴스 삭제 및 관련 데이터 정리
@@ -51,18 +58,18 @@ function _deleteBatchedMeshInstances(mesh: ExtendedBatchedMesh, instanceIds: num
  * InstancedMesh에서 swap-pop 발생 시 그룹 내 인스턴스 ID 참조 업데이트
  * group.ts::updateGroupReferenceForMovedInstance 호출 래퍼
  */
-function _updateGroupReferenceForMovedInstance(loadedObjectGroup: THREE.Group, mesh: THREE.Mesh, oldInstanceId: number, newInstanceId: number): void {
+function _updateGroupReferenceForMovedInstance(loadedObjectGroup: Group, mesh: Mesh, oldInstanceId: number, newInstanceId: number): void {
     GroupUtils.updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, oldInstanceId, newInstanceId);
 }
 
 /**
  * InstancedMesh 인스턴스 삭제 (Swap-Pop 방식)
  */
-function _deleteInstancedMeshInstances(loadedObjectGroup: THREE.Group, mesh: THREE.InstancedMesh, instanceIdsSortedDescending: number[]): void {
+function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: InstancedMesh, instanceIdsSortedDescending: number[]): void {
     if (!mesh || !mesh.isInstancedMesh) return;
 
     const instanceMatrix = mesh.instanceMatrix;
-    const uvAttr = (mesh.geometry && mesh.geometry.attributes) ? (mesh.geometry.attributes.instancedUvOffset as THREE.BufferAttribute) : null;
+    const uvAttr = (mesh.geometry && mesh.geometry.attributes) ? (mesh.geometry.attributes.instancedUvOffset as BufferAttribute) : null;
     const hasHatArray = mesh.userData ? (mesh.userData.hasHat as boolean[]) : null;
 
     const swapData = (srcIdx: number, dstIdx: number) => {
@@ -107,13 +114,13 @@ export interface DeleteSelectionCallbacks {
  * 선택된 모든 그룹 및 객체를 씬과 데이터 구조에서 영구 삭제
  */
 export function deleteSelectedItems(
-    loadedObjectGroup: THREE.Group, 
-    currentSelection: { groups: Set<string>; objects: Map<THREE.Mesh, Set<number>> }, 
+    loadedObjectGroup: Group, 
+    currentSelection: { groups: Set<string>; objects: Map<Mesh, Set<number>> }, 
     { resetSelectionAndDeselect }: DeleteSelectionCallbacks
 ): void {
-    const itemsToDelete = new Map<string, { mesh: THREE.Mesh; instanceId: number }>();
+    const itemsToDelete = new Map<string, { mesh: Mesh; instanceId: number }>();
 
-    const collectItem = (mesh: THREE.Mesh, instanceId: number) => {
+    const collectItem = (mesh: Mesh, instanceId: number) => {
         if (!mesh) return;
         const k = GroupUtils.getGroupKey(mesh, instanceId);
         if (!itemsToDelete.has(k)) {
@@ -177,7 +184,7 @@ export function deleteSelectedItems(
     }
 
     // 4. 객체 삭제 처리 (메쉬별 그룹화)
-    const byMesh = new Map<THREE.Mesh, Set<number>>();
+    const byMesh = new Map<Mesh, Set<number>>();
 
     for (const { mesh, instanceId } of itemsToDelete.values()) {
         const key = GroupUtils.getGroupKey(mesh, instanceId);
@@ -203,11 +210,11 @@ export function deleteSelectedItems(
     // BatchedMesh: 직접 삭제 또는 도시 표본방식(setVisibleAt) 사용
     // InstancedMesh: lastIdx를 삭제 지에 복사하는 Swap-Pop 방식 — 이동된 ID는 _updateGroupReferenceForMovedInstance로 갱신
     for (const [mesh, idSet] of byMesh) {
-        if ((mesh as THREE.BatchedMesh).isBatchedMesh) {
+        if ((mesh as BatchedMesh).isBatchedMesh) {
             _deleteBatchedMeshInstances(mesh as ExtendedBatchedMesh, Array.from(idSet));
-        } else if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
+        } else if ((mesh as InstancedMesh).isInstancedMesh) {
             const sortedIds = Array.from(idSet).sort((a, b) => b - a);
-            _deleteInstancedMeshInstances(loadedObjectGroup, mesh as THREE.InstancedMesh, sortedIds);
+            _deleteInstancedMeshInstances(loadedObjectGroup, mesh as InstancedMesh, sortedIds);
         }
     }
 

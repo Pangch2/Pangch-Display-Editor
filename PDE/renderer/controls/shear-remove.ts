@@ -1,8 +1,15 @@
-import * as THREE from 'three/webgpu';
+import {
+    InstancedMesh,
+    BatchedMesh,
+    Vector3,
+    Object3D,
+    Group,
+    Matrix4
+} from 'three/webgpu';
 import * as GroupUtils from './group';
 
 export interface ShearItem {
-    mesh: THREE.InstancedMesh | THREE.BatchedMesh;
+    mesh: InstancedMesh | BatchedMesh;
     instanceId: number;
 }
 
@@ -11,7 +18,7 @@ export interface ShearSelection {
 }
 
 export interface ShearCallbacks {
-    SelectionCenter: (pivotMode: string, isCustomPivot: boolean, pivotOffset: THREE.Vector3) => THREE.Vector3;
+    SelectionCenter: (pivotMode: string, isCustomPivot: boolean, pivotOffset: Vector3) => Vector3;
     updateHelperPosition: () => void;
     updateSelectionOverlay: () => void;
 }
@@ -22,12 +29,12 @@ export interface ShearCallbacks {
  */
 export function removeShearFromSelection(
     items: ShearItem[],
-    selectionHelper: THREE.Object3D,
+    selectionHelper: Object3D,
     currentSelection: ShearSelection,
-    loadedObjectGroup: THREE.Group,
+    loadedObjectGroup: Group,
     pivotMode: string,
     isCustomPivot: boolean,
-    pivotOffset: THREE.Vector3,
+    pivotOffset: Vector3,
     callbacks: ShearCallbacks
 ): void {
     const { SelectionCenter, updateHelperPosition, updateSelectionOverlay } = callbacks;
@@ -38,15 +45,15 @@ export function removeShearFromSelection(
         // Shear removal - Optimized to single pass using Gram-Schmidt Orthogonalization.
         // This method mathematically guarantees 0 shear in one step, so no iteration is needed.
         items.forEach(({mesh, instanceId}) => {
-            const matrix = new THREE.Matrix4();
+            const matrix = new Matrix4();
             mesh.getMatrixAt(instanceId, matrix);
             
-            const position = new THREE.Vector3().setFromMatrixPosition(matrix);
+            const position = new Vector3().setFromMatrixPosition(matrix);
             
             // Extract basis vectors
-            const x = new THREE.Vector3().setFromMatrixColumn(matrix, 0);
-            const y = new THREE.Vector3().setFromMatrixColumn(matrix, 1);
-            const z = new THREE.Vector3().setFromMatrixColumn(matrix, 2);
+            const x = new Vector3().setFromMatrixColumn(matrix, 0);
+            const y = new Vector3().setFromMatrixColumn(matrix, 1);
+            const z = new Vector3().setFromMatrixColumn(matrix, 2);
             
             // Preserve Scale
             const sx = x.length();
@@ -79,8 +86,8 @@ export function removeShearFromSelection(
         });
         
         items.forEach(({mesh}) => {
-             if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
-                 (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+             if ((mesh as InstancedMesh).isInstancedMesh) {
+                 (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
              }
         });
 
@@ -103,9 +110,9 @@ export function removeShearFromSelection(
 
         if (pivotMode === 'center') {
             const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
-            const offset = new THREE.Vector3().subVectors(targetPosition, currentCenter);
+            const offset = new Vector3().subVectors(targetPosition, currentCenter);
             
-            const tempMat = new THREE.Matrix4();
+            const tempMat = new Matrix4();
             
             items.forEach(({mesh, instanceId}) => {
                 const inverseMeshWorld = mesh.matrixWorld.clone().invert();
@@ -118,8 +125,8 @@ export function removeShearFromSelection(
                 
                 tempMat.premultiply(inverseMeshWorld);
                 mesh.setMatrixAt(instanceId, tempMat);
-                if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
-                    (mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+                if ((mesh as InstancedMesh).isInstancedMesh) {
+                    (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
                 }
             });
         }
