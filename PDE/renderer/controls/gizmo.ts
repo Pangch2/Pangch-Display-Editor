@@ -18,8 +18,7 @@ import {
     Raycaster,
     BoxGeometry,
     MeshBasicMaterial,
-    Sprite,
-    Material
+    Sprite
 } from 'three/webgpu';
 import {
     blockbenchScaleMode,
