@@ -72,7 +72,7 @@ export interface PushVertexQueueParams {
 export function pushToVertexQueue(params: PushVertexQueueParams): void {
     const {
         suppressVertexQueue, isVertexMode, selectionAnchorMode, isCustomPivot, pivotOffset,
-        multiSelectionExplicitPivot, multiSelectionOriginAnchorValid, multiSelectionOriginAnchorPosition,
+        multiSelectionOriginAnchorValid, multiSelectionOriginAnchorPosition,
         currentSelection, selectedVertexKeys, vertexQueue, selectionHelper, getSelectionCenterWorld,
         getSelectionOriginWorld
     } = params;
