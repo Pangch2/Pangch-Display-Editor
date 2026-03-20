@@ -19,12 +19,16 @@ export interface QueueEntry {
     gizmoLocalQuaternion: THREE.Quaternion;
     promoteOnExit?: boolean;
     isPrimary?: boolean;
+    selectionAnchorMode?: 'default' | 'center';
 }
 
 export interface QueueBundle {
     type: 'bundle';
     items: QueueEntry[];
     promoteOnExit?: boolean;
+    selectionAnchorMode?: 'default' | 'center';
+    isCustomPivot?: boolean;
+    pivotOffset?: THREE.Vector3;
 }
 
 export type QueueItem = QueueEntry | QueueBundle;
@@ -50,6 +54,11 @@ export interface SwapOptions {
     targetAnchorWorld?: THREE.Vector3;
 }
 
+interface PivotSnapshot {
+    isCustomPivot: boolean;
+    pivotOffset: THREE.Vector3;
+}
+
 export function performSelectionSwap(
     src: SelectionSource | null,
     targetSrc: SelectionSource | null,
@@ -67,6 +76,9 @@ export function performSelectionSwap(
         SelectionCenter,
         vertexQueue
     } = context;
+
+    const initialGizmoState = getGizmoState();
+    const initialAnchorMode = initialGizmoState.selectionAnchorMode;
 
     if (!targetSrc) return;
 
@@ -204,7 +216,11 @@ export function performSelectionSwap(
         return entry.gizmoLocalPosition.clone().applyMatrix4(getSourceWorldMatrix(source, _TMP_MAT4_A));
     };
 
-    const applySelectionAnchorFromQueue = (anchorWorld: THREE.Vector3 | null, selectionCount: number): void => {
+    const applySelectionAnchorFromQueue = (
+        anchorWorld: THREE.Vector3 | null,
+        selectionCount: number,
+        anchorMode?: 'default' | 'center'
+    ): void => {
         if (!anchorWorld) return;
 
         const updates: Partial<GizmoState> = {
@@ -215,8 +231,16 @@ export function performSelectionSwap(
         if (selectionCount > 1) {
             updates._multiSelectionOriginAnchorPosition = anchorWorld;
             updates._multiSelectionOriginAnchorValid = true;
+            if (anchorMode) {
+                updates.selectionAnchorMode = anchorMode;
+            } else if (initialAnchorMode) {
+                updates.selectionAnchorMode = initialAnchorMode;
+            }
+        } else {
+            updates.selectionAnchorMode = 'default';
         }
 
+        console.log(`[Swap] Applying Anchor Mode: ${updates.selectionAnchorMode} (Count: ${selectionCount}, Requested: ${anchorMode})`);
         setGizmoState(updates);
 
         if (selectionCount > 1) {
@@ -241,7 +265,8 @@ export function performSelectionSwap(
         source: SelectionSource,
         promoteOnExit = false,
         anchorWorld?: THREE.Vector3 | null,
-        isPrimary = false
+        isPrimary = false,
+        anchorMode?: 'default' | 'center'
     ): QueueEntry => {
         const targetLocalPivot = new THREE.Vector3(0, 0, 0);
         let hasCustomPivot = false;
@@ -316,7 +341,8 @@ export function performSelectionSwap(
             gizmoLocalPosition: targetLocalPivot,
             gizmoLocalQuaternion: new THREE.Quaternion(),
             promoteOnExit,
-            isPrimary
+            isPrimary,
+            selectionAnchorMode: anchorMode
         };
     };
 
@@ -324,19 +350,52 @@ export function performSelectionSwap(
         sources: SelectionSource[],
         promoteOnExit = false,
         anchorWorld?: THREE.Vector3 | null,
-        primarySource?: SelectionSource | null
+        primarySource?: SelectionSource | null,
+        pivotSnapshot?: PivotSnapshot
     ): QueueItem | null => {
+        const anchorMode = getGizmoState().selectionAnchorMode;
+        console.log(`[Swap] Capturing Mode for Queue: ${anchorMode} (Items: ${sources.length})`);
         if (sources.length === 1) {
-            return createQueueEntry(sources[0], promoteOnExit, anchorWorld, matchesSource(sources[0], primarySource ?? null));
+            return createQueueEntry(sources[0], promoteOnExit, anchorWorld, matchesSource(sources[0], primarySource ?? null), anchorMode);
         }
         if (sources.length > 1) {
+            const currentState = getGizmoState();
+            const bundlePivot = pivotSnapshot ?? {
+                isCustomPivot: currentState.isCustomPivot,
+                pivotOffset: currentState.pivotOffset.clone()
+            };
             return {
                 type: 'bundle',
-                items: sources.map((item) => createQueueEntry(item, promoteOnExit, anchorWorld, matchesSource(item, primarySource ?? null))),
-                promoteOnExit
+                items: sources.map((item) => createQueueEntry(item, promoteOnExit, anchorWorld, matchesSource(item, primarySource ?? null), anchorMode)),
+                promoteOnExit,
+                selectionAnchorMode: anchorMode,
+                isCustomPivot: bundlePivot.isCustomPivot,
+                pivotOffset: bundlePivot.pivotOffset.clone()
             };
         }
         return null;
+    };
+
+    const deriveEffectivePivotSnapshot = (state: GizmoState, selectionCount: number): PivotSnapshot => {
+        if (selectionCount > 1 && state._multiSelectionOriginAnchorValid) {
+            const originBase = SelectionCenter('origin', false, _ZERO_VEC3);
+            return {
+                isCustomPivot: true,
+                pivotOffset: state._multiSelectionOriginAnchorPosition.clone().sub(originBase)
+            };
+        }
+
+        if (state.isCustomPivot) {
+            return {
+                isCustomPivot: true,
+                pivotOffset: state.pivotOffset.clone()
+            };
+        }
+
+        return {
+            isCustomPivot: false,
+            pivotOffset: new THREE.Vector3(0, 0, 0)
+        };
     };
 
     const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
@@ -366,6 +425,18 @@ export function performSelectionSwap(
             const queuedEntries: QueueEntry[] = ('items' in qItem && Array.isArray(qItem.items))
                 ? qItem.items
                 : [qItem as QueueEntry];
+            const queuedPivotSnapshot: PivotSnapshot | null = (
+                qItem.type === 'bundle' && qItem.pivotOffset
+            ) ? {
+                isCustomPivot: !!qItem.isCustomPivot,
+                pivotOffset: qItem.pivotOffset.clone()
+            } : null;
+
+            const queuedAnchorMode = ('selectionAnchorMode' in qItem) ? qItem.selectionAnchorMode : undefined;
+
+            //console.log(
+            //    `[Swap] Retrieved payload from Queue: mode=${queuedAnchorMode}, custom=${queuedPivotSnapshot?.isCustomPivot}, offset=${queuedPivotSnapshot?.pivotOffset?.toArray()}`
+            //);
             const queuedAnchorEntry = queuedEntries[queuedLocation.subIndex ?? 0] ?? queuedEntries[0];
             const queuedAnchorWorld = getQueueEntryAnchorWorld(queuedAnchorEntry);
             const itemsToSelect: SelectionSource[] = queuedEntries.map((item) => toSelectionSourceFromEntry(item));
@@ -384,6 +455,7 @@ export function performSelectionSwap(
                 }
             }
             const currentSelectionAnchorWorld = getCurrentSelectionAnchorWorld(itemsToQueue.length);
+            const currentStateSnapshot: PivotSnapshot = deriveEffectivePivotSnapshot(getGizmoState(), itemsToQueue.length);
 
             currentSelection.groups.clear();
             currentSelection.objects.clear();
@@ -409,14 +481,49 @@ export function performSelectionSwap(
 
             currentSelection.primary = primaryToUse ? toSelectionSource(primaryToUse) : null;
 
-            const newQueueItem = createQueueItem(itemsToQueue, queueSelectionOnExit, currentSelectionAnchorWorld, previousPrimary);
+            const newQueueItem = createQueueItem(
+                itemsToQueue,
+                queueSelectionOnExit,
+                currentSelectionAnchorWorld,
+                previousPrimary,
+                currentStateSnapshot
+            );
 
             if (newQueueItem) {
                 vertexQueue[queuedLocation.itemIndex] = newQueueItem;
             }
 
-            applySelectionAnchorFromQueue(queuedAnchorWorld, itemsToSelect.length);
-            if (primaryToUse) {
+            applySelectionAnchorFromQueue(queuedAnchorWorld, itemsToSelect.length, queuedAnchorMode);
+
+            if (queuedPivotSnapshot) {
+                const state = getGizmoState();
+                
+                // 큐에 들어갈 당시 mode=center 였다면 queuedAnchorWorld가 'center' 위치로 오염되어 있을 수 있음
+                // isCustomPivot일 경우, offset을 이용해 진정한 MultiSelectionOriginAnchor를 역산해서 원상복구함
+                if (queuedPivotSnapshot.isCustomPivot && itemsToSelect.length > 1) {
+                    const originBase = SelectionCenter('origin', false, _ZERO_VEC3);
+                    const reconstructedAnchor = originBase.clone().add(queuedPivotSnapshot.pivotOffset);
+                    
+                    setGizmoState({
+                        ...state,
+                        isCustomPivot: true,
+                        pivotOffset: queuedPivotSnapshot.pivotOffset.clone(),
+                        _multiSelectionExplicitPivot: true,
+                        _multiSelectionOriginAnchorPosition: reconstructedAnchor,
+                        _multiSelectionOriginAnchorValid: true
+                    });
+                    
+                    // 내부 World->Local 매핑 시스템에도 진짜 Origin을 등록해 복구
+                    setMultiAnchorInitial?.(reconstructedAnchor);
+                } else {
+                    setGizmoState({
+                        ...state,
+                        isCustomPivot: queuedPivotSnapshot.isCustomPivot,
+                        pivotOffset: queuedPivotSnapshot.pivotOffset.clone(),
+                        _multiSelectionExplicitPivot: queuedPivotSnapshot.isCustomPivot
+                    });
+                }
+            } else if (primaryToUse) {
                 computeAndApplyPivotState(primaryToUse);
             }
             updateHelperPosition();
@@ -459,6 +566,7 @@ export function performSelectionSwap(
                 for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as THREE.InstancedMesh | THREE.BatchedMesh | THREE.Mesh, instanceId: id });
             }
             const currentSelectionAnchorWorld = getCurrentSelectionAnchorWorld(itemsToQueue.length);
+            const currentStateSnapshot = deriveEffectivePivotSnapshot(getGizmoState(), itemsToQueue.length);
 
             currentSelection.groups.clear();
             currentSelection.objects.clear();
@@ -475,9 +583,20 @@ export function performSelectionSwap(
             }
 
             vertexQueue.length = 0;
-            const newQueueItem = createQueueItem(itemsToQueue, false, currentSelectionAnchorWorld, previousPrimary);
+            const newQueueItem = createQueueItem(
+                itemsToQueue,
+                false,
+                currentSelectionAnchorWorld,
+                previousPrimary,
+                currentStateSnapshot
+            );
             if (newQueueItem) {
                 vertexQueue.push(newQueueItem);
+            }
+
+            if (itemsToQueue.length > 1) {
+                console.log('[Swap] Setting Mode: default (New Selection is single item)');
+                setGizmoState({ selectionAnchorMode: 'default' });
             }
 
             computeAndApplyPivotState(src);
@@ -491,24 +610,27 @@ export function performSelectionSwap(
     // isSwap=true, selection이 비어있음: src를 selection으로 올림.
     const shouldReplaceWithSrc = !!src && (!isSwap || !hasActiveSelection);
     if (shouldReplaceWithSrc && src) {
-         currentSelection.groups.clear();
-         currentSelection.objects.clear();
-         currentSelection.primary = null;
+        currentSelection.groups.clear();
+        currentSelection.objects.clear();
+        currentSelection.primary = null;
 
-         if (src.type === 'group') {
-             currentSelection.groups.add(src.id);
-             currentSelection.primary = { type: 'group', id: src.id };
-         } else {
-             const { mesh, instanceId } = src;
-             const ids = new Set<number>();
-             ids.add(instanceId);
+        if (src.type === 'group') {
+            currentSelection.groups.add(src.id);
+            currentSelection.primary = { type: 'group', id: src.id };
+        } else {
+            const { mesh, instanceId } = src;
+            const ids = new Set<number>();
+            ids.add(instanceId);
 
-             currentSelection.objects.set(mesh, ids);
-             currentSelection.primary = { type: 'object', mesh, instanceId };
-         }
+            currentSelection.objects.set(mesh, ids);
+            currentSelection.primary = { type: 'object', mesh, instanceId };
+        }
 
-         computeAndApplyPivotState(src);
-         updateHelperPosition();
+        console.log('[Swap] Fallback - Setting Mode: default');
+        setGizmoState({ selectionAnchorMode: 'default' });
+        computeAndApplyPivotState(src);
+
+        updateHelperPosition();
     }
 
     let isTargetSelected = false;
@@ -518,11 +640,11 @@ export function performSelectionSwap(
         const ids = currentSelection.objects.get(targetSrc.mesh);
         if (ids && ids.has(targetSrc.instanceId)) isTargetSelected = true;
     }
-    
+
     if (isTargetSelected) {
-         if (isSwap) return;
-         while (vertexQueue.length > 0) vertexQueue.shift();
-         return;
+        if (isSwap) return;
+        while (vertexQueue.length > 0) vertexQueue.shift();
+        return;
     }
 
     if (isSwap && Array.isArray(vertexQueue) && vertexQueue.length > 0) {
@@ -534,6 +656,6 @@ export function performSelectionSwap(
         if (targetInBundle) return;
     }
 
-    vertexQueue.push(createQueueEntry(targetSrc, false, options.targetAnchorWorld ?? null, false));
+    vertexQueue.push(createQueueEntry(targetSrc, false, options.targetAnchorWorld ?? null, false, 'default'));
     while (vertexQueue.length > 1) vertexQueue.shift();
 }

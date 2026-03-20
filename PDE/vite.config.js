@@ -6,6 +6,13 @@ export default defineConfig({
   build: {
     outDir: '../renderer-dist',
     emptyOutDir: true,
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true, // console.* 제거
+        drop_debugger: true // debugger도 같이 제거 (선택)
+      }
+    }
   },
   optimizeDeps: {
     exclude: ['@babylonjs/havok'],

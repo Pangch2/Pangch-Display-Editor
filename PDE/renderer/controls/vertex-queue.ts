@@ -55,17 +55,26 @@ function getGroupWorldAABB(groupId: string): THREE.Box3 | null {
 export interface PushVertexQueueParams {
     suppressVertexQueue: boolean;
     isVertexMode: boolean;
+    selectionAnchorMode: 'default' | 'center';
+    isCustomPivot: boolean;
+    pivotOffset: THREE.Vector3;
+    multiSelectionExplicitPivot: boolean;
+    multiSelectionOriginAnchorValid: boolean;
+    multiSelectionOriginAnchorPosition: THREE.Vector3;
     currentSelection: SelectionState;
     selectedVertexKeys: Set<string>;
     vertexQueue: QueueItem[];
     selectionHelper: THREE.Mesh | null;
     getSelectionCenterWorld(out?: THREE.Vector3): THREE.Vector3;
+    getSelectionOriginWorld(out?: THREE.Vector3): THREE.Vector3;
 }
 
 export function pushToVertexQueue(params: PushVertexQueueParams): void {
     const {
-        suppressVertexQueue, isVertexMode, currentSelection,
-        selectedVertexKeys, vertexQueue, selectionHelper, getSelectionCenterWorld
+        suppressVertexQueue, isVertexMode, selectionAnchorMode, isCustomPivot, pivotOffset,
+        multiSelectionExplicitPivot, multiSelectionOriginAnchorValid, multiSelectionOriginAnchorPosition,
+        currentSelection, selectedVertexKeys, vertexQueue, selectionHelper, getSelectionCenterWorld,
+        getSelectionOriginWorld
     } = params;
 
     if (suppressVertexQueue || !isVertexMode) return;
@@ -133,7 +142,13 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
             }
         }
 
-        bundleItems.push({ ...item, gizmoLocalPosition: localPos, gizmoLocalQuaternion: localQuat, promoteOnExit: false } as QueueEntry);
+        bundleItems.push({
+            ...item,
+            gizmoLocalPosition: localPos,
+            gizmoLocalQuaternion: localQuat,
+            promoteOnExit: false,
+            selectionAnchorMode
+        } as QueueEntry);
 
         const currentPrimary = currentSelection.primary;
         if (currentPrimary) {
@@ -156,7 +171,26 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
     }
 
     if (bundleItems.length > 0) {
-        vertexQueue.push({ type: 'bundle', items: bundleItems, promoteOnExit: false } as QueueBundle);
+        let effectiveIsCustomPivot = isCustomPivot;
+        const effectivePivotOffset = pivotOffset.clone();
+
+        // Multi explicit pivot is tracked by anchor state, not always by isCustomPivot/pivotOffset.
+        // Also, if isCustomPivot is already true from a single object, the pivotOffset might be stale
+        // relative to the multi-selection originBase. Therefore, ALWAYS derive for multi-selection.
+        if (multiSelectionOriginAnchorValid && bundleItems.length > 1) {
+            const originBase = getSelectionOriginWorld(_TMP_VEC3_A);
+            effectivePivotOffset.copy(multiSelectionOriginAnchorPosition).sub(originBase);
+            effectiveIsCustomPivot = true;
+        }
+
+        vertexQueue.push({
+            type: 'bundle',
+            items: bundleItems,
+            promoteOnExit: false,
+            selectionAnchorMode,
+            isCustomPivot: effectiveIsCustomPivot,
+            pivotOffset: effectivePivotOffset
+        } as QueueBundle);
     }
 
     while (vertexQueue.length > VERTEX_QUEUE_MAX_SIZE) {

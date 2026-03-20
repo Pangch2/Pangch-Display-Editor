@@ -1,4 +1,4 @@
-﻿import { setupGizmo } from './gizmo-setup';
+﻿﻿import { setupGizmo } from './gizmo-setup';
 import type { GizmoLines, GizmoMaterial } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import * as THREE from 'three/webgpu';
@@ -48,6 +48,8 @@ export interface GizmoState {
     _multiSelectionOriginAnchorPosition: THREE.Vector3;
     _multiSelectionOriginAnchorInitialValid: boolean;
     _multiSelectionOriginAnchorInitialPosition: THREE.Vector3;
+    selectionAnchorMode?: 'default' | 'center';
+    _multiSelectionExplicitPivot?: boolean;
 }
 
 export interface InitGizmoParams {
@@ -201,11 +203,21 @@ function _pushToVertexQueue(): void {
     VertexQueue.pushToVertexQueue({
         suppressVertexQueue,
         isVertexMode,
+        selectionAnchorMode: _selectionAnchorMode,
+        isCustomPivot,
+        pivotOffset,
+        multiSelectionExplicitPivot: _multiSelectionExplicitPivot,
+        multiSelectionOriginAnchorValid: _multiSelectionOriginAnchorValid,
+        multiSelectionOriginAnchorPosition: _multiSelectionOriginAnchorPosition,
         currentSelection,
         selectedVertexKeys,
         vertexQueue,
         selectionHelper,
-        getSelectionCenterWorld: _getSelectionCenterWorld
+        getSelectionCenterWorld: _getSelectionCenterWorld,
+        getSelectionOriginWorld: (out = new THREE.Vector3()) => {
+            const origin = SelectionCenter('origin', false, _ZERO_VEC3);
+            return out.copy(origin);
+        }
     });
 }
 
@@ -497,7 +509,12 @@ function updateHelperPosition(): void {
         // 로컬 초기값 캡처는 Block 1(primaryPivotWorld)에서만 수행.
     }
 
-    const lockMultiOrigin = (pivotMode === 'origin') && isMulti && _multiSelectionOriginAnchorValid;
+    const shouldPrioritizeMultiCustomPivot = _multiSelectionExplicitPivot || isCustomPivot;
+    const lockMultiOrigin =
+        (pivotMode === 'origin') &&
+        isMulti &&
+        _multiSelectionOriginAnchorValid &&
+        (_selectionAnchorMode !== 'center' || shouldPrioritizeMultiCustomPivot);
     if (lockMultiOrigin) {
         // 로컬 좌표에서 world 위치 재계산: center 모드에서 이동 후 world 앵커가 stale 되는 문제 원천 차단
         const refreshedFromLocal = _resolveMultiAnchorInitialWorld(new THREE.Vector3());
@@ -508,7 +525,8 @@ function updateHelperPosition(): void {
         _gizmoAnchorPosition.copy(_multiSelectionOriginAnchorPosition);
         _gizmoAnchorValid = true;
     } else {
-        const center = (_selectionAnchorMode === 'center')
+        const useCenterAnchorMode = (_selectionAnchorMode === 'center') && !shouldPrioritizeMultiCustomPivot;
+        const center = useCenterAnchorMode
             ? _getSelectionCenterWorld(new THREE.Vector3())
             : SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
         selectionHelper!.position.copy(center);
@@ -1233,7 +1251,9 @@ export function initGizmo({
                             pivotMode, isCustomPivot, pivotOffset,
                             _gizmoAnchorValid, _gizmoAnchorPosition,
                             _multiSelectionOriginAnchorValid, _multiSelectionOriginAnchorPosition,
-                            _multiSelectionOriginAnchorInitialValid, _multiSelectionOriginAnchorInitialPosition
+                            _multiSelectionOriginAnchorInitialValid, _multiSelectionOriginAnchorInitialPosition,
+                            selectionAnchorMode: _selectionAnchorMode,
+                            _multiSelectionExplicitPivot
                         });
                         const setGizmoState = (updates: Partial<GizmoState>): void => {
                             if (updates.pivotMode !== undefined) pivotMode = updates.pivotMode;
@@ -1245,6 +1265,8 @@ export function initGizmo({
                             if (updates._multiSelectionOriginAnchorPosition !== undefined) _multiSelectionOriginAnchorPosition.copy(updates._multiSelectionOriginAnchorPosition);
                             if (updates._multiSelectionOriginAnchorInitialValid !== undefined) _multiSelectionOriginAnchorInitialValid = updates._multiSelectionOriginAnchorInitialValid;
                             if (updates._multiSelectionOriginAnchorInitialPosition !== undefined) _multiSelectionOriginAnchorInitialPosition.copy(updates._multiSelectionOriginAnchorInitialPosition);
+                            if (updates.selectionAnchorMode !== undefined) _selectionAnchorMode = updates.selectionAnchorMode;
+                            if (updates._multiSelectionExplicitPivot !== undefined) _multiSelectionExplicitPivot = updates._multiSelectionExplicitPivot;
                         };
 
                         const handled = processVertexSnap(selectedVertexKeys, {
