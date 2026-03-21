@@ -419,6 +419,12 @@ export function performSelectionSwap(
     
     const isSwap = !!options.preserveSelection;
 
+    // Swap이나 처리가 일어난 후 다중 선택 명시적 피벗 상태 해제
+    const clearExplicitPivot = () => {
+        const finalState = getGizmoState();
+        setGizmoState({ ...finalState, _multiSelectionExplicitPivot: false });
+    };
+
     if (isSwap && src) {
         const srcSelected = isSelectedSource(src);
         const targetInQueue = findQueueLocation(targetSrc);
@@ -506,7 +512,7 @@ export function performSelectionSwap(
 
             if (queuedPivotSnapshot) {
                 const state = getGizmoState();
-                
+
                 // 큐에 들어갈 당시 mode=center 였다면 queuedAnchorWorld가 'center' 위치로 오염되어 있을 수 있음
                 // isCustomPivot일 경우, offset을 이용해 진정한 MultiSelectionOriginAnchor를 역산해서 원상복구함
                 if (queuedPivotSnapshot.isCustomPivot && itemsToSelect.length > 1) {
@@ -539,10 +545,6 @@ export function performSelectionSwap(
         };
 
         if (srcSelected && targetInQueue) {
-            // queue bundle의 items가 현재 선택과 완전히 일치하면(pushToVertexQueue 자기 번들),
-            // executeFullSwap를 건너뜀:
-            //   no-op 스왑으로 selection·queue 양쪽에 gizmo점이 생기는 현상 방지.
-            // 자기 번들은 큐에서 제거하고, target이 미선택 오브젝트면 정상 큐 추가로 fall-through.
             const _qItem = vertexQueue[targetInQueue.itemIndex];
             const _bundleItems =
                 ('items' in _qItem && Array.isArray((_qItem as QueueBundle).items))
@@ -553,14 +555,15 @@ export function performSelectionSwap(
                 _bundleItems.every(item => isSelectedSource(item as SelectionSource));
             if (!isSelfBundle) {
                 executeFullSwap(targetInQueue, targetSrc, true);
+                clearExplicitPivot();
                 return;
             }
-            // 자기 번들 제거 후 fall-through
             vertexQueue.splice(targetInQueue.itemIndex, 1);
         }
 
         if (targetSelected && srcInQueue) {
             executeFullSwap(srcInQueue, src, false);
+            clearExplicitPivot();
             return;
         }
 
@@ -604,16 +607,15 @@ export function performSelectionSwap(
             }
 
             if (itemsToQueue.length > 1) {
-                console.log('[Swap] Setting Mode: default (New Selection is single item)');
                 setGizmoState({ selectionAnchorMode: 'default' });
             }
 
             computeAndApplyPivotState(src);
             updateHelperPosition();
+            clearExplicitPivot();
             return;
         }
     }
-
     // isSwap 블록에서 처리되지 않은 경우의 폴백.
     // isSwap=false: src를 selection으로 교체 (단일선택 snap: src가 이동).  
     // isSwap=true, selection이 비어있음: src를 selection으로 올림.
@@ -635,7 +637,6 @@ export function performSelectionSwap(
             currentSelection.primary = { type: 'object', mesh, instanceId };
         }
 
-        console.log('[Swap] Fallback - Setting Mode: default');
         setGizmoState({ selectionAnchorMode: 'default' });
         computeAndApplyPivotState(src);
 
@@ -651,8 +652,12 @@ export function performSelectionSwap(
     }
 
     if (isTargetSelected) {
-        if (isSwap) return;
+        if (isSwap) {
+            clearExplicitPivot();
+            return;
+        }
         while (vertexQueue.length > 0) vertexQueue.shift();
+        clearExplicitPivot();
         return;
     }
 
@@ -662,9 +667,14 @@ export function performSelectionSwap(
             return item.items.some((sub) => matchesSource(sub, targetSrc));
         });
 
-        if (targetInBundle) return;
+        if (targetInBundle) {
+            clearExplicitPivot();
+            return;
+        }
     }
 
     vertexQueue.push(createQueueEntry(targetSrc, false, options.targetAnchorWorld ?? null, false, 'default'));
     while (vertexQueue.length > 1) vertexQueue.shift();
+
+    clearExplicitPivot();
 }
