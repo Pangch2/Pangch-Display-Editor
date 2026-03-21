@@ -1,4 +1,4 @@
-declare interface AssetContentResult {
+﻿declare interface AssetContentResult {
   success: boolean;
   content: unknown;
   error?: string;
