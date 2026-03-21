@@ -17,7 +17,7 @@ import * as GroupUtils from './group';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
 // Helper aliases
-const { getInstanceCount, isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled } = Overlay;
+const { getInstanceCount, isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled, getInstanceLocalBox } = Overlay;
 const { getGroupKey, getGroupChain, getObjectToGroup } = GroupUtils;
 
 interface OrbitControlsLike {
@@ -270,15 +270,14 @@ export function initDrag({
                     if (!obj || (!(obj as InstancedMesh).isInstancedMesh && !(obj as BatchedMesh).isBatchedMesh)) return;
                     if (obj.visible === false) return;
 
-                    if (!(obj as Mesh).geometry?.boundingBox) (obj as Mesh).geometry?.computeBoundingBox();
-                    const bbox = (obj as Mesh).geometry?.boundingBox;
-                    if (!bbox) return;
-
                     const instanceCount = getInstanceCount(obj as InstancedMesh | BatchedMesh);
                     if (instanceCount <= 0) return;
 
                     for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
                         if (!isInstanceValid(obj as InstancedMesh | BatchedMesh, instanceId)) continue;
+
+                        const bbox = getInstanceLocalBox(obj as InstancedMesh | BatchedMesh, instanceId);
+                        if (!bbox) continue;
 
                         getInstanceWorldMatrixForOrigin(obj as InstancedMesh | BatchedMesh, instanceId, tmpMat);
                         const localYOffset = isItemDisplayHatEnabled(obj as InstancedMesh | BatchedMesh, instanceId) ? 0.03125 : 0;
