@@ -533,7 +533,7 @@ export function handleSelectionClick(
             ? currentSelection.groups.has(target.id) 
             : !!currentSelection.objects.get(target.mesh)?.has(target.ids[0]);
 
-        if (callbacks.isVertexMode && (groupToDeselect || isTargetAlreadySelected)) {
+        if (callbacks.isVertexMode && target.type !== 'group' && (groupToDeselect || isTargetAlreadySelected)) {
             if (groupToDeselect && currentSelection.groups.has(groupToDeselect)) {
                 currentSelection.groups.delete(groupToDeselect);
                 if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
