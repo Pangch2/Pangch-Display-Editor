@@ -162,6 +162,29 @@ export function initHandleKey(p: HandleKeyParams): void {
     // ── Inner key handler ────────────────────────────────────────────────────
 
     const handleKeyPress = (key: string): void => {
+        const normalizeSelectionStateForVertexEntry = () => {
+            if (!p.hasAnySelection()) return;
+
+            // Entering vertex mode should match a fresh reselect baseline.
+            p.revertEphemeralPivotUndoIfAny();
+
+            p.setMultiSelectionExplicitPivot(false);
+            p.setMultiSelectionOriginAnchorValid(false);
+            p.setMultiSelectionOriginAnchorInitialValid(false);
+            p.setMultiSelectionOriginAnchorInitialLocalValid(false);
+            p.setGizmoAnchorValid(false);
+
+            p.multiSelectionOriginAnchorPosition.set(0, 0, 0);
+            p.gizmoAnchorPosition.set(0, 0, 0);
+
+            p.setSelectionAnchorMode('default');
+            p.pivotOffset.set(0, 0, 0);
+            p.setIsCustomPivot(false);
+
+            p.recomputePivotStateForSelection();
+            p.updateHelperPosition();
+        };
+
         const resetHelperRotationForWorldSpace = () => {
             if (p.getCurrentSpace() !== 'world') return;
             const items = p.getSelectedItems();
@@ -174,10 +197,14 @@ export function initHandleKey(p: HandleKeyParams): void {
 
         switch (key) {
             case 'v':
-                p.setIsVertexMode(!p.getIsVertexMode());
+                const nextVertexMode = !p.getIsVertexMode();
+                p.setIsVertexMode(nextVertexMode);
                 console.log(p.getIsVertexMode() ? 'Vertex mode activated' : 'Vertex mode deactivated');
 
                 if (p.getIsVertexMode()) {
+                    normalizeSelectionStateForVertexEntry();
+                    p.vertexQueue.length = 0;
+                    p.selectedVertexKeys.clear();
                     p.getTransformControls().detach();
                 } else {
                     p.promoteVertexQueueBundleOnExit();
