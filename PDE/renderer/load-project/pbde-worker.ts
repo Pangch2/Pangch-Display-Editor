@@ -1,4 +1,4 @@
-﻿import { decompressSync, strFromU8 } from 'fflate';
+﻿﻿﻿import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
 
 type TexturePixelData = {

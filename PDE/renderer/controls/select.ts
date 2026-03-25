@@ -540,19 +540,12 @@ export function handleSelectionClick(
                     currentSelection.primary = null;
                 }
             } else if (isTargetAlreadySelected) {
-                if (target.type === 'group') {
-                    currentSelection.groups.delete(target.id);
-                    if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === target.id) {
+                const set = currentSelection.objects.get(target.mesh);
+                if (set) {
+                    for (const id of target.ids) set.delete(id);
+                    if (set.size === 0) currentSelection.objects.delete(target.mesh);
+                    if (currentSelection.primary && currentSelection.primary.type === 'object' && currentSelection.primary.mesh === target.mesh && target.ids.includes(currentSelection.primary.instanceId)) {
                         currentSelection.primary = null;
-                    }
-                } else {
-                    const set = currentSelection.objects.get(target.mesh);
-                    if (set) {
-                        for (const id of target.ids) set.delete(id);
-                        if (set.size === 0) currentSelection.objects.delete(target.mesh);
-                        if (currentSelection.primary && currentSelection.primary.type === 'object' && currentSelection.primary.mesh === target.mesh && target.ids.includes(currentSelection.primary.instanceId)) {
-                            currentSelection.primary = null;
-                        }
                     }
                 }
             }
@@ -563,14 +556,9 @@ export function handleSelectionClick(
 
             beginSelectionReplace(callbacks, { detachTransform: true });
             
-            if (target.type === 'group') {
-                currentSelection.groups.add(target.id);
-                currentSelection.primary = { type: 'group', id: target.id };
-            } else {
-                const set = new Set(target.ids);
-                currentSelection.objects.set(target.mesh, set);
-                currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
-            }
+            const set = new Set(target.ids);
+            currentSelection.objects.set(target.mesh, set);
+            currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
 
             performedSurgicalUpdate = true;
         } else if (groupToDeselect) {
