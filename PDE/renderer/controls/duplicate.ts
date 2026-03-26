@@ -14,6 +14,7 @@ import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
 import * as Overlay from './overlay';
 import { createEntityMaterial } from '../entityMaterial.js';
+import { rebalanceDisplayMeshesByThreshold } from '../load-project/display-mesh-threshold';
 
 const getDisplayType = Overlay.getDisplayType;
 
@@ -473,6 +474,7 @@ function getOrCreateWritableBatch(loadedObjectGroup: Group, _targetGroupId: stri
     batch.frustumCulled = false;
     batch.userData.isWritable = true;
     batch.userData._pdeMaxInstances = maxInstances;
+    batch.userData._pdeThresholdSwitchable = true;
     batch.userData.displayType = 'block_display';
     batch.userData.displayTypes = new Map();
     batch.userData.geometryBounds = new Map();
@@ -657,7 +659,7 @@ function cloneInstance(loadedObjectGroup: Group, mesh: InstancedMesh | BatchedMe
 
     // Copy UserData
     // Local Matrices (Blockstates)
-    if (mesh.isBatchedMesh && mesh.userData.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
+    if (mesh.userData.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
         targetBatch.userData.localMatrices.set(newInstanceId, mesh.userData.localMatrices.get(instanceId).clone());
     }
 
@@ -839,6 +841,13 @@ export function duplicateGroupsAndObjects(loadedObjectGroup: Group, groupIds: Se
             newSelection.objects.set(mesh, new Set());
         }
         newSelection.objects.get(mesh)!.add(instanceId);
+    }
+
+    const rebalanceResult = rebalanceDisplayMeshesByThreshold(loadedObjectGroup, {
+        selectedObjects: newSelection.objects as Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>
+    });
+    if (rebalanceResult.selectedObjects) {
+        newSelection.objects = rebalanceResult.selectedObjects as Map<BatchedMesh | InstancedMesh, Set<number>>;
     }
 
     return newSelection;

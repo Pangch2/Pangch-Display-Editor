@@ -224,7 +224,7 @@ export function disposeThreeObjectTree(root: Object3D): void {
 
 export function getDisplayType(mesh: PdeMesh, instanceId: number): string | undefined {
     if (!mesh) return undefined;
-    if (mesh.isBatchedMesh && mesh.userData?.displayTypes) {
+    if (mesh.userData?.displayTypes instanceof Map) {
         return mesh.userData.displayTypes.get(instanceId);
     }
     return mesh.userData?.displayType;
@@ -245,7 +245,7 @@ export function getInstanceWorldMatrixForOrigin(mesh: PdeMesh, instanceId: numbe
     if (!mesh) return outMatrix;
 
     mesh.getMatrixAt(instanceId, outMatrix);
-    if (mesh.isBatchedMesh && mesh.userData?.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
+    if (mesh.userData?.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
         _TMP_MAT4_B.copy(mesh.userData.localMatrices.get(instanceId)).invert();
         outMatrix.multiply(_TMP_MAT4_B);
     }

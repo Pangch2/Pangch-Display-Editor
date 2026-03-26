@@ -2,6 +2,7 @@
 import * as THREE from 'three/webgpu';
 import PbdeWorker from './pbde-worker?worker&inline';
 import { createEntityMaterial } from '../entityMaterial.js';
+import { rebalanceDisplayMeshesByThreshold } from './display-mesh-threshold.js';
 
 type AssetPayload = string | Uint8Array | ArrayBuffer | unknown;
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
@@ -741,6 +742,38 @@ function performSelection(newlyAddedSelectableMeshes: Set<THREE.Object3D>) {
     }
 }
 
+function buildSelectionMapFromMeshes(meshes: Set<THREE.Object3D>): Map<THREE.Object3D, Set<number>> {
+    const out = new Map<THREE.Object3D, Set<number>>();
+    for (const mesh of meshes) {
+        if (!mesh) continue;
+
+        const instancedMesh = mesh as THREE.InstancedMesh;
+        const batchedMesh = mesh as THREE.BatchedMesh;
+
+        if (instancedMesh.isInstancedMesh) {
+            const count = Math.max(0, instancedMesh.count ?? 0);
+            if (count <= 0) continue;
+
+            const ids = new Set<number>();
+            for (let i = 0; i < count; i++) ids.add(i);
+            if (ids.size > 0) out.set(mesh, ids);
+            continue;
+        }
+
+        if (batchedMesh.isBatchedMesh) {
+            const geomIds = batchedMesh.userData?.instanceGeometryIds;
+            if (!Array.isArray(geomIds)) continue;
+
+            const ids = new Set<number>();
+            for (let i = 0; i < geomIds.length; i++) {
+                if (geomIds[i] !== undefined && geomIds[i] !== null) ids.add(i);
+            }
+            if (ids.size > 0) out.set(mesh, ids);
+        }
+    }
+    return out;
+}
+
 function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number): Promise<Set<THREE.Object3D>> {
     return new Promise((resolve, reject) => {
         // 0. 새 프로젝트를 로드하기 전에 현재 선택 상태를 리셋합니다.
@@ -1200,6 +1233,7 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                             // BatchedMesh(maxInstanceCount, maxVertexCount, maxIndexCount, material)
                             const batch = new THREE.BatchedMesh(group.parts.length, group.maxVerts, group.maxIndices, material);
                             batch.frustumCulled = false;
+                            batch.userData._pdeThresholdSwitchable = true;
                             batch.userData.displayType = 'block_display'; 
                             batch.userData.displayTypes = new Map();
                             batch.userData.geometryBounds = new Map();
@@ -1639,6 +1673,10 @@ async function loadpbde(files: File | File[]): Promise<void> {
             const isMerge = (i > 0); 
             await _loadAndRenderPbde(fileList[i], isMerge, batchGen);
         }
+
+        // 65535 임계값을 기준으로 BatchedMesh/InstancedMesh를 자동 전환한다.
+        rebalanceDisplayMeshesByThreshold(loadedObjectGroup);
+
         // Requirement: Do not perform multi-selection for "Open" (loadpbde) even with multiple files.
     } catch (e) {
         console.error("Error loading project files:", e);
@@ -1660,8 +1698,22 @@ async function mergepbde(files: File | File[]): Promise<void> {
             newMeshes.forEach(m => allNewMeshes.add(m));
         }
 
+        const preRebalanceSelection = buildSelectionMapFromMeshes(allNewMeshes);
+        const rebalanceResult = rebalanceDisplayMeshesByThreshold(loadedObjectGroup, {
+            selectedObjects: preRebalanceSelection as Map<any, Set<number>>
+        });
+
+        const selectionSource = (rebalanceResult.selectedObjects && rebalanceResult.selectedObjects.size > 0)
+            ? rebalanceResult.selectedObjects
+            : preRebalanceSelection;
+
+        const remappedMeshes = new Set<THREE.Object3D>();
+        for (const mesh of selectionSource.keys()) {
+            remappedMeshes.add(mesh as THREE.Object3D);
+        }
+
         // Requirement: Select all newly added objects after all files are loaded.
-        performSelection(allNewMeshes);
+        performSelection(remappedMeshes);
 
     } catch (e) {
         console.error("Error merging project files:", e);

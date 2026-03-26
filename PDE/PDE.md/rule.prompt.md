@@ -15,6 +15,7 @@
 - `entityMaterial.js`: 모델 셰이더 및 머티리얼 노드 관리
 - `load-project/pbde-worker.ts`: .bdengine, .pdengine 파일 파싱 (Worker)
 - `load-project/upload-pbde.ts`: 파싱 데이터 수신 및 씬 로드
+- `load-project/display-mesh-threshold.ts`: 씬 내 객체 수에 따라 BatchedMesh/InstancedMesh 모드를 동적으로 전환하여 렌더링 최적화 및 16비트 인덱스 제한(65,535) 우회 관리.
 
 - `controls/`: 조작 핵심 로직 (기능별 파일 분리 엄수)
   - `group.ts`: 그룹 구조 관리 유틸리티. 그룹 CRUD, 피벗 판별, 트리 탐색, 클론 등 그룹 데이터 조작 전담.
