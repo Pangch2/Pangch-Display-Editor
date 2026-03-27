@@ -19,8 +19,45 @@ interface ExtendedBatchedMesh extends BatchedMesh {
     setVisibleAt?(instanceId: number, visible: boolean): void;
 }
 
+interface SceneOrderEntry {
+    type: 'group' | 'object';
+    id: string;
+}
+
+interface DeleteUserData {
+    instanceKeyToObjectUuid?: Map<string, string>;
+    objectUuidToInstance?: Map<string, { mesh: Mesh | InstancedMesh | BatchedMesh; instanceId: number }>;
+    objectNames?: Map<string, string>;
+    objectIsItemDisplay?: Set<string>;
+    objectDisplayTypes?: Map<string, string>;
+    objectBlockProps?: Map<string, unknown>;
+    sceneOrder?: SceneOrderEntry[];
+}
+
 // 성능을 위한 임시 변수
 const _TMP_MAT4_A = new Matrix4();
+
+function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, instanceId: number): void {
+    const ud = loadedObjectGroup.userData as DeleteUserData;
+    const keyToUuid = ud.instanceKeyToObjectUuid;
+    if (!keyToUuid) return;
+
+    const key = GroupUtils.getGroupKey(mesh, instanceId);
+    const objectUuid = keyToUuid.get(key);
+    keyToUuid.delete(key);
+
+    if (!objectUuid) return;
+
+    ud.objectUuidToInstance?.delete(objectUuid);
+    ud.objectNames?.delete(objectUuid);
+    ud.objectIsItemDisplay?.delete(objectUuid);
+    ud.objectDisplayTypes?.delete(objectUuid);
+    ud.objectBlockProps?.delete(objectUuid);
+
+    if (Array.isArray(ud.sceneOrder)) {
+        ud.sceneOrder = ud.sceneOrder.filter(entry => !(entry.type === 'object' && entry.id === objectUuid));
+    }
+}
 
 /**
  * BatchedMesh 인스턴스 삭제 및 관련 데이터 정리
@@ -188,6 +225,7 @@ export function deleteSelectedItems(
 
     for (const { mesh, instanceId } of itemsToDelete.values()) {
         const key = GroupUtils.getGroupKey(mesh, instanceId);
+        _removeDeletedObjectMetadata(loadedObjectGroup, mesh, instanceId);
         
         if (objectToGroup.has(key)) {
             const parentGroupId = objectToGroup.get(key)!;

@@ -683,6 +683,10 @@ function _promoteVertexQueueBundleOnExit(): boolean {
     });
 }
 
+function _emitSceneUpdated(): void {
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+}
+
 function createGroup(): string | undefined {
     suppressVertexQueue = true;
     vertexQueue.length = 0;
@@ -720,6 +724,7 @@ function createGroup(): string | undefined {
 
     invalidateSelectionCaches();
     applySelection(null, [], newGroupId);
+    _emitSceneUpdated();
     suppressVertexQueue = false;
 
     console.log(`Group created: ${newGroupId}`);
@@ -745,6 +750,8 @@ function ungroupGroup(groupId: string): void {
         resetSelectionAndDeselect();
     }
 
+    _emitSceneUpdated();
+
     suppressVertexQueue = false;
     console.log(`Group removed: ${groupId}`);
 }
@@ -760,6 +767,7 @@ function deleteSelectedItems(): void {
 
     try {
         Delete.deleteSelectedItems(loadedObjectGroup, currentSelection, { resetSelectionAndDeselect });
+        _emitSceneUpdated();
     } finally {
         suppressVertexQueue = false;
     }
@@ -808,6 +816,7 @@ function duplicateSelected(): void {
 
         updateHelperPosition();
         updateSelectionOverlay();
+        _emitSceneUpdated();
 
         console.log('Duplication complete');
     } finally {
@@ -1192,6 +1201,10 @@ export function initGizmo({
     });
 
     loadedObjectGroup.userData.resetSelection = resetSelectionAndDeselect;
+    loadedObjectGroup.userData.deleteSelected = deleteSelectedItems;
+    loadedObjectGroup.userData.duplicateSelected = duplicateSelected;
+    loadedObjectGroup.userData.groupSelected = () => { createGroup(); };
+    loadedObjectGroup.userData.ungroupSelected = (groupId: string) => { ungroupGroup(groupId); };
     loadedObjectGroup.userData.replaceSelectionWithObjectsMap = (meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string }) => {
         _replaceSelectionWithObjectsMap(meshToIds, options);
     };

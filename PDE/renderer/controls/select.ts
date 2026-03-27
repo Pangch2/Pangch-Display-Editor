@@ -403,9 +403,16 @@ export function isMultiSelection(): boolean {
 
 export function commitSelectionChange(callbacks: SelectionCallbacks): void {
     invalidateSelectionCaches();
-    if (hasAnySelection() && !currentSelection.primary) { 
-        setPrimaryToFirstAvailable();
+    if (hasAnySelection()) {
+        if (!currentSelection.primary) { 
+            setPrimaryToFirstAvailable();
+        }
+    } else {
+        if (callbacks.detachTransformControls) callbacks.detachTransformControls();
+        if (callbacks.clearGizmoAnchor) callbacks.clearGizmoAnchor();
+        if (callbacks.resetPivotState) callbacks.resetPivotState();
     }
+    
     if (callbacks.recomputePivotState) callbacks.recomputePivotState();
     if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
     if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();

@@ -67,6 +67,7 @@ const extraTokenCache = new WeakMap<HTMLElement, string[]>();
 const ELLIPSIS = '...';
 
 let lastClickedItem: HTMLElement | null = null;
+const expandedGroupIds = new Set<string>();
 
 function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
@@ -441,12 +442,31 @@ function scheduleSceneExtraFit(): void {
 window.addEventListener('resize', scheduleSceneExtraFit);
 scenePanelList?.addEventListener('scroll', scheduleSceneExtraFit, { passive: true });
 
+function resolveChildObjectUuid(child: GroupChild, ud: LoadedObjectUserData): string | null {
+    if (child.type !== 'object') return null;
+    if (child.id) return child.id;
+    if (!child.mesh || typeof child.instanceId !== 'number') return null;
+    return ud.instanceKeyToObjectUuid?.get(`${child.mesh.uuid}_${child.instanceId}`) ?? null;
+}
+
+function isObjectUuidGrouped(uuid: string, ud: LoadedObjectUserData): boolean {
+    const inst = ud.objectUuidToInstance?.get(uuid);
+    if (!inst) return false;
+    const key = `${inst.mesh.uuid}_${inst.instanceId}`;
+    return ud.objectToGroup?.has(key) ?? false;
+}
+
+function hasRenderableObject(uuid: string, ud: LoadedObjectUserData): boolean {
+    return ud.objectUuidToInstance?.has(uuid) ?? false;
+}
+
 function renderGroup(groupId: string, depth: number): HTMLElement | null {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const groups = ud.groups;
     const group = groups?.get(groupId);
     if (!group) return null;
 
+    const isExpanded = expandedGroupIds.has(groupId);
     const wrapper = document.createElement('div');
 
     // 그룹 헤더
@@ -458,7 +478,7 @@ function renderGroup(groupId: string, depth: number): HTMLElement | null {
 
     const toggleEl = document.createElement('span');
     toggleEl.className = 'scene-toggle';
-    toggleEl.innerHTML = '&#xE06F;';
+    toggleEl.innerHTML = isExpanded ? '&#xE06D;' : '&#xE06F;';
 
     const nameEl = document.createElement('span');
     nameEl.className = 'scene-name';
@@ -484,9 +504,9 @@ function renderGroup(groupId: string, depth: number): HTMLElement | null {
     header.appendChild(nameEl);
     header.appendChild(rightIconEl);
 
-    // 자식 컨테이너 — 기본 접힘
+    // 자식 컨테이너
     const childContainer = document.createElement('div');
-    childContainer.className = 'scene-tree-children collapsed';
+    childContainer.className = 'scene-tree-children' + (isExpanded ? '' : ' collapsed');
 
     // 자식: worker가 넣은 children 순서 그대로 표시
     for (const child of (group.children || [])) {
@@ -494,7 +514,10 @@ function renderGroup(groupId: string, depth: number): HTMLElement | null {
             const subEl = renderGroup(child.id, depth + 1);
             if (subEl) childContainer.appendChild(subEl);
         } else {
-            childContainer.appendChild(makeObjectRow(child.id, depth + 1));
+            const objectUuid = resolveChildObjectUuid(child, ud);
+            if (objectUuid && hasRenderableObject(objectUuid, ud)) {
+                childContainer.appendChild(makeObjectRow(objectUuid, depth + 1));
+            }
         }
     }
 
@@ -502,6 +525,11 @@ function renderGroup(groupId: string, depth: number): HTMLElement | null {
     toggleEl.addEventListener('click', (e) => {
         e.stopPropagation();
         const isCollapsed = childContainer.classList.toggle('collapsed');
+        if (isCollapsed) {
+            expandedGroupIds.delete(groupId);
+        } else {
+            expandedGroupIds.add(groupId);
+        }
         toggleEl.innerHTML = isCollapsed ? '&#xE06F;' : '&#xE06D;';
         scheduleSceneExtraFit();
     });
@@ -523,36 +551,51 @@ export function refreshScenePanel(): void {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const objectNames = ud.objectNames;
     const groups = ud.groups;
-    const objectToGroup = ud.objectToGroup;
     const sceneOrder = ud.sceneOrder;
 
     const fragment = document.createDocumentFragment();
+    const renderedRootGroups = new Set<string>();
+    const renderedRootObjects = new Set<string>();
+
+    const appendRootGroup = (groupId: string): void => {
+        if (!groupId || renderedRootGroups.has(groupId)) return;
+        const group = groups?.get(groupId);
+        if (!group || group.parent !== null) return;
+        const el = renderGroup(groupId, 0);
+        if (!el) return;
+        renderedRootGroups.add(groupId);
+        fragment.appendChild(el);
+    };
+
+    const appendRootObject = (uuid: string): void => {
+        if (!uuid || renderedRootObjects.has(uuid)) return;
+        if (!hasRenderableObject(uuid, ud)) return;
+        if (isObjectUuidGrouped(uuid, ud)) return;
+        renderedRootObjects.add(uuid);
+        fragment.appendChild(makeObjectRow(uuid, 0));
+    };
 
     if (sceneOrder && sceneOrder.length > 0) {
         for (const entry of sceneOrder) {
             if (entry.type === 'group') {
-                const el = renderGroup(entry.id, 0);
-                if (el) fragment.appendChild(el);
+                appendRootGroup(entry.id);
             } else {
-                fragment.appendChild(makeObjectRow(entry.id, 0));
+                appendRootObject(entry.id);
             }
         }
-    } else {
-        // fallback: sceneOrder 없는 레거시 로드
-        if (groups) {
-            for (const group of groups.values()) {
-                if (group.parent === null) {
-                    const el = renderGroup(group.id, 0);
-                    if (el) fragment.appendChild(el);
-                }
+    }
+
+    if (groups) {
+        for (const group of groups.values()) {
+            if (group.parent === null) {
+                appendRootGroup(group.id);
             }
         }
-        if (objectNames) {
-            for (const [uuid] of objectNames) {
-                if (!objectToGroup || !objectToGroup.has(uuid)) {
-                    fragment.appendChild(makeObjectRow(uuid, 0));
-                }
-            }
+    }
+
+    if (objectNames) {
+        for (const [uuid] of objectNames) {
+            appendRootObject(uuid);
         }
     }
 
@@ -570,6 +613,8 @@ function _expandAncestors(el: HTMLElement): void {
             node.classList.remove('collapsed');
             const header = node.previousElementSibling as HTMLElement | null;
             if (header?.classList.contains('scene-tree-group')) {
+                const gId = header.dataset.groupId;
+                if (gId) expandedGroupIds.add(gId);
                 const toggle = header.querySelector('.scene-toggle');
                 if (toggle) toggle.innerHTML = '&#xE06D;';
             }

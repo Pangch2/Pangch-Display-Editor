@@ -14,6 +14,7 @@ export interface GroupChildObject {
     type: 'object';
     mesh: Mesh | BatchedMesh | InstancedMesh;
     instanceId: number;
+    id?: string;
 }
 
 export interface GroupChildGroup {
@@ -57,6 +58,58 @@ export const DEFAULT_GROUP_PIVOT = new Vector3(0.5, 0.5, 0.5);
 // Utils
 function _nearlyEqual(a: number, b: number, eps: number = 1e-6): boolean {
     return Math.abs(a - b) <= eps;
+}
+
+function _parseGroupNameIndex(name: string | null | undefined): number | null {
+    if (!name) return null;
+    const normalized = String(name).trim().toLowerCase();
+    if (normalized === 'group') return 1;
+
+    const m = normalized.match(/^group(\d+)$/);
+    if (!m) return null;
+    const n = Number.parseInt(m[1], 10);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n;
+}
+
+function _getNextGroupName(groups: Map<string, GroupData>): string {
+    const used = new Set<number>();
+    for (const g of groups.values()) {
+        const idx = _parseGroupNameIndex(g?.name);
+        if (idx !== null) used.add(idx);
+    }
+
+    let next = 1;
+    while (used.has(next)) next++;
+    return next === 1 ? 'group' : `group${next}`;
+}
+
+function _getCloneName(sourceName: string | null | undefined, groups: Map<string, GroupData>): string {
+    const base = (sourceName || 'Group').trim();
+    // 이름 끝에 숫자가 있는지 확인 (공백 유무 상관없이 매칭)
+    const match = base.match(/^(.*?)\s*(\d+)$/);
+
+    let namePart = base;
+    let nextNum = 1;
+
+    if (match) {
+        // 숫자가 있다면 기본 이름과 다음 숫자를 추출
+        namePart = match[1].trim() || base;
+        nextNum = parseInt(match[2], 10) + 1;
+    }
+
+    const existingNames = new Set<string>();
+    for (const g of groups.values()) {
+        if (g.name) existingNames.add(g.name);
+    }
+
+    // 고유한 이름을 찾을 때까지 숫자 증가
+    let candidate = `${namePart} ${nextNum}`.trim();
+    while (existingNames.has(candidate)) {
+        nextNum++;
+        candidate = `${namePart} ${nextNum}`.trim();
+    }
+    return candidate;
 }
 
 export function normalizePivotToVector3(pivot: PivotInput, out: Vector3 = new Vector3()): Vector3 | null {
@@ -195,6 +248,10 @@ export function updateGroupReferenceForMovedInstance(
 ): void {
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
     const groups = getGroups(loadedObjectGroup);
+    const keyToUuid = loadedObjectGroup?.userData?.instanceKeyToObjectUuid as Map<string, string> | undefined;
+    const uuidToInstance = loadedObjectGroup?.userData?.objectUuidToInstance as
+        | Map<string, { mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number }>
+        | undefined;
 
     const oldKey = getGroupKey(mesh, oldInstanceId);
     const newKey = getGroupKey(mesh, newInstanceId);
@@ -216,6 +273,18 @@ export function updateGroupReferenceForMovedInstance(
             }
         }
     }
+
+    if (keyToUuid) {
+        const objectUuid = keyToUuid.get(oldKey);
+        if (objectUuid) {
+            keyToUuid.delete(oldKey);
+            keyToUuid.set(newKey, objectUuid);
+
+            if (uuidToInstance) {
+                uuidToInstance.set(objectUuid, { mesh, instanceId: newInstanceId });
+            }
+        }
+    }
 }
 
 export function createGroupStructure(
@@ -233,11 +302,12 @@ export function createGroupStructure(
         isCollection: true,
         children: [],
         parent: null,
-        name: 'Group',
+        name: "", // Will be determined after cleanup
         position: initialPosition.clone(),
         quaternion: new Quaternion(),
         scale: new Vector3(1, 1, 1)
     };
+    const keyToUuid = loadedObjectGroup?.userData?.instanceKeyToObjectUuid as Map<string, string> | undefined;
 
     let commonParentId: string | null | undefined = undefined;
     const considerParentId = (gid: string | null | undefined): void => {
@@ -267,14 +337,23 @@ export function createGroupStructure(
         }
     }
 
+    const affectedGroupIds = new Set<string>();
+
     for (const childGroupId of selectedGroupIds) {
         const childGroup = groups.get(childGroupId);
         if (!childGroup) continue;
 
         if (childGroup.parent) {
+            affectedGroupIds.add(childGroup.parent);
             const oldParent = groups.get(childGroup.parent);
             if (oldParent && Array.isArray(oldParent.children)) {
                 oldParent.children = oldParent.children.filter(c => !(c && c.type === 'group' && (c as GroupChildGroup).id === childGroupId));
+            }
+        } else {
+            // Root group being moved: remove from sceneOrder
+            const ud = loadedObjectGroup.userData;
+            if (Array.isArray(ud.sceneOrder)) {
+                ud.sceneOrder = ud.sceneOrder.filter((entry: any) => !(entry.type === 'group' && entry.id === childGroupId));
             }
         }
 
@@ -285,18 +364,66 @@ export function createGroupStructure(
     for (const { mesh, instanceId } of selectedObjects) {
         if (!mesh && (mesh as unknown) !== 0) continue;
         const key = getGroupKey(mesh, instanceId);
+        const objectUuid = keyToUuid?.get(key);
         const oldGroupId = objectToGroup.get(key);
         if (oldGroupId) {
+            affectedGroupIds.add(oldGroupId);
             const oldGroup = groups.get(oldGroupId);
             if (oldGroup && Array.isArray(oldGroup.children)) {
                 oldGroup.children = oldGroup.children.filter(c => !(c && c.type === 'object' && (c as GroupChildObject).mesh === mesh && (c as GroupChildObject).instanceId === instanceId));
             }
+        } else if (objectUuid) {
+            // Root object being moved: remove from sceneOrder
+            const ud = loadedObjectGroup.userData;
+            if (Array.isArray(ud.sceneOrder)) {
+                ud.sceneOrder = ud.sceneOrder.filter((entry: any) => !(entry.type === 'object' && entry.id === objectUuid));
+            }
         }
-        newGroup.children.push({ type: 'object', mesh, instanceId });
+        newGroup.children.push({ type: 'object', mesh, instanceId, id: objectUuid });
         objectToGroup.set(key, newGroupId);
     }
 
+    // Recursive cleanup of empty affected groups
+    const cleanupEmptyGroups = (groupId: string) => {
+        const g = groups.get(groupId);
+        if (!g) return;
+        // Only clean up if it's empty
+        if (Array.isArray(g.children) && g.children.length === 0) {
+            const parentId = g.parent;
+            if (parentId) {
+                const pg = groups.get(parentId);
+                if (pg && Array.isArray(pg.children)) {
+                    pg.children = pg.children.filter(c => !(c && c.type === 'group' && (c as GroupChildGroup).id === groupId));
+                }
+                groups.delete(groupId);
+                cleanupEmptyGroups(parentId);
+            } else {
+                groups.delete(groupId);
+                // Also clean up from sceneOrder if it's a root
+                const ud = loadedObjectGroup.userData;
+                if (Array.isArray(ud.sceneOrder)) {
+                    ud.sceneOrder = ud.sceneOrder.filter((entry: any) => !(entry.type === 'group' && entry.id === groupId));
+                }
+            }
+        }
+    };
+
+    for (const gid of affectedGroupIds) {
+        cleanupEmptyGroups(gid);
+    }
+
+    // Now determine the name after cleanup to potentially reuse index 1
+    newGroup.name = _getNextGroupName(groups);
     groups.set(newGroupId, newGroup);
+
+    // If it's a root group, add to sceneOrder for consistent tracking
+    if (newGroup.parent === null) {
+        const ud = loadedObjectGroup.userData;
+        if (Array.isArray(ud.sceneOrder)) {
+            ud.sceneOrder.push({ type: 'group', id: newGroupId });
+        }
+    }
+
     return newGroupId;
 }
 
@@ -363,7 +490,7 @@ export function cloneGroupStructure(
         isCollection: true,
         children: [],
         parent: parentId,
-        name: sourceGroup.name ? sourceGroup.name + " (Copy)" : "Group (Copy)",
+        name: _getCloneName(sourceGroup.name, groups),
         position: sourceGroup.position ? sourceGroup.position.clone() : new Vector3(),
         quaternion: sourceGroup.quaternion ? sourceGroup.quaternion.clone() : new Quaternion(),
         scale: sourceGroup.scale ? sourceGroup.scale.clone() : new Vector3(1, 1, 1),
