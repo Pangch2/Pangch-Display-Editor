@@ -16,9 +16,9 @@
     "typescript": "^6.0.2",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "^41.0.4",
+    "electron": "^41.1.0",
     "electron-builder": "^26.8.1",
-    "vite": "^8.0.2",
+    "vite": "^8.0.3",
     "nodemon": "^3.1.14",
     "three": "^0.183.2"
   },

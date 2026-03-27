@@ -8,7 +8,6 @@ import {
 } from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { GroupData, GroupChild } from './group';
-import { rebalanceDisplayMeshesByThreshold } from '../load-project/display-mesh-threshold';
 
 /**
  * Three.js BatchedMesh의 확장 인터페이스 (userData 및 메서드 포함)
@@ -26,16 +25,10 @@ const _TMP_MAT4_A = new Matrix4();
 /**
  * BatchedMesh 인스턴스 삭제 및 관련 데이터 정리
  */
-function _deleteBatchedMeshInstances(loadedObjectGroup: Group, mesh: ExtendedBatchedMesh, instanceIds: number[]): void {
+function _deleteBatchedMeshInstances(mesh: ExtendedBatchedMesh, instanceIds: number[]): void {
     if (!mesh || !mesh.isBatchedMesh) return;
 
-    const keyToUuid = loadedObjectGroup.userData?.instanceKeyToObjectUuid as Map<string, string> | undefined;
-    const uuidToInstance = loadedObjectGroup.userData?.objectUuidToInstance as Map<string, { mesh: Mesh; instanceId: number }> | undefined;
-
     for (const instanceId of instanceIds) {
-        const key = GroupUtils.getGroupKey(mesh as unknown as Mesh, instanceId);
-        const uuid = keyToUuid instanceof Map ? keyToUuid.get(key) : undefined;
-
         // 1. 실제 인스턴스 삭제 또는 숨김
         if (typeof mesh.deleteInstance === 'function') {
             mesh.deleteInstance(instanceId);
@@ -58,13 +51,6 @@ function _deleteBatchedMeshInstances(loadedObjectGroup: Group, mesh: ExtendedBat
                 mesh.userData.customPivots.delete(instanceId);
             }
         }
-
-        if (keyToUuid instanceof Map) {
-            keyToUuid.delete(key);
-        }
-        if (uuid && uuidToInstance instanceof Map) {
-            uuidToInstance.delete(uuid);
-        }
     }
 }
 
@@ -76,22 +62,6 @@ function _updateGroupReferenceForMovedInstance(loadedObjectGroup: Group, mesh: M
     GroupUtils.updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, oldInstanceId, newInstanceId);
 }
 
-function _updateObjectUuidReferenceForMovedInstance(loadedObjectGroup: Group, mesh: Mesh, oldInstanceId: number, newInstanceId: number): void {
-    const keyToUuid = loadedObjectGroup.userData?.instanceKeyToObjectUuid as Map<string, string> | undefined;
-    const uuidToInstance = loadedObjectGroup.userData?.objectUuidToInstance as Map<string, { mesh: Mesh; instanceId: number }> | undefined;
-    if (!(keyToUuid instanceof Map) || !(uuidToInstance instanceof Map)) return;
-
-    const oldKey = GroupUtils.getGroupKey(mesh, oldInstanceId);
-    const newKey = GroupUtils.getGroupKey(mesh, newInstanceId);
-
-    const movedUuid = keyToUuid.get(oldKey);
-    keyToUuid.delete(oldKey);
-    if (!movedUuid) return;
-
-    keyToUuid.set(newKey, movedUuid);
-    uuidToInstance.set(movedUuid, { mesh, instanceId: newInstanceId });
-}
-
 /**
  * InstancedMesh 인스턴스 삭제 (Swap-Pop 방식)
  */
@@ -101,31 +71,6 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
     const instanceMatrix = mesh.instanceMatrix;
     const uvAttr = (mesh.geometry && mesh.geometry.attributes) ? (mesh.geometry.attributes.instancedUvOffset as BufferAttribute) : null;
     const hasHatArray = mesh.userData ? (mesh.userData.hasHat as boolean[]) : null;
-    const displayTypes = mesh.userData?.displayTypes instanceof Map ? mesh.userData.displayTypes as Map<number, unknown> : null;
-    const localMatrices = mesh.userData?.localMatrices instanceof Map ? mesh.userData.localMatrices as Map<number, unknown> : null;
-    const customPivots = mesh.userData?.customPivots instanceof Map ? mesh.userData.customPivots as Map<number, unknown> : null;
-    const itemIds = mesh.userData?.itemIds instanceof Map ? mesh.userData.itemIds as Map<number, unknown> : null;
-    const keyToUuid = loadedObjectGroup.userData?.instanceKeyToObjectUuid as Map<string, string> | undefined;
-    const uuidToInstance = loadedObjectGroup.userData?.objectUuidToInstance as Map<string, { mesh: Mesh; instanceId: number }> | undefined;
-
-    const copyMapEntry = (map: Map<number, unknown> | null, srcIdx: number, dstIdx: number) => {
-        if (!map) return;
-        if (!map.has(srcIdx)) {
-            map.delete(dstIdx);
-            return;
-        }
-        const value = map.get(srcIdx) as { clone?: () => unknown } | unknown;
-        if (value && typeof (value as { clone?: () => unknown }).clone === 'function') {
-            map.set(dstIdx, (value as { clone: () => unknown }).clone());
-        } else {
-            map.set(dstIdx, value);
-        }
-    };
-
-    const clearMapEntry = (map: Map<number, unknown> | null, idx: number) => {
-        if (!map) return;
-        map.delete(idx);
-    };
 
     const swapData = (srcIdx: number, dstIdx: number) => {
         // 행렬 복사
@@ -143,43 +88,16 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
         if (Array.isArray(hasHatArray)) {
             hasHatArray[dstIdx] = hasHatArray[srcIdx];
         }
-
-        copyMapEntry(displayTypes, srcIdx, dstIdx);
-        copyMapEntry(localMatrices, srcIdx, dstIdx);
-        copyMapEntry(customPivots, srcIdx, dstIdx);
-        copyMapEntry(itemIds, srcIdx, dstIdx);
     };
 
     for (const deleteIdx of instanceIdsSortedDescending) {
         const lastIdx = mesh.count - 1;
-        const deleteKey = GroupUtils.getGroupKey(mesh, deleteIdx);
-        const removedUuid = keyToUuid instanceof Map ? keyToUuid.get(deleteKey) : undefined;
         
         if (deleteIdx < lastIdx) {
             swapData(lastIdx, deleteIdx);
             // 마지막 인스턴스가 삭제된 위치로 이동했으므로 그룹 참조 갱신
             _updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, lastIdx, deleteIdx);
-            _updateObjectUuidReferenceForMovedInstance(loadedObjectGroup, mesh, lastIdx, deleteIdx);
         }
-
-        const lastKey = GroupUtils.getGroupKey(mesh, lastIdx);
-        if (keyToUuid instanceof Map) {
-            keyToUuid.delete(lastKey);
-            if (deleteIdx === lastIdx) {
-                keyToUuid.delete(deleteKey);
-            }
-        }
-        if (removedUuid && uuidToInstance instanceof Map) {
-            uuidToInstance.delete(removedUuid);
-        }
-
-        if (Array.isArray(hasHatArray)) {
-            hasHatArray[lastIdx] = undefined as unknown as boolean;
-        }
-        clearMapEntry(displayTypes, lastIdx);
-        clearMapEntry(localMatrices, lastIdx);
-        clearMapEntry(customPivots, lastIdx);
-        clearMapEntry(itemIds, lastIdx);
         
         mesh.count--;
     }
@@ -293,14 +211,12 @@ export function deleteSelectedItems(
     // InstancedMesh: lastIdx를 삭제 지에 복사하는 Swap-Pop 방식 — 이동된 ID는 _updateGroupReferenceForMovedInstance로 갱신
     for (const [mesh, idSet] of byMesh) {
         if ((mesh as BatchedMesh).isBatchedMesh) {
-            _deleteBatchedMeshInstances(loadedObjectGroup, mesh as ExtendedBatchedMesh, Array.from(idSet));
+            _deleteBatchedMeshInstances(mesh as ExtendedBatchedMesh, Array.from(idSet));
         } else if ((mesh as InstancedMesh).isInstancedMesh) {
             const sortedIds = Array.from(idSet).sort((a, b) => b - a);
             _deleteInstancedMeshInstances(loadedObjectGroup, mesh as InstancedMesh, sortedIds);
         }
     }
-
-    rebalanceDisplayMeshesByThreshold(loadedObjectGroup);
 
     console.log('선택된 항목 제거됨 (Real Delete)');
 }
