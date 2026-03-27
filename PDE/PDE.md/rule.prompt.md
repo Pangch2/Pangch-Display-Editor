@@ -10,7 +10,7 @@
 # 프로젝트 구조 및 컨텍스트
 `renderer/`
 - `index.html`: 메인 진입점
-- `renderer.js`: 메인 씬 렌더러 및 WebGPU 초기화
+- `renderer.ts`: 메인 씬 렌더러 및 WebGPU 초기화
 - `asset-manager.js`: 마인크래프트 에셋(리소스 팩 등) 관리
 - `entityMaterial.js`: 모델 셰이더 및 머티리얼 노드 관리
 - `load-project/pbde-worker.ts`: .bdengine, .pdengine 파일 파싱 (Worker)
@@ -39,7 +39,7 @@
   - `vertex-queue.ts`: 버텍스 큐(Vertex Queue) 상태 관리 로직 전담. `pushToVertexQueue` (큐 항목 추가·정리, 키 동기화) 및 `promoteVertexQueueBundleOnExit` (큐 번들 → 다중 선택 승격) 구현.
 
 - `ui/main.css`: 전체 스타일시트
-- `ui/scene-panel.js`: 아웃라이너 및 씬 관리 UI
+- `ui/scene-panel.ts`: 아웃라이너 및 씬 관리 UI
 
 - `../hardcoded/`: 리소스 데이터 (player_head 제외)
 

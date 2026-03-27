@@ -1,5 +1,6 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { initGizmo } from './controls/gizmo';
+import type { InitGizmoResult, OrbitControlsLike } from './controls/gizmo';
 import {
     Group,
     BufferGeometry,
@@ -10,26 +11,32 @@ import {
     Color,
     PerspectiveCamera,
     WebGPURenderer,
-    GridHelper
+    GridHelper,
+    Renderer
 } from 'three/webgpu';
-import { initAssets } from './asset-manager.js';
-import { loadedObjectGroup } from './load-project/upload-pbde.ts';
-import { openWithAnimation, closeWithAnimation } from './ui/ui-open-close.js';
-import './ui/scene-panel.js';
+import { initAssets } from './asset-manager';
+import { loadedObjectGroup } from './load-project/upload-pbde';
+import { openWithAnimation, closeWithAnimation } from './ui/ui-open-close';
+import './ui/scene-panel';
 
 // 전역 변수로 선언
-let scene, camera, renderer, controls;
-let gizmoModule = null;
+let scene: Scene;
+let camera: PerspectiveCamera;
+let renderer: WebGPURenderer;
+let controls: OrbitControls;
+let gizmoModule: InitGizmoResult | null = null;
 
 // 앱 시작 로직을 비동기 함수로 감싸기
-async function startApp() {
+async function startApp(): Promise<void> {
   // --- 1. 로딩 화면 준비 ---
   const loadingOverlay = document.getElementById('loading-overlay');
-  const loadingIcon = document.getElementById('loading-icon');
+  const loadingIcon = document.getElementById('loading-icon') as HTMLImageElement;
+
+  if (!loadingOverlay || !loadingIcon) return;
 
   // 메인 프로세스로부터 아이콘 Data URL 받아오기
-  const iconResult = await window.ipcApi.getLoadingIcon();
-  if (iconResult.success) {
+  const iconResult = await window.ipcApi.getLoadingIcon?.();
+  if (iconResult && iconResult.success && iconResult.dataUrl) {
     loadingIcon.src = iconResult.dataUrl;
   }
 
@@ -43,7 +50,8 @@ async function startApp() {
   } catch (error) {
     console.error("Asset initialization failed:", error);
     // 에러 발생 시 사용자에게 알림 (예: 로딩 텍스트 변경)
-    document.getElementById('loading-text').textContent = '에셋 로딩 실패!';
+    const loadingText = document.getElementById('loading-text');
+    if (loadingText) loadingText.textContent = '에셋 로딩 실패!';
     return; // 앱 시작 중단
   }
 
@@ -58,10 +66,10 @@ async function startApp() {
 }
 
 // XYZ 축을 양/음 방향으로 모두 표시하는 헬퍼
-function createFullAxesHelper(size = 50) {
+function createFullAxesHelper(size: number = 50): Group {
     const axesGroup = new Group();
 
-    const createAxisLine = (start, end, color) => {
+    const createAxisLine = (start: Vector3, end: Vector3, color: number): Line => {
         const geometry = new BufferGeometry().setFromPoints([start, end]);
         const material = new LineBasicMaterial({ color: color });
         return new Line(geometry, material);
@@ -91,7 +99,7 @@ function createFullAxesHelper(size = 50) {
 }
 
 // 'Z>' 모양을 XZ 평면(바닥) 위에 그리는 헬퍼
-function createZGreaterSymbol(position = new Vector3(0.5, 0, 0.5), size = 0.5, color = 0x515151) {
+function createZGreaterSymbol(position: Vector3 = new Vector3(0.5, 0, 0.5), size: number = 0.5, color: number = 0x515151): Group {
     const group = new Group();
     group.position.copy(position);
 
@@ -102,17 +110,13 @@ function createZGreaterSymbol(position = new Vector3(0.5, 0, 0.5), size = 0.5, c
     const gap = s * 0.15;           // Z와 > 사이 간격
     const arrowWidth = s * 0.45;    // > 화살표 가로 길이
 
-    // Z: 위, 대각선, 아래
-    const lines = [];
-
-    const addLine = (ax, az, bx, bz) => {
+    const addLine = (ax: number, az: number, bx: number, bz: number): void => {
         const geometry = new BufferGeometry().setFromPoints([
             new Vector3(ax, 0, az),
             new Vector3(bx, 0, bz)
         ]);
         const line = new Line(geometry, material);
         group.add(line);
-        lines.push(line);
     };
 
     // Top horizontal
@@ -134,14 +138,7 @@ function createZGreaterSymbol(position = new Vector3(0.5, 0, 0.5), size = 0.5, c
     return group;
 }
 
-// NOTE: Rotation-from-matrix helper moved into gizmo module
-
-// NOTE: Pivot update helper moved into gizmo module
-
-// NOTE: Selection overlay helper moved into gizmo module
-
-
-async function initScene() {
+async function initScene(): Promise<void> {
     // 1. 장면(Scene)
     scene = new Scene();
     scene.background = new Color(0x1F1F1F); // 어두운 회색 배경
@@ -149,6 +146,8 @@ async function initScene() {
 
     // 2. 카메라(Camera)
     const mainContent = document.getElementById('main-content');
+    if (!mainContent) return;
+
     camera = new PerspectiveCamera(
         80,
         mainContent.clientWidth / mainContent.clientHeight,
@@ -160,7 +159,7 @@ async function initScene() {
 
     // 3. 렌더러(Renderer)
     renderer = new WebGPURenderer({
-        canvas: document.querySelector('#renderCanvas'),
+        canvas: document.querySelector('#renderCanvas') as HTMLCanvasElement,
         logarithmicDepthBuffer: true
     });
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
@@ -171,7 +170,14 @@ async function initScene() {
     controls.screenSpacePanning = true;
 
     // Initialize gizmo module after creating controls
-    gizmoModule = initGizmo({ scene, camera, renderer, controls, loadedObjectGroup, setControls: (c) => { controls = c; } });
+    gizmoModule = initGizmo({ 
+        scene, 
+        camera, 
+        renderer: renderer as unknown as Renderer, 
+        controls: controls as unknown as OrbitControlsLike, 
+        loadedObjectGroup, 
+        setControls: (c: OrbitControlsLike) => { controls = c as unknown as OrbitControls; } 
+    });
 
     // 8. 헬퍼(Helper)
     const axes = createFullAxesHelper(150);
@@ -186,11 +192,9 @@ async function initScene() {
     Grid.renderOrder = -1; 
     scene.add(Grid);
     
-    renderer.shadowMap.enabled = false;
-    
     [detailGrid, Grid].forEach(helper => {
         const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
-        materials.forEach(m => { m.depthWrite = false; });
+        materials.forEach(m => { (m as any).depthWrite = false; });
     });
 
     const zSymbol = createZGreaterSymbol(new Vector3(0.5, 0, -0.25), 0.125, 0x515151);
@@ -203,7 +207,7 @@ let lastTime = performance.now();
 let frameCount = 0;
 const fpsCounterElement = document.getElementById('fps-counter');
 
-function animate() {
+function animate(): void {
     requestAnimationFrame(animate);
     //fps표시용2
     const currentTime = performance.now();
@@ -224,7 +228,7 @@ function animate() {
     }
 }
 
-function onWindowResize() {
+function onWindowResize(): void {
     const mainContent = document.getElementById('main-content');
     if (!mainContent || mainContent.clientWidth === 0 || mainContent.clientHeight === 0) return;
 

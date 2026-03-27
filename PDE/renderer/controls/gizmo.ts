@@ -48,7 +48,7 @@ import * as VertexQueue from './vertex-queue';
 
 type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
 
-interface OrbitControlsLike {
+export interface OrbitControlsLike {
     enabled: boolean;
     target: Vector3;
     screenSpacePanning: boolean;

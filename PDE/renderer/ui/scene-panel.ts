@@ -1,20 +1,80 @@
-import { loadedObjectGroup } from '../load-project/upload-pbde.ts';
+import * as THREE from 'three/webgpu';
+import { loadedObjectGroup } from '../load-project/upload-pbde';
+
+// ----- Interfaces -----
+
+interface GroupChild {
+    type: 'group' | 'object';
+    id: string;
+    mesh?: THREE.Object3D;
+    instanceId?: number;
+}
+
+interface GroupData {
+    id: string;
+    isCollection?: boolean;
+    children: GroupChild[];
+    parent: string | null;
+    name: string;
+    position: THREE.Vector3 | { x: number; y: number; z: number };
+    quaternion: THREE.Quaternion | { x: number; y: number; z: number; w: number };
+    scale: THREE.Vector3 | { x: number; y: number; z: number };
+    pivot?: [number, number, number];
+}
+
+interface SceneOrderEntry {
+    type: 'group' | 'object';
+    id: string;
+}
+
+interface SelectionState {
+    groups: Set<string>;
+    objects: Map<THREE.Object3D, Set<number>>;
+    primary: { type: 'group'; id: string } | { type: 'object'; mesh: THREE.Object3D; instanceId: number } | null;
+}
+
+interface LoadedObjectUserData {
+    objectUuidToInstance?: Map<string, { mesh: THREE.Object3D; instanceId: number }>;
+    instanceKeyToObjectUuid?: Map<string, string>;
+    objectNames?: Map<string, string>;
+    objectIsItemDisplay?: Set<string>;
+    objectDisplayTypes?: Map<string, string>;
+    objectBlockProps?: Map<string, any>;
+    groups?: Map<string, GroupData>;
+    objectToGroup?: Map<string, string>;
+    sceneOrder?: SceneOrderEntry[];
+    replaceSelectionWithGroupsAndObjects?: (
+        groupIds: Set<string>,
+        meshToIds: Map<THREE.Object3D, Set<number>>,
+        opts?: { anchorMode?: string; primaryIsRangeStart?: boolean }
+    ) => void;
+    addOrToggleInSelection?: (
+        groupIds: Set<string> | null,
+        meshToIds: Map<THREE.Object3D, Set<number>> | null
+    ) => void;
+    resetSelection?: () => void;
+    // 신규 추가: 씬 조작 메서드
+    deleteSelected?: () => void;
+    duplicateSelected?: () => void;
+    groupSelected?: () => void;
+    ungroupSelected?: (groupId: string) => void;
+}
 
 // ----- Scene 패널 오브젝트 목록 갱신 -----
-const scenePanelList = document.getElementById('scene-object-list');
+const scenePanelList = document.getElementById('scene-object-list') as HTMLElement | null;
 let sceneExtraFitRaf = 0;
-const extraTokenCache = new WeakMap();
+const extraTokenCache = new WeakMap<HTMLElement, string[]>();
 const ELLIPSIS = '...';
 
-let lastClickedItem = null;
+let lastClickedItem: HTMLElement | null = null;
 
-function handleSceneItemClick(e, el) {
-    const ud = loadedObjectGroup?.userData;
+function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     if (!ud) return;
 
-    if (e.ctrlKey && e.shiftKey && lastClickedItem && lastClickedItem !== el) {
+    if (e.ctrlKey && e.shiftKey && lastClickedItem && lastClickedItem !== el && scenePanelList) {
         const visibleItems = Array.from(scenePanelList.querySelectorAll('.scene-object-item, .scene-tree-group'))
-            .filter(node => node.offsetParent !== null);
+            .filter(node => (node as HTMLElement).offsetParent !== null) as HTMLElement[];
             
         const idx1 = visibleItems.indexOf(lastClickedItem);
         const idx2 = visibleItems.indexOf(el);
@@ -23,11 +83,11 @@ function handleSceneItemClick(e, el) {
             const start = Math.min(idx1, idx2);
             const end = Math.max(idx1, idx2);
             
-            const rangeGroups = new Set();
-            const rangeObjects = new Map();
+            const rangeGroups = new Set<string>();
+            const rangeObjects = new Map<THREE.Object3D, Set<number>>();
             const uuidToInstance = ud.objectUuidToInstance;
             
-            const selectedNodes = scenePanelList.querySelectorAll('.selected');
+            const selectedNodes = scenePanelList.querySelectorAll('.selected') as NodeListOf<HTMLElement>;
             selectedNodes.forEach(node => {
                 if (node.dataset.displayType === 'group') {
                     const gId = node.dataset.groupId;
@@ -40,7 +100,7 @@ function handleSceneItemClick(e, el) {
                             if (!rangeObjects.has(inst.mesh)) {
                                 rangeObjects.set(inst.mesh, new Set());
                             }
-                            rangeObjects.get(inst.mesh).add(inst.instanceId);
+                            rangeObjects.get(inst.mesh)!.add(inst.instanceId);
                         }
                     }
                 }
@@ -61,30 +121,25 @@ function handleSceneItemClick(e, el) {
                             if (!rangeObjects.has(inst.mesh)) {
                                 rangeObjects.set(inst.mesh, new Set());
                             }
-                            rangeObjects.get(inst.mesh).add(inst.instanceId);
+                            rangeObjects.get(inst.mesh)!.add(inst.instanceId);
                         }
                     }
                 }
             }
             
-            // To properly preserve the primary object, we will rely on the `primaryIsRangeStart` flag we added
-            // to select.ts, and we'll let handleSceneItemClick's `replaceSelectionWithGroupsAndObjects` handle it.
-            // When multiple selections are passed into this function, `firstGroupId` or `firstObjectMesh` 
-            // inside select.ts gets set to whatever was iterated first. To guarantee lastClickedItem becomes `primary`,
-            // we will find its specific id/mesh and inject it into the API call natively if needed, but 
-            // currently select.ts loops `rangeGroups` and `rangeObjects` as they were added.
-            
-            // Let's ensure the `lastClickedItem` is at the FRONT of the Iterator.
-            const sortedRangeGroups = new Set();
-            const sortedRangeObjects = new Map();
+            const sortedRangeGroups = new Set<string>();
+            const sortedRangeObjects = new Map<THREE.Object3D, Set<number>>();
             
             if (lastClickedItem.dataset.displayType === 'group') {
-                sortedRangeGroups.add(lastClickedItem.dataset.groupId);
+                const gId = lastClickedItem.dataset.groupId;
+                if (gId) sortedRangeGroups.add(gId);
             } else {
                 const uuid = lastClickedItem.dataset.uuid;
-                const inst = uuidToInstance.get(uuid);
-                if (inst) {
-                    sortedRangeObjects.set(inst.mesh, new Set([inst.instanceId]));
+                if (uuid && uuidToInstance) {
+                    const inst = uuidToInstance.get(uuid);
+                    if (inst) {
+                        sortedRangeObjects.set(inst.mesh, new Set([inst.instanceId]));
+                    }
                 }
             }
             
@@ -93,7 +148,8 @@ function handleSceneItemClick(e, el) {
                 if (!sortedRangeObjects.has(mesh)) {
                     sortedRangeObjects.set(mesh, new Set());
                 }
-                ids.forEach(id => sortedRangeObjects.get(mesh).add(id));
+                const set = sortedRangeObjects.get(mesh)!;
+                ids.forEach(id => set.add(id));
             });
 
             ud.replaceSelectionWithGroupsAndObjects?.(sortedRangeGroups, sortedRangeObjects, { 
@@ -106,18 +162,20 @@ function handleSceneItemClick(e, el) {
 
     lastClickedItem = el;
 
-    let groupIds = null;
-    let meshToIds = null;
+    let groupIds: Set<string> | null = null;
+    let meshToIds: Map<THREE.Object3D, Set<number>> | null = null;
 
     if (el.dataset.displayType === 'group') {
         const groupId = el.dataset.groupId;
         if (groupId) groupIds = new Set([groupId]);
     } else {
         const uuidToInstance = ud.objectUuidToInstance;
-        if (!uuidToInstance) return;
-        const inst = uuidToInstance.get(el.dataset.uuid);
-        if (inst) {
-            meshToIds = new Map([[inst.mesh, new Set([inst.instanceId])]]);
+        const uuid = el.dataset.uuid;
+        if (uuidToInstance && uuid) {
+            const inst = uuidToInstance.get(uuid);
+            if (inst) {
+                meshToIds = new Map([[inst.mesh, new Set([inst.instanceId])]]);
+            }
         }
     }
 
@@ -128,21 +186,22 @@ function handleSceneItemClick(e, el) {
     }
 }
 
-function cleanLabel(rawName) {
+function cleanLabel(rawName: string): string {
     return (rawName || '')
         .replace(/^[^:]+:/, '')  // 네임스페이스 제거
         .replace(/\[.*\]$/, '')  // 블록스테이트 프로퍼티 제거
         .trim();                 // 앞뒤 공백 제거
 }
 
-function makeObjectRow(uuid, depth) {
-    const objectNames  = loadedObjectGroup.userData.objectNames;
+function makeObjectRow(uuid: string, depth: number): HTMLElement {
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const objectNames = ud.objectNames;
     const rawName = objectNames?.get(uuid) || uuid.slice(0, 8);
-    const itemDisplaySet = loadedObjectGroup.userData.objectIsItemDisplay;
+    const itemDisplaySet = ud.objectIsItemDisplay;
     const isItemDisplay = itemDisplaySet?.has(uuid) ?? false;
     
-    const displayTypes = loadedObjectGroup.userData.objectDisplayTypes;
-    const blockPropsMap = loadedObjectGroup.userData.objectBlockProps;
+    const displayTypes = ud.objectDisplayTypes;
+    const blockPropsMap = ud.objectBlockProps;
     
     let extraInfo = '';
     if (isItemDisplay) {
@@ -211,25 +270,26 @@ function makeObjectRow(uuid, depth) {
     return el;
 }
 
-function fitSceneExtraBlocks() {
+function fitSceneExtraBlocks(): void {
     if (!scenePanelList) return;
 
     const viewTop = scenePanelList.scrollTop;
     const viewBottom = viewTop + scenePanelList.clientHeight;
-    const rows = scenePanelList.querySelectorAll('.scene-object-item, .scene-tree-group');
+    const rows = scenePanelList.querySelectorAll('.scene-object-item, .scene-tree-group') as NodeListOf<HTMLElement>;
+    
     for (const row of rows) {
         const rowTop = row.offsetTop;
         const rowBottom = rowTop + row.offsetHeight;
         if (rowBottom < viewTop - 40 || rowTop > viewBottom + 40) continue;
 
-        const nameEl = row.querySelector('.scene-name');
-        const nameTextEl = row.querySelector('.scene-name-text');
-        const nameDotsEl = row.querySelector('.scene-name-dots');
-        const extraEl = row.querySelector('.scene-extra');
+        const nameEl = row.querySelector('.scene-name') as HTMLElement | null;
+        const nameTextEl = row.querySelector('.scene-name-text') as HTMLElement | null;
+        const nameDotsEl = row.querySelector('.scene-name-dots') as HTMLElement | null;
+        const extraEl = row.querySelector('.scene-extra') as HTMLElement | null;
         if (!nameEl || !nameTextEl || !nameDotsEl) continue;
 
         const fullName = nameEl.dataset.fullText || '';
-        const setNameByCount = (count, showDots = true) => {
+        const setNameByCount = (count: number, showDots = true) => {
             const safeCount = Math.max(0, Math.min(count, fullName.length));
             if (safeCount >= fullName.length) {
                 nameTextEl.textContent = fullName;
@@ -300,7 +360,8 @@ function fitSceneExtraBlocks() {
             extraTokenCache.set(extraEl, tokens);
         }
 
-        const setExtraByCount = (count) => {
+        const setExtraByCount = (count: number) => {
+            if (!tokens) return;
             if (count <= 0) {
                 extraEl.textContent = '';
                 return;
@@ -369,7 +430,7 @@ function fitSceneExtraBlocks() {
     }
 }
 
-function scheduleSceneExtraFit() {
+function scheduleSceneExtraFit(): void {
     if (sceneExtraFitRaf) return;
     sceneExtraFitRaf = requestAnimationFrame(() => {
         sceneExtraFitRaf = 0;
@@ -380,8 +441,9 @@ function scheduleSceneExtraFit() {
 window.addEventListener('resize', scheduleSceneExtraFit);
 scenePanelList?.addEventListener('scroll', scheduleSceneExtraFit, { passive: true });
 
-function renderGroup(groupId, depth) {
-    const groups = loadedObjectGroup.userData.groups;
+function renderGroup(groupId: string, depth: number): HTMLElement | null {
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const groups = ud.groups;
     const group = groups?.get(groupId);
     if (!group) return null;
 
@@ -437,10 +499,10 @@ function renderGroup(groupId, depth) {
     }
 
     // 토글 아이콘 클릭 → 접기/펼치
-    header.querySelector('.scene-toggle').addEventListener('click', (e) => {
+    toggleEl.addEventListener('click', (e) => {
         e.stopPropagation();
         const isCollapsed = childContainer.classList.toggle('collapsed');
-        header.querySelector('.scene-toggle').innerHTML = isCollapsed ? '&#xE06F;' : '&#xE06D;';
+        toggleEl.innerHTML = isCollapsed ? '&#xE06F;' : '&#xE06D;';
         scheduleSceneExtraFit();
     });
 
@@ -454,14 +516,15 @@ function renderGroup(groupId, depth) {
     return wrapper;
 }
 
-export function refreshScenePanel() {
+export function refreshScenePanel(): void {
     if (!scenePanelList) return;
     scenePanelList.innerHTML = '';
 
-    const objectNames   = loadedObjectGroup.userData.objectNames;   // Map<uuid, rawName>
-    const groups        = loadedObjectGroup.userData.groups;         // Map<groupId, GroupData>
-    const objectToGroup = loadedObjectGroup.userData.objectToGroup;  // Map<uuid, groupId>
-    const sceneOrder    = loadedObjectGroup.userData.sceneOrder;
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const objectNames = ud.objectNames;
+    const groups = ud.groups;
+    const objectToGroup = ud.objectToGroup;
+    const sceneOrder = ud.sceneOrder;
 
     const fragment = document.createDocumentFragment();
 
@@ -476,15 +539,20 @@ export function refreshScenePanel() {
         }
     } else {
         // fallback: sceneOrder 없는 레거시 로드
-        if (groups) for (const group of groups.values()) {
-            if (group.parent === null) {
-                const el = renderGroup(group.id, 0);
-                if (el) fragment.appendChild(el);
+        if (groups) {
+            for (const group of groups.values()) {
+                if (group.parent === null) {
+                    const el = renderGroup(group.id, 0);
+                    if (el) fragment.appendChild(el);
+                }
             }
         }
-        if (objectNames) for (const [uuid] of objectNames) {
-            if (!objectToGroup || !objectToGroup.has(uuid))
-                fragment.appendChild(makeObjectRow(uuid, 0));
+        if (objectNames) {
+            for (const [uuid] of objectNames) {
+                if (!objectToGroup || !objectToGroup.has(uuid)) {
+                    fragment.appendChild(makeObjectRow(uuid, 0));
+                }
+            }
         }
     }
 
@@ -494,12 +562,13 @@ export function refreshScenePanel() {
 
 window.addEventListener('pde:scene-updated', refreshScenePanel);
 
-function _expandAncestors(el) {
+function _expandAncestors(el: HTMLElement): void {
+    if (!scenePanelList) return;
     let node = el.parentElement;
     while (node && node !== scenePanelList) {
         if (node.classList.contains('scene-tree-children') && node.classList.contains('collapsed')) {
             node.classList.remove('collapsed');
-            const header = node.previousElementSibling;
+            const header = node.previousElementSibling as HTMLElement | null;
             if (header?.classList.contains('scene-tree-group')) {
                 const toggle = header.querySelector('.scene-toggle');
                 if (toggle) toggle.innerHTML = '&#xE06D;';
@@ -509,18 +578,19 @@ function _expandAncestors(el) {
     }
 }
 
-function syncScenePanelSelection(sel) {
+function syncScenePanelSelection(sel: SelectionState): void {
     if (!scenePanelList) return;
 
     scenePanelList.querySelectorAll('.selected').forEach(el => el.classList.remove('selected'));
 
     if (!sel) return;
 
-    let newPrimaryEl = null;
+    let newPrimaryEl: HTMLElement | null = null;
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
 
     if (sel.groups && sel.groups.size > 0) {
         for (const groupId of sel.groups) {
-            const el = scenePanelList.querySelector(`.scene-tree-group[data-group-id="${groupId}"]`);
+            const el = scenePanelList.querySelector(`.scene-tree-group[data-group-id="${groupId}"]`) as HTMLElement | null;
             if (el) {
                 el.classList.add('selected');
                 _expandAncestors(el);
@@ -529,13 +599,13 @@ function syncScenePanelSelection(sel) {
     }
 
     if (sel.objects && sel.objects.size > 0) {
-        const keyToUuid = loadedObjectGroup?.userData?.instanceKeyToObjectUuid;
+        const keyToUuid = ud.instanceKeyToObjectUuid;
         if (keyToUuid) {
             for (const [mesh, ids] of sel.objects) {
                 for (const instanceId of ids) {
                     const uuid = keyToUuid.get(`${mesh.uuid}_${instanceId}`);
                     if (!uuid) continue;
-                    const el = scenePanelList.querySelector(`.scene-object-item[data-uuid="${uuid}"]`);
+                    const el = scenePanelList.querySelector(`.scene-object-item[data-uuid="${uuid}"]`) as HTMLElement | null;
                     if (el) {
                         el.classList.add('selected');
                         _expandAncestors(el);
@@ -547,11 +617,11 @@ function syncScenePanelSelection(sel) {
     
     if (sel.primary) {
         if (sel.primary.type === 'group') {
-            newPrimaryEl = scenePanelList.querySelector(`.scene-tree-group[data-group-id="${sel.primary.id}"]`);
+            newPrimaryEl = scenePanelList.querySelector(`.scene-tree-group[data-group-id="${sel.primary.id}"]`) as HTMLElement | null;
         } else if (sel.primary.type === 'object') {
-            const uuid = loadedObjectGroup?.userData?.instanceKeyToObjectUuid?.get(`${sel.primary.mesh.uuid}_${sel.primary.instanceId}`);
+            const uuid = ud.instanceKeyToObjectUuid?.get(`${sel.primary.mesh.uuid}_${sel.primary.instanceId}`);
             if (uuid) {
-                newPrimaryEl = scenePanelList.querySelector(`.scene-object-item[data-uuid="${uuid}"]`);
+                newPrimaryEl = scenePanelList.querySelector(`.scene-object-item[data-uuid="${uuid}"]`) as HTMLElement | null;
             }
         }
     }
@@ -564,4 +634,7 @@ function syncScenePanelSelection(sel) {
     }
 }
 
-window.addEventListener('pde:selection-changed', (e) => syncScenePanelSelection(e.detail));
+window.addEventListener('pde:selection-changed', (e: Event) => {
+    const customEvent = e as CustomEvent<SelectionState>;
+    syncScenePanelSelection(customEvent.detail);
+});
