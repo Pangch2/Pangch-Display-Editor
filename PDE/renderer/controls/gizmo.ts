@@ -720,11 +720,22 @@ function createGroup(): string | undefined {
         }
     }
 
-    const newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition);
+    let primaryId: string | null = null;
+    if (currentSelection.primary) {
+        if (currentSelection.primary.type === 'group') {
+            primaryId = currentSelection.primary.id;
+        } else {
+            const key = getGroupKey(currentSelection.primary.mesh, currentSelection.primary.instanceId);
+            const keyToUuid = loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
+            primaryId = keyToUuid?.get(key) || null;
+        }
+    }
+
+    const newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition, primaryId);
 
     invalidateSelectionCaches();
-    applySelection(null, [], newGroupId);
     _emitSceneUpdated();
+    applySelection(null, [], newGroupId);
     suppressVertexQueue = false;
 
     console.log(`Group created: ${newGroupId}`);
@@ -744,13 +755,13 @@ function ungroupGroup(groupId: string): void {
 
     invalidateSelectionCaches();
 
+    _emitSceneUpdated();
+
     if (parentId && getGroups().has(parentId)) {
         applySelection(null, [], parentId);
     } else {
         resetSelectionAndDeselect();
     }
-
-    _emitSceneUpdated();
 
     suppressVertexQueue = false;
     console.log(`Group removed: ${groupId}`);
@@ -815,8 +826,8 @@ function duplicateSelected(): void {
         }
 
         updateHelperPosition();
-        updateSelectionOverlay();
         _emitSceneUpdated();
+        updateSelectionOverlay();
 
         console.log('Duplication complete');
     } finally {

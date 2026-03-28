@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
+import { currentSelection } from '../controls/select';
 
 // ----- Interfaces -----
 
@@ -601,6 +602,7 @@ export function refreshScenePanel(): void {
 
     scenePanelList.appendChild(fragment);
     scheduleSceneExtraFit();
+    syncScenePanelSelection(currentSelection as any);
 }
 
 window.addEventListener('pde:scene-updated', refreshScenePanel);
