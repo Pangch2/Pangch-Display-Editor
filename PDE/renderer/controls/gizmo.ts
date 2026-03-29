@@ -734,8 +734,8 @@ function createGroup(): string | undefined {
     const newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition, primaryId);
 
     invalidateSelectionCaches();
-    _emitSceneUpdated();
     applySelection(null, [], newGroupId);
+    _emitSceneUpdated();
     suppressVertexQueue = false;
 
     console.log(`Group created: ${newGroupId}`);
@@ -755,13 +755,13 @@ function ungroupGroup(groupId: string): void {
 
     invalidateSelectionCaches();
 
-    _emitSceneUpdated();
-
     if (parentId && getGroups().has(parentId)) {
         applySelection(null, [], parentId);
     } else {
         resetSelectionAndDeselect();
     }
+
+    _emitSceneUpdated();
 
     suppressVertexQueue = false;
     console.log(`Group removed: ${groupId}`);
