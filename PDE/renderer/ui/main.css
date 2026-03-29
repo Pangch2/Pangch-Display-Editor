@@ -100,6 +100,7 @@ canvas {
   display: flex;
   align-items: center;
   gap: 10px;
+  position: relative;
 }
 
 .scene-name {
@@ -187,6 +188,64 @@ canvas {
   align-items: center;
   gap: 10px;
   user-select: none;
+  position: relative;
+}
+
+.scene-object-item.scene-drag-source,
+.scene-tree-group.scene-drag-source {
+  opacity: 0.45;
+}
+
+.scene-drag-preview {
+  position: fixed;
+  left: -10000px;
+  top: -10000px;
+  padding: 4px 0;
+  border: 1px solid rgba(132, 132, 142, 0.6);
+  border-radius: 6px;
+  background: rgba(36, 36, 42, 0.86);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+  opacity: 0.78;
+  overflow: hidden;
+}
+
+.scene-drag-preview .scene-drag-preview-row {
+  pointer-events: none;
+}
+
+.scene-drag-preview .scene-object-item,
+.scene-drag-preview .scene-tree-group {
+  background: transparent;
+}
+
+.scene-drag-preview-more {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: #9ea4ad;
+}
+
+.scene-object-item.scene-drop-before,
+.scene-tree-group.scene-drop-before {
+  box-shadow: inset 0 2px 0 #4ea6ff;
+}
+
+.scene-object-item.scene-drop-after,
+.scene-tree-group.scene-drop-after {
+  box-shadow: inset 0 -2px 0 #4ea6ff;
+}
+
+.scene-tree-group.scene-drop-inside {
+  background: rgba(78, 166, 255, 0.16);
+  outline: 1px solid #4ea6ff;
+  outline-offset: -1px;
+}
+
+#scene-object-list.scene-drop-root-end::after {
+  content: '';
+  display: block;
+  border-top: 2px solid #4ea6ff;
+  margin: 2px 8px 2px 8px;
 }
 
 .scene-tree-group:hover {
