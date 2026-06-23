@@ -18,9 +18,11 @@
 
 * `entityMaterial.js`: model shader, material node management
 
-* `load-project/upload-pbde.ts`: entry point, coordinates parsing and rendering
-* `load-project/scene-parser.ts`: parses pbde data, generates atlas
-* `load-project/mesh-builder.ts`: builds BatchedMesh/InstancedMesh/PlayerHead
+* `load-project/upload-pbde.ts`: entry point, file open/merge/drop UI and load orchestration only
+* `load-project/scene-parser.ts`: parses pbde data, normalizes scene graph, builds atlas metadata
+* `load-project/mesh-builder.ts`: builds BatchedMesh/InstancedMesh/PlayerHead and applies scene data
+* `load-project/pbde-assets.ts`: main-thread asset access, texture decode, cache helpers
+* `load-project/pbde-types.ts`: shared pbde types for parser/builder/assets
 
 * `controls/`: core interaction logic (feature separation)
 

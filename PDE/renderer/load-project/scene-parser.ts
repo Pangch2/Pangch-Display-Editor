@@ -1,5 +1,6 @@
 import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
+import type { GroupData as ParserGroupData } from './pbde-types';
 
 type TexturePixelData = {
     w: number;
@@ -48,18 +49,6 @@ interface RenderItem {
     tints?: number[];
     originalName?: string;
     [key: string]: any; // Allow for other dynamic properties for now
-}
-
-interface GroupData {
-    id: string;
-    isCollection: boolean;
-    children: { type: 'group' | 'object', id: string }[];
-    parent: string | null;
-    name: string;
-    position: { x: number, y: number, z: number };
-    quaternion: { x: number, y: number, z: number, w: number };
-    scale: { x: number, y: number, z: number };
-    pivot: number[];
 }
 
 // tintColor 모듈을 워커에서 직접 불러올 수 없으므로 여기에서 구현을 포함한다.
@@ -158,58 +147,21 @@ function getTextureColor(modelResourceLocation: string, textureLayer?: string | 
   }
 }
 
-// --- 워커 내부 에셋 공급자 ---
-
-const assetCache = new Map();
-const requestPromises = new Map();
-let requestIdCounter = 0;
-
-const workerAssetProvider = {
-    getAsset(assetPath) {
-        // 캐시가 존재하면 메인 스레드 왕복 없이 즉시 반환한다.
-        if (assetCache.has(assetPath)) {
-            return Promise.resolve(assetCache.get(assetPath));
-        }
-
-        // 동일한 에셋에 대한 중복 요청은 기존 프라미스에 합류시킨다.
-        if (requestPromises.has(assetPath)) {
-            return requestPromises.get(assetPath);
-        }
-
-        const promise = new Promise((resolve, reject) => {
-            const requestId = requestIdCounter++;
-            let timeoutId = null;
-
-            const listener = (e) => {
-                if (e.data.type === 'assetResponse' && e.data.requestId === requestId) {
-                    clearTimeout(timeoutId);
-                    self.removeEventListener('message', listener);
-                    requestPromises.delete(assetPath);
-                    if (e.data.success) {
-                        assetCache.set(assetPath, e.data.content);
-                        resolve(e.data.content);
-                    } else {
-                        reject(new Error(e.data.error));
-                    }
-                }
-            };
-
-            // 워커에서 오래 대기하지 않도록 하드 타임아웃을 건다.
-            timeoutId = setTimeout(() => {
-                self.removeEventListener('message', listener);
-                requestPromises.delete(assetPath);
-                reject(new Error(`Asset request timed out for: ${assetPath}`));
-            }, 15000); // 15초 안에 응답이 없으면 타임아웃으로 간주한다.
-
-            self.addEventListener('message', listener);
-            // 메인 스레드에 에셋 요청을 전달한다.
-            self.postMessage({ type: 'requestAsset', path: assetPath, requestId });
-        });
-
-        requestPromises.set(assetPath, promise);
-        return promise;
-    }
+export type PbdeAssetProvider = {
+    getAsset(assetPath: string): Promise<string | Uint8Array | ArrayBuffer | unknown>;
 };
+
+export interface ParsedPbdeProject {
+    metadata: {
+        geometries: any[];
+        otherItems: any[];
+        useUint32Indices: boolean;
+        atlas: { width: number; height: number; data: Uint8ClampedArray } | null;
+        groups: Map<string, ParserGroupData>;
+        sceneOrder: { type: 'group' | 'object'; id: string }[];
+    };
+    geometryBuffer: ArrayBuffer;
+}
 
 // --- block-processor를 바탕으로 한 블록 처리 로직 ---
 
@@ -1277,7 +1229,7 @@ const loadTexturePixels: LoadTexturePixelsFn = Object.assign(
         if (texturePixelPromises.has(texPath)) return texturePixelPromises.get(texPath) ?? null;
         const p = (async () => {
             try {
-                const asset = await workerAssetProvider.getAsset(texPath);
+                const asset = await assetProvider.getAsset(texPath);
                 let bytes: Uint8Array | null = null;
                 if (asset instanceof Uint8Array) bytes = asset;
                 else if (asset && typeof asset === 'object' && 'type' in asset && (asset as any).type === 'Buffer' && Array.isArray((asset as any).data)) bytes = new Uint8Array((asset as any).data);
@@ -1549,9 +1501,6 @@ async function processItemModelDisplay(node: any): Promise<RenderItem | null> {
 // 반복 실행 시 캐시와 임시 리소스를 초기화한다.
 function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
     const { clearCanvas = true } = options;
-    assetCache.clear();
-    requestPromises.clear();
-    requestIdCounter = 0;
     modelTreeCache.clear();
     itemDefinitionCache.clear();
     itemModelGeometryCache.clear();
@@ -1582,7 +1531,7 @@ function generateUUID() {
     });
 }
 
-let groups = new Map<string, GroupData>();
+let groups = new Map<string, ParserGroupData>();
 let sceneOrder: { rootIndex: number, type: 'group' | 'object', id: string }[] = [];
 
 // 두 개의 4x4 행렬을 곱해 누적 변환을 계산한다.
@@ -1850,16 +1799,9 @@ function getTransparencyType(pixels: TexturePixelData) {
     return 0; // Opaque
 }
 
-// 메인 스레드에서 전송된 PBDE 프로젝트 데이터를 수신해 처리한다.
-self.onmessage = async (e) => {
-    const fileContent = e.data;
-    // 에셋 응답 메시지는 렌더링 로직에서 무시한다.
-    if (fileContent && typeof fileContent === 'object' && 'type' in fileContent) {
-        return;
-    }
-
+export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, provider: PbdeAssetProvider): Promise<ParsedPbdeProject> {
     resetWorkerCaches({ clearCanvas: true });
-    initializeAssetProvider(workerAssetProvider);
+    initializeAssetProvider(provider);
     groups = new Map();
     sceneOrder = [];
 
@@ -1870,7 +1812,7 @@ self.onmessage = async (e) => {
         } else if (fileContent instanceof Uint8Array) {
             uint8Array = fileContent;
         } else {
-            return;
+            throw new Error('Unsupported PBDE buffer input');
         }
         const decompressedU8 = decompressSync(uint8Array);
 
@@ -2154,23 +2096,16 @@ self.onmessage = async (e) => {
             sceneOrder: sceneOrder.map(({ type, id }) => ({ type, id }))
         };
 
-        // 메타데이터와 지오메트리 버퍼를 메인 스레드로 제로카피 전송한다.
-        // ArrayBuffer는 소유권이 이전(transfer)되므로 구조적 클론 비용이 없다.
-        // 아틀라스 버퍼도 함께 전송해 Uint8ClampedArray 복사를 방지한다.
-        const transferList: Transferable[] = [geometryBuffer];
-        if (atlasInfo) transferList.push(atlasInfo.data.buffer);
-        self.postMessage({
-            success: true,
+        return {
             metadata: metadataPayload,
             geometryBuffer
-        }, transferList);
+        };
 
     } catch (error) {
-        self.postMessage({
-            success: false,
-            error: 'Worker Error: ' + String(error) + '\nStack: ' + (error ? error.stack : 'No stack available')
-        });
+        const err = error as Error;
+        throw new Error('PBDE parse error: ' + String(error) + '\nStack: ' + (err && err.stack ? err.stack : 'No stack available'));
     } finally {
         resetWorkerCaches({ clearCanvas: true });
     }
-};
+}
+
