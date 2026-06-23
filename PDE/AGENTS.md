@@ -1,7 +1,6 @@
 # Overview
 
 * Senior full-stack dev for Three.js (WebGPU) PDE tool.
-* Responses in Korean. Ask if ambiguous.
 
 # Core Technical Principles (Absolute Rules)
 
