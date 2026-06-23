@@ -1,4 +1,4 @@
-﻿﻿import { decompressSync, strFromU8 } from 'fflate';
+import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
 
 type TexturePixelData = {
@@ -1853,7 +1853,10 @@ function getTransparencyType(pixels: TexturePixelData) {
 // 메인 스레드에서 전송된 PBDE 프로젝트 데이터를 수신해 처리한다.
 self.onmessage = async (e) => {
     const fileContent = e.data;
-    if (typeof fileContent !== 'string') return; // 에셋 응답 메시지는 렌더링 로직에서 무시한다.
+    // 에셋 응답 메시지는 렌더링 로직에서 무시한다.
+    if (fileContent && typeof fileContent === 'object' && 'type' in fileContent) {
+        return;
+    }
 
     resetWorkerCaches({ clearCanvas: true });
     initializeAssetProvider(workerAssetProvider);
@@ -1861,13 +1864,45 @@ self.onmessage = async (e) => {
     sceneOrder = [];
 
     try {
-        // 전달받은 PBDE 파일을 디코딩하고 JSON으로 변환한다.
-        const decodedData = atob(fileContent);
-        const uint8Array = new Uint8Array(decodedData.length);
-        for (let i = 0; i < decodedData.length; i++) {
-            uint8Array[i] = decodedData.charCodeAt(i);
+        let uint8Array: Uint8Array;
+        if (fileContent instanceof ArrayBuffer) {
+            uint8Array = new Uint8Array(fileContent);
+        } else if (fileContent instanceof Uint8Array) {
+            uint8Array = fileContent;
+        } else {
+            return;
         }
-    const jsonData = JSON.parse(strFromU8(decompressSync(uint8Array)));
+        const decompressedU8 = decompressSync(uint8Array);
+
+        // "PRJ2" 마술 바이트 확인 (ASCII: P=80, R=82, J=74, 2=50)
+        if (decompressedU8[0] !== 80 || decompressedU8[1] !== 82 || decompressedU8[2] !== 74 || decompressedU8[3] !== 50) {
+            throw new Error('Invalid magic bytes. Expected PRJ2.');
+        }
+
+        const target = [115, 99, 101, 110, 101, 46, 106, 115, 111, 110]; // "scene.json"
+        let index = -1;
+        for (let i = 0; i <= decompressedU8.length - target.length; i++) {
+            let found = true;
+            for (let j = 0; j < target.length; j++) {
+                if (decompressedU8[i + j] !== target[j]) {
+                    found = false;
+                    break;
+                }
+            }
+            if (found) {
+                index = i;
+                break;
+            }
+        }
+        if (index === -1) {
+            throw new Error('scene.json not found in PRJ2 archive');
+        }
+        const sizeIndex = index + target.length;
+        const view = new DataView(decompressedU8.buffer, decompressedU8.byteOffset + sizeIndex, 4);
+        const dataSize = view.getUint32(0, true);
+        const jsonStartIndex = sizeIndex + 4;
+        const jsonBytes = decompressedU8.subarray(jsonStartIndex, jsonStartIndex + dataSize);
+        const jsonData = JSON.parse(strFromU8(jsonBytes));
 
         // 렌더링에 필요한 필드만 남기도록 씬 트리를 단순화한다.
         const processedChildren = split_children(jsonData[0].children);

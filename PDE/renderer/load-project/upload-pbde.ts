@@ -1,4 +1,4 @@
-﻿﻿import { openWithAnimation, closeWithAnimation } from '../ui/ui-open-close.js';
+﻿import { openWithAnimation, closeWithAnimation } from '../ui/ui-open-close.js';
 import * as THREE from 'three/webgpu';
 import PbdeWorker from './pbde-worker?worker&inline';
 import { createEntityMaterial } from '../entityMaterial.js';
@@ -1617,11 +1617,11 @@ function _loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number):
                 return;
             }
             const result = event.target?.result;
-            if (typeof result === 'string' && worker) {
+            if (result && worker) {
                 worker.postMessage(result);
             }
         };
-        reader.readAsText(file);
+        reader.readAsArrayBuffer(file);
     });
 }
 
