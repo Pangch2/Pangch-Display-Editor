@@ -41,13 +41,20 @@ function createWindow() {
     };
     callback({ responseHeaders: newHeaders });
   });
-
+  
   if (process.env.NODE_ENV === 'development') {
     win.loadURL('http://localhost:5173');
     win.webContents.openDevTools();
+  
+    win.webContents.on('before-input-event', (event, input) => {
+      if (input.key === 'F12' && input.type === 'keyDown') {
+        win.webContents.toggleDevTools();
+        event.preventDefault();
+      }
+    });
+  
   } else {
-  win.loadFile(path.join(__dirname, 'renderer-dist', 'index.html'));
-    //win.webContents.openDevTools();
+    win.loadFile(path.join(__dirname, 'renderer-dist', 'index.html'));
   }
 
   Menu.setApplicationMenu(null);

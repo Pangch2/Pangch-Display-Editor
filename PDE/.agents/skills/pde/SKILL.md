@@ -63,6 +63,12 @@ Tracked files — any time one mentioned in request while skill active, follow *
 | `vertex-queue.ts` | `controls/vertex-queue.ts` |
 | `main.css` | `ui/main.css` |
 | `scene-panel.ts` | `ui/scene-panel.ts` |
+| `scene-panel-types.ts` | `ui/scene-panel-types.ts` |
+| `scene-panel-state.ts` | `ui/scene-panel-state.ts` |
+| `scene-panel-model.ts` | `ui/scene-panel-model.ts` |
+| `scene-panel-selection.ts` | `ui/scene-panel-selection.ts` |
+| `scene-panel-dnd.ts` | `ui/scene-panel-dnd.ts` |
+| `scene-panel-render.ts` | `ui/scene-panel-render.ts` |
 
 ---
 

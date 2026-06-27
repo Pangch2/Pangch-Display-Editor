@@ -687,6 +687,13 @@ function _emitSceneUpdated(): void {
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
+function _handleSceneUpdated(): void {
+    invalidateSelectionCaches();
+    _recomputePivotStateForSelection();
+    updateHelperPosition();
+    updateSelectionOverlay();
+}
+
 function createGroup(): string | undefined {
     suppressVertexQueue = true;
     vertexQueue.length = 0;
@@ -1412,6 +1419,8 @@ export function initGizmo({
             isVertexMode: isVertexMode
         });
     });
+
+    window.addEventListener('pde:scene-updated', _handleSceneUpdated);
 
     return {
         getTransformControls: () => transformControls!,

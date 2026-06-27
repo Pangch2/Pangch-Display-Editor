@@ -42,3 +42,5 @@ Owns the editor's custom group tree model, including group creation, cloning, un
 
 ## Notes
 This module is the canonical access point for group metadata. Callers should use its accessors rather than mutating `loadedObjectGroup.userData` directly.
+`createGroupStructure()` anchors the new group to the primary selected row when possible and keeps root `sceneOrder` mutations in place instead of replacing the array reference.
+`cloneGroupStructure()` now inserts root clones immediately after the source group in `sceneOrder` or the parent group's child list when the source is still at the same level, and falls back to appending only when the source location cannot be resolved.

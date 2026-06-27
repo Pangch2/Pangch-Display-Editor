@@ -55,6 +55,15 @@ export interface CollectCloneContext {
     _groupIdMap?: Map<string, string>;
 }
 
+type SceneItemContainer = GroupChild[] | SceneOrderEntry[];
+
+interface SceneItemLocation {
+    parentGroupId: string | null;
+    containerKind: 'group' | 'scene';
+    container: SceneItemContainer;
+    index: number;
+}
+
 type PivotInput = Vector3 | [number, number, number] | { x: number; y: number; z: number } | null | undefined;
 
 // Constants
@@ -115,6 +124,127 @@ function _getCloneName(sourceName: string | null | undefined, groups: Map<string
         candidate = `${namePart} ${nextNum}`.trim();
     }
     return candidate;
+}
+
+function _findGroupLocationForCreate(
+    loadedObjectGroup: Group,
+    groupId: string
+): SceneItemLocation | null {
+    const groups = getGroups(loadedObjectGroup);
+    const group = groups.get(groupId);
+    if (!group) return null;
+
+    if (group.parent) {
+        const parent = groups.get(group.parent);
+        if (parent) {
+            if (!Array.isArray(parent.children)) parent.children = [];
+            const idx = parent.children.findIndex((child) => child.type === 'group' && child.id === groupId);
+            if (idx !== -1) {
+                return {
+                    parentGroupId: group.parent,
+                    containerKind: 'group',
+                    container: parent.children,
+                    index: idx
+                };
+            }
+        }
+    }
+
+    const sceneOrder = loadedObjectGroup.userData?.sceneOrder as SceneOrderEntry[] | undefined;
+    if (Array.isArray(sceneOrder)) {
+        const rootIdx = sceneOrder.findIndex((entry) => entry.type === 'group' && entry.id === groupId);
+        if (rootIdx !== -1) {
+            return {
+                parentGroupId: null,
+                containerKind: 'scene',
+                container: sceneOrder,
+                index: rootIdx
+            };
+        }
+    }
+
+    for (const [parentId, parent] of groups) {
+        if (!Array.isArray(parent.children)) continue;
+        const idx = parent.children.findIndex((child) => child.type === 'group' && child.id === groupId);
+        if (idx !== -1) {
+            return {
+                parentGroupId: parentId,
+                containerKind: 'group',
+                container: parent.children,
+                index: idx
+            };
+        }
+    }
+
+    return null;
+}
+
+function _findObjectLocationForCreate(
+    loadedObjectGroup: Group,
+    objectUuid: string
+): SceneItemLocation | null {
+    const groups = getGroups(loadedObjectGroup);
+    const ud = loadedObjectGroup.userData;
+    const objectKey = ud?.objectUuidToInstance?.get(objectUuid)
+        ? getGroupKey(ud.objectUuidToInstance.get(objectUuid)!.mesh as Mesh | BatchedMesh | InstancedMesh, ud.objectUuidToInstance.get(objectUuid)!.instanceId)
+        : null;
+    const mappedParentId = objectKey ? (ud?.objectToGroup?.get(objectKey) ?? null) : null;
+
+    if (mappedParentId) {
+        const parent = groups.get(mappedParentId);
+        if (parent) {
+            if (!Array.isArray(parent.children)) parent.children = [];
+            const idx = parent.children.findIndex((child) => child.type === 'object' && child.id === objectUuid);
+            if (idx !== -1) {
+                return {
+                    parentGroupId: mappedParentId,
+                    containerKind: 'group',
+                    container: parent.children,
+                    index: idx
+                };
+            }
+        }
+    }
+
+    const sceneOrder = ud?.sceneOrder as SceneOrderEntry[] | undefined;
+    if (Array.isArray(sceneOrder)) {
+        const rootIdx = sceneOrder.findIndex((entry) => entry.type === 'object' && entry.id === objectUuid);
+        if (rootIdx !== -1) {
+            return {
+                parentGroupId: null,
+                containerKind: 'scene',
+                container: sceneOrder,
+                index: rootIdx
+            };
+        }
+    }
+
+    if (groups) {
+        for (const [parentId, parent] of groups) {
+            if (!Array.isArray(parent.children)) continue;
+            const idx = parent.children.findIndex((child) => child.type === 'object' && child.id === objectUuid);
+            if (idx !== -1) {
+                return {
+                    parentGroupId: parentId,
+                    containerKind: 'group',
+                    container: parent.children,
+                    index: idx
+                };
+            }
+        }
+    }
+
+    if (sceneOrder && loadedObjectGroup.userData?.objectUuidToInstance?.has(objectUuid)) {
+        sceneOrder.push({ type: 'object', id: objectUuid });
+        return {
+            parentGroupId: null,
+            containerKind: 'scene',
+            container: sceneOrder,
+            index: sceneOrder.length - 1
+        };
+    }
+
+    return null;
 }
 
 export function normalizePivotToVector3(pivot: PivotInput, out: Vector3 = new Vector3()): Vector3 | null {
@@ -317,8 +447,6 @@ export function createGroupStructure(
         scale: new Vector3(1, 1, 1)
     };
 
-    // Find the common parent and determine the insertion index based on the topmost selected item
-    let commonParentId: string | null | undefined = undefined;
     const selectedUuids = new Set<string>();
     for (const { mesh, instanceId } of selectedObjects) {
         const key = getGroupKey(mesh, instanceId);
@@ -327,63 +455,48 @@ export function createGroupStructure(
     }
     const selectedGroupSet = new Set(selectedGroupIds);
 
-    const considerParentId = (gid: string | null | undefined): void => {
-        if (commonParentId === undefined) commonParentId = gid ?? null;
-        else if (commonParentId !== (gid ?? null)) commonParentId = null;
-    };
-
-    for (const gid of selectedGroupIds) {
-        const g = groups.get(gid);
-        considerParentId(g ? g.parent : undefined);
-    }
-    for (const { mesh, instanceId } of selectedObjects) {
-        const key = getGroupKey(mesh, instanceId);
-        considerParentId(objectToGroup.get(key));
-    }
-
     let insertionIndex = -1;
+    const insertionLocation = (() => {
+        if (primaryId) {
+            if (groups.has(primaryId)) return _findGroupLocationForCreate(loadedObjectGroup, primaryId);
+            return _findObjectLocationForCreate(loadedObjectGroup, primaryId);
+        }
 
-    if (commonParentId) {
-        newGroup.parent = commonParentId;
-        const parentGroup = groups.get(commonParentId);
-        if (parentGroup && Array.isArray(parentGroup.children)) {
-            // Find the index of the primary selection if any
-            if (primaryId) {
-                insertionIndex = parentGroup.children.findIndex(c => 
-                    (c.type === 'group' && c.id === primaryId) ||
-                    (c.type === 'object' && c.id === primaryId)
-                );
-            }
-            
-            // Fallback: Find the index of the first selected item among children (topmost)
-            if (insertionIndex === -1) {
-                insertionIndex = parentGroup.children.findIndex(c => 
-                    (c.type === 'group' && selectedGroupSet.has(c.id)) ||
-                    (c.type === 'object' && c.id && selectedUuids.has(c.id))
-                );
-            }
-            
-            // Temporary insertion, will clean up children later
-            if (insertionIndex !== -1) {
-                parentGroup.children.splice(insertionIndex, 0, { type: 'group', id: newGroupId });
-            } else {
-                parentGroup.children.push({ type: 'group', id: newGroupId });
-            }
+        for (const gid of selectedGroupIds) {
+            const location = _findGroupLocationForCreate(loadedObjectGroup, gid);
+            if (location) return location;
+        }
+
+        for (const uuid of selectedUuids) {
+            const location = _findObjectLocationForCreate(loadedObjectGroup, uuid);
+            if (location) return location;
+        }
+
+        return null;
+    })();
+
+    if (insertionLocation) {
+        newGroup.parent = insertionLocation.parentGroupId;
+        insertionIndex = insertionLocation.index;
+
+        if (insertionLocation.containerKind === 'group') {
+            (insertionLocation.container as GroupChild[]).splice(insertionIndex, 0, { type: 'group', id: newGroupId });
+        } else {
+            (insertionLocation.container as SceneOrderEntry[]).splice(insertionIndex, 0, { type: 'group', id: newGroupId });
         }
     } else if (sceneOrder) {
-        // Find the index of the primary selection if any
+        newGroup.parent = null;
         if (primaryId) {
             insertionIndex = sceneOrder.findIndex(entry => entry.id === primaryId);
         }
 
-        // Fallback: Find the index of the first selected item in sceneOrder (topmost)
         if (insertionIndex === -1) {
-            insertionIndex = sceneOrder.findIndex(entry => 
+            insertionIndex = sceneOrder.findIndex(entry =>
                 (entry.type === 'group' && selectedGroupSet.has(entry.id)) ||
                 (entry.type === 'object' && selectedUuids.has(entry.id))
             );
         }
-        
+
         if (insertionIndex !== -1) {
             sceneOrder.splice(insertionIndex, 0, { type: 'group', id: newGroupId });
         }
@@ -399,13 +512,13 @@ export function createGroupStructure(
             affectedGroupIds.add(childGroup.parent);
             const oldParent = groups.get(childGroup.parent);
             if (oldParent && Array.isArray(oldParent.children)) {
-                oldParent.children = oldParent.children.filter(c => !(c && c.type === 'group' && (c as GroupChildGroup).id === childGroupId));
+                const childIndex = oldParent.children.findIndex(c => c && c.type === 'group' && (c as GroupChildGroup).id === childGroupId);
+                if (childIndex !== -1) oldParent.children.splice(childIndex, 1);
             }
         } else if (sceneOrder) {
             // Root group being moved: remove from sceneOrder (excluding the newly inserted one)
-            ud.sceneOrder = ud.sceneOrder.filter((entry: any) => 
-                !(entry.type === 'group' && entry.id === childGroupId)
-            );
+            const rootIndex = sceneOrder.findIndex((entry) => entry.type === 'group' && entry.id === childGroupId);
+            if (rootIndex !== -1) sceneOrder.splice(rootIndex, 1);
         }
 
         childGroup.parent = newGroupId;
@@ -421,13 +534,13 @@ export function createGroupStructure(
             affectedGroupIds.add(oldGroupId);
             const oldGroup = groups.get(oldGroupId);
             if (oldGroup && Array.isArray(oldGroup.children)) {
-                oldGroup.children = oldGroup.children.filter(c => !(c && c.type === 'object' && (c as GroupChildObject).mesh === mesh && (c as GroupChildObject).instanceId === instanceId));
+                const childIndex = oldGroup.children.findIndex(c => c && c.type === 'object' && (c as GroupChildObject).mesh === mesh && (c as GroupChildObject).instanceId === instanceId);
+                if (childIndex !== -1) oldGroup.children.splice(childIndex, 1);
             }
         } else if (objectUuid && sceneOrder) {
             // Root object being moved: remove from sceneOrder
-            ud.sceneOrder = ud.sceneOrder.filter((entry: any) => 
-                !(entry.type === 'object' && entry.id === objectUuid)
-            );
+            const rootIndex = sceneOrder.findIndex((entry) => entry.type === 'object' && entry.id === objectUuid);
+            if (rootIndex !== -1) sceneOrder.splice(rootIndex, 1);
         }
         newGroup.children.push({ type: 'object', mesh, instanceId, id: objectUuid });
         objectToGroup.set(key, newGroupId);
@@ -442,14 +555,16 @@ export function createGroupStructure(
             if (parentId) {
                 const pg = groups.get(parentId);
                 if (pg && Array.isArray(pg.children)) {
-                    pg.children = pg.children.filter(c => !(c && c.type === 'group' && (c as GroupChildGroup).id === groupId));
+                    const childIndex = pg.children.findIndex(c => c && c.type === 'group' && (c as GroupChildGroup).id === groupId);
+                    if (childIndex !== -1) pg.children.splice(childIndex, 1);
                 }
                 groups.delete(groupId);
                 cleanupEmptyGroups(parentId);
             } else {
                 groups.delete(groupId);
                 if (Array.isArray(ud.sceneOrder)) {
-                    ud.sceneOrder = ud.sceneOrder.filter((entry: any) => !(entry.type === 'group' && entry.id === groupId));
+                    const rootIndex = ud.sceneOrder.findIndex((entry: any) => entry.type === 'group' && entry.id === groupId);
+                    if (rootIndex !== -1) ud.sceneOrder.splice(rootIndex, 1);
                 }
             }
         }
@@ -552,7 +667,26 @@ export function cloneGroupStructure(
         const parentGroup = groups.get(parentId);
         if (parentGroup) {
             if (!Array.isArray(parentGroup.children)) parentGroup.children = [];
-            parentGroup.children.push({ type: 'group', id: newGroupId });
+            if (parentId === sourceGroup.parent) {
+                const sourceIndex = parentGroup.children.findIndex((child) => child.type === 'group' && child.id === groupId);
+                if (sourceIndex !== -1) {
+                    parentGroup.children.splice(sourceIndex + 1, 0, { type: 'group', id: newGroupId });
+                } else {
+                    parentGroup.children.push({ type: 'group', id: newGroupId });
+                }
+            } else {
+                parentGroup.children.push({ type: 'group', id: newGroupId });
+            }
+        }
+    } else {
+        const sceneOrder = loadedObjectGroup.userData?.sceneOrder as SceneOrderEntry[] | undefined;
+        if (Array.isArray(sceneOrder) && sourceGroup.parent === null) {
+            const sourceIndex = sceneOrder.findIndex((entry) => entry.type === 'group' && entry.id === groupId);
+            if (sourceIndex !== -1) {
+                sceneOrder.splice(sourceIndex + 1, 0, { type: 'group', id: newGroupId });
+            } else {
+                sceneOrder.push({ type: 'group', id: newGroupId });
+            }
         }
     }
 

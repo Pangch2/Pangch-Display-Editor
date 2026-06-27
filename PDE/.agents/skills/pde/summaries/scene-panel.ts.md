@@ -1,31 +1,27 @@
 # scene-panel.ts
 
 ## Purpose
-Builds and keeps sync scene-object sidebar for loaded PBDE scene. Renders groups and objects, tracks selection state, supports expand/collapse, drag-drop reordering, auto-fit truncation for long labels, and emits/consumes `pde:scene-updated` and `pde:selection-changed` events.
+Bootstraps the scene panel module cluster while preserving the existing `./ui/scene-panel` import path. Installs the resize/scroll/drag/drop/scene-update/selection listeners and re-exports `refreshScenePanel()`, while the actual render, selection, drag/drop, and scene-data logic now live in the sibling scene-panel modules.
 
 ## Exports
 
 ### Functions / Methods
 - `refreshScenePanel(): void` -- Rebuilds entire scene tree from `loadedObjectGroup.userData`, then reapplies selection.
 
-## Internal State
-- `scenePanelList` -- DOM root for scene object list.
-- `sceneExtraFitRaf` -- `requestAnimationFrame` throttle for text fitting.
-- `extraTokenCache` -- caches tokenized extra-info strings for truncation.
-- `lastClickedItem` -- anchor for range selection and selection sync.
-- `expandedGroupIds` -- remembers expanded groups across rerenders.
-- Drag/drop state: `sceneDragBundle`, `sceneDropHint`, `sceneDropMarkerEl`, `sceneDropMarkerClass`, `sceneDragPreviewEl`, `sceneAutoExpandTimer`, `sceneAutoExpandGroupId`, `suppressSceneItemClickUntil`.
-
 ## Dependencies (imports)
-- `three/webgpu` -- `Object3D`, `Vector3`, `Quaternion`, and type references.
+- `./scene-panel-state` -- shared panel DOM/state singleton used by all scene-panel modules.
+- `./scene-panel-dnd` -- drag/drop handlers for panel DOM events.
+- `./scene-panel-render` -- render entrypoint and fit scheduler.
+- `./scene-panel-selection` -- selection sync and click handling.
+- `./scene-panel-types` -- shared local type for the selection-changed event payload.
+- `../controls/select` -- fallback selection snapshot for the selection-changed listener.
 - `../load-project/upload-pbde` -- source of `loadedObjectGroup.userData` scene data.
-- `../controls/select` -- current selection snapshot for sync.
 
 ## Used By (known callers)
+- `renderer.ts` -- imports this module for bootstrapping side effects.
 - `window` event listeners -- `pde:scene-updated` triggers rerender; `pde:selection-changed` updates highlight state.
 
 ## Notes
-- Renders root order from `sceneOrder` first, then any unrooted groups, then loose objects.
-- Selection supports click, shift range select, ctrl/meta toggle, and keeps ancestors expanded for visible selection.
-- Drag/drop moves both group tree nodes and object instances, while preventing invalid cycles and self-drops.
-- Label fitting uses binary search on visible rows to fit name plus optional extra-info tokens.
+- Shared mutable state was extracted to `scene-panel-state.ts`.
+- Rendering helpers live in `scene-panel-render.ts`; model/lookups in `scene-panel-model.ts`; click/selection in `scene-panel-selection.ts`; drag/drop in `scene-panel-dnd.ts`.
+- Behavior and DOM structure were kept unchanged.

@@ -66,11 +66,19 @@ interface SceneOrderEntry {
 interface DuplicateUserData {
     instanceKeyToObjectUuid?: Map<string, string>;
     objectUuidToInstance?: Map<string, { mesh: Object3D; instanceId: number }>;
+    objectToGroup?: Map<string, string>;
     objectNames?: Map<string, string>;
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, unknown>;
     sceneOrder?: SceneOrderEntry[];
+}
+
+interface SourceObjectLocation {
+    parentGroupId: string | null;
+    containerKind: 'group' | 'scene';
+    container: Array<{ type: 'group' | 'object'; id?: string; mesh?: Object3D; instanceId?: number }>;
+    index: number;
 }
 
 export interface DuplicationSelection {
@@ -104,7 +112,7 @@ function _cloneBlockProps<T>(value: T): T {
 function _ensureDuplicateUserDataStores(loadedObjectGroup: Group): Required<Pick<
     DuplicateUserData,
     'instanceKeyToObjectUuid' | 'objectUuidToInstance' | 'objectNames' | 'objectIsItemDisplay' | 'objectDisplayTypes' | 'objectBlockProps'
->> & { sceneOrder?: SceneOrderEntry[] } {
+>> & { sceneOrder?: SceneOrderEntry[]; objectToGroup?: Map<string, string> } {
     const ud = loadedObjectGroup.userData as DuplicateUserData;
     if (!ud.instanceKeyToObjectUuid) ud.instanceKeyToObjectUuid = new Map<string, string>();
     if (!ud.objectUuidToInstance) ud.objectUuidToInstance = new Map<string, { mesh: Object3D; instanceId: number }>();
@@ -120,7 +128,8 @@ function _ensureDuplicateUserDataStores(loadedObjectGroup: Group): Required<Pick
         objectIsItemDisplay: ud.objectIsItemDisplay,
         objectDisplayTypes: ud.objectDisplayTypes,
         objectBlockProps: ud.objectBlockProps,
-        sceneOrder: ud.sceneOrder
+        sceneOrder: ud.sceneOrder,
+        objectToGroup: ud.objectToGroup
     };
 }
 
@@ -129,8 +138,7 @@ function _registerClonedObjectMetadata(
     sourceMesh: BatchedMesh | InstancedMesh,
     sourceInstanceId: number,
     targetMesh: BatchedMesh | InstancedMesh,
-    targetInstanceId: number,
-    targetGroupId: string | null
+    targetInstanceId: number
 ): string {
     const stores = _ensureDuplicateUserDataStores(loadedObjectGroup);
     const sourceKey = GroupUtils.getGroupKey(sourceMesh, sourceInstanceId);
@@ -161,11 +169,99 @@ function _registerClonedObjectMetadata(
         stores.objectNames.set(newUuid, newUuid.slice(0, 8));
     }
 
-    if (!targetGroupId && Array.isArray(stores.sceneOrder)) {
-        stores.sceneOrder.push({ type: 'object', id: newUuid });
+    return newUuid;
+}
+
+function _findSourceObjectLocation(
+    loadedObjectGroup: Group,
+    sourceMesh: BatchedMesh | InstancedMesh,
+    sourceInstanceId: number
+): SourceObjectLocation | null {
+    const stores = _ensureDuplicateUserDataStores(loadedObjectGroup);
+    const sourceKey = GroupUtils.getGroupKey(sourceMesh, sourceInstanceId);
+    const sourceUuid = stores.instanceKeyToObjectUuid.get(sourceKey);
+    if (!sourceUuid) return null;
+
+    const groups = GroupUtils.getGroups(loadedObjectGroup);
+    const parentGroupId = stores.objectToGroup?.get(sourceKey) ?? null;
+
+    if (parentGroupId) {
+        const parentGroup = groups.get(parentGroupId);
+        if (parentGroup && Array.isArray(parentGroup.children)) {
+            const index = parentGroup.children.findIndex((child) => child.type === 'object' && child.id === sourceUuid);
+            if (index !== -1) {
+                return {
+                    parentGroupId,
+                    containerKind: 'group',
+                    container: parentGroup.children,
+                    index
+                };
+            }
+        }
     }
 
-    return newUuid;
+    if (Array.isArray(stores.sceneOrder)) {
+        const index = stores.sceneOrder.findIndex((entry) => entry.type === 'object' && entry.id === sourceUuid);
+        if (index !== -1) {
+            return {
+                parentGroupId: null,
+                containerKind: 'scene',
+                container: stores.sceneOrder,
+                index
+            };
+        }
+    }
+
+    return null;
+}
+
+function _insertClonedObjectEntry(
+    loadedObjectGroup: Group,
+    sourceMesh: BatchedMesh | InstancedMesh,
+    sourceInstanceId: number,
+    targetGroupId: string | null,
+    targetMesh: BatchedMesh | InstancedMesh,
+    targetInstanceId: number,
+    newObjectUuid: string,
+    coveredByGroup: boolean
+): void {
+    const stores = _ensureDuplicateUserDataStores(loadedObjectGroup);
+    const groups = GroupUtils.getGroups(loadedObjectGroup);
+
+    if (targetGroupId) {
+        const targetGroup = groups.get(targetGroupId);
+        if (!targetGroup) return;
+        if (!Array.isArray(targetGroup.children)) targetGroup.children = [];
+
+        if (coveredByGroup) {
+            targetGroup.children.push({ type: 'object', mesh: targetMesh, instanceId: targetInstanceId, id: newObjectUuid });
+            return;
+        }
+
+        const sourceLocation = _findSourceObjectLocation(loadedObjectGroup, sourceMesh, sourceInstanceId);
+        if (sourceLocation && sourceLocation.parentGroupId === targetGroupId && sourceLocation.containerKind === 'group') {
+            sourceLocation.container.splice(sourceLocation.index + 1, 0, {
+                type: 'object',
+                mesh: targetMesh,
+                instanceId: targetInstanceId,
+                id: newObjectUuid
+            });
+            return;
+        }
+
+        targetGroup.children.push({ type: 'object', mesh: targetMesh, instanceId: targetInstanceId, id: newObjectUuid });
+        return;
+    }
+
+    const sourceLocation = _findSourceObjectLocation(loadedObjectGroup, sourceMesh, sourceInstanceId);
+    if (sourceLocation && sourceLocation.parentGroupId === null && sourceLocation.containerKind === 'scene') {
+        sourceLocation.container.splice(sourceLocation.index + 1, 0, { type: 'object', id: newObjectUuid });
+        return;
+    }
+
+    if (Array.isArray(stores.sceneOrder)) {
+        stores.sceneOrder.push({ type: 'object', id: newObjectUuid });
+    }
 }
 
 function createDuplicationContext(): DuplicationContext {
@@ -498,8 +594,7 @@ export function flushPendingHeadClones(loadedObjectGroup: Group, ctx: Duplicatio
                 sm,
                 sourceId,
                 targetMesh,
-                dstId,
-                targetGroupId
+                dstId
             );
 
             // Register Group mapping
@@ -816,19 +911,22 @@ function cloneInstance(loadedObjectGroup: Group, mesh: InstancedMesh | BatchedMe
         mesh,
         instanceId,
         targetBatch,
+        newInstanceId
+    );
+
+    _insertClonedObjectEntry(
+        loadedObjectGroup,
+        mesh,
+        instanceId,
+        targetGroupId,
+        targetBatch,
         newInstanceId,
-        targetGroupId
+        newObjectUuid,
+        coveredByGroup
     );
 
     // Register in LoadedObjectGroup hierarchy if group exists
     if (targetGroupId) {
-        const groups = GroupUtils.getGroups(loadedObjectGroup);
-        const group = groups.get(targetGroupId);
-        if (group) {
-            if (!Array.isArray(group.children)) group.children = [];
-            group.children.push({ type: 'object', mesh: targetBatch, instanceId: newInstanceId, id: newObjectUuid });
-        }
-
         const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
         const key = GroupUtils.getGroupKey(targetBatch, newInstanceId);
         objectToGroup.set(key, targetGroupId);

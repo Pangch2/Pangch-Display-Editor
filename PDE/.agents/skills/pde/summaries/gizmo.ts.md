@@ -35,3 +35,4 @@ Maintains selection, pivot, drag, vertex queue, and gizmo-anchor caches at modul
 
 ## Notes
 This is the highest-risk module in the control layer: it owns the event wiring and many mutable shared references, so changes here can ripple across selection and transform behavior.
+It now listens for `pde:scene-updated` to invalidate selection caches and recompute the helper/overlay after hierarchy edits.
