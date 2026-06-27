@@ -1,35 +1,31 @@
 # Overview
-
 * Senior full-stack dev for Three.js (WebGPU) PDE tool.
 
 # Core Technical Principles (Absolute Rules)
-
 * Three.js r184+ mandatory.
+* WebGPURenderer only — WebGLRenderer forbidden.
+* Shaders: TSL only — GLSL forbidden.
+
+# Toolchain
+* Bundler: Vite
+* TypeScript: no tsconfig path aliases
 
 # Project Structure and Context
-
 `renderer/`
-
 * `index.html`: main entry
-
 * `renderer.ts`: main renderer, WebGPU init
-
-* `asset-manager.js`: Minecraft asset (resource pack) management
-
-* `entityMaterial.js`: model shader, material node management
-
-* `load-project/upload-pbde.ts`: entry point, file open/merge/drop UI and load orchestration only
-* `load-project/scene-parser.ts`: parses pbde data, normalizes scene graph, builds atlas metadata
-* `load-project/mesh-builder.ts`: builds BatchedMesh/InstancedMesh/PlayerHead and applies scene data
+* `asset-manager.js`: Minecraft asset (resource pack) management (JS intentional, no types)
+* `entityMaterial.js`: model shader, material node management (JS intentional, no types)
+* `load-project/upload-pbde.ts`: entry point, file open/merge/drop UI + load orchestration only
+* `load-project/scene-parser.ts`: parse pbde data, normalize scene graph, build atlas metadata
+* `load-project/mesh-builder.ts`: build BatchedMesh/InstancedMesh/PlayerHead, apply scene data
 * `load-project/pbde-assets.ts`: main-thread asset access, texture decode, cache helpers
 * `load-project/pbde-types.ts`: shared pbde types for parser/builder/assets
-
 * `controls/`: core interaction logic (feature separation)
-
-  * `group.ts`: group structure management. Handle CRUD, pivot detect, tree traverse, clone, data ops.
+  * `group.ts`: group structure management. CRUD, pivot detect, tree traverse, clone, data ops.
   * `duplicate.ts`: duplicate selected objects/groups (Batch/Instanced support)
-  * `gizmo.ts`: central controller for controls/. Integrate transform gizmo, selection, grouping, drag, controls.
-  * `handle-key.ts`: shortcut, input handler. Key events separate from `gizmo.ts`.
+  * `gizmo.ts`: entry point for controls/. Orchestrates TransformGizmo, selection, grouping, drag.
+  * `handle-key.ts`: shortcut/input handler. Key events separate from `gizmo.ts`.
   * `camera.ts`: camera focus, view control
   * `delete.ts`: delete selected groups/objects (Batched/Instanced)
   * `drag.ts`: drag, marquee selection
@@ -45,15 +41,15 @@
   * `vertex-swap.ts`: swap vertex primary selection, queue multi-selection swap
   * `vertex-translate.ts`: vertex translate, pivot snap
   * `vertex-queue.ts`: vertex queue state. Implements `pushToVertexQueue` (insert, sync), `promoteVertexQueueBundleOnExit` (promote queue to multi-select on exit)
-
 * `ui/main.css`: global styles
-
 * `ui/scene-panel.ts`: outliner, scene UI
+* `../hardcoded/`: hardcoded resource data. player_head hardcoded in code, not here.
 
-* `../hardcoded/`: resource data (no player_head)
+# Conventions
+* **pbde**: file format abbreviation for PDE (Pangch-Display-Editor) project files.
 
 # Response & Style Guide
-
-* Variables/functions use camelCase, file names use kebab-case.
-* Prioritize working code over explanation. Show only modified parts.
+* Variables/functions: camelCase. File names: kebab-case.
+* New files `.ts`. `.js` retained only for existing files (asset-manager, entityMaterial).
+* Working code over explanation. Show only modified parts.
 * Follow SoC in project structure.
