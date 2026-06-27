@@ -984,6 +984,12 @@ export function initGizmo({
 
                 pivotOffset.copy(commitResult.newPivotOffset);
                 isCustomPivot = commitResult.newIsCustomPivot;
+                if (!isCustomPivot && currentSelection.objects && currentSelection.objects.size > 0) {
+                    // Object pivot edits need a live offset, not just stored userData.
+                    const originBase = SelectionCenter('origin', false, _ZERO_VEC3);
+                    pivotOffset.copy(selectionHelper!.position).sub(originBase);
+                    isCustomPivot = true;
+                }
                 if (commitResult.setMultiExplicitPivot) _multiSelectionExplicitPivot = true;
 
                 if (_pivotEditPreviousPivotMode) {

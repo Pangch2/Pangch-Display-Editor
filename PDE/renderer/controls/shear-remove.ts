@@ -15,6 +15,10 @@ export interface ShearItem {
 
 export interface ShearSelection {
     groups?: Set<string>;
+    objects?: Map<InstancedMesh | BatchedMesh, Set<number>>;
+    primary?: {
+        type: 'group' | 'object';
+    } | null;
 }
 
 export interface ShearCallbacks {
@@ -108,27 +112,55 @@ export function removeShearFromSelection(
             }
         }
 
-        if (pivotMode === 'center') {
-            const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
-            const offset = new Vector3().subVectors(targetPosition, currentCenter);
-            
+        // Keep gizmo world position fixed, move objects to match it.
+        const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
+        const offset = new Vector3().subVectors(targetPosition, currentCenter);
+
+        if (offset.lengthSq() > 1e-12) {
             const tempMat = new Matrix4();
-            
+
             items.forEach(({mesh, instanceId}) => {
                 const inverseMeshWorld = mesh.matrixWorld.clone().invert();
                 mesh.getMatrixAt(instanceId, tempMat);
                 tempMat.premultiply(mesh.matrixWorld);
-                
+
                 tempMat.elements[12] += offset.x;
                 tempMat.elements[13] += offset.y;
                 tempMat.elements[14] += offset.z;
-                
+
                 tempMat.premultiply(inverseMeshWorld);
                 mesh.setMatrixAt(instanceId, tempMat);
                 if ((mesh as InstancedMesh).isInstancedMesh) {
                     (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
                 }
             });
+        }
+
+        // Single-object custom pivot: keep stored local pivot aligned with gizmo world position.
+        // Without this, reselect recomputes pivotOffset from stale local pivot and gizmo jumps.
+        if (
+            isCustomPivot &&
+            currentSelection.objects &&
+            currentSelection.objects.size === 1 &&
+            currentSelection.primary?.type === 'object'
+        ) {
+            for (const [mesh, ids] of currentSelection.objects) {
+                if (!mesh || !ids || ids.size === 0) continue;
+                if (!(mesh as BatchedMesh).isBatchedMesh && !(mesh as InstancedMesh).isInstancedMesh) continue;
+
+                const worldMatrix = new Matrix4();
+                const invWorldMatrix = new Matrix4();
+
+                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
+                const customPivots = mesh.userData.customPivots as Map<number, Vector3>;
+
+                for (const instanceId of ids) {
+                    mesh.getMatrixAt(instanceId, worldMatrix);
+                    worldMatrix.premultiply(mesh.matrixWorld);
+                    invWorldMatrix.copy(worldMatrix).invert();
+                    customPivots.set(instanceId, targetPosition.clone().applyMatrix4(invWorldMatrix));
+                }
+            }
         }
 
         updateHelperPosition();
