@@ -255,7 +255,14 @@ export function SelectionCenter(
 
     if (items.length === 0 && !hasGroups && !hasObjects) return center;
 
-    if (pivotMode === 'center') {
+    // When a custom pivot is active, pivotOffset already encodes the world-space
+    // displacement from the object/group origin to the custom pivot. The offset is
+    // only applied in origin mode (see below), so treat center mode as origin mode
+    // whenever isCustomPivot is true. This keeps the gizmo at the custom pivot
+    // position even when the user has switched pivotMode to 'center'.
+    const effectivePivotMode = isCustomPivot ? 'origin' : pivotMode;
+
+    if (effectivePivotMode === 'center') {
         const singleGroupId = getSingleSelectedGroupId();
         if (singleGroupId) {
             const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, any>;
@@ -276,7 +283,7 @@ export function SelectionCenter(
             else center.copy(calculateAvgOrigin());
         }
     } else {
-        // Origin Mode
+        // Origin Mode (or custom pivot overriding center mode)
         const singleGroupId = getSingleSelectedGroupId();
         if (singleGroupId) {
             const groups = GroupUtils.getGroups(loadedObjectGroup);
@@ -324,8 +331,9 @@ export function SelectionCenter(
         }
     }
 
-    // Apply offset only in Origin mode. Custom pivots are offsets from Origin.
-    if (pivotMode === 'origin') {
+    // Apply offset in origin mode, or whenever a custom pivot is active
+    // (custom pivot overrides center mode above, so effectivePivotMode will be 'origin').
+    if (effectivePivotMode === 'origin') {
         center.add(pivotOffset);
     }
 

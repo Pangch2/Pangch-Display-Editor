@@ -46,6 +46,31 @@ export function removeShearFromSelection(
     if (items.length > 0) {
         const targetPosition = selectionHelper.position.clone();
         
+        // Store original custom pivot world positions before any matrix modifications
+        const originalCustomPivotWorlds = new Map<string, Vector3>();
+        const getCustomPivot = (mesh: any, instanceId: number): Vector3 | null => {
+            if (!mesh || !mesh.userData) return null;
+            if (mesh.userData.customPivots) {
+                return (mesh.userData.customPivots as Map<number, Vector3>).get(instanceId) ?? null;
+            }
+            if (mesh.userData.customPivot) {
+                return mesh.userData.customPivot as Vector3;
+            }
+            return null;
+        };
+
+        items.forEach(({ mesh, instanceId }) => {
+            const customPivot = getCustomPivot(mesh, instanceId);
+            if (customPivot) {
+                const matrix = new Matrix4();
+                mesh.getMatrixAt(instanceId, matrix);
+                const worldMatrix = matrix.premultiply(mesh.matrixWorld);
+                const worldPos = customPivot.clone().applyMatrix4(worldMatrix);
+                const key = `${mesh.uuid}_${instanceId}`;
+                originalCustomPivotWorlds.set(key, worldPos);
+            }
+        });
+
         // Shear removal - Optimized to single pass using Gram-Schmidt Orthogonalization.
         // This method mathematically guarantees 0 shear in one step, so no iteration is needed.
         items.forEach(({mesh, instanceId}) => {
@@ -112,53 +137,65 @@ export function removeShearFromSelection(
             }
         }
 
-        // Keep gizmo world position fixed, move objects to match it.
-        const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
-        const offset = new Vector3().subVectors(targetPosition, currentCenter);
+        // In Center mode the gizmo sits at the bbox center, which shifts when the basis is
+        // orthogonalized. Translating objects to chase the old center snaps the object origin
+        // to the pivot. Leave objects in place; updateHelperPosition() will reposition the
+        // gizmo at the new bbox center.
+        if (pivotMode !== 'center') {
+            // Keep gizmo world position fixed, move objects to match it.
+            const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
+            const offset = new Vector3().subVectors(targetPosition, currentCenter);
 
-        if (offset.lengthSq() > 1e-12) {
-            const tempMat = new Matrix4();
+            if (offset.lengthSq() > 1e-12) {
+                const tempMat = new Matrix4();
 
-            items.forEach(({mesh, instanceId}) => {
-                const inverseMeshWorld = mesh.matrixWorld.clone().invert();
-                mesh.getMatrixAt(instanceId, tempMat);
-                tempMat.premultiply(mesh.matrixWorld);
+                items.forEach(({mesh, instanceId}) => {
+                    const inverseMeshWorld = mesh.matrixWorld.clone().invert();
+                    mesh.getMatrixAt(instanceId, tempMat);
+                    tempMat.premultiply(mesh.matrixWorld);
 
-                tempMat.elements[12] += offset.x;
-                tempMat.elements[13] += offset.y;
-                tempMat.elements[14] += offset.z;
+                    tempMat.elements[12] += offset.x;
+                    tempMat.elements[13] += offset.y;
+                    tempMat.elements[14] += offset.z;
 
-                tempMat.premultiply(inverseMeshWorld);
-                mesh.setMatrixAt(instanceId, tempMat);
-                if ((mesh as InstancedMesh).isInstancedMesh) {
-                    (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
-                }
-            });
-        }
+                    tempMat.premultiply(inverseMeshWorld);
+                    mesh.setMatrixAt(instanceId, tempMat);
+                    if ((mesh as InstancedMesh).isInstancedMesh) {
+                        (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
+                    }
+                });
+            }
 
-        // Single-object custom pivot: keep stored local pivot aligned with gizmo world position.
-        // Without this, reselect recomputes pivotOffset from stale local pivot and gizmo jumps.
-        if (
-            isCustomPivot &&
-            currentSelection.objects &&
-            currentSelection.objects.size === 1 &&
-            currentSelection.primary?.type === 'object'
-        ) {
-            for (const [mesh, ids] of currentSelection.objects) {
-                if (!mesh || !ids || ids.size === 0) continue;
-                if (!(mesh as BatchedMesh).isBatchedMesh && !(mesh as InstancedMesh).isInstancedMesh) continue;
+            // Single-object custom pivot: keep stored local pivot aligned with its world position.
+            // Without this, reselect recomputes pivotOffset from stale local pivot and gizmo jumps.
+            if (
+                isCustomPivot &&
+                currentSelection.objects &&
+                currentSelection.objects.size === 1 &&
+                currentSelection.primary?.type === 'object'
+            ) {
+                for (const [mesh, ids] of currentSelection.objects) {
+                    if (!mesh || !ids || ids.size === 0) continue;
+                    if (!(mesh as BatchedMesh).isBatchedMesh && !(mesh as InstancedMesh).isInstancedMesh) continue;
 
-                const worldMatrix = new Matrix4();
-                const invWorldMatrix = new Matrix4();
+                    const worldMatrix = new Matrix4();
+                    const invWorldMatrix = new Matrix4();
 
-                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
-                const customPivots = mesh.userData.customPivots as Map<number, Vector3>;
+                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
+                    const customPivots = mesh.userData.customPivots as Map<number, Vector3>;
 
-                for (const instanceId of ids) {
-                    mesh.getMatrixAt(instanceId, worldMatrix);
-                    worldMatrix.premultiply(mesh.matrixWorld);
-                    invWorldMatrix.copy(worldMatrix).invert();
-                    customPivots.set(instanceId, targetPosition.clone().applyMatrix4(invWorldMatrix));
+                    for (const instanceId of ids) {
+                        const key = `${mesh.uuid}_${instanceId}`;
+                        const originalWorldPos = originalCustomPivotWorlds.get(key);
+                        const newWorldPos = originalWorldPos
+                            ? originalWorldPos.clone().add(offset)
+                            : targetPosition.clone();
+
+                        mesh.getMatrixAt(instanceId, worldMatrix);
+                        worldMatrix.premultiply(mesh.matrixWorld);
+                        invWorldMatrix.copy(worldMatrix).invert();
+                        customPivots.set(instanceId, newWorldPos.applyMatrix4(invWorldMatrix));
+                    }
                 }
             }
         }

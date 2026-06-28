@@ -1,4 +1,4 @@
-﻿import { setupGizmo } from './gizmo-setup';
+import { setupGizmo } from './gizmo-setup';
 import type { GizmoLines, GizmoMaterial } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
