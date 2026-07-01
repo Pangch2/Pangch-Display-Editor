@@ -21,8 +21,26 @@ let sharedPlaceholderMaterial: THREE.Material | null = null;
 
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
 const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
+const MAX_INSTANCES_PER_INSTANCED_MESH = 32768;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
+const signatureHashScratch = new ArrayBuffer(8);
+const signatureHashView = new DataView(signatureHashScratch);
+
+type InstanceMeta = { uuid: string, groupId: string | null };
+type SignatureGroup = {
+    parts: GeometryMeta[];
+    transforms: Array<Float32Array | number[]>;
+    instanceMetas: InstanceMeta[];
+    geometryKey: string;
+};
+type MaterialUpdate = {
+    instancedMesh: THREE.InstancedMesh;
+    materials: THREE.Material[];
+    pendingMaterialSlots: Array<{ index: number; promise: Promise<THREE.Material> }>;
+    signature: string;
+};
+
 function acquireTextureSlot() {
     if (currentTextureSlots < MAX_TEXTURE_DECODE_CONCURRENCY) {
         currentTextureSlots++;
@@ -37,6 +55,64 @@ function releaseTextureSlot() {
     } else {
         currentTextureSlots = Math.max(0, currentTextureSlots - 1);
     }
+}
+
+function mixHash(hash: number, value: number): number {
+    hash ^= value >>> 0;
+    return Math.imul(hash, 16777619) >>> 0;
+}
+
+function hashString(hash: number, value: string): number {
+    for (let i = 0; i < value.length; i++) {
+        hash = mixHash(hash, value.charCodeAt(i));
+    }
+    return mixHash(hash, value.length);
+}
+
+function hashNumber(hash: number, value: number): number {
+    signatureHashView.setFloat64(0, value, true);
+    hash = mixHash(hash, signatureHashView.getUint32(0, true));
+    return mixHash(hash, signatureHashView.getUint32(4, true));
+}
+
+function buildPartHashKeys(parts: GeometryMeta[]): { signature: string; geometryKey: string } {
+    let signatureHashA = 2166136261;
+    let signatureHashB = 16777619;
+    let geometryHashA = 2166136261;
+    let geometryHashB = 16777619;
+
+    signatureHashA = mixHash(signatureHashA, parts.length);
+    signatureHashB = mixHash(signatureHashB, parts.length);
+    geometryHashA = mixHash(geometryHashA, parts.length);
+    geometryHashB = mixHash(geometryHashB, parts.length);
+
+    for (const part of parts) {
+        signatureHashA = hashString(signatureHashA, part.geometryId);
+        signatureHashA = mixHash(signatureHashA, part.geometryIndex);
+        signatureHashA = hashString(signatureHashA, part.texPath);
+        signatureHashA = mixHash(signatureHashA, (part.tintHex ?? 0xffffff) >>> 0);
+        signatureHashB = hashString(signatureHashB, part.texPath);
+        signatureHashB = mixHash(signatureHashB, (part.tintHex ?? 0xffffff) >>> 0);
+        signatureHashB = hashString(signatureHashB, part.geometryId);
+        signatureHashB = mixHash(signatureHashB, part.geometryIndex);
+
+        geometryHashA = hashString(geometryHashA, part.geometryId);
+        geometryHashA = mixHash(geometryHashA, part.geometryIndex);
+        geometryHashB = mixHash(geometryHashB, part.geometryIndex);
+        geometryHashB = hashString(geometryHashB, part.geometryId);
+
+        for (let i = 0; i < part.modelMatrix.length; i++) {
+            signatureHashA = hashNumber(signatureHashA, part.modelMatrix[i]);
+            signatureHashB = hashNumber(signatureHashB, part.modelMatrix[part.modelMatrix.length - 1 - i]);
+            geometryHashA = hashNumber(geometryHashA, part.modelMatrix[i]);
+            geometryHashB = hashNumber(geometryHashB, part.modelMatrix[part.modelMatrix.length - 1 - i]);
+        }
+    }
+
+    return {
+        signature: `${parts.length}|${signatureHashA.toString(36)}|${signatureHashB.toString(36)}`,
+        geometryKey: `${parts.length}|${geometryHashA.toString(36)}|${geometryHashB.toString(36)}`
+    };
 }
 
 
@@ -818,8 +894,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 loadedObjectGroup.userData.sceneOrder = prevOrder.concat(sceneOrder ?? []);
 
                 const instancedGeometries = new Map<string, THREE.BufferGeometry>();
+                const mergedGeometryCache = new Map<string, THREE.BufferGeometry>();
                 const instancedMaterials = new Map<string, THREE.Material>();
                 const materialPromises = new Map<string, Promise<THREE.Material>>();
+                const materialUpdates: MaterialUpdate[] = [];
                 
                 // Grouping structure: itemId -> all renderable parts for that scene object.
                 const blocks = new Map<string, GeometryMeta[]>();
@@ -844,7 +922,6 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
                         geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
                         geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-                        geometry.computeBoundingSphere();
                         instancedGeometries.set(geomKey, geometry);
                     }
 
@@ -860,7 +937,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                 // Process grouped blocks
                 // Group instances by Signature (combination of geometries, local transforms, and materials)
-                const signatureGroups = new Map<string, { parts: GeometryMeta[], matrices: THREE.Matrix4[], instanceMetas: { uuid: string, groupId: string | null }[] }>();
+                const signatureGroups = new Map<string, SignatureGroup>();
 
                 for (const [_itemId, parts] of blocks) {
                     // Sort parts to keep geometry/material groups deterministic across matching objects.
@@ -870,44 +947,63 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         return a.geometryIndex - b.geometryIndex;
                     });
 
-                    // Create Signature (modelMatrix 포함하여 facing 등 blockstate 정보 반영)
-                    const signature = parts.map(p =>
-                        `${p.geometryId}|${p.geometryIndex}|${p.texPath}|${p.tintHex ?? 0xffffff}|${p.modelMatrix.join(',')}`
-                    ).join('||');
+                    // modelMatrix 포함하여 facing 등 blockstate 정보를 반영하되 긴 문자열 생성을 피한다.
+                    const { signature, geometryKey } = buildPartHashKeys(parts);
 
                     let group = signatureGroups.get(signature);
                     if (!group) {
-                        group = { parts: parts, matrices: [], instanceMetas: [] };
+                        group = { parts: parts, transforms: [], instanceMetas: [], geometryKey };
                         signatureGroups.set(signature, group);
                     }
 
-                    // Reconstruct instance matrix
-                    const matrix = new THREE.Matrix4().fromArray(parts[0].transform).transpose();
-                    group.matrices.push(matrix);
+                    group.transforms.push(parts[0].transform);
                     group.instanceMetas.push({ uuid: parts[0].uuid, groupId: parts[0].groupId });
                 }
 
                 // Create InstancedMesh for each signature group
                 for (const [signature, group] of signatureGroups) {
                         const representativeParts = group.parts;
-                        const matrices = group.matrices;
+                        const transforms = group.transforms;
                         const instanceMetas = group.instanceMetas;
 
                         // Merge Geometries
-                        const geometriesToMerge: THREE.BufferGeometry[] = [];
                         const materials: THREE.Material[] = [];
                         const pendingMaterialSlots: Array<{ index: number; promise: Promise<THREE.Material> }> = [];
+                        let mergedGeo = mergedGeometryCache.get(group.geometryKey);
+
+                        if (!mergedGeo) {
+                            const geometriesToMerge: THREE.BufferGeometry[] = [];
+                            const localMatrix = new THREE.Matrix4();
+
+                            for (const part of representativeParts) {
+                                const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                                const baseGeo = instancedGeometries.get(geomKey)!;
+                                
+                                // Clone and apply local transform (modelMatrix)
+                                const clonedGeo = baseGeo.clone();
+                                localMatrix.fromArray(part.modelMatrix);
+                                clonedGeo.applyMatrix4(localMatrix);
+                                geometriesToMerge.push(clonedGeo);
+                            }
+
+                            mergedGeo = mergeIndexedGeometries(geometriesToMerge) ?? undefined;
+                            if (mergedGeo) {
+                                // Add groups for multi-material support
+                                let start = 0;
+                                for (let i = 0; i < geometriesToMerge.length; i++) {
+                                    const count = geometriesToMerge[i].getIndex()!.count;
+                                    mergedGeo.addGroup(start, count, i);
+                                    start += count;
+                                }
+                                mergedGeometryCache.set(group.geometryKey, mergedGeo);
+                            }
+
+                            for (const geometry of geometriesToMerge) {
+                                geometry.dispose();
+                            }
+                        }
 
                         for (const part of representativeParts) {
-                            const geomKey = `${part.geometryId}|${part.geometryIndex}`;
-                            const baseGeo = instancedGeometries.get(geomKey)!;
-                            
-                            // Clone and apply local transform (modelMatrix)
-                            const clonedGeo = baseGeo.clone();
-                            const localMatrix = new THREE.Matrix4().fromArray(part.modelMatrix);
-                            clonedGeo.applyMatrix4(localMatrix);
-                            geometriesToMerge.push(clonedGeo);
-
                             // Prepare Material
                             const matKey = `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}`;
                             let material = instancedMaterials.get(matKey);
@@ -929,60 +1025,62 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             materials.push(material);
                         }
 
-                        const mergedGeo = mergeIndexedGeometries(geometriesToMerge);
                         if (mergedGeo) {
-                            // Add groups for multi-material support
-                            let start = 0;
-                            for (let i = 0; i < geometriesToMerge.length; i++) {
-                                const count = geometriesToMerge[i].getIndex()!.count;
-                                mergedGeo.addGroup(start, count, i);
-                                start += count;
-                            }
+                            const instanceMatrix = new THREE.Matrix4();
+                            for (let chunkStart = 0; chunkStart < transforms.length; chunkStart += MAX_INSTANCES_PER_INSTANCED_MESH) {
+                                const chunkCount = Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, transforms.length - chunkStart);
+                                const instancedMesh = new THREE.InstancedMesh(mergedGeo, materials, chunkCount);
+                                
+                                // Use parser metadata to determine display type.
+                                if (representativeParts[0].isItemDisplayModel) {
+                                    instancedMesh.userData.displayType = 'item_display';
+                                } else {
+                                    instancedMesh.userData.displayType = 'block_display';
+                                }
+                                
+                                instancedMesh.frustumCulled = false;
 
-                            const instancedMesh = new THREE.InstancedMesh(mergedGeo, materials, matrices.length);
-                            
-                            // Use parser metadata to determine display type.
-                            if (representativeParts[0].isItemDisplayModel) {
-                                instancedMesh.userData.displayType = 'item_display';
-                            } else {
-                                instancedMesh.userData.displayType = 'block_display';
-                            }
-                            
-                            instancedMesh.frustumCulled = false;
+                                for (let i = 0; i < chunkCount; i++) {
+                                    const sourceIndex = chunkStart + i;
+                                    instanceMatrix.fromArray(transforms[sourceIndex]).transpose();
+                                    instancedMesh.setMatrixAt(i, instanceMatrix);
+                                    const meta = instanceMetas[sourceIndex];
+                                    registerObject(instancedMesh, i, meta.uuid, meta.groupId);
+                                }
+                                instancedMesh.instanceMatrix.needsUpdate = true;
+                                instancedMesh.computeBoundingSphere();
+                                loadedObjectGroup.add(instancedMesh);
+                                newlyAddedSelectableMeshes.add(instancedMesh);
 
-                            for (let i = 0; i < matrices.length; i++) {
-                                instancedMesh.setMatrixAt(i, matrices[i]);
-                                const meta = instanceMetas[i];
-                                registerObject(instancedMesh, i, meta.uuid, meta.groupId);
-                            }
-                            instancedMesh.instanceMatrix.needsUpdate = true;
-                            instancedMesh.computeBoundingSphere();
-                            loadedObjectGroup.add(instancedMesh);
-                            newlyAddedSelectableMeshes.add(instancedMesh);
-
-                            // Handle async material loading
-                            if (pendingMaterialSlots.length > 0) {
-                                Promise.all(pendingMaterialSlots.map(slot => slot.promise)).then(loadedMats => {
-                                    if (myGen === currentLoadGen) {
-                                        for (let i = 0; i < pendingMaterialSlots.length; i++) {
-                                            materials[pendingMaterialSlots[i].index] = loadedMats[i];
-                                        }
-                                        instancedMesh.material = materials;
-                                        // Check transparency
-                                        if (materials.some(m => m.transparent)) {
-                                            instancedMesh.renderOrder = 1;
-                                        }
+                                // Handle async material loading
+                                if (pendingMaterialSlots.length > 0) {
+                                    materialUpdates.push({ instancedMesh, materials, pendingMaterialSlots, signature });
+                                } else {
+                                    if (materials.some(m => m.transparent)) {
+                                        instancedMesh.renderOrder = 1;
                                     }
-                                }).catch(e => {
-                                    console.warn(`[Texture] Error loading materials for ${signature}:`, e);
-                                });
-                            } else {
-                                if (materials.some(m => m.transparent)) {
-                                    instancedMesh.renderOrder = 1;
                                 }
                             }
                         }
                     }
+
+                if (materialUpdates.length > 0) {
+                    Promise.all(materialUpdates.map(async update => {
+                        try {
+                            const loadedMats = await Promise.all(update.pendingMaterialSlots.map(slot => slot.promise));
+                            if (myGen !== currentLoadGen) return;
+                            for (let i = 0; i < update.pendingMaterialSlots.length; i++) {
+                                update.materials[update.pendingMaterialSlots[i].index] = loadedMats[i];
+                            }
+                            update.instancedMesh.material = update.materials;
+                            if (update.materials.some(m => m.transparent)) {
+                                update.instancedMesh.renderOrder = 1;
+                            }
+                        } catch (e) {
+                            console.warn(`[Texture] Error loading materials for ${update.signature}:`, e);
+                        }
+                    }));
+                }
 
                 const playerHeadItems: Array<OtherItem> = [];
                 otherItems.forEach((item) => {

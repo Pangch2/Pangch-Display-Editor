@@ -18,6 +18,8 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, builds tex
 - `currentLoadGen` token to invalidate stale async results
 - Shared placeholder material and cached head geometries
 - Concurrency gate for texture decoding to avoid overload
+- Signature hash scratch buffer and per-load geometry/material update caches to reduce mesh creation allocations
+- `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
 
 ## Dependencies (imports)
 - `three/webgpu` -- scene graph, geometry, material, and texture classes
@@ -33,6 +35,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, builds tex
 - Uses WebGPU-only Three.js path; no WebGL fallback.
 - Clears caches and scene state on non-merge load, then builds block and item display objects as InstancedMesh roots.
 - Mesh building groups geometry metadata by `itemId` before signature matching so all parts of one scene object merge into the same InstancedMesh geometry.
-- During InstancedMesh creation, only placeholder material slots are tracked for async replacement; already-loaded materials do not allocate resolved Promises.
+- During InstancedMesh creation, hashed part signatures avoid long model-matrix string joins, merged geometry is cached by geometry layout, and only placeholder material slots are tracked for batched async replacement.
+- Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
 - Logs per-file elapsed time from `loadAndRenderPbde` entry until mesh roots are added to `loadedObjectGroup`.

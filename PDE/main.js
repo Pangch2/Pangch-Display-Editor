@@ -77,7 +77,7 @@ function createWindow() {
       const content = await fs.readFile(fullPath);
       return { success: true, content };
     } catch (error) {
-      console.error(`Failed to read cached asset '${assetPath}':`, error.code);
+      //console.error(`Failed to read cached asset '${assetPath}':`, error.code);
       return { success: false, error: error.message };
     }
   });
@@ -94,7 +94,7 @@ function createWindow() {
       const content = await fs.readFile(resolvedPath);
       return { success: true, content };
     } catch (error) {
-      console.error(`Failed to read hardcoded file '${relPath}':`, error.code || error.message);
+      //console.error(`Failed to read hardcoded file '${relPath}':`, error.code || error.message);
       return { success: false, error: error.message };
     }
   });

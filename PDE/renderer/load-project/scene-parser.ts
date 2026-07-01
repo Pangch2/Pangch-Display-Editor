@@ -1,12 +1,8 @@
 import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
+import { buildTextureAtlasForRenderList } from './texture-atlas-builder';
+import type { TexturePixelData } from './texture-atlas-builder';
 import type { GroupData as ParserGroupData } from './pbde-types';
-
-type TexturePixelData = {
-    w: number;
-    h: number;
-    data: Uint8ClampedArray;
-};
 
 interface ResolvedModel {
     id: string;
@@ -50,6 +46,11 @@ interface RenderItem {
     originalName?: string;
     [key: string]: any; // Allow for other dynamic properties for now
 }
+
+type BlockDisplayTemplate = {
+    models: ModelData[];
+    blockProps: Record<string, string>;
+};
 
 // tintColor 모듈을 워커에서 직접 불러올 수 없으므로 여기에서 구현을 포함한다.
 // 아래 getTextureColor 함수는 메인 스레드와 동일하게 동작하도록 수동으로 삽입한다.
@@ -166,6 +167,7 @@ export interface ParsedPbdeProject {
 // --- block-processor를 바탕으로 한 블록 처리 로직 ---
 
 let assetProvider;
+const jsonAssetPromiseCache = new Map<string, Promise<any>>();
 
 function initializeAssetProvider(provider) {
     assetProvider = provider;
@@ -175,8 +177,12 @@ async function readJsonAsset(assetPath) {
     if (!assetProvider) {
         throw new Error("Asset provider is not initialized!");
     }
-    const text = await assetProvider.getAsset(assetPath);
-    return JSON.parse(text);
+    let promise = jsonAssetPromiseCache.get(assetPath);
+    if (!promise) {
+        promise = assetProvider.getAsset(assetPath).then(text => JSON.parse(text as string));
+        jsonAssetPromiseCache.set(assetPath, promise);
+    }
+    return promise;
 }
 
 // 블록 이름에서 기본 ID와 속성 키-값을 분리해 구조화한다.
@@ -558,11 +564,16 @@ async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = 
     const elements = resolved.elements;
     if (!elements || elements.length === 0) return null;
 
-    // 🚀 최적화 3: 동일한 모델 ID는 캐시에서 재사용
-    // const cacheKey = resolved.id + (opts ? JSON.stringify(opts) : '');
-    // if (blockModelGeometryCache.has(cacheKey)) {
-    //     return blockModelGeometryCache.get(cacheKey);
-    // }
+    const cacheKey = [
+        resolved.id,
+        opts?.uvlock ? 1 : 0,
+        opts?.xRot || 0,
+        opts?.yRot || 0,
+        opts?.bannerColorHex ?? ''
+    ].join('|');
+    if (blockModelGeometryCache.has(cacheKey)) {
+        return blockModelGeometryCache.get(cacheKey);
+    }
 
     const buffers = new Map<string, GeometryData>();
     // 텍스처 경로와 틴트 조합마다 독립된 버퍼를 생성한다.
@@ -724,15 +735,34 @@ async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = 
     }
 
     const result = Array.from(buffers.values());
-    
-    // 🚀 최적화 3: 결과를 캐시에 저장
-    // blockModelGeometryCache.set(cacheKey, result);
-    
+    blockModelGeometryCache.set(cacheKey, result);
+
     return result;
+}
+
+const blockDisplayTemplatePromiseCache = new Map<string, Promise<BlockDisplayTemplate | null>>();
+
+function cloneBlockDisplayTemplate(template: BlockDisplayTemplate): RenderItem {
+    return {
+        type: 'blockDisplay',
+        models: template.models,
+        blockProps: template.blockProps
+    };
 }
 
 // block_display 엔티티 노드를 Minecraft 블록 모델 지오메트리로 변환한다.
 async function processBlockDisplay(item: any): Promise<RenderItem | null> {
+    const cacheKey = String(item.name || '');
+    let templatePromise = blockDisplayTemplatePromiseCache.get(cacheKey);
+    if (!templatePromise) {
+        templatePromise = buildBlockDisplayTemplate(item);
+        blockDisplayTemplatePromiseCache.set(cacheKey, templatePromise);
+    }
+    const template = await templatePromise;
+    return template ? cloneBlockDisplayTemplate(template) : null;
+}
+
+async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplate | null> {
     try {
         const { baseName, props } = blockNameToBaseAndProps(item.name);
         const { path } = nsAndPathFromId(baseName);
@@ -855,7 +885,6 @@ async function processBlockDisplay(item: any): Promise<RenderItem | null> {
 
         if (allGeometryData.length > 0) {
             return {
-                type: 'blockDisplay',
                 models: allGeometryData,
                 blockProps: props
             };
@@ -1501,11 +1530,13 @@ async function processItemModelDisplay(node: any): Promise<RenderItem | null> {
 // 반복 실행 시 캐시와 임시 리소스를 초기화한다.
 function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
     const { clearCanvas = true } = options;
+    jsonAssetPromiseCache.clear();
     modelTreeCache.clear();
     itemDefinitionCache.clear();
     itemModelGeometryCache.clear();
     itemModelHasElementsCache.clear();
-    blockModelGeometryCache.clear(); // 🚀 최적화 3: 블록 지오메트리 캐시 초기화
+    blockModelGeometryCache.clear();
+    blockDisplayTemplatePromiseCache.clear();
     builtinBorderGeometryCache.clear();
     extrudedItemGeometryCache.clear();
     texturePixelCache.clear();
@@ -1780,32 +1811,15 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
     return renderItems;
 }
 
-function getTransparencyType(pixels: TexturePixelData) {
-    const data = pixels.data;
-    let hasAlpha = false;
-    let hasIntermediateAlpha = false;
-    for (let i = 3; i < data.length; i += 4) {
-        const a = data[i];
-        if (a < 255) {
-            hasAlpha = true;
-            if (a > 0) {
-                hasIntermediateAlpha = true;
-                break;
-            }
-        }
-    }
-    if (hasIntermediateAlpha) return 2; // Translucent
-    if (hasAlpha) return 1; // Cutout
-    return 0; // Opaque
-}
-
 export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, provider: PbdeAssetProvider): Promise<ParsedPbdeProject> {
     resetWorkerCaches({ clearCanvas: true });
     initializeAssetProvider(provider);
     groups = new Map();
     sceneOrder = [];
+    const parseStartMs = performance.now();
 
     try {
+        const archiveStartMs = performance.now();
         let uint8Array: Uint8Array;
         if (fileContent instanceof ArrayBuffer) {
             uint8Array = new Uint8Array(fileContent);
@@ -1845,8 +1859,10 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         const jsonStartIndex = sizeIndex + 4;
         const jsonBytes = decompressedU8.subarray(jsonStartIndex, jsonStartIndex + dataSize);
         const jsonData = JSON.parse(strFromU8(jsonBytes));
+        const archiveElapsedMs = performance.now() - archiveStartMs;
 
         // 렌더링에 필요한 필드만 남기도록 씬 트리를 단순화한다.
+        const sceneStartMs = performance.now();
         const processedChildren = split_children(jsonData[0].children);
 
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
@@ -1857,119 +1873,18 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         const renderList: RenderItem[] = (await Promise.all(promises)).flat();
         // 루트 인덱스 기준으로 sceneOrder 정렬
         sceneOrder.sort((a, b) => a.rootIndex - b.rootIndex);
+        const sceneElapsedMs = performance.now() - sceneStartMs;
 
-        // --- Atlas Generation Start ---
+        const atlasStartMs = performance.now();
         let atlasInfo = null;
         try {
-            const texturePaths = new Set<string>();
-            for (const item of renderList) {
-                if (item.type === 'blockDisplay' || item.type === 'itemDisplayModel') {
-                    if (item.models) {
-                        for (const model of item.models) {
-                            for (const geom of model.geometries) {
-                                if (geom.texPath) texturePaths.add(geom.texPath);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (texturePaths.size > 0) {
-                const loadedTextures = [];
-                const textureTypes = new Map();
-                for (const path of texturePaths) {
-                    try {
-                        const pixels = await loadTexturePixels(path as string);
-                        if (pixels) {
-                            loadedTextures.push({ path, pixels });
-                            textureTypes.set(path, getTransparencyType(pixels));
-                        }
-                    } catch (e) { /* ignore */ }
-                }
-
-                if (loadedTextures.length > 0) {
-                    // Sort by height desc
-                    loadedTextures.sort((a, b) => b.pixels.h - a.pixels.h);
-
-                    const totalArea = loadedTextures.reduce((sum, t) => sum + t.pixels.w * t.pixels.h, 0);
-                    let atlasW = Math.max(512, Math.pow(2, Math.ceil(Math.log2(Math.sqrt(totalArea)))));
-                    const maxW = Math.max(...loadedTextures.map(t => t.pixels.w));
-                    if (atlasW < maxW) atlasW = Math.pow(2, Math.ceil(Math.log2(maxW)));
-
-                    let atlasH = 0;
-                    const packed = new Map();
-                    
-                    let x = 0;
-                    let y = 0;
-                    let rowH = 0;
-
-                    for (const t of loadedTextures) {
-                        const w = t.pixels.w;
-                        const h = t.pixels.h;
-                        if (x + w > atlasW) {
-                            x = 0;
-                            y += rowH;
-                            rowH = 0;
-                        }
-                        packed.set(t.path, { x, y, w, h });
-                        x += w;
-                        rowH = Math.max(rowH, h);
-                    }
-                    atlasH = y + rowH;
-                    atlasH = Math.pow(2, Math.ceil(Math.log2(atlasH)));
-
-                    const atlasData = new Uint8ClampedArray(atlasW * atlasH * 4);
-                    for (const t of loadedTextures) {
-                        const info = packed.get(t.path);
-                        const src = t.pixels.data;
-                        const { x, y, w, h } = info;
-                        for (let r = 0; r < h; r++) {
-                            const srcStart = r * w * 4;
-                            const dstStart = ((y + r) * atlasW + x) * 4;
-                            atlasData.set(src.subarray(srcStart, srcStart + w * 4), dstStart);
-                        }
-                    }
-
-                    for (const item of renderList) {
-                        if (item.type === 'blockDisplay' || item.type === 'itemDisplayModel') {
-                            for (const model of item.models) {
-                                for (const geom of model.geometries) {
-                                    const info = packed.get(geom.texPath);
-                                    if (info) {
-                                        const { x, y, w, h } = info;
-                                        for (let i = 0; i < geom.uvs.length; i += 2) {
-                                            const u = geom.uvs[i];
-                                            const v = geom.uvs[i+1];
-                                            geom.uvs[i] = (u * w + x) / atlasW;
-                                            geom.uvs[i+1] = (v * h + (atlasH - y - h)) / atlasH;
-                                        }
-                                        const type = textureTypes.get(geom.texPath);
-                                        if (type === 2) {
-                                            geom.texPath = '__ATLAS_TRANSLUCENT__';
-                                        } else {
-                                            geom.texPath = '__ATLAS__';
-                                        }
-                                    }
-                                }
-                                // geometryMeta에 추가 속성 주입 (onmessage 루프 내 renderList 처리 부분)
-                                (model as any).blockProps = item.blockProps;
-                                (model as any).itemDisplayType = item.itemDisplayType;
-                            }
-                        }
-                    }
-
-                    atlasInfo = {
-                        width: atlasW,
-                        height: atlasH,
-                        data: atlasData
-                    };
-                }
-            }
+            atlasInfo = await buildTextureAtlasForRenderList(renderList, loadTexturePixels);
         } catch (e) {
             // console.warn('Atlas generation failed', e);
         }
-        // --- Atlas Generation End ---
+        const atlasElapsedMs = performance.now() - atlasStartMs;
 
+        const packStartMs = performance.now();
         const geometryItems: RenderItem[] = [];
         const otherItems: RenderItem[] = [];
         for (const item of renderList) {
@@ -2095,6 +2010,11 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             groups: groups,
             sceneOrder: sceneOrder.map(({ type, id }) => ({ type, id }))
         };
+        const packElapsedMs = performance.now() - packStartMs;
+        const parseElapsedMs = performance.now() - parseStartMs;
+        console.log(
+            `[PBDE] Parse timings: archive=${archiveElapsedMs.toFixed(2)}ms, scene=${sceneElapsedMs.toFixed(2)}ms, atlas=${atlasElapsedMs.toFixed(2)}ms, pack=${packElapsedMs.toFixed(2)}ms, total=${parseElapsedMs.toFixed(2)}ms.`
+        );
 
         return {
             metadata: metadataPayload,
