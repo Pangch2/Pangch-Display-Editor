@@ -33,3 +33,4 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, builds tex
 - Uses WebGPU-only Three.js path; no WebGL fallback.
 - Clears caches and scene state on non-merge load, then builds instanced/batched meshes where possible.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
+- Logs per-file elapsed time from `loadAndRenderPbde` entry until mesh roots are added to `loadedObjectGroup`.

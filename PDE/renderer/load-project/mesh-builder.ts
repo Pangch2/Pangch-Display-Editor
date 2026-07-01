@@ -603,6 +603,8 @@ export function performSelection(newlyAddedSelectableMeshes: Set<THREE.Object3D>
 }
 
 export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number): Promise<Set<THREE.Object3D>> {
+        const meshUploadStartMs = performance.now();
+
         // 0. 새 프로젝트를 로드하기 전에 현재 선택 상태를 리셋합니다.
         // Single file open case or first file of batch open.
         if (!isMerge && loadedObjectGroup.userData.resetSelection) {
@@ -1412,12 +1414,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     try { await playerHeadPromise; } catch { /* ignore */ }
                 }
 
+                const meshUploadElapsedMs = performance.now() - meshUploadStartMs;
+                console.log(`[PBDE] Mesh uploaded to scene in ${meshUploadElapsedMs.toFixed(2)} ms (${file.name}, ${newlyAddedSelectableMeshes.size} mesh roots, ${loadedObjectGroup.children.length} scene children).`);
                 console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
                 return newlyAddedSelectableMeshes;
 
 }
-
-
-
-
-
