@@ -1444,11 +1444,6 @@ async function processItemModelDisplay(node: any): Promise<RenderItem | null> {
             }
         }
         if (!modelId) modelId = `minecraft:item/${baseName}`;
-        //try { console.log('[ItemModel] definition', definition ? 'yes' : 'no', 'modelId', modelId, 'tints', tintList ? tintList.length : 0); } catch {}
-        // 모델 ID 단위로 지오메트리를 캐싱해 반복 연산을 줄인다.
-        // const cacheKey = modelId;
-        // let geomData = itemModelGeometryCache.get(cacheKey);
-        // let hasElements = itemModelHasElementsCache.get(cacheKey) || false;
         let geomData = null;
         let hasElements = false;
         let resolved = null;
