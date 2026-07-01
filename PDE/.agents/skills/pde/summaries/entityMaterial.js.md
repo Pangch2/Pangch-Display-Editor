@@ -1,7 +1,7 @@
 # entityMaterial.js
 
 ## Purpose
-Builds the shared node-based material used for entity-style rendering. It combines a diffuse texture, optional tint, simple two-direction lighting, and optional instanced UV offsets into a `MeshBasicNodeMaterial`.
+Builds the shared node-based material used for entity-style rendering. It combines a diffuse texture, cached tint/light TSL nodes, simple two-direction lighting, and optional instanced UV offsets into a `MeshBasicNodeMaterial`.
 
 ## Exports
 
@@ -10,7 +10,8 @@ Builds the shared node-based material used for entity-style rendering. It combin
 
 ## Internal State
 - Creates `uniform` nodes for block and sky light so callers can adjust brightness through node values.
-- Converts the hex tint from sRGB to linear before multiplying it into the sampled texture.
+- Caches converted tint `vec3` nodes by normalized hex color to avoid rebuilding constant TSL nodes for repeated materials.
+- Reuses module-level TSL nodes for static directional lighting.
 - Switches UV lookup to `instancedUvOffset` when `useInstancedUv` is true.
 
 ## Dependencies (imports)
@@ -24,3 +25,4 @@ Builds the shared node-based material used for entity-style rendering. It combin
 ## Notes
 - Material is configured with `transparent = true`, `fog = false`, `flatShading = true`, and `alphaTest = 0.1`.
 - Lighting is intentionally lightweight and non-physical, tuned for game-like entity rendering.
+- Texture sampling and per-material light uniforms remain per material; static tint/light graph parts are shared.

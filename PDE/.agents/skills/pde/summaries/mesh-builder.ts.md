@@ -33,5 +33,6 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, builds tex
 - Uses WebGPU-only Three.js path; no WebGL fallback.
 - Clears caches and scene state on non-merge load, then builds block and item display objects as InstancedMesh roots.
 - Mesh building groups geometry metadata by `itemId` before signature matching so all parts of one scene object merge into the same InstancedMesh geometry.
+- During InstancedMesh creation, only placeholder material slots are tracked for async replacement; already-loaded materials do not allocate resolved Promises.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
 - Logs per-file elapsed time from `loadAndRenderPbde` entry until mesh roots are added to `loadedObjectGroup`.

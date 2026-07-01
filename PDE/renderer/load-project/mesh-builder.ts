@@ -896,7 +896,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         // Merge Geometries
                         const geometriesToMerge: THREE.BufferGeometry[] = [];
                         const materials: THREE.Material[] = [];
-                        const matPromisesForMesh: Promise<THREE.Material>[] = [];
+                        const pendingMaterialSlots: Array<{ index: number; promise: Promise<THREE.Material> }> = [];
 
                         for (const part of representativeParts) {
                             const geomKey = `${part.geometryId}|${part.geometryIndex}`;
@@ -924,9 +924,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     });
                                     materialPromises.set(matKey, p);
                                 }
-                                matPromisesForMesh.push(materialPromises.get(matKey)!);
-                            } else {
-                                matPromisesForMesh.push(Promise.resolve(material));
+                                pendingMaterialSlots.push({ index: materials.length, promise: materialPromises.get(matKey)! });
                             }
                             materials.push(material);
                         }
@@ -963,12 +961,15 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             newlyAddedSelectableMeshes.add(instancedMesh);
 
                             // Handle async material loading
-                            if (matPromisesForMesh.length > 0) {
-                                Promise.all(matPromisesForMesh).then(loadedMats => {
+                            if (pendingMaterialSlots.length > 0) {
+                                Promise.all(pendingMaterialSlots.map(slot => slot.promise)).then(loadedMats => {
                                     if (myGen === currentLoadGen) {
-                                        instancedMesh.material = loadedMats;
+                                        for (let i = 0; i < pendingMaterialSlots.length; i++) {
+                                            materials[pendingMaterialSlots[i].index] = loadedMats[i];
+                                        }
+                                        instancedMesh.material = materials;
                                         // Check transparency
-                                        if (loadedMats.some(m => m.transparent)) {
+                                        if (materials.some(m => m.transparent)) {
                                             instancedMesh.renderOrder = 1;
                                         }
                                     }
