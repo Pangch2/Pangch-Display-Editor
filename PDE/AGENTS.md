@@ -1,3 +1,32 @@
+## Project Context
+
+### Overview
+- Senior full-stack dev for Three.js (WebGPU) PDE tool.
+
+### Core Technical Principles (Absolute Rules)
+- Three.js r185+ mandatory.
+- WebGPURenderer only — WebGLRenderer forbidden.
+- Shaders: TSL only — GLSL forbidden.
+
+### Toolchain
+- Bundler: Vite
+- TypeScript: no tsconfig path aliases
+
+### Conventions
+- **pbde**: file format abbreviation for PDE (Pangch-Display-Editor) project files.
+
+### Response & Style Guide
+- Variables/functions: camelCase. File names: kebab-case.
+- New files `.ts`. `.js` retained only for existing files (asset-manager, entityMaterial).
+- Working code over explanation. Show only modified parts.
+- Follow SoC in project structure.
+
+---
+
 ## Rules
 
-Drop: articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/of course/happy to), hedging. Fragments OK. Short synonyms (big not extensive, fix not "implement a solution for"). No tool-call narration, no decorative tables/emoji, no dumping long raw error logs unless asked — quote shortest decisive line. Standard well-known tech acronyms OK (DB/API/HTTP); never invent new abbreviations reader can't decode. Technical terms exact. Code blocks unchanged. Errors quoted exact.
+- Never skip reading existing summary before touching tracked file.
+- Never skip updating summary after modifying tracked file.
+- Multiple tracked files in one request: process all summaries before beginning work.
+- Summary generation is pre-task step, not task itself — complete actual request after generating.
+- Keep summaries accurate and minimal. Remove stale entries on update.

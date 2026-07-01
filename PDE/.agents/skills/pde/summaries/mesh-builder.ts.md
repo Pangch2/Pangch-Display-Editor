@@ -1,7 +1,7 @@
 # mesh-builder.ts
 
 ## Purpose
-Main-thread renderer for parsed PBDE projects. Loads parsed metadata, builds textures/materials/meshes, manages scene clearing and merging, and handles selection state for newly created objects.
+Main-thread renderer for parsed PBDE projects. Loads parsed metadata, builds textures/materials/InstancedMesh roots, manages scene clearing and merging, and handles selection state for newly created objects.
 
 ## Exports
 
@@ -31,6 +31,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, builds tex
 
 ## Notes
 - Uses WebGPU-only Three.js path; no WebGL fallback.
-- Clears caches and scene state on non-merge load, then builds instanced/batched meshes where possible.
+- Clears caches and scene state on non-merge load, then builds block and item display objects as InstancedMesh roots.
+- Mesh building groups geometry metadata by `itemId` before signature matching so all parts of one scene object merge into the same InstancedMesh geometry.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
 - Logs per-file elapsed time from `loadAndRenderPbde` entry until mesh roots are added to `loadedObjectGroup`.

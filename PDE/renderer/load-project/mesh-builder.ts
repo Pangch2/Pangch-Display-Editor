@@ -559,17 +559,10 @@ export function performSelection(newlyAddedSelectableMeshes: Set<THREE.Object3D>
         for (const mesh of newlyAddedSelectableMeshes) {
             if (!mesh) continue;
             const instancedMesh = mesh as THREE.InstancedMesh;
-            const batchedMesh = mesh as THREE.BatchedMesh;
 
-            if (!instancedMesh.isInstancedMesh && !batchedMesh.isBatchedMesh) continue;
+            if (!instancedMesh.isInstancedMesh) continue;
 
-            let instanceCount = 0;
-            if (instancedMesh.isInstancedMesh) {
-                instanceCount = instancedMesh.count ?? 0;
-            } else {
-                const geomIds = mesh.userData?.instanceGeometryIds;
-                instanceCount = Array.isArray(geomIds) ? geomIds.length : 0;
-            }
+            const instanceCount = instancedMesh.count ?? 0;
 
             if (instanceCount <= 0) continue;
 
@@ -828,8 +821,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const instancedMaterials = new Map<string, THREE.Material>();
                 const materialPromises = new Map<string, Promise<THREE.Material>>();
                 
-                // Grouping structure: GeometryId -> InstanceTransformString -> PartMeta[]
-                const blocks = new Map<string, Map<string, GeometryMeta[]>>();
+                // Grouping structure: itemId -> all renderable parts for that scene object.
+                const blocks = new Map<string, GeometryMeta[]>();
 
                 ensureSharedPlaceholder();
                 const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
@@ -855,283 +848,47 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         instancedGeometries.set(geomKey, geometry);
                     }
 
-                    let type: 'opaque' | 'translucent' | null = null;
-                    if (currentAtlasTexture) {
-                        if (meta.texPath === '__ATLAS__') type = 'opaque';
-                        else if (meta.texPath === '__ATLAS_TRANSLUCENT__') type = 'translucent';
-                    }
+                    const instanceKey = String(meta.itemId);
 
-                    if (!type) {
-                        const geomId = meta.geometryId;
-                        const instanceKey = String(meta.itemId);
-                        
-                        let geomGroup = blocks.get(geomId);
-                        if (!geomGroup) {
-                            geomGroup = new Map();
-                            blocks.set(geomId, geomGroup);
-                        }
-                        
-                        let instanceParts = geomGroup.get(instanceKey);
-                        if (!instanceParts) {
-                            instanceParts = [];
-                            geomGroup.set(instanceKey, instanceParts);
-                        }
-                        instanceParts.push(meta);
+                    let instanceParts = blocks.get(instanceKey);
+                    if (!instanceParts) {
+                        instanceParts = [];
+                        blocks.set(instanceKey, instanceParts);
                     }
+                    instanceParts.push(meta);
                 }
-
-                // --- BatchedMesh Logic for Atlas ---
-                if (currentAtlasTexture) {
-                    const batchGroups = {
-                        opaque: { parts: [] as GeometryMeta[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() },
-                        translucent: { parts: [] as GeometryMeta[], maxVerts: 0, maxIndices: 0, geometries: new Map<string, THREE.BufferGeometry>() }
-                    };
-
-                    // Pre-process: Group parts by itemId and transparency type to merge multi-part blocks (e.g. Grass Block)
-                    // into a single geometry with baked vertex colors.
-                    const itemParts = new Map<number, { opaque: GeometryMeta[], translucent: GeometryMeta[] }>();
-                    
-                    for (const meta of geometryMetas) {
-                        let type: 'opaque' | 'translucent' | null = null;
-                        if (meta.texPath === '__ATLAS__') type = 'opaque';
-                        else if (meta.texPath === '__ATLAS_TRANSLUCENT__') type = 'translucent';
-                        
-                        if (type) {
-                            let entry = itemParts.get(meta.itemId);
-                            if (!entry) {
-                                entry = { opaque: [], translucent: [] };
-                                itemParts.set(meta.itemId, entry);
-                            }
-                            entry[type].push(meta);
-                        }
-                    }
-
-                    // Process each item and merge its parts if necessary
-                    for (const [_itemId, types] of itemParts) {
-                        const processTypeGroup = (type: 'opaque' | 'translucent', parts: GeometryMeta[]) => {
-                            if (parts.length === 0) return;
-                            
-                            const targetGroup = type === 'opaque' ? batchGroups.opaque : batchGroups.translucent;
-
-                            // Optimization: If only 1 part and no specific local transform needed, use as is.
-                            // However, to support consistent Vertex Color usage, we should probably bake color even for single parts
-                            // if we want to rely on vertexColors=true in material.
-                            // But if tint is white, we can skip baking if we assume material.color is white.
-                            // Let's standardise: Always bake color if we want full consistency, 
-                            // OR merge multiple parts. 
-                            
-                            // To solve "Grass Block" issue (multiple parts), we MUST merge.
-                            if (parts.length > 1) {
-                                const geometriesToMerge: THREE.BufferGeometry[] = [];
-                                
-                                for (const part of parts) {
-                                    const geomKey = `${part.geometryId}|${part.geometryIndex}`;
-                                    const baseGeo = instancedGeometries.get(geomKey)!;
-                                    const clonedGeo = baseGeo.clone();
-                                    
-                                    // 1. Bake Transform (Model Matrix -> Local Vertex Position)
-                                    if (part.modelMatrix) {
-                                        const m = new THREE.Matrix4().fromArray(part.modelMatrix);
-                                        clonedGeo.applyMatrix4(m);
-                                    }
-
-                                    // 2. Bake Tint Color (Tint Hex -> Vertex Color)
-                                    const color = new THREE.Color(part.tintHex ?? 0xffffff);
-                                    const count = clonedGeo.attributes.position.count;
-                                    const colors = new Float32Array(count * 3);
-                                    for (let i = 0; i < count; i++) {
-                                        colors[i * 3] = color.r;
-                                        colors[i * 3 + 1] = color.g;
-                                        colors[i * 3 + 2] = color.b;
-                                    }
-                                    clonedGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-                                    geometriesToMerge.push(clonedGeo);
-                                }
-
-                                const mergedGeo = mergeIndexedGeometries(geometriesToMerge);
-                                if (mergedGeo) {
-                                    // Generate a unique ID for this baked geometry
-                                    // Use first part's info as base, but this is a unique combination for this instance really.
-                                    // We cache it by a signature of the parts to allow instancing if multiple blocks are identical.
-                                    // Signature: join(part.geomKey + tint + matrix)
-                                    const signature = parts.map(p => `${p.geometryId}|${p.geometryIndex}|${p.tintHex}|${p.modelMatrix?.join(',')}`).join('||');
-                                    const uniqueId = `baked|${signature}`;
-                                    const finalGeomKey = `${uniqueId}|0`;
-
-                                    if (!targetGroup.geometries.has(finalGeomKey)) {
-                                        targetGroup.geometries.set(finalGeomKey, mergedGeo);
-                                        targetGroup.maxVerts += mergedGeo.attributes.position.count;
-                                        targetGroup.maxIndices += (mergedGeo.index ? mergedGeo.index.count : 0);
-                                    }
-
-                                    // Create a new synthetic meta representing the merged whole
-                                    const firstPart = parts[0];
-                                    const mergedMeta: GeometryMeta = {
-                                        ...firstPart,
-                                        geometryId: uniqueId,
-                                        geometryIndex: 0,
-                                        modelMatrix: [], // Identity, as we baked it in
-                                        tintHex: 0xffffff // Color baked in, pass white to material
-                                    };
-                                    targetGroup.parts.push(mergedMeta);
-                                }
-                            } else {
-                                // Single part case
-                                // We still need to ensure Vertex Colors exist if the material expects them,
-                                // or at least consistency. If we don't bake, the material will multiply texture * white (vertex default) * uniform.
-                                // If we set batch color to tint, it works.
-                                // BUT, if we mix baked (vertex color) and non-baked (uniform color) in same batch, 
-                                // we need to be careful. BatchedMesh multiplies vertex color * instance color.
-                                // So for merged parts, we set instance color to White.
-                                // For single parts, we can set instance color to Tint and leave vertex color white (or absent).
-                                // Standard BatchedMesh shaders: gl_FragColor = texture * vColor * iColor.
-                                // So this hybrid approach works fine.
-                                
-                                const part = parts[0];
-                                targetGroup.parts.push(part);
-                                const geomKey = `${part.geometryId}|${part.geometryIndex}`;
-                                if (!targetGroup.geometries.has(geomKey)) {
-                                    const geo = instancedGeometries.get(geomKey)!;
-                                    
-                                    // Ensure 'color' attribute exists (default white) to prevent shader warnings/issues
-                                    // if some geometries in batch have it and others don't.
-                                    if (!geo.attributes.color) {
-                                        const count = geo.attributes.position.count;
-                                        const colors = new Float32Array(count * 3).fill(1); // White
-                                        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-                                    }
-
-                                    targetGroup.geometries.set(geomKey, geo);
-                                    targetGroup.maxVerts += geo.attributes.position.count;
-                                    targetGroup.maxIndices += (geo.index ? geo.index.count : 0);
-                                }
-                            }
-                        };
-
-                        processTypeGroup('opaque', types.opaque);
-                        processTypeGroup('translucent', types.translucent);
-                    }
-
-                    // 2. Create BatchedMeshes
-                    const createBatchedMesh = async (group: typeof batchGroups.opaque, texPath: string) => {
-                        if (group.parts.length === 0) return;
-
-                        try {
-                            const material = await getBlockMaterial(texPath, undefined, myGen);
-                            // BatchedMesh(maxInstanceCount, maxVertexCount, maxIndexCount, material)
-                            const batch = new THREE.BatchedMesh(group.parts.length, group.maxVerts, group.maxIndices, material);
-                            batch.frustumCulled = false;
-                            batch.userData.displayType = 'block_display'; 
-                            batch.userData.displayTypes = new Map();
-                            batch.userData.geometryBounds = new Map();
-                            batch.userData.originalGeometries = new Map();
-                            batch.userData.instanceGeometryIds = [];
-                            batch.userData.itemIds = new Map();
-                            batch.userData.localMatrices = new Map();
-
-                            // Register geometries
-                            const geomIdMap = new Map<string, number>();
-                            for (const [key, geo] of group.geometries) {
-                                // Use raw geometry without baking modelMatrix
-                                // modelMatrix (blockstate rotation, display transform) will be applied to instance matrix
-                                const batchGeomId = batch.addGeometry(geo);
-                                geomIdMap.set(key, batchGeomId);
-                                batch.userData.originalGeometries.set(batchGeomId, geo);
-
-                                if (!geo.boundingBox) geo.computeBoundingBox();
-                                batch.userData.geometryBounds.set(batchGeomId, geo.boundingBox.clone());
-                            }
-
-                            // Add instances
-                            const dummyMatrix = new THREE.Matrix4();
-                            const localMatrix = new THREE.Matrix4();
-                            const color = new THREE.Color();
-                            
-                            for (const part of group.parts) {
-                                const geomKey = `${part.geometryId}|${part.geometryIndex}`;
-                                const batchGeomId = geomIdMap.get(geomKey);
-                                if (batchGeomId === undefined) continue;
-
-                                const instanceId = batch.addInstance(batchGeomId);
-                                batch.userData.instanceGeometryIds[instanceId] = batchGeomId;
-                                
-                                // part.transform is the instance matrix (parser emits row-major; Three.js needs transpose).
-                                dummyMatrix.fromArray(part.transform).transpose();
-                                
-                                // part.modelMatrix is the local transform (blockstate, display settings, column-major)
-                                // If it was baked (merged parts), modelMatrix is empty/identity, so this does nothing (correct).
-                                // If single part, it applies normally.
-                                if (part.modelMatrix && part.modelMatrix.length > 0) {
-                                    localMatrix.fromArray(part.modelMatrix);
-                                    dummyMatrix.multiply(localMatrix);
-
-                                    batch.userData.localMatrices.set(instanceId, localMatrix.clone());
-                                }
-
-                                batch.setMatrixAt(instanceId, dummyMatrix);
-
-                                // If baked, tintHex is white (0xffffff). If single, it's the actual tint.
-                                // In both cases, this works with vertex color multiplication.
-                                const tint = part.tintHex ?? 0xffffff;
-                                color.setHex(tint);
-                                batch.setColorAt(instanceId, color);
-
-                                if (batch.userData.displayTypes) {
-                                    batch.userData.displayTypes.set(instanceId, part.isItemDisplayModel ? 'item_display' : 'block_display');
-                                }
-                                if (batch.userData.itemIds && part.itemId !== undefined) {
-                                    batch.userData.itemIds.set(instanceId, part.itemId);
-                                }
-
-                                registerObject(batch, instanceId, part.uuid, part.groupId);
-                            }
-
-                            loadedObjectGroup.add(batch);
-                            newlyAddedSelectableMeshes.add(batch);
-                            
-                            if (material.transparent) {
-                                batch.renderOrder = 1;
-                            }
-
-                        } catch (e) {
-                            console.error("Failed to create BatchedMesh", e);
-                        }
-                    };
-
-                    await createBatchedMesh(batchGroups.opaque, '__ATLAS__');
-                    await createBatchedMesh(batchGroups.translucent, '__ATLAS_TRANSLUCENT__');
-                }
-                //--- BatchedMesh Logic for Atlas End ---
 
                 // Process grouped blocks
-                for (const [geomId, instancesMap] of blocks) {
-                    // Group instances by Signature (combination of parts and materials)
-                    const signatureGroups = new Map<string, { parts: GeometryMeta[], matrices: THREE.Matrix4[], instanceMetas: { uuid: string, groupId: string | null }[] }>();
+                // Group instances by Signature (combination of geometries, local transforms, and materials)
+                const signatureGroups = new Map<string, { parts: GeometryMeta[], matrices: THREE.Matrix4[], instanceMetas: { uuid: string, groupId: string | null }[] }>();
 
-                    for (const [_matrixStr, parts] of instancesMap) {
-                        // Sort parts by geometryIndex to ensure consistent order
-                        parts.sort((a, b) => a.geometryIndex - b.geometryIndex);
+                for (const [_itemId, parts] of blocks) {
+                    // Sort parts to keep geometry/material groups deterministic across matching objects.
+                    parts.sort((a, b) => {
+                        const geometryCompare = a.geometryId.localeCompare(b.geometryId);
+                        if (geometryCompare !== 0) return geometryCompare;
+                        return a.geometryIndex - b.geometryIndex;
+                    });
 
-                        // Create Signature (modelMatrix 포함하여 facing 등 blockstate 정보 반영)
-                        const signature = parts.map(p => 
-                            `${p.geometryIndex}|${p.texPath}|${p.tintHex ?? 0xffffff}|${p.modelMatrix.join(',')}`
-                        ).join('||');
+                    // Create Signature (modelMatrix 포함하여 facing 등 blockstate 정보 반영)
+                    const signature = parts.map(p =>
+                        `${p.geometryId}|${p.geometryIndex}|${p.texPath}|${p.tintHex ?? 0xffffff}|${p.modelMatrix.join(',')}`
+                    ).join('||');
 
-                        let group = signatureGroups.get(signature);
-                        if (!group) {
-                            group = { parts: parts, matrices: [], instanceMetas: [] };
-                            signatureGroups.set(signature, group);
-                        }
-                        
-                        // Reconstruct instance matrix
-                        const matrix = new THREE.Matrix4().fromArray(parts[0].transform).transpose();
-                        group.matrices.push(matrix);
-                        group.instanceMetas.push({ uuid: parts[0].uuid, groupId: parts[0].groupId });
+                    let group = signatureGroups.get(signature);
+                    if (!group) {
+                        group = { parts: parts, matrices: [], instanceMetas: [] };
+                        signatureGroups.set(signature, group);
                     }
 
-                    // Create InstancedMesh for each signature group
-                    for (const [_sig, group] of signatureGroups) {
+                    // Reconstruct instance matrix
+                    const matrix = new THREE.Matrix4().fromArray(parts[0].transform).transpose();
+                    group.matrices.push(matrix);
+                    group.instanceMetas.push({ uuid: parts[0].uuid, groupId: parts[0].groupId });
+                }
+
+                // Create InstancedMesh for each signature group
+                for (const [signature, group] of signatureGroups) {
                         const representativeParts = group.parts;
                         const matrices = group.matrices;
                         const instanceMetas = group.instanceMetas;
@@ -1216,16 +973,15 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                         }
                                     }
                                 }).catch(e => {
-                                    console.warn(`[Texture] Error loading materials for ${geomId}:`, e);
+                                    console.warn(`[Texture] Error loading materials for ${signature}:`, e);
                                 });
                             } else {
-                                    if (materials.some(m => m.transparent)) {
+                                if (materials.some(m => m.transparent)) {
                                     instancedMesh.renderOrder = 1;
                                 }
                             }
                         }
                     }
-                }
 
                 const playerHeadItems: Array<OtherItem> = [];
                 otherItems.forEach((item) => {
