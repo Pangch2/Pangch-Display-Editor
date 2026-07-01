@@ -1,7 +1,7 @@
 # pbde-types.ts
 
 ## Purpose
-Shared type layer for load-project pipeline. Keeps parser output, renderer inputs, group tree, and asset payload shapes aligned across files.
+Shared type layer for load-project pipeline. Keeps parser output, batched geometry metadata, renderer inputs, group tree, and asset payload shapes aligned across files.
 
 ## Exports
 
@@ -10,10 +10,12 @@ Shared type layer for load-project pipeline. Keeps parser output, renderer input
 - `TypedArrayConstructor` -- runtime typed-array constructor shape for merge logic
 - `HeadGeometrySet` -- cached player-head geometries (`base`, `layer`, `merged`)
 - `GeometryMeta` -- per-geometry slice metadata into shared geometry buffer
+- `GeometryInstanceMeta` -- per-instance transform/uuid/group/name data for a batched geometry shape
+- `GeometryInstanceBatch` -- compressed parser output with shared geometry `parts` and repeated `instances`
 - `OtherItem` -- non-geometry render item such as player head display data
 - `GroupChild` -- child entry in `GroupData.children`
 - `GroupData` -- group node with transform, children, parent, and optional pivot
-- `WorkerMetadata` -- parser output consumed by `loadAndRenderPbde`
+- `WorkerMetadata` -- parser output consumed by `loadAndRenderPbde`, with optional `geometryBatches`
 
 ## Dependencies (imports)
 - `three/webgpu` -- type-only `BufferGeometry`, `Object3D`, `Vector3`, `Quaternion`
@@ -25,4 +27,6 @@ Shared type layer for load-project pipeline. Keeps parser output, renderer input
 
 ## Notes
 - `GroupData.position/quaternion/scale` may be plain objects or THREE instances.
+- `GeometryMeta.geometryBufferKey` distinguishes actual buffer slices when different batches share the same model id/index.
 - `WorkerMetadata.atlas` stays optional to signal atlas packing result.
+- `WorkerMetadata.geometries` remains for legacy per-item metadata; `geometryBatches` is preferred when present.

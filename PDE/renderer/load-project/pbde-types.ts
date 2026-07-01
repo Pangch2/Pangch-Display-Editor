@@ -21,6 +21,7 @@ export interface GeometryMeta {
     transform: Float32Array | number[];
     modelMatrix: number[];
     geometryId: string;
+    geometryBufferKey?: string;
     geometryIndex: number;
     texPath: string;
     tintHex?: number;
@@ -38,6 +39,18 @@ export interface GeometryMeta {
     name?: string | null;
     blockProps?: unknown;
     itemDisplayType?: string;
+}
+
+export interface GeometryInstanceMeta {
+    transform: Float32Array | number[];
+    uuid: string;
+    groupId: string | null;
+    name?: string | null;
+}
+
+export interface GeometryInstanceBatch {
+    parts: GeometryMeta[];
+    instances: GeometryInstanceMeta[];
 }
 
 export interface OtherItem {
@@ -72,6 +85,7 @@ export interface GroupData {
 
 export interface WorkerMetadata {
     geometries: GeometryMeta[];
+    geometryBatches?: GeometryInstanceBatch[];
     otherItems: OtherItem[];
     useUint32Indices?: boolean;
     atlas?: { width: number; height: number; data: Uint8ClampedArray<ArrayBuffer> };

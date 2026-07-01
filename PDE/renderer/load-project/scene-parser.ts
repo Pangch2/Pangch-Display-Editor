@@ -47,6 +47,18 @@ interface RenderItem {
     [key: string]: any; // Allow for other dynamic properties for now
 }
 
+type GeometryBatchPartSource = {
+    model: ModelData;
+    geomData: GeometryData;
+    geometryIndex: number;
+    modelMatrix: number[] | Float32Array;
+};
+
+type GeometryBatchBuilder = {
+    parts: GeometryBatchPartSource[];
+    instances: RenderItem[];
+};
+
 type BlockDisplayTemplate = {
     models: ModelData[];
     blockProps: Record<string, string>;
@@ -155,6 +167,7 @@ export type PbdeAssetProvider = {
 export interface ParsedPbdeProject {
     metadata: {
         geometries: any[];
+        geometryBatches?: any[];
         otherItems: any[];
         useUint32Indices: boolean;
         atlas: { width: number; height: number; data: Uint8ClampedArray } | null;
@@ -1896,20 +1909,70 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         let totalIndices = 0;
         let totalVertices = 0;
         let itemId = 0;
+        let geometryRefId = 0;
+        const geometryRefIds = new WeakMap<GeometryData, number>();
+        const geometryBatches = new Map<string, GeometryBatchBuilder>();
 
-        // 전체 버퍼 크기를 미리 계산해 단일 ArrayBuffer에 데이터를 적재한다.
+        const getGeometryRefId = (geomData: GeometryData) => {
+            let id = geometryRefIds.get(geomData);
+            if (id == null) {
+                id = ++geometryRefId;
+                geometryRefIds.set(geomData, id);
+            }
+            return id;
+        };
+
+        const matrixKey = (matrix: number[] | Float32Array) => Array.from(matrix).join(',');
+        const stableJson = (value: unknown) => {
+            if (value == null) return '';
+            try {
+                return JSON.stringify(value, Object.keys(value as any).sort());
+            } catch {
+                return String(value);
+            }
+        };
+
         for (const item of geometryItems) {
-            if (item.models) {
-                for (const model of item.models) {
-                    for (const geomData of model.geometries) {
-                        totalPositions += geomData.positions.length;
-                        totalNormals += geomData.normals.length;
-                        totalUvs += geomData.uvs.length;
-                        totalIndices += geomData.indices.length;
-                        totalVertices += geomData.positions.length / 3;
-                    }
+            if (!item.models) continue;
+            const parts: GeometryBatchPartSource[] = [];
+            const keyParts = [item.type, stableJson(item.blockProps), String(item.displayType ?? '')];
+
+            for (const model of item.models) {
+                const matrixArray = (Array.isArray(model.modelMatrix) || ArrayBuffer.isView(model.modelMatrix))
+                    ? model.modelMatrix
+                    : identityMatrix;
+
+                model.geometries.forEach((geomData, geometryIndex) => {
+                    parts.push({ model, geomData, geometryIndex, modelMatrix: matrixArray });
+                    keyParts.push(
+                        model.geometryId,
+                        String(geometryIndex),
+                        String(getGeometryRefId(geomData)),
+                        matrixKey(matrixArray),
+                        geomData.texPath,
+                        String((geomData.tintHex ?? 0xffffff) >>> 0),
+                        stableJson((model as any).blockProps),
+                        String((model as any).itemDisplayType ?? '')
+                    );
+                });
+            }
+
+            if (parts.length === 0) continue;
+            const batchKey = keyParts.join('|');
+            let batch = geometryBatches.get(batchKey);
+            if (!batch) {
+                batch = { parts, instances: [] };
+                geometryBatches.set(batchKey, batch);
+                for (const part of parts) {
+                    const { geomData } = part;
+                    totalPositions += geomData.positions.length;
+                    totalNormals += geomData.normals.length;
+                    totalUvs += geomData.uvs.length;
+                    totalIndices += geomData.indices.length;
+                    totalVertices += geomData.positions.length / 3;
                 }
             }
+            batch.instances.push(item);
         }
 
         const useUint32Indices = totalVertices > 65535;
@@ -1927,6 +1990,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
 
         const geometryBuffer = new ArrayBuffer(totalByteLength);
         const metadata = [];
+        const geometryBatchMetadata = [];
 
         const posView = new Float32Array(geometryBuffer, 0, totalPositions);
         const normView = new Float32Array(geometryBuffer, normByteOffset, totalNormals);
@@ -1940,65 +2004,72 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         let uvCursor = 0;
         let indicesCursor = 0;
 
-        // 개별 지오메트리 버퍼를 연속 메모리 공간에 복사한다.
-        for (const item of geometryItems) {
+        // 배치 대표 지오메트리만 연속 메모리 공간에 복사하고, 인스턴스별 데이터는 별도 배열로 압축한다.
+        for (const batch of geometryBatches.values()) {
             itemId++;
-            if (item.models) {
-                for (const model of item.models) {
-                    const matrixArray = (Array.isArray(model.modelMatrix) || ArrayBuffer.isView(model.modelMatrix))
-                        ? model.modelMatrix
-                        : identityMatrix;
+            const batchParts = [];
 
-                    model.geometries.forEach((geomData, geomIndex) => {
-                    const { positions, normals, uvs, indices } = geomData;
+            for (const part of batch.parts) {
+                const { model, geomData, geometryIndex, modelMatrix } = part;
+                const { positions, normals, uvs, indices } = geomData;
 
-                    const posStart = posCursor;
-                    const normStart = normCursor;
-                    const uvStart = uvCursor;
-                    const idxStart = indicesCursor;
+                const posStart = posCursor;
+                const normStart = normCursor;
+                const uvStart = uvCursor;
+                const idxStart = indicesCursor;
 
-                    posView.set(positions, posCursor);
-                    posCursor += positions.length;
+                posView.set(positions, posCursor);
+                posCursor += positions.length;
 
-                    normView.set(normals, normCursor);
-                    normCursor += normals.length;
+                normView.set(normals, normCursor);
+                normCursor += normals.length;
 
-                    uvView.set(uvs, uvCursor);
-                    uvCursor += uvs.length;
+                uvView.set(uvs, uvCursor);
+                uvCursor += uvs.length;
 
-                    indicesView.set(indices, indicesCursor);
-                    indicesCursor += indices.length;
+                indicesView.set(indices, indicesCursor);
+                indicesCursor += indices.length;
 
-                    metadata.push({
-                        itemId: itemId,
-                        transform: item.transform,
-                        modelMatrix: matrixArray,
-                        geometryId: model.geometryId,
-                        geometryIndex: geomIndex,
-                        texPath: geomData.texPath,
-                        tintHex: geomData.tintHex,
-                        isItemDisplayModel: item.type === 'itemDisplayModel',
-                        posByteOffset: posStart * 4,
-                        posLen: positions.length,
-                        normByteOffset: normByteOffset + normStart * 4,
-                        normLen: normals.length,
-                        uvByteOffset: uvByteOffset + uvStart * 4,
-                        uvLen: uvs.length,
-                        indicesByteOffset: indicesByteOffset + idxStart * indexElementSize,
-                        indicesLen: indices.length,
-                        uuid: item.uuid,
-                        groupId: item.groupId,
-                        name: (item as any).name ?? null,
-                        blockProps: (model as any).blockProps || item.blockProps,
-                        itemDisplayType: (model as any).itemDisplayType || item.displayType
-                    });
+                batchParts.push({
+                    itemId: itemId,
+                    transform: identityMatrix,
+                    modelMatrix: Array.from(modelMatrix),
+                    geometryId: model.geometryId,
+                    geometryBufferKey: `${itemId}|${model.geometryId}|${geometryIndex}`,
+                    geometryIndex: geometryIndex,
+                    texPath: geomData.texPath,
+                    tintHex: geomData.tintHex,
+                    isItemDisplayModel: batch.instances[0]?.type === 'itemDisplayModel',
+                    posByteOffset: posStart * 4,
+                    posLen: positions.length,
+                    normByteOffset: normByteOffset + normStart * 4,
+                    normLen: normals.length,
+                    uvByteOffset: uvByteOffset + uvStart * 4,
+                    uvLen: uvs.length,
+                    indicesByteOffset: indicesByteOffset + idxStart * indexElementSize,
+                    indicesLen: indices.length,
+                    uuid: '',
+                    groupId: null,
+                    name: null,
+                    blockProps: (model as any).blockProps || batch.instances[0]?.blockProps,
+                    itemDisplayType: (model as any).itemDisplayType || batch.instances[0]?.displayType
                 });
             }
+
+            geometryBatchMetadata.push({
+                parts: batchParts,
+                instances: batch.instances.map(item => ({
+                    transform: item.transform,
+                    uuid: item.uuid,
+                    groupId: item.groupId ?? null,
+                    name: (item as any).name ?? null
+                }))
+            });
         }
-    }
 
         const metadataPayload = {
             geometries: metadata,
+            geometryBatches: geometryBatchMetadata,
             otherItems: otherItems,
             useUint32Indices: useUint32Indices,
             atlas: atlasInfo,

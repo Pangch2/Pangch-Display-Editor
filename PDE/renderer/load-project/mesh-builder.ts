@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import { createEntityMaterial } from '../entityMaterial.js';
 import { parsePbdeProject } from './scene-parser';
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
-import type { GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
+import type { GeometryInstanceBatch, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
 
@@ -87,19 +87,24 @@ function buildPartHashKeys(parts: GeometryMeta[]): { signature: string; geometry
     geometryHashB = mixHash(geometryHashB, parts.length);
 
     for (const part of parts) {
+        const geometryBufferKey = getGeometryBufferKey(part);
         signatureHashA = hashString(signatureHashA, part.geometryId);
+        signatureHashA = hashString(signatureHashA, geometryBufferKey);
         signatureHashA = mixHash(signatureHashA, part.geometryIndex);
         signatureHashA = hashString(signatureHashA, part.texPath);
         signatureHashA = mixHash(signatureHashA, (part.tintHex ?? 0xffffff) >>> 0);
         signatureHashB = hashString(signatureHashB, part.texPath);
         signatureHashB = mixHash(signatureHashB, (part.tintHex ?? 0xffffff) >>> 0);
         signatureHashB = hashString(signatureHashB, part.geometryId);
+        signatureHashB = hashString(signatureHashB, geometryBufferKey);
         signatureHashB = mixHash(signatureHashB, part.geometryIndex);
 
         geometryHashA = hashString(geometryHashA, part.geometryId);
+        geometryHashA = hashString(geometryHashA, geometryBufferKey);
         geometryHashA = mixHash(geometryHashA, part.geometryIndex);
         geometryHashB = mixHash(geometryHashB, part.geometryIndex);
         geometryHashB = hashString(geometryHashB, part.geometryId);
+        geometryHashB = hashString(geometryHashB, geometryBufferKey);
 
         for (let i = 0; i < part.modelMatrix.length; i++) {
             signatureHashA = hashNumber(signatureHashA, part.modelMatrix[i]);
@@ -113,6 +118,10 @@ function buildPartHashKeys(parts: GeometryMeta[]): { signature: string; geometry
         signature: `${parts.length}|${signatureHashA.toString(36)}|${signatureHashB.toString(36)}`,
         geometryKey: `${parts.length}|${geometryHashA.toString(36)}|${geometryHashB.toString(36)}`
     };
+}
+
+function getGeometryBufferKey(part: GeometryMeta): string {
+    return part.geometryBufferKey ?? `${part.geometryId}|${part.geometryIndex}`;
 }
 
 
@@ -720,7 +729,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     console.error('[Debug] Invalid metadata payload from parser.');
                     return new Set<THREE.Object3D>();
                 }
-                const { geometries: geometryMetas, otherItems, useUint32Indices, atlas, groups, sceneOrder } = metadataPayload;
+                const { geometries: geometryMetas, geometryBatches, otherItems, useUint32Indices, atlas, groups, sceneOrder } = metadataPayload;
+                const activeGeometryBatches = Array.isArray(geometryBatches) && geometryBatches.length > 0 ? geometryBatches : null;
 
                 const newlyAddedSelectableMeshes = new Set<THREE.Object3D>();
 
@@ -833,7 +843,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     }
                 }
 
-                console.log(`[Debug] Processing ${geometryMetas.length + otherItems.length} items from parser (binary).`);
+                const geometryItemCount = activeGeometryBatches
+                    ? activeGeometryBatches.reduce((sum, batch) => sum + batch.instances.length, 0)
+                    : geometryMetas.length;
+                console.log(`[Debug] Processing ${geometryItemCount + otherItems.length} items from parser (binary).`);
 
                 // uuid → 표시 이름 맵 구성
                 if (!isMerge) {
@@ -858,18 +871,38 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const objectBlockProps: Map<string, any> =
                     (loadedObjectGroup.userData.objectBlockProps as Map<string, any>) ?? new Map<string, any>();
 
-                for (const meta of geometryMetas) {
-                    if (meta.uuid && !objectNamesMap.has(meta.uuid) && meta.name) {
-                        objectNamesMap.set(meta.uuid, meta.name);
-                    }
-                    if (meta.uuid && meta.isItemDisplayModel) {
-                        objectIsItemDisplay.add(meta.uuid);
-                        if ((meta as any).itemDisplayType) {
-                            objectDisplayTypes.set(meta.uuid, (meta as any).itemDisplayType);
+                if (activeGeometryBatches) {
+                    for (const batch of activeGeometryBatches) {
+                        const firstPart = batch.parts[0];
+                        for (const instance of batch.instances) {
+                            if (instance.uuid && !objectNamesMap.has(instance.uuid) && instance.name) {
+                                objectNamesMap.set(instance.uuid, instance.name);
+                            }
+                            if (instance.uuid && firstPart?.isItemDisplayModel) {
+                                objectIsItemDisplay.add(instance.uuid);
+                                if ((firstPart as any).itemDisplayType) {
+                                    objectDisplayTypes.set(instance.uuid, (firstPart as any).itemDisplayType);
+                                }
+                            }
+                            if (instance.uuid && firstPart && !firstPart.isItemDisplayModel && (firstPart as any).blockProps) {
+                                objectBlockProps.set(instance.uuid, (firstPart as any).blockProps);
+                            }
                         }
                     }
-                    if (meta.uuid && !meta.isItemDisplayModel && (meta as any).blockProps) {
-                        objectBlockProps.set(meta.uuid, (meta as any).blockProps);
+                } else {
+                    for (const meta of geometryMetas) {
+                        if (meta.uuid && !objectNamesMap.has(meta.uuid) && meta.name) {
+                            objectNamesMap.set(meta.uuid, meta.name);
+                        }
+                        if (meta.uuid && meta.isItemDisplayModel) {
+                            objectIsItemDisplay.add(meta.uuid);
+                            if ((meta as any).itemDisplayType) {
+                                objectDisplayTypes.set(meta.uuid, (meta as any).itemDisplayType);
+                            }
+                        }
+                        if (meta.uuid && !meta.isItemDisplayModel && (meta as any).blockProps) {
+                            objectBlockProps.set(meta.uuid, (meta as any).blockProps);
+                        }
                     }
                 }
                 for (const item of otherItems) {
@@ -905,8 +938,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 ensureSharedPlaceholder();
                 const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
 
-                for (const meta of geometryMetas) {
-                    const geomKey = `${meta.geometryId}|${meta.geometryIndex}`;
+                const ensureBufferGeometry = (meta: GeometryMeta): void => {
+                    const geomKey = getGeometryBufferKey(meta);
                     let geometry = instancedGeometries.get(geomKey);
 
                     if (!geometry) {
@@ -924,6 +957,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         geometry.setIndex(new THREE.BufferAttribute(indices, 1));
                         instancedGeometries.set(geomKey, geometry);
                     }
+                };
+
+                for (const meta of geometryMetas) {
+                    ensureBufferGeometry(meta);
 
                     const instanceKey = String(meta.itemId);
 
@@ -939,25 +976,38 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 // Group instances by Signature (combination of geometries, local transforms, and materials)
                 const signatureGroups = new Map<string, SignatureGroup>();
 
-                for (const [_itemId, parts] of blocks) {
-                    // Sort parts to keep geometry/material groups deterministic across matching objects.
+                const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null }>) => {
                     parts.sort((a, b) => {
                         const geometryCompare = a.geometryId.localeCompare(b.geometryId);
                         if (geometryCompare !== 0) return geometryCompare;
                         return a.geometryIndex - b.geometryIndex;
                     });
 
-                    // modelMatrix 포함하여 facing 등 blockstate 정보를 반영하되 긴 문자열 생성을 피한다.
-                    const { signature, geometryKey } = buildPartHashKeys(parts);
+                    for (const part of parts) {
+                        ensureBufferGeometry(part);
+                    }
 
+                    const { signature, geometryKey } = buildPartHashKeys(parts);
                     let group = signatureGroups.get(signature);
                     if (!group) {
                         group = { parts: parts, transforms: [], instanceMetas: [], geometryKey };
                         signatureGroups.set(signature, group);
                     }
 
-                    group.transforms.push(parts[0].transform);
-                    group.instanceMetas.push({ uuid: parts[0].uuid, groupId: parts[0].groupId });
+                    for (const instance of instances) {
+                        group.transforms.push(instance.transform);
+                        group.instanceMetas.push({ uuid: instance.uuid, groupId: instance.groupId });
+                    }
+                };
+
+                if (activeGeometryBatches) {
+                    for (const batch of activeGeometryBatches as GeometryInstanceBatch[]) {
+                        addSignatureGroup(batch.parts, batch.instances);
+                    }
+                } else {
+                    for (const [_itemId, parts] of blocks) {
+                        addSignatureGroup(parts, [{ transform: parts[0].transform, uuid: parts[0].uuid, groupId: parts[0].groupId }]);
+                    }
                 }
 
                 // Create InstancedMesh for each signature group
@@ -976,7 +1026,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             const localMatrix = new THREE.Matrix4();
 
                             for (const part of representativeParts) {
-                                const geomKey = `${part.geometryId}|${part.geometryIndex}`;
+                                const geomKey = getGeometryBufferKey(part);
                                 const baseGeo = instancedGeometries.get(geomKey)!;
                                 
                                 // Clone and apply local transform (modelMatrix)

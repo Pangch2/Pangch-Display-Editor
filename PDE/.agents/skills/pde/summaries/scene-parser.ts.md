@@ -1,13 +1,13 @@
 # scene-parser.ts
 
 ## Purpose
-Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content, resolves model trees and blockstate variants, delegates texture atlas packing, builds packed geometry buffers, and emits atlas/group/scene-order metadata for `mesh-builder.ts`.
+Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content, resolves model trees and blockstate variants, delegates texture atlas packing, builds packed geometry buffers, and emits batched geometry, atlas, group, and scene-order metadata for `mesh-builder.ts`.
 
 ## Exports
 
 ### Types / Interfaces
 - `PbdeAssetProvider` -- asset source contract used during parse
-- `ParsedPbdeProject` -- parser result with `metadata` and raw `geometryBuffer`
+- `ParsedPbdeProject` -- parser result with `metadata`, optional `geometryBatches`, and raw `geometryBuffer`
 
 ### Functions / Methods
 - `parsePbdeProject(fileContent, provider)` -- main parser entry; returns packed geometry and metadata
@@ -17,6 +17,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - `groups` and `sceneOrder` -- module-level accumulators reset per parse
 - Promise caches for JSON assets and block display templates to deduplicate concurrent scene traversal work
 - Multiple caches for model resolution, textures, block/item geometry, and worker-side state
+- Geometry pack step groups identical renderable shapes into `geometryBatches`; each batch stores shared parts once and per-instance transform/uuid/group/name data separately.
 
 ## Dependencies (imports)
 - `fflate` -- `decompressSync`, `strFromU8` for PRJ2 archive unpacking
@@ -30,6 +31,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 ## Notes
 - Expects PRJ2 archive with embedded `scene.json`.
 - Produces shared geometry buffer plus metadata references, not ready-made meshes.
+- `metadata.geometries` remains for compatibility but batched output is emitted through `metadata.geometryBatches`.
 - Handles hardcoded models, display transforms, and player/item display variants while atlas packing is delegated.
 - Reuses identical block display templates and block model geometry during a parse; per-node transform/uuid metadata is still assigned separately.
 - Logs parse timings for archive extraction, scene traversal, atlas generation, buffer packing, and total parse time.
