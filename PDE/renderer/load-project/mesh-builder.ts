@@ -1115,7 +1115,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     }
 
                 if (materialUpdates.length > 0) {
-                    Promise.all(materialUpdates.map(async update => {
+                    await Promise.all(materialUpdates.map(async update => {
                         try {
                             const loadedMats = await Promise.all(update.pendingMaterialSlots.map(slot => slot.promise));
                             if (myGen !== currentLoadGen) return;

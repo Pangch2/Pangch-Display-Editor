@@ -3,23 +3,26 @@ import * as THREE from 'three/webgpu';
 import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, performSelection } from './mesh-builder';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
+type RenderSettledDetail = {
+    frames: number;
+    resolve: () => void;
+};
 
 export { loadedObjectGroup };
 
-function waitForNextPaint(): Promise<void> {
+function waitForRenderSettled(frames = 3): Promise<void> {
     return new Promise(resolve => {
-        requestAnimationFrame(() => {
-            setTimeout(resolve, 0);
-        });
+        window.dispatchEvent(new CustomEvent<RenderSettledDetail>('pde:wait-render-settled', {
+            detail: { frames, resolve }
+        }));
     });
 }
 
-async function logPerceivedPbdeLoadTime(startMs: number, mode: 'open' | 'merge', fileCount: number): Promise<void> {
-    await waitForNextPaint();
-    await waitForNextPaint();
+async function logFinalPbdeLoadTime(startMs: number, mode: 'open' | 'merge', fileCount: number): Promise<void> {
+    await waitForRenderSettled();
 
     const elapsedSeconds = (performance.now() - startMs) / 1000;
-    console.log(`[PBDE] Perceived load time: ${elapsedSeconds.toFixed(2)}s (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}, after scene update + paint).`);
+    console.log(`[PBDE] Final load time: ${elapsedSeconds.toFixed(2)}s (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}, after materials + scene panel + rendered frames).`);
 }
 
 async function loadpbde(files: File | File[]): Promise<void> {
@@ -43,7 +46,7 @@ async function loadpbde(files: File | File[]): Promise<void> {
         console.error("Error loading project files:", e);
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-    await logPerceivedPbdeLoadTime(perceivedLoadStartMs, 'open', fileList.length);
+    await logFinalPbdeLoadTime(perceivedLoadStartMs, 'open', fileList.length);
 }
 
 async function mergepbde(files: File | File[]): Promise<void> {
@@ -69,7 +72,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
         console.error("Error merging project files:", e);
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-    await logPerceivedPbdeLoadTime(perceivedLoadStartMs, 'merge', fileList.length);
+    await logFinalPbdeLoadTime(perceivedLoadStartMs, 'merge', fileList.length);
 }
 
 

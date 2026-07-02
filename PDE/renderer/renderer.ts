@@ -25,6 +25,37 @@ let camera: PerspectiveCamera;
 let renderer: WebGPURenderer;
 let controls: OrbitControls;
 let gizmoModule: InitGizmoResult | null = null;
+type GpuQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
+type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike } } };
+const renderSettledRequests = new Set<{ framesRemaining: number; resolve: () => void }>();
+
+window.addEventListener('pde:wait-render-settled', (event: Event) => {
+    const detail = (event as CustomEvent<{ frames?: number; resolve?: () => void }>).detail;
+    if (!detail || typeof detail.resolve !== 'function') return;
+
+    renderSettledRequests.add({
+        framesRemaining: Math.max(1, detail.frames ?? 3),
+        resolve: detail.resolve
+    });
+});
+
+function resolveRenderSettledRequests(): void {
+    if (!renderer || renderSettledRequests.size === 0) return;
+
+    for (const request of [...renderSettledRequests]) {
+        request.framesRemaining--;
+        if (request.framesRemaining > 0) continue;
+
+        renderSettledRequests.delete(request);
+        const queue = (renderer as unknown as WebGpuRendererWithBackend).backend?.device?.queue;
+
+        if (queue && typeof queue.onSubmittedWorkDone === 'function') {
+            queue.onSubmittedWorkDone().then(request.resolve, request.resolve);
+        } else {
+            request.resolve();
+        }
+    }
+}
 
 // 앱 시작 로직을 비동기 함수로 감싸기
 async function startApp(): Promise<void> {
@@ -225,6 +256,7 @@ function animate(): void {
     if (gizmoModule) gizmoModule.updateGizmo();
     if (renderer && scene && camera) {
         renderer.render(scene, camera);
+        resolveRenderSettledRequests();
     }
 }
 
