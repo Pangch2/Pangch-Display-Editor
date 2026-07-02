@@ -17,6 +17,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - `groups` and `sceneOrder` -- module-level accumulators reset per parse
 - Promise caches for JSON assets and block display templates to deduplicate concurrent scene traversal work
 - Multiple caches for model resolution, textures, block/item geometry, and worker-side state
+- Promise and resolved-template caches for block/item display templates deduplicate repeated geometry and display-matrix work before traversal.
 - Geometry pack step groups identical renderable shapes into `geometryBatches`; each batch stores shared parts once and per-instance transform/uuid/group/name data separately.
 
 ## Dependencies (imports)
@@ -34,4 +35,6 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - `metadata.geometries` remains for compatibility but batched output is emitted through `metadata.geometryBatches`.
 - Handles hardcoded models, display transforms, and player/item display variants while atlas packing is delegated.
 - Reuses identical block display templates and block model geometry during a parse; per-node transform/uuid metadata is still assigned separately.
-- Logs parse timings for archive extraction, scene traversal, atlas generation, buffer packing, and total parse time.
+- Large scene traversal avoids cloning the full source tree, preloads repeated block/item templates once, and then walks nodes synchronously into a shared render list instead of creating per-node promises and nested arrays.
+- Pack key generation caches repeated matrix and structured JSON string keys within a parse.
+- Logs parse timings for archive extraction, scene traversal, atlas generation, buffer packing, and total parse time, plus scene prep/traverse/order sub-timings.

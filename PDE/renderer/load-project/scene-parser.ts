@@ -64,6 +64,15 @@ type BlockDisplayTemplate = {
     blockProps: Record<string, string>;
 };
 
+type ItemModelTemplate = {
+    name: string;
+    displayType: string | null;
+    tints: number[] | null;
+    modelMatrix: number[];
+    geometries: GeometryData[];
+    geometryId: string;
+};
+
 // tintColor 모듈을 워커에서 직접 불러올 수 없으므로 여기에서 구현을 포함한다.
 // 아래 getTextureColor 함수는 메인 스레드와 동일하게 동작하도록 수동으로 삽입한다.
 
@@ -754,6 +763,7 @@ async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = 
 }
 
 const blockDisplayTemplatePromiseCache = new Map<string, Promise<BlockDisplayTemplate | null>>();
+const blockDisplayTemplateCache = new Map<string, BlockDisplayTemplate | null>();
 
 function cloneBlockDisplayTemplate(template: BlockDisplayTemplate): RenderItem {
     return {
@@ -763,15 +773,26 @@ function cloneBlockDisplayTemplate(template: BlockDisplayTemplate): RenderItem {
     };
 }
 
-// block_display 엔티티 노드를 Minecraft 블록 모델 지오메트리로 변환한다.
-async function processBlockDisplay(item: any): Promise<RenderItem | null> {
+async function prepareBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplate | null> {
     const cacheKey = String(item.name || '');
+    if (blockDisplayTemplateCache.has(cacheKey)) {
+        return blockDisplayTemplateCache.get(cacheKey) ?? null;
+    }
+
     let templatePromise = blockDisplayTemplatePromiseCache.get(cacheKey);
     if (!templatePromise) {
         templatePromise = buildBlockDisplayTemplate(item);
         blockDisplayTemplatePromiseCache.set(cacheKey, templatePromise);
     }
     const template = await templatePromise;
+    blockDisplayTemplateCache.set(cacheKey, template);
+    return template;
+}
+
+// block_display 엔티티 노드를 Minecraft 블록 모델 지오메트리로 변환한다.
+function processBlockDisplay(item: any): RenderItem | null {
+    const cacheKey = String(item.name || '');
+    const template = blockDisplayTemplateCache.get(cacheKey);
     return template ? cloneBlockDisplayTemplate(template) : null;
 }
 
@@ -915,8 +936,10 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
 // 아이템 정의와 지오메트리 결과를 캐싱하여 중복 계산을 줄인다.
 const modelTreeCache = new Map(); // 모델 ID별로 해석한 트리를 보관한다.
 const itemDefinitionCache = new Map(); // 아이템 이름별 정의 JSON을 캐싱한다.
-const itemModelGeometryCache = new Map(); // 모델 ID와 틴트 조합으로 생성된 지오메트리를 저장한다.
-const itemModelHasElementsCache = new Map(); // 모델 ID별 요소 존재 여부를 기록한다.
+const itemModelTemplatePromiseCache = new Map<string, Promise<ItemModelTemplate | null>>(); // 모델 ID/display 조합별 완성 템플릿을 저장한다.
+const itemModelTemplateCache = new Map<string, ItemModelTemplate | null>();
+const itemModelTemplateKeyByName = new Map<string, string | null>();
+const itemNameParseCache = new Map<string, { baseName: string; displayType: string | null }>();
 
 // 🚀 최적화 3: 블록 모델 지오메트리 캐싱 (같은 블록 타입은 재사용)
 const blockModelGeometryCache = new Map(); // 모델 ID별 지오메트리 캐시
@@ -1187,6 +1210,15 @@ function parseItemName(raw) {
     return { baseName, displayType };
 }
 
+function parseItemNameCached(raw: string): { baseName: string; displayType: string | null } {
+    let parsed = itemNameParseCache.get(raw);
+    if (!parsed) {
+        parsed = parseItemName(raw);
+        itemNameParseCache.set(raw, parsed);
+    }
+    return parsed;
+}
+
 
 // items 디렉터리에서 아이템 정의 JSON을 읽어 캐싱한다.
 async function loadItemDefinition(itemName) {
@@ -1436,11 +1468,84 @@ async function buildItemModelGeometryData(resolved) {
     return buildGeneratedPlaneGeometry(layer0, tintHex);
 }
 
-// item_display 노드를 분석해 모델 지오메트리와 display 변환을 계산한다.
-async function processItemModelDisplay(node: any): Promise<RenderItem | null> {
+async function buildItemModelTemplate(baseName: string, displayType: string | null, modelId: string, tintList: number[] | null): Promise<ItemModelTemplate | null> {
+    let resolved = await resolveModelTree(modelId, modelTreeCache);
+    if (!resolved) {
+        return null;
+    }
+
+    const hasElements = !!(resolved.elements && resolved.elements.length > 0);
+    const geomData = await buildItemModelGeometryData(resolved);
+    if (!geomData || geomData.length === 0) {
+        return null;
+    }
+
+    const modelMatrix = new THREE.Matrix4();
+    if (hasElements) {
+        // 블록형 아이템은 중심을 -0.5로 이동해 월드 좌표계와 정렬한다.
+        modelMatrix.multiply(new THREE.Matrix4().makeTranslation(-0.5, -0.5, -0.5));
+    } else {
+        // 평면 아이템은 중심만 이동하고 좌우 반전으로 UV와 노멀 방향을 일치시킨다.
+        const translateCenter = new THREE.Matrix4().makeTranslation(-0.5, -0.5, 0);
+        modelMatrix.multiply(translateCenter);
+        modelMatrix.premultiply(new THREE.Matrix4().makeScale(-1, 1, 1));
+    }
+
+    if (displayType) {
+        if (baseName === 'player_head') {
+            const override = PLAYER_HEAD_DISPLAY_TRANSFORMS[displayType];
+            const overrideMatrix = buildDisplayTransformMatrix(override);
+            if (overrideMatrix) {
+                modelMatrix.premultiply(overrideMatrix);
+            }
+        } else {
+            try {
+                const displayTransform = await getDisplayTransformForItem(resolved, displayType, modelTreeCache);
+                const displayMatrix = buildDisplayTransformMatrix(displayTransform);
+                if (displayMatrix) {
+                    modelMatrix.premultiply(displayMatrix);
+                }
+            } catch {
+                // Display transform lookup failures fall back to the base model matrix.
+            }
+        }
+    }
+
+    return {
+        name: baseName,
+        displayType: displayType || null,
+        tints: tintList || null,
+        modelMatrix: modelMatrix.elements.slice(),
+        geometries: geomData,
+        geometryId: modelId
+    };
+}
+
+function cloneItemModelTemplate(template: ItemModelTemplate, node: any): RenderItem {
+    return {
+        type: 'itemDisplayModel',
+        name: template.name,
+        originalName: node.name,
+        displayType: template.displayType,
+        tints: template.tints,
+        models: [{ modelMatrix: template.modelMatrix, geometries: template.geometries, geometryId: template.geometryId }],
+        transform: node.transform || node.transforms || null,
+        itemDisplayType: template.displayType
+    };
+}
+
+async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTemplate | null> {
+    if (itemModelTemplateKeyByName.has(rawName)) {
+        const existingKey = itemModelTemplateKeyByName.get(rawName);
+        return existingKey ? itemModelTemplateCache.get(existingKey) ?? null : null;
+    }
+
     try {
-        const { baseName, displayType } = parseItemName(node.name);
-        if (!baseName) return null;
+        const { baseName, displayType } = parseItemNameCached(rawName);
+        if (!baseName) {
+            itemModelTemplateKeyByName.set(rawName, null);
+            return null;
+        }
         //try { console.log('[ItemModel] start', node.name, 'base', baseName); } catch {}
         const definition = await loadItemDefinition(baseName);
         let modelId;
@@ -1457,82 +1562,37 @@ async function processItemModelDisplay(node: any): Promise<RenderItem | null> {
             }
         }
         if (!modelId) modelId = `minecraft:item/${baseName}`;
-        let geomData = null;
-        let hasElements = false;
-        let resolved = null;
-        if (!geomData) {
-            resolved = await resolveModelTree(modelId, modelTreeCache);
-            if (!resolved) {
-                //try { console.warn('[ItemModel] resolve failed', modelId); } catch {}
-                return null;
-            }
-            hasElements = !!(resolved.elements && resolved.elements.length > 0);
-            //try { console.log('[ItemModel] resolved', modelId, 'elements', hasElements ? resolved.elements.length : 0, 'parent', resolved.parent || 'none'); } catch {}
-            geomData = await buildItemModelGeometryData(resolved);
-            // if (geomData && geomData.length) {
-            //     itemModelGeometryCache.set(cacheKey, geomData);
-            //     itemModelHasElementsCache.set(cacheKey, hasElements);
-            // }
-        }
-        if (!resolved) {
-            resolved = await resolveModelTree(modelId, modelTreeCache);
-        }
-        if (!resolved) {
-            //try { console.warn('[ItemModel] resolve failed (post-cache)', modelId); } catch {}
-            return null;
-        }
-        if (!geomData || geomData.length === 0) {
-            //try { console.warn('[ItemModel] empty geometry', modelId); } catch {}
-            return null;
-        }
-        //try { console.log('[ItemModel] geometry buffers', geomData.length, 'for', modelId, 'hasElements', hasElements); } catch {}
-        const modelMatrix = new THREE.Matrix4();
-        if (hasElements) {
-            // 블록형 아이템은 중심을 -0.5로 이동해 월드 좌표계와 정렬한다.
-            modelMatrix.multiply(new THREE.Matrix4().makeTranslation(-0.5, -0.5, -0.5));
-            //try { console.log('[ItemModel] applied block-like centering', modelId); } catch {}
-        } else {
-            // 평면 아이템은 Y축 180도 회전 없이 중심만 이동해 앞면이 +Z를 바라보게 유지한다.
-            const translateCenter = new THREE.Matrix4().makeTranslation(-0.5, -0.5, 0);
-            modelMatrix.multiply(translateCenter);
-            // 좌우 반전으로 UV와 노멀 방향을 일치시킨다.
-            modelMatrix.premultiply(new THREE.Matrix4().makeScale(-1, 1, 1));
-            //try { console.log('[ItemModel] applied flat full centering and horizontal flip', modelId); } catch {}
+
+        const tintKey = tintList ? JSON.stringify(tintList) : '';
+        const cacheKey = `${baseName}|${modelId}|${displayType || ''}|${tintKey}`;
+        itemModelTemplateKeyByName.set(rawName, cacheKey);
+
+        if (itemModelTemplateCache.has(cacheKey)) {
+            return itemModelTemplateCache.get(cacheKey) ?? null;
         }
 
-        if (displayType) {
-            if (baseName === 'player_head') {
-                const override = PLAYER_HEAD_DISPLAY_TRANSFORMS[displayType];
-                const overrideMatrix = buildDisplayTransformMatrix(override);
-                if (overrideMatrix) {
-                    modelMatrix.premultiply(overrideMatrix);
-                }
-            } else {
-                try {
-                    const displayTransform = await getDisplayTransformForItem(resolved, displayType, modelTreeCache);
-                    const displayMatrix = buildDisplayTransformMatrix(displayTransform);
-                    if (displayMatrix) {
-                        modelMatrix.premultiply(displayMatrix);
-                    }
-                } catch (err) {
-                    //try { console.warn('[ItemModel] display transform error', modelId, displayType, err); } catch {}
-                }
-            }
+        let templatePromise = itemModelTemplatePromiseCache.get(cacheKey);
+        if (!templatePromise) {
+            templatePromise = buildItemModelTemplate(baseName, displayType || null, modelId, tintList);
+            itemModelTemplatePromiseCache.set(cacheKey, templatePromise);
         }
-        return {
-            type: 'itemDisplayModel',
-            name: baseName,
-            originalName: node.name,
-            displayType: displayType || null,
-            tints: tintList || null,
-            models: [{ modelMatrix: modelMatrix.elements.slice(), geometries: geomData, geometryId: modelId }],
-            transform: node.transform || node.transforms || null,
-            itemDisplayType: displayType || null
-        };
+        const template = await templatePromise;
+        itemModelTemplateCache.set(cacheKey, template);
+        return template;
     } catch (e) {
         //try { console.warn('[ItemModel] error', node.name, e); } catch {}
+        itemModelTemplateKeyByName.set(rawName, null);
         return null;
     }
+}
+
+// item_display 노드를 분석해 모델 지오메트리와 display 변환을 계산한다.
+function processItemModelDisplay(node: any): RenderItem | null {
+    const cacheKey = itemModelTemplateKeyByName.get(node.name);
+    if (!cacheKey) return null;
+
+    const template = itemModelTemplateCache.get(cacheKey);
+    return template ? cloneItemModelTemplate(template, node) : null;
 }
 
 // 반복 실행 시 캐시와 임시 리소스를 초기화한다.
@@ -1541,10 +1601,13 @@ function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
     jsonAssetPromiseCache.clear();
     modelTreeCache.clear();
     itemDefinitionCache.clear();
-    itemModelGeometryCache.clear();
-    itemModelHasElementsCache.clear();
+    itemModelTemplatePromiseCache.clear();
+    itemModelTemplateCache.clear();
+    itemModelTemplateKeyByName.clear();
+    itemNameParseCache.clear();
     blockModelGeometryCache.clear();
     blockDisplayTemplatePromiseCache.clear();
+    blockDisplayTemplateCache.clear();
     builtinBorderGeometryCache.clear();
     extrudedItemGeometryCache.clear();
     texturePixelCache.clear();
@@ -1589,50 +1652,42 @@ function apply_transforms(parent: Float32Array | number[], child: Float32Array |
 }
 
 
-// 렌더링에 필요한 필드만 남기며 자식 노드를 얕게 복제한다.
+// 렌더링 루트 배열을 정규화한다. 대형 씬에서는 전체 트리 복제를 피한다.
 function split_children(children: any): any[] {
-    if (!children) return [];
-    return children.map((item: any) => {
-        const newItem: any = {};
+    return Array.isArray(children) ? children : [];
+}
 
-        // display 유형 플래그는 그대로 복사해 후속 로직이 구분할 수 있게 한다.
-        if (item.isCollection) newItem.isCollection = true;
-        if (item.isItemDisplay) newItem.isItemDisplay = true;
-        if (item.isBlockDisplay) newItem.isBlockDisplay = true;
-        if (item.isTextDisplay) newItem.isTextDisplay = true;
-
-        // name과 nbt는 기본 정보이므로 항상 포함한다.
-        newItem.name = item.name || "";
-        newItem.nbt = item.nbt || "";
-
-        // 밝기 정보는 기본값과 다를 때만 보존한다.
-        if (item.brightness && (item.brightness.sky !== 15 || item.brightness.block !== 0)) {
-            newItem.brightness = item.brightness;
+function collectTemplateNames(nodes: any[], itemNames: Set<string>, blockNames: Set<string>): void {
+    for (const node of nodes) {
+        if (node?.isBlockDisplay) {
+            blockNames.add(String(node.name || ''));
+        } else if (node?.isItemDisplay && typeof node.name === 'string' && !node.name.startsWith('player_head')) {
+            itemNames.add(node.name);
         }
 
-        // 선택 속성들은 존재할 때만 전달한다.
-        if (item.tagHead) newItem.tagHead = item.tagHead;
-        if (item.options) newItem.options = item.options;
-        if (item.paintTexture) newItem.paintTexture = item.paintTexture;
-        if (item.textureValueList) newItem.textureValueList = item.textureValueList;
-        if (item.pivotCustom) newItem.pivotCustom = item.pivotCustom;
-
-        // 변환 행렬은 빈 문자열이라도 항상 유지한다.
-        newItem.transforms = item.transforms || "";
-
-        // 자식 노드는 재귀적으로 동일한 규칙을 적용해 복제한다.
-        if (item.children) {
-            newItem.children = split_children(item.children);
+        if (Array.isArray(node?.children)) {
+            collectTemplateNames(node.children, itemNames, blockNames);
         }
-        // 필요하면 아래 로그를 복구해 변환 결과를 확인할 수 있다.
-        return newItem;
-    });
+    }
+}
+
+async function prepareSceneTemplates(nodes: any[]): Promise<void> {
+    const itemNames = new Set<string>();
+    const blockNames = new Set<string>();
+    collectTemplateNames(nodes, itemNames, blockNames);
+
+    await Promise.all([
+        ...Array.from(blockNames, name => prepareBlockDisplayTemplate({ name })),
+        ...Array.from(itemNames, name => prepareItemModelTemplate(name))
+    ]);
 }
 
 // 씬 그래프 노드를 재귀적으로 순회하며 렌더 항목을 만든다.
-async function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null = null): Promise<RenderItem[]> {
-    const worldTransform = apply_transforms(parentTransform, node.transforms);
-    let renderItems: RenderItem[] = [];
+function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null, renderItems: RenderItem[]): void {
+    const localTransform = (Array.isArray(node.transforms) || ArrayBuffer.isView(node.transforms))
+        ? node.transforms
+        : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const worldTransform = apply_transforms(parentTransform, localTransform);
 
     let currentGroupId = parentGroupId;
 
@@ -1673,7 +1728,7 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
     }
 
     if (node.isBlockDisplay) {
-        const modelData = await processBlockDisplay(node);
+        const modelData = processBlockDisplay(node);
         if (modelData) {
             (modelData as any).transform = worldTransform; // 계산된 월드 변환 행렬을 결과에 포함한다.
             (modelData as any).name = node.name;
@@ -1764,7 +1819,7 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
 
             renderItems.push(itemData);
         } else {
-            const modelDisplay = await processItemModelDisplay({
+            const modelDisplay = processItemModelDisplay({
                 name: node.name,
                 transform: worldTransform
             });
@@ -1811,12 +1866,10 @@ async function processNode(node: any, parentTransform: Float32Array | number[], 
     }
 
     if (node.children) {
-        const childPromises = node.children.map(child => processNode(child, worldTransform, currentGroupId));
-        const childRenderItems = await Promise.all(childPromises);
-        renderItems = renderItems.concat(childRenderItems.flat());
+        for (const child of node.children) {
+            processNode(child, worldTransform, currentGroupId, renderItems);
+        }
     }
-
-    return renderItems;
 }
 
 export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, provider: PbdeAssetProvider): Promise<ParsedPbdeProject> {
@@ -1877,11 +1930,25 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         // 루트 자식 노드를 병렬로 처리해 렌더 항목을 구성한다.
         // 루트 노드에 순서 인덱스를 태깅한 뒤 병렬 처리한다.
         processedChildren.forEach((node: any, i: number) => { node._rootIndex = i; });
-        const promises = processedChildren.map((node: any) => processNode(node, identityMatrix, null));
-        const renderList: RenderItem[] = (await Promise.all(promises)).flat();
+        const scenePrepStartMs = performance.now();
+        await prepareSceneTemplates(processedChildren);
+        const scenePrepElapsedMs = performance.now() - scenePrepStartMs;
+
+        const sceneTraverseStartMs = performance.now();
+        const renderList: RenderItem[] = [];
+        for (const node of processedChildren) {
+            processNode(node, identityMatrix, null, renderList);
+        }
+        const sceneTraverseElapsedMs = performance.now() - sceneTraverseStartMs;
+
+        const sceneOrderStartMs = performance.now();
         // 루트 인덱스 기준으로 sceneOrder 정렬
         sceneOrder.sort((a, b) => a.rootIndex - b.rootIndex);
+        const sceneOrderElapsedMs = performance.now() - sceneOrderStartMs;
         const sceneElapsedMs = performance.now() - sceneStartMs;
+        console.log(
+            `[PBDE] Scene timings: prep=${scenePrepElapsedMs.toFixed(2)}ms, traverse=${sceneTraverseElapsedMs.toFixed(2)}ms, order=${sceneOrderElapsedMs.toFixed(2)}ms, total=${sceneElapsedMs.toFixed(2)}ms.`
+        );
 
         const atlasStartMs = performance.now();
         let atlasInfo = null;
@@ -1922,14 +1989,33 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             return id;
         };
 
-        const matrixKey = (matrix: number[] | Float32Array) => Array.from(matrix).join(',');
+        const matrixKeyCache = new WeakMap<object, string>();
+        const stableJsonCache = new WeakMap<object, string>();
+        const matrixKey = (matrix: number[] | Float32Array) => {
+            const cached = matrixKeyCache.get(matrix);
+            if (cached !== undefined) return cached;
+            const key = Array.from(matrix).join(',');
+            matrixKeyCache.set(matrix, key);
+            return key;
+        };
         const stableJson = (value: unknown) => {
             if (value == null) return '';
-            try {
-                return JSON.stringify(value, Object.keys(value as any).sort());
-            } catch {
-                return String(value);
+            if (typeof value === 'object') {
+                const cached = stableJsonCache.get(value);
+                if (cached !== undefined) return cached;
             }
+            
+            let key: string;
+            try {
+                key = JSON.stringify(value, Object.keys(value as any).sort());
+            } catch {
+                key = String(value);
+            }
+
+            if (typeof value === 'object') {
+                stableJsonCache.set(value, key);
+            }
+            return key;
         };
 
         for (const item of geometryItems) {
