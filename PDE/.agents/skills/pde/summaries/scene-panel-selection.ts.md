@@ -1,25 +1,29 @@
 # scene-panel-selection.ts
 
 ## Purpose
-Handles scene-panel click behavior and selection highlighting. It translates DOM clicks into the PDE selection API, keeps the visual selection state in sync with the shared scene selection payload, and expands ancestor groups for visible highlights.
+Handles scene-panel click behavior and selection highlighting. It translates rendered virtual-row clicks into the PDE selection API, expands ancestor groups for selected hidden children, keeps visible selection classes in sync, and uses flat row metadata for range selection anchors.
 
 ## Exports
 
 ### Functions / Methods
-- `handleSceneItemClick(e, el): void` -- processes single, toggle, and range click selection behavior for scene rows.
-- `syncScenePanelSelection(sel): void` -- applies the current selection state to the scene panel DOM.
+- `handleSceneItemClick(e, el): void` -- processes single, toggle, and ctrl+shift range selection for rendered scene rows.
+- `syncScenePanelSelection(sel): void` -- expands needed ancestors, refreshes virtual rows when expansion changed, applies current selection classes to mounted rows, and updates the primary row anchor when visible.
+
+## Internal State
+- Reads and writes `scenePanelState.lastClickedItem` as `ScenePanelRow | null`.
+- Range selection uses `scenePanelState.visibleRows` indices instead of DOM order.
+- Selection sync may add group ids to `expandedGroupIds` and schedule `pde:scene-updated` on the next animation frame.
 
 ## Dependencies (imports)
 - `three/webgpu` -- `Object3D` typing for range and toggle selection collections.
-- `../controls/select` -- source of the current global selection snapshot and selection mutators.
-- `./scene-panel-state` -- tracks last clicked item, expansion state, and click suppression.
-- `./scene-panel-types` -- scene-panel selection and user-data contracts.
+- `../load-project/upload-pbde` -- source of loaded scene metadata and selection mutators.
+- `./scene-panel-state` -- tracks last clicked row, visible rows, and click suppression.
+- `./scene-panel-types` -- scene-panel row, selection, and user-data contracts.
 
 ## Used By (known callers)
-- `scene-panel-render.ts` -- re-applies selection after rebuilding the tree.
+- `scene-panel-render.ts` -- row click handlers and selection re-application after viewport rendering.
 - `scene-panel.ts` -- updates highlight state on `pde:selection-changed`.
 
 ## Notes
-- Range selection uses the visible row order, not the full scene order.
-- Selection sync expands ancestor groups so selected children stay visible.
-
+- Object selection expands the containing group and its parents; group selection expands only parent groups.
+- Selection sync only decorates currently mounted virtual rows; offscreen selected rows are highlighted when rendered.

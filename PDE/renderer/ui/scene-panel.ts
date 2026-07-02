@@ -6,17 +6,20 @@ import {
     handleScenePanelDragOver,
     handleScenePanelDrop
 } from './scene-panel-dnd';
-import { refreshScenePanel, scheduleSceneExtraFit } from './scene-panel-render';
+import { refreshScenePanel, scheduleSceneExtraFit, scheduleScenePanelRender } from './scene-panel-render';
 import { syncScenePanelSelection } from './scene-panel-selection';
 
 if (scenePanelState.scenePanelList) {
-    scenePanelState.scenePanelList.addEventListener('scroll', scheduleSceneExtraFit, { passive: true });
+    scenePanelState.scenePanelList.addEventListener('scroll', scheduleScenePanelRender, { passive: true });
     scenePanelState.scenePanelList.addEventListener('dragover', handleScenePanelDragOver);
     scenePanelState.scenePanelList.addEventListener('drop', handleScenePanelDrop);
     scenePanelState.scenePanelList.addEventListener('dragleave', handleScenePanelDragLeave);
 }
 
-window.addEventListener('resize', scheduleSceneExtraFit);
+window.addEventListener('resize', () => {
+    scheduleScenePanelRender();
+    scheduleSceneExtraFit();
+});
 window.addEventListener('pde:scene-updated', refreshScenePanel);
 window.addEventListener('pde:selection-changed', (e: Event) => {
     const customEvent = e as CustomEvent<ScenePanelSelectionState>;

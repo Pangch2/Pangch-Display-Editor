@@ -1,33 +1,36 @@
 # scene-panel-render.ts
 
 ## Purpose
-Renders the scene panel tree from `loadedObjectGroup.userData`, including group recursion, object rows, root ordering, and text fitting for names and extra metadata. It also re-applies selection after refresh and exposes the fit scheduler used by resize and scroll events.
+Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userData`. It rebuilds visible row metadata on scene updates, only creates DOM rows around the current viewport, preserves selection highlighting, and keeps the extra-label fitting pass scoped to rendered rows.
 
 ## Exports
 
 ### Functions / Methods
-- `scheduleSceneExtraFit(): void` -- schedules a deferred pass that fits labels and extra info into visible rows.
-- `refreshScenePanel(): void` -- rebuilds the full panel DOM and reapplies current selection.
+- `scheduleSceneExtraFit(): void` -- schedules a deferred pass that fits rendered row labels and extra metadata.
+- `renderVisibleSceneRows(): void` -- reconciles the viewport row DOM against `scenePanelState.visibleRows`.
+- `scheduleScenePanelRender(): void` -- RAF-coalesces scroll/resize viewport rendering.
+- `refreshScenePanel(): void` -- rebuilds flat row metadata, updates spacer height, renders the current viewport, syncs selection, and logs timings.
+
+## Internal State
+- Uses `scenePanelState.visibleRows` as the canonical rendered tree order.
+- Uses `scenePanelState.renderedRowEls` to track mounted virtual rows by visible index.
+- Uses `scenePanelState.scenePanelSpacerEl` and `scenePanelContentEl` to maintain scroll height while rendering only visible rows.
+- `scenePanelState.sceneExtraFitRaf` and `scenePanelRenderRaf` gate deferred work.
 
 ## Dependencies (imports)
 - `../controls/select` -- provides the current selection snapshot for highlight sync.
-- `../load-project/upload-pbde` -- source scene data used to build the tree.
+- `../load-project/upload-pbde` -- source scene data used to build row metadata.
 - `./scene-panel-dnd` -- drag handlers for rendered rows.
-- `./scene-panel-model` -- label cleanup, object visibility, and child resolution helpers.
+- `./scene-panel-model` -- label cleanup, object visibility, grouping, and child resolution helpers.
 - `./scene-panel-selection` -- click handling and selection sync.
-- `./scene-panel-state` -- shared DOM/state singleton, ellipsis token, and caches.
-- `./scene-panel-types` -- scene selection and user-data contracts.
+- `./scene-panel-state` -- shared DOM/state singleton and virtual-list caches.
+- `./scene-panel-types` -- row, selection, and user-data contracts.
 
-## Internal State
-- `scenePanelState.sceneExtraFitRaf` gates the requestAnimationFrame fit pass.
-- `scenePanelState.extraTokenCache` caches split extra-info tokens for incremental truncation.
-- Module-level render token cancels stale progressive root-row rendering when a refresh occurs.
-- Module-level delegated panel reference ensures row click/drag listeners are installed once on the list element.
+## Used By (known callers)
+- `scene-panel.ts` -- refreshes on scene updates and schedules viewport renders on scroll/resize.
+- `scene-panel-dnd.ts` -- imports `scheduleSceneExtraFit()` for drag auto-expand updates.
 
 ## Notes
-- Root rendering respects `sceneOrder` first, then falls back to groups and object names to preserve legacy behavior.
-- Refresh renders only an initial root-row slice synchronously, then appends remaining root rows in animation-frame chunks for large scenes.
-- Collapsed groups render only their header initially; child rows are created lazily on expansion.
-- Object/group row click and drag handling uses event delegation instead of per-row listeners.
-- The fitting pass only inspects rows near the viewport to keep resize/scroll updates cheap.
-
+- Root rendering respects `sceneOrder` first, then falls back to groups and object names.
+- Group expand/collapse rebuilds the flat row list and spacer height, not the full scene DOM.
+- Logs `[PBDE] Scene panel timings` for refresh cost and logs slow viewport renders over 8 ms.

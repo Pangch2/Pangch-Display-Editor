@@ -214,8 +214,7 @@ function scheduleSceneAutoExpand(hint: SceneDropHint): void {
         return;
     }
 
-    const childContainer = hint.targetEl.nextElementSibling as HTMLElement | null;
-    if (!childContainer?.classList.contains('scene-tree-children') || !childContainer.classList.contains('collapsed')) {
+    if (scenePanelState.expandedGroupIds.has(hint.targetId)) {
         clearSceneAutoExpandTimer();
         return;
     }
@@ -228,17 +227,9 @@ function scheduleSceneAutoExpand(hint: SceneDropHint): void {
         const groupId = scenePanelState.sceneAutoExpandGroupId;
         scenePanelState.sceneAutoExpandTimer = 0;
         scenePanelState.sceneAutoExpandGroupId = null;
-        if (!groupId || !scenePanelState.scenePanelList) return;
-
-        const header = scenePanelState.scenePanelList.querySelector(`.scene-tree-group[data-group-id="${groupId}"]`) as HTMLElement | null;
-        if (!header) return;
-        const children = header.nextElementSibling as HTMLElement | null;
-        if (!children?.classList.contains('scene-tree-children') || !children.classList.contains('collapsed')) return;
-
-        children.classList.remove('collapsed');
+        if (!groupId) return;
         scenePanelState.expandedGroupIds.add(groupId);
-        const toggle = header.querySelector('.scene-toggle');
-        if (toggle) toggle.innerHTML = '&#xE06D;';
+        window.dispatchEvent(new CustomEvent('pde:scene-updated'));
         scheduleSceneExtraFit();
     }, 420);
 }

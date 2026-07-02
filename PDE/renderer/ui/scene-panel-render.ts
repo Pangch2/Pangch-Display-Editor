@@ -1,6 +1,6 @@
 import { currentSelection } from '../controls/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { handleSceneItemClick } from './scene-panel-selection';
+import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';
 import {
     handleSceneItemDragEnd,
     handleSceneItemDragStart
@@ -8,6 +8,7 @@ import {
 import { ELLIPSIS, scenePanelState } from './scene-panel-state';
 import type {
     LoadedObjectUserData,
+    ScenePanelRow,
     ScenePanelSelectionState
 } from './scene-panel-types';
 import {
@@ -16,52 +17,47 @@ import {
     isObjectUuidGrouped,
     resolveChildObjectUuid
 } from './scene-panel-model';
-import { syncScenePanelSelection } from './scene-panel-selection';
 
-type RenderEntry = { type: 'group' | 'object'; id: string };
+function getRowKey(row: ScenePanelRow): string {
+    return `${row.type}:${row.id}`;
+}
 
-const INITIAL_SCENE_PANEL_ROWS = 600;
-const SCENE_PANEL_RENDER_CHUNK = 1500;
+function setRowPosition(el: HTMLElement, row: ScenePanelRow): void {
+    el.dataset.visibleIndex = String(row.visibleIndex);
+    el.dataset.parentGroupId = row.parentGroupId ?? '';
+    el.style.top = `${row.visibleIndex * scenePanelState.rowHeight}px`;
+    el.style.height = `${scenePanelState.rowHeight}px`;
+    el.style.paddingLeft = `${12 + row.depth * 16}px`;
+}
 
-let scenePanelRenderToken = 0;
-let delegatedScenePanelList: HTMLElement | null = null;
-
-function makeObjectRow(uuid: string, depth: number): HTMLElement {
+function makeObjectRow(row: ScenePanelRow): HTMLElement {
+    const uuid = row.id;
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const objectNames = ud.objectNames;
-    const rawName = objectNames?.get(uuid) || uuid.slice(0, 8);
-    const itemDisplaySet = ud.objectIsItemDisplay;
-    const isItemDisplay = itemDisplaySet?.has(uuid) ?? false;
-
-    const displayTypes = ud.objectDisplayTypes;
-    const blockPropsMap = ud.objectBlockProps;
+    const rawName = ud.objectNames?.get(uuid) || uuid.slice(0, 8);
+    const isItemDisplay = ud.objectIsItemDisplay?.has(uuid) ?? false;
 
     let extraInfo = '';
     if (isItemDisplay) {
-        const dType = displayTypes?.get(uuid);
+        const dType = ud.objectDisplayTypes?.get(uuid);
         if (dType) extraInfo = `display=${dType}`;
     } else {
-        const props = blockPropsMap?.get(uuid);
+        const props = ud.objectBlockProps?.get(uuid);
         if (props) {
             const propStrings = Object.entries(props).map(([k, v]) => `${k}=${v}`);
-            if (propStrings.length > 0) {
-                extraInfo = propStrings.join(' ');
-            }
+            if (propStrings.length > 0) extraInfo = propStrings.join(' ');
         }
     }
 
-    const iconCode = isItemDisplay ? '&#xE5C6;' : '&#xE061;';
-    const iconClass = isItemDisplay ? 'icon-item' : 'icon-box';
     const el = document.createElement('div');
-    el.className = 'scene-object-item';
-    el.style.paddingLeft = `${12 + depth * 16}px`;
+    el.className = 'scene-object-item scene-virtual-row';
     el.dataset.uuid = uuid;
     el.dataset.displayType = isItemDisplay ? 'item_display' : 'block_display';
     el.draggable = true;
+    setRowPosition(el, row);
 
     const leftIcon = document.createElement('span');
-    leftIcon.className = `scene-icon ${iconClass}`;
-    leftIcon.innerHTML = iconCode;
+    leftIcon.className = `scene-icon ${isItemDisplay ? 'icon-item' : 'icon-box'}`;
+    leftIcon.innerHTML = isItemDisplay ? '&#xE5C6;' : '&#xE061;';
 
     const nameEl = document.createElement('span');
     nameEl.className = 'scene-name';
@@ -78,7 +74,6 @@ function makeObjectRow(uuid: string, depth: number): HTMLElement {
 
     nameEl.appendChild(nameTextEl);
     nameEl.appendChild(nameDotsEl);
-
     el.appendChild(leftIcon);
     el.appendChild(nameEl);
 
@@ -97,37 +92,153 @@ function makeObjectRow(uuid: string, depth: number): HTMLElement {
     rightIcon.innerHTML = '&#xE0BA;';
     el.appendChild(rightIcon);
 
+    el.addEventListener('click', (e) => handleSceneItemClick(e, el));
+    el.addEventListener('dragstart', (e) => handleSceneItemDragStart(e, { type: 'object', id: uuid }, el));
+    el.addEventListener('dragend', handleSceneItemDragEnd);
+
     return el;
 }
 
-function getSceneRowFromEvent(event: Event): HTMLElement | null {
-    if (!scenePanelState.scenePanelList || !(event.target instanceof Element)) return null;
-    const row = event.target.closest('.scene-object-item, .scene-tree-group') as HTMLElement | null;
-    return row && scenePanelState.scenePanelList.contains(row) ? row : null;
+function makeGroupRow(row: ScenePanelRow): HTMLElement {
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const group = ud.groups?.get(row.id);
+    const isExpanded = scenePanelState.expandedGroupIds.has(row.id);
+
+    const header = document.createElement('div');
+    header.className = 'scene-tree-group scene-virtual-row';
+    header.dataset.groupId = row.id;
+    header.dataset.displayType = 'group';
+    header.draggable = true;
+    setRowPosition(header, row);
+
+    const toggleEl = document.createElement('span');
+    toggleEl.className = 'scene-toggle';
+    toggleEl.innerHTML = isExpanded ? '&#xE06D;' : '&#xE06F;';
+    toggleEl.draggable = false;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'scene-name';
+    const cleanGroupName = group?.name || '';
+    nameEl.dataset.fullText = cleanGroupName;
+
+    const nameTextEl = document.createElement('span');
+    nameTextEl.className = 'scene-name-text';
+    nameTextEl.textContent = cleanGroupName;
+
+    const nameDotsEl = document.createElement('span');
+    nameDotsEl.className = 'scene-name-dots';
+    nameDotsEl.textContent = ELLIPSIS;
+
+    nameEl.appendChild(nameTextEl);
+    nameEl.appendChild(nameDotsEl);
+
+    const rightIconEl = document.createElement('span');
+    rightIconEl.className = 'scene-icon-right';
+    rightIconEl.innerHTML = '&#xE0BA;';
+
+    header.appendChild(toggleEl);
+    header.appendChild(nameEl);
+    header.appendChild(rightIconEl);
+
+    toggleEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (scenePanelState.expandedGroupIds.has(row.id)) {
+            scenePanelState.expandedGroupIds.delete(row.id);
+        } else {
+            scenePanelState.expandedGroupIds.add(row.id);
+        }
+        rebuildSceneRows();
+        syncScenePanelSpacerHeight();
+        renderVisibleSceneRows();
+        syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
+        scheduleSceneExtraFit();
+    });
+
+    header.addEventListener('click', (e) => handleSceneItemClick(e, header));
+    header.addEventListener('dragstart', (e) => handleSceneItemDragStart(e, { type: 'group', id: row.id }, header));
+    header.addEventListener('dragend', handleSceneItemDragEnd);
+
+    return header;
 }
 
-function getSceneRowSource(row: HTMLElement): RenderEntry | null {
-    if (row.dataset.displayType === 'group') {
-        const groupId = row.dataset.groupId;
-        return groupId ? { type: 'group', id: groupId } : null;
+function makeRowElement(row: ScenePanelRow): HTMLElement {
+    return row.type === 'group' ? makeGroupRow(row) : makeObjectRow(row);
+}
+
+function appendGroupRows(rows: ScenePanelRow[], groupId: string, depth: number, parentGroupId: string | null): void {
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const group = ud.groups?.get(groupId);
+    if (!group) return;
+
+    rows.push({ type: 'group', id: groupId, depth, parentGroupId, visibleIndex: rows.length });
+    if (!scenePanelState.expandedGroupIds.has(groupId)) return;
+
+    for (const child of (group.children || [])) {
+        if (child.type === 'group') {
+            appendGroupRows(rows, child.id, depth + 1, groupId);
+            continue;
+        }
+
+        const objectUuid = resolveChildObjectUuid(child, ud);
+        if (objectUuid && hasRenderableObject(objectUuid, ud)) {
+            rows.push({ type: 'object', id: objectUuid, depth: depth + 1, parentGroupId: groupId, visibleIndex: rows.length });
+        }
+    }
+}
+
+function rebuildSceneRows(): void {
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const rows: ScenePanelRow[] = [];
+    const renderedRootGroups = new Set<string>();
+    const renderedRootObjects = new Set<string>();
+
+    const appendRootGroup = (groupId: string): void => {
+        if (!groupId || renderedRootGroups.has(groupId)) return;
+        const group = ud.groups?.get(groupId);
+        if (!group || group.parent !== null) return;
+        renderedRootGroups.add(groupId);
+        appendGroupRows(rows, groupId, 0, null);
+    };
+
+    const appendRootObject = (uuid: string): void => {
+        if (!uuid || renderedRootObjects.has(uuid)) return;
+        if (!hasRenderableObject(uuid, ud)) return;
+        if (isObjectUuidGrouped(uuid, ud)) return;
+        renderedRootObjects.add(uuid);
+        rows.push({ type: 'object', id: uuid, depth: 0, parentGroupId: null, visibleIndex: rows.length });
+    };
+
+    if (ud.sceneOrder && ud.sceneOrder.length > 0) {
+        for (const entry of ud.sceneOrder) {
+            if (entry.type === 'group') appendRootGroup(entry.id);
+            else appendRootObject(entry.id);
+        }
     }
 
-    const uuid = row.dataset.uuid;
-    return uuid ? { type: 'object', id: uuid } : null;
+    if (ud.groups) {
+        for (const group of ud.groups.values()) {
+            if (group.parent === null) appendRootGroup(group.id);
+        }
+    }
+
+    if (ud.objectNames) {
+        for (const [uuid] of ud.objectNames) appendRootObject(uuid);
+    }
+
+    scenePanelState.visibleRows = rows;
+}
+
+function syncScenePanelSpacerHeight(): void {
+    if (!scenePanelState.scenePanelSpacerEl) return;
+    scenePanelState.scenePanelSpacerEl.style.height = `${scenePanelState.visibleRows.length * scenePanelState.rowHeight}px`;
 }
 
 function fitSceneExtraBlocks(): void {
-    if (!scenePanelState.scenePanelList) return;
+    if (!scenePanelState.scenePanelContentEl) return;
 
-    const viewTop = scenePanelState.scenePanelList.scrollTop;
-    const viewBottom = viewTop + scenePanelState.scenePanelList.clientHeight;
-    const rows = scenePanelState.scenePanelList.querySelectorAll('.scene-object-item, .scene-tree-group') as NodeListOf<HTMLElement>;
+    const rows = scenePanelState.scenePanelContentEl.querySelectorAll('.scene-object-item, .scene-tree-group') as NodeListOf<HTMLElement>;
 
     for (const row of rows) {
-        const rowTop = row.offsetTop;
-        const rowBottom = rowTop + row.offsetHeight;
-        if (rowBottom < viewTop - 40 || rowTop > viewBottom + 40) continue;
-
         const nameEl = row.querySelector('.scene-name') as HTMLElement | null;
         const nameTextEl = row.querySelector('.scene-name-text') as HTMLElement | null;
         const nameDotsEl = row.querySelector('.scene-name-dots') as HTMLElement | null;
@@ -161,9 +272,8 @@ function fitSceneExtraBlocks(): void {
             while (lowNameOnly <= highNameOnly) {
                 const mid = (lowNameOnly + highNameOnly) >> 1;
                 setNameByCount(mid, true);
-                if (isOverflow()) {
-                    highNameOnly = mid - 1;
-                } else {
+                if (isOverflow()) highNameOnly = mid - 1;
+                else {
                     bestNameOnly = mid;
                     lowNameOnly = mid + 1;
                 }
@@ -178,25 +288,6 @@ function fitSceneExtraBlocks(): void {
             extraEl.textContent = '';
             row.classList.remove('scene-extra-active');
             row.classList.remove('scene-extra-ellipsis');
-
-            if (!isOverflow()) continue;
-
-            let lowNameNoExtra = 0;
-            let highNameNoExtra = fullName.length;
-            let bestNameNoExtra = -1;
-
-            while (lowNameNoExtra <= highNameNoExtra) {
-                const mid = (lowNameNoExtra + highNameNoExtra) >> 1;
-                setNameByCount(mid, true);
-                if (isOverflow()) {
-                    highNameNoExtra = mid - 1;
-                } else {
-                    bestNameNoExtra = mid;
-                    lowNameNoExtra = mid + 1;
-                }
-            }
-
-            if (bestNameNoExtra >= 0) setNameByCount(bestNameNoExtra, true);
             continue;
         }
 
@@ -223,9 +314,7 @@ function fitSceneExtraBlocks(): void {
         row.classList.remove('scene-extra-ellipsis');
         extraEl.textContent = fullText;
 
-        if (!isOverflow()) {
-            continue;
-        }
+        if (!isOverflow()) continue;
 
         let lowExtra = 1;
         let highExtra = tokens.length - 1;
@@ -234,9 +323,8 @@ function fitSceneExtraBlocks(): void {
         while (lowExtra <= highExtra) {
             const mid = (lowExtra + highExtra) >> 1;
             setExtraByCount(mid);
-            if (isOverflow()) {
-                highExtra = mid - 1;
-            } else {
+            if (isOverflow()) highExtra = mid - 1;
+            else {
                 bestExtraFit = mid;
                 lowExtra = mid + 1;
             }
@@ -264,9 +352,8 @@ function fitSceneExtraBlocks(): void {
         while (lowNameAfterExtra <= highNameAfterExtra) {
             const mid = (lowNameAfterExtra + highNameAfterExtra) >> 1;
             setNameByCount(mid, false);
-            if (isOverflow()) {
-                highNameAfterExtra = mid - 1;
-            } else {
+            if (isOverflow()) highNameAfterExtra = mid - 1;
+            else {
                 bestNameAfterExtra = mid;
                 lowNameAfterExtra = mid + 1;
             }
@@ -284,248 +371,83 @@ export function scheduleSceneExtraFit(): void {
     });
 }
 
-function populateGroupChildren(groupId: string, depth: number, childContainer: HTMLElement): void {
-    if (childContainer.dataset.populated === 'true') return;
+export function renderVisibleSceneRows(): void {
+    const list = scenePanelState.scenePanelList;
+    const content = scenePanelState.scenePanelContentEl;
+    const spacer = scenePanelState.scenePanelSpacerEl;
+    if (!list || !content || !spacer) return;
 
-    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const group = ud.groups?.get(groupId);
-    if (!group) return;
+    const renderStartMs = performance.now();
+    const rowHeight = scenePanelState.rowHeight;
+    const rows = scenePanelState.visibleRows;
+    const scrollTop = list.scrollTop;
+    const viewportHeight = list.clientHeight;
+    const firstIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - scenePanelState.rowOverscan);
+    const lastIndex = Math.min(rows.length - 1, Math.ceil((scrollTop + viewportHeight) / rowHeight) + scenePanelState.rowOverscan);
+    const wanted = new Set<number>();
+
+    for (let i = firstIndex; i <= lastIndex; i++) wanted.add(i);
+
+    for (const [index, el] of scenePanelState.renderedRowEls) {
+        const row = rows[index];
+        if (wanted.has(index) && row && el.dataset.rowKey === getRowKey(row)) continue;
+        el.remove();
+        scenePanelState.renderedRowEls.delete(index);
+    }
 
     const fragment = document.createDocumentFragment();
-    for (const child of (group.children || [])) {
-        if (child.type === 'group') {
-            const subEl = renderGroup(child.id, depth + 1);
-            if (subEl) fragment.appendChild(subEl);
-        } else {
-            const objectUuid = resolveChildObjectUuid(child, ud);
-            if (objectUuid && hasRenderableObject(objectUuid, ud)) {
-                fragment.appendChild(makeObjectRow(objectUuid, depth + 1));
-            }
-        }
+    for (let i = firstIndex; i <= lastIndex; i++) {
+        const row = rows[i];
+        if (!row || scenePanelState.renderedRowEls.has(i)) continue;
+        const el = makeRowElement(row);
+        el.dataset.rowKey = getRowKey(row);
+        scenePanelState.renderedRowEls.set(i, el);
+        fragment.appendChild(el);
     }
 
-    childContainer.appendChild(fragment);
-    childContainer.dataset.populated = 'true';
-}
-
-function toggleGroupChildren(header: HTMLElement): void {
-    const groupId = header.dataset.groupId;
-    const childContainer = header.nextElementSibling as HTMLElement | null;
-    if (!groupId || !childContainer?.classList.contains('scene-tree-children')) return;
-
-    const depth = Number(header.dataset.depth || 0);
-    const isCollapsed = childContainer.classList.contains('collapsed');
-    const toggleEl = header.querySelector('.scene-toggle');
-
-    if (isCollapsed) {
-        populateGroupChildren(groupId, depth, childContainer);
-        childContainer.classList.remove('collapsed');
-        scenePanelState.expandedGroupIds.add(groupId);
-        if (toggleEl) toggleEl.innerHTML = '&#xE06D;';
-    } else {
-        childContainer.classList.add('collapsed');
-        scenePanelState.expandedGroupIds.delete(groupId);
-        if (toggleEl) toggleEl.innerHTML = '&#xE06F;';
-    }
-
+    content.appendChild(fragment);
+    syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
     scheduleSceneExtraFit();
-}
 
-function ensureScenePanelDelegation(list: HTMLElement): void {
-    if (delegatedScenePanelList === list) return;
-    delegatedScenePanelList = list;
-
-    list.addEventListener('click', (event) => {
-        if (event.target instanceof Element && event.target.closest('.scene-toggle')) {
-            const header = event.target.closest('.scene-tree-group') as HTMLElement | null;
-            if (header) {
-                event.preventDefault();
-                event.stopPropagation();
-                toggleGroupChildren(header);
-            }
-            return;
-        }
-
-        const row = getSceneRowFromEvent(event);
-        if (row) handleSceneItemClick(event, row);
-    });
-
-    list.addEventListener('dragstart', (event) => {
-        const row = getSceneRowFromEvent(event);
-        if (!row) return;
-
-        const source = getSceneRowSource(row);
-        if (source) handleSceneItemDragStart(event, source, row);
-    });
-
-    list.addEventListener('dragend', () => {
-        handleSceneItemDragEnd();
-    });
-}
-
-function renderGroup(groupId: string, depth: number): HTMLElement | null {
-    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const groups = ud.groups;
-    const group = groups?.get(groupId);
-    if (!group) return null;
-
-    const isExpanded = scenePanelState.expandedGroupIds.has(groupId);
-    const wrapper = document.createElement('div');
-
-    const header = document.createElement('div');
-    header.className = 'scene-tree-group';
-    header.style.paddingLeft = `${12 + depth * 16}px`;
-    header.dataset.groupId = groupId;
-    header.dataset.displayType = 'group';
-    header.dataset.depth = String(depth);
-    header.draggable = true;
-
-    const toggleEl = document.createElement('span');
-    toggleEl.className = 'scene-toggle';
-    toggleEl.innerHTML = isExpanded ? '&#xE06D;' : '&#xE06F;';
-    toggleEl.draggable = false;
-
-    const nameEl = document.createElement('span');
-    nameEl.className = 'scene-name';
-    const cleanGroupName = group.name || '';
-    nameEl.dataset.fullText = cleanGroupName;
-
-    const nameTextEl = document.createElement('span');
-    nameTextEl.className = 'scene-name-text';
-    nameTextEl.textContent = cleanGroupName;
-
-    const nameDotsEl = document.createElement('span');
-    nameDotsEl.className = 'scene-name-dots';
-    nameDotsEl.textContent = ELLIPSIS;
-
-    nameEl.appendChild(nameTextEl);
-    nameEl.appendChild(nameDotsEl);
-
-    const rightIconEl = document.createElement('span');
-    rightIconEl.className = 'scene-icon-right';
-    rightIconEl.innerHTML = '&#xE0BA;';
-
-    header.appendChild(toggleEl);
-    header.appendChild(nameEl);
-    header.appendChild(rightIconEl);
-
-    const childContainer = document.createElement('div');
-    childContainer.className = 'scene-tree-children' + (isExpanded ? '' : ' collapsed');
-    childContainer.dataset.populated = 'false';
-
-    if (isExpanded) {
-        populateGroupChildren(groupId, depth, childContainer);
-    }
-
-    wrapper.appendChild(header);
-    wrapper.appendChild(childContainer);
-    return wrapper;
-}
-
-function appendRenderEntry(entry: RenderEntry, target: DocumentFragment | HTMLElement): void {
-    if (entry.type === 'group') {
-        const el = renderGroup(entry.id, 0);
-        if (el) target.appendChild(el);
-        return;
-    }
-
-    target.appendChild(makeObjectRow(entry.id, 0));
-}
-
-function appendRenderEntries(entries: RenderEntry[], start: number, end: number, target: DocumentFragment | HTMLElement): void {
-    for (let i = start; i < end; i++) {
-        appendRenderEntry(entries[i], target);
+    const elapsed = performance.now() - renderStartMs;
+    if (elapsed > 8) {
+        console.log(`[PBDE] Scene panel viewport render=${elapsed.toFixed(2)}ms, rows=${scenePanelState.renderedRowEls.size}/${rows.length}.`);
     }
 }
 
-function scheduleProgressiveRender(entries: RenderEntry[], startIndex: number, token: number): void {
-    if (startIndex >= entries.length) {
-        syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
-        scheduleSceneExtraFit();
-        return;
-    }
-
-    requestAnimationFrame(() => {
-        if (token !== scenePanelRenderToken || !scenePanelState.scenePanelList) return;
-
-        const fragment = document.createDocumentFragment();
-        const endIndex = Math.min(startIndex + SCENE_PANEL_RENDER_CHUNK, entries.length);
-        appendRenderEntries(entries, startIndex, endIndex, fragment);
-        scenePanelState.scenePanelList.appendChild(fragment);
-
-        scheduleSceneExtraFit();
-        scheduleProgressiveRender(entries, endIndex, token);
+export function scheduleScenePanelRender(): void {
+    if (scenePanelState.scenePanelRenderRaf) return;
+    scenePanelState.scenePanelRenderRaf = requestAnimationFrame(() => {
+        scenePanelState.scenePanelRenderRaf = 0;
+        renderVisibleSceneRows();
     });
 }
 
 export function refreshScenePanel(): void {
-    if (!scenePanelState.scenePanelList) return;
-    const refreshStartMs = performance.now();
-    const token = ++scenePanelRenderToken;
-    ensureScenePanelDelegation(scenePanelState.scenePanelList);
-    scenePanelState.scenePanelList.innerHTML = '';
+    const list = scenePanelState.scenePanelList;
+    const content = scenePanelState.scenePanelContentEl;
+    const spacer = scenePanelState.scenePanelSpacerEl;
+    if (!list || !content || !spacer) return;
 
-    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const objectNames = ud.objectNames;
-    const groups = ud.groups;
-    const sceneOrder = ud.sceneOrder;
+    const totalStartMs = performance.now();
+    const previousScrollTop = list.scrollTop;
 
-    const entries: RenderEntry[] = [];
-    const renderedRootGroups = new Set<string>();
-    const renderedRootObjects = new Set<string>();
+    scenePanelState.renderedRowEls.clear();
+    content.textContent = '';
 
-    const appendRootGroup = (groupId: string): void => {
-        if (!groupId || renderedRootGroups.has(groupId)) return;
-        const group = groups?.get(groupId);
-        if (!group || group.parent !== null) return;
-        renderedRootGroups.add(groupId);
-        entries.push({ type: 'group', id: groupId });
-    };
+    const modelStartMs = performance.now();
+    rebuildSceneRows();
+    const modelElapsedMs = performance.now() - modelStartMs;
 
-    const appendRootObject = (uuid: string): void => {
-        if (!uuid || renderedRootObjects.has(uuid)) return;
-        if (!hasRenderableObject(uuid, ud)) return;
-        if (isObjectUuidGrouped(uuid, ud)) return;
-        renderedRootObjects.add(uuid);
-        entries.push({ type: 'object', id: uuid });
-    };
+    syncScenePanelSpacerHeight();
+    list.scrollTop = Math.min(previousScrollTop, Math.max(0, spacer.offsetHeight - list.clientHeight));
 
-    if (sceneOrder && sceneOrder.length > 0) {
-        for (const entry of sceneOrder) {
-            if (entry.type === 'group') {
-                appendRootGroup(entry.id);
-            } else {
-                appendRootObject(entry.id);
-            }
-        }
-    }
+    const domStartMs = performance.now();
+    renderVisibleSceneRows();
+    const domElapsedMs = performance.now() - domStartMs;
+    const totalElapsedMs = performance.now() - totalStartMs;
 
-    if (groups) {
-        for (const group of groups.values()) {
-            if (group.parent === null) {
-                appendRootGroup(group.id);
-            }
-        }
-    }
-
-    if (objectNames) {
-        for (const [uuid] of objectNames) {
-            appendRootObject(uuid);
-        }
-    }
-
-    const fragment = document.createDocumentFragment();
-    const initialEnd = Math.min(INITIAL_SCENE_PANEL_ROWS, entries.length);
-    appendRenderEntries(entries, 0, initialEnd, fragment);
-    scenePanelState.scenePanelList.appendChild(fragment);
-
-    const elapsedMs = performance.now() - refreshStartMs;
-    console.log(`[ScenePanel] Initial render: ${elapsedMs.toFixed(2)}ms (${initialEnd}/${entries.length} root rows).`);
-
-    scheduleSceneExtraFit();
-    syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
-
-    if (initialEnd < entries.length) {
-        scheduleProgressiveRender(entries, initialEnd, token);
-    }
+    console.log(
+        `[PBDE] Scene panel timings: rows=${scenePanelState.visibleRows.length}, model=${modelElapsedMs.toFixed(2)}ms, viewport=${domElapsedMs.toFixed(2)}ms, total=${totalElapsedMs.toFixed(2)}ms.`
+    );
 }

@@ -53,24 +53,17 @@ export function ensureSceneOrderSeeded(ud: LoadedObjectUserData): SceneOrderEntr
         sceneOrder.push(entry);
     };
 
-    const rootNodes = Array.from(scenePanelState.scenePanelList.children) as HTMLElement[];
-    for (const node of rootNodes) {
-        if (node.classList.contains('scene-object-item')) {
-            const uuid = node.dataset.uuid;
-            if (uuid) pushRootEntry({ type: 'object', id: uuid });
-            continue;
-        }
-
-        const maybeHeader = node.firstElementChild as HTMLElement | null;
-        if (!maybeHeader || !maybeHeader.classList.contains('scene-tree-group')) continue;
-        const groupId = maybeHeader.dataset.groupId;
-        if (groupId) pushRootEntry({ type: 'group', id: groupId });
+    for (const row of scenePanelState.visibleRows) {
+        if (row.parentGroupId !== null) continue;
+        pushRootEntry({ type: row.type, id: row.id });
     }
 
     return sceneOrder;
 }
 
 export function getParentGroupIdFromElement(el: HTMLElement): string | null {
+    const parentGroupId = el.dataset.parentGroupId;
+    if (parentGroupId !== undefined) return parentGroupId || null;
     if (!scenePanelState.scenePanelList) return null;
 
     let node = el.parentElement;

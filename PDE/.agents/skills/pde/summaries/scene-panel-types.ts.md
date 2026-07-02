@@ -1,7 +1,7 @@
 # scene-panel-types.ts
 
 ## Purpose
-Defines the local scene-panel data model shared across the refactored scene-panel modules. It keeps the drag/drop, selection, lookup, and mutation helpers on the same type contracts without tying them to DOM code.
+Defines the local scene-panel data model shared across the refactored scene-panel modules. It keeps drag/drop, selection, lookup, mutation, and virtual-list helpers on the same type contracts without tying them to implementation code.
 
 ## Exports
 
@@ -18,6 +18,7 @@ Defines the local scene-panel data model shared across the refactored scene-pane
 - `SceneInsertionPoint` -- resolved insertion target for a move.
 - `SceneMoveEntry` -- drag source paired with its current location.
 - `ScenePanelSelectionState` -- canonical selection payload for the scene panel.
+- `ScenePanelRow` -- flat virtual row metadata for a visible group/object row.
 - `LoadedObjectUserData` -- scene metadata contract used throughout the panel.
 - `ScenePanelState` -- module-level singleton state held by `scene-panel-state.ts`.
 
@@ -26,4 +27,3 @@ Defines the local scene-panel data model shared across the refactored scene-pane
 
 ## Notes
 - This file is type-only plumbing; it should stay free of runtime logic.
-

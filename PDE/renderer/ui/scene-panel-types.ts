@@ -70,6 +70,14 @@ export interface ScenePanelSelectionState {
     primary: { type: 'group'; id: string } | { type: 'object'; mesh: Object3D; instanceId: number } | null;
 }
 
+export interface ScenePanelRow {
+    type: SceneDragItemType;
+    id: string;
+    depth: number;
+    parentGroupId: string | null;
+    visibleIndex: number;
+}
+
 export interface LoadedObjectUserData {
     objectUuidToInstance?: Map<string, { mesh: Object3D; instanceId: number }>;
     instanceKeyToObjectUuid?: Map<string, string>;
@@ -98,9 +106,16 @@ export interface LoadedObjectUserData {
 
 export interface ScenePanelState {
     scenePanelList: HTMLElement | null;
+    scenePanelContentEl: HTMLElement | null;
+    scenePanelSpacerEl: HTMLElement | null;
     sceneExtraFitRaf: number;
+    scenePanelRenderRaf: number;
     extraTokenCache: WeakMap<HTMLElement, string[]>;
-    lastClickedItem: HTMLElement | null;
+    rowHeight: number;
+    rowOverscan: number;
+    visibleRows: ScenePanelRow[];
+    renderedRowEls: Map<number, HTMLElement>;
+    lastClickedItem: ScenePanelRow | null;
     expandedGroupIds: Set<string>;
     sceneDragBundle: SceneDragBundle | null;
     sceneDropHint: SceneDropHint | null;
