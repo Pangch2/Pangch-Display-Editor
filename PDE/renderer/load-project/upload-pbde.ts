@@ -19,9 +19,12 @@ function waitForRenderSettled(frames = 3): Promise<void> {
 }
 
 async function logFinalPbdeLoadTime(startMs: number, mode: 'open' | 'merge', fileCount: number): Promise<void> {
+    const renderSettleStartMs = performance.now();
     await waitForRenderSettled();
+    const renderSettleElapsedMs = performance.now() - renderSettleStartMs;
 
     const elapsedSeconds = (performance.now() - startMs) / 1000;
+    console.log(`[PBDE] Render settle wait: ${renderSettleElapsedMs.toFixed(2)}ms (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}).`);
     console.log(`[PBDE] Final load time: ${elapsedSeconds.toFixed(2)}s (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}, after materials + scene panel + rendered frames).`);
 }
 

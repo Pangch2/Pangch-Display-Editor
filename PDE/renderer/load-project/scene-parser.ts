@@ -2180,4 +2180,3 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         resetWorkerCaches({ clearCanvas: true });
     }
 }
-

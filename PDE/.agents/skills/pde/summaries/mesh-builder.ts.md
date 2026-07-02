@@ -40,4 +40,4 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `GeometryMeta.geometryBufferKey` is used when present so same model id/index values from different packed batches do not collide.
 - Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
-- Logs per-file elapsed time from `loadAndRenderPbde` entry until mesh roots are added to `loadedObjectGroup`.
+- Logs per-file setup, file read, parse, atlas, signature grouping, mesh build, material wait, player-head timings, plus geometry/root/material stats before the total mesh upload time.

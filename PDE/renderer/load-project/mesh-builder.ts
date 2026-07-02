@@ -682,6 +682,7 @@ export function performSelection(newlyAddedSelectableMeshes: Set<THREE.Object3D>
 
 export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number): Promise<Set<THREE.Object3D>> {
         const meshUploadStartMs = performance.now();
+        const setupStartMs = meshUploadStartMs;
 
         // 0. 새 프로젝트를 로드하기 전에 현재 선택 상태를 리셋합니다.
         // Single file open case or first file of batch open.
@@ -704,13 +705,18 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
         }
         
         createHeadGeometries();
+        const setupElapsedMs = performance.now() - setupStartMs;
 
+        const fileReadStartMs = performance.now();
         const fileBuffer = await file.arrayBuffer();
+        const fileReadElapsedMs = performance.now() - fileReadStartMs;
         if (myGen !== currentLoadGen) {
             return new Set<THREE.Object3D>();
         }
 
+        const parseStartMs = performance.now();
         const { metadata, geometryBuffer } = await parsePbdeProject(fileBuffer, mainThreadAssetProvider);
+        const parseElapsedMs = performance.now() - parseStartMs;
         if (myGen !== currentLoadGen) {
             return new Set<THREE.Object3D>();
         }
@@ -828,6 +834,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     }
                 }
 
+                const atlasStartMs = performance.now();
                 if (atlas) {
                     try {
                         const imageData = new ImageData(atlas.data, atlas.width, atlas.height);
@@ -842,6 +849,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         console.warn("Failed to create atlas texture", e);
                     }
                 }
+                const atlasElapsedMs = performance.now() - atlasStartMs;
 
                 const geometryItemCount = activeGeometryBatches
                     ? activeGeometryBatches.reduce((sum, batch) => sum + batch.instances.length, 0)
@@ -931,6 +939,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const instancedMaterials = new Map<string, THREE.Material>();
                 const materialPromises = new Map<string, Promise<THREE.Material>>();
                 const materialUpdates: MaterialUpdate[] = [];
+                let createdInstancedMeshCount = 0;
                 
                 // Grouping structure: itemId -> all renderable parts for that scene object.
                 const blocks = new Map<string, GeometryMeta[]>();
@@ -974,6 +983,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                 // Process grouped blocks
                 // Group instances by Signature (combination of geometries, local transforms, and materials)
+                const signatureStartMs = performance.now();
                 const signatureGroups = new Map<string, SignatureGroup>();
 
                 const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null }>) => {
@@ -1009,8 +1019,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         addSignatureGroup(parts, [{ transform: parts[0].transform, uuid: parts[0].uuid, groupId: parts[0].groupId }]);
                     }
                 }
+                const signatureElapsedMs = performance.now() - signatureStartMs;
 
                 // Create InstancedMesh for each signature group
+                const meshBuildStartMs = performance.now();
                 for (const [signature, group] of signatureGroups) {
                         const representativeParts = group.parts;
                         const transforms = group.transforms;
@@ -1101,6 +1113,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 instancedMesh.computeBoundingSphere();
                                 loadedObjectGroup.add(instancedMesh);
                                 newlyAddedSelectableMeshes.add(instancedMesh);
+                                createdInstancedMeshCount++;
 
                                 // Handle async material loading
                                 if (pendingMaterialSlots.length > 0) {
@@ -1113,7 +1126,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             }
                         }
                     }
+                const meshBuildElapsedMs = performance.now() - meshBuildStartMs;
 
+                const materialAwaitStartMs = performance.now();
                 if (materialUpdates.length > 0) {
                     await Promise.all(materialUpdates.map(async update => {
                         try {
@@ -1131,6 +1146,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         }
                     }));
                 }
+                const materialAwaitElapsedMs = performance.now() - materialAwaitStartMs;
 
                 const playerHeadItems: Array<OtherItem> = [];
                 otherItems.forEach((item) => {
@@ -1139,6 +1155,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     }
                 });
 
+                const playerHeadStartMs = performance.now();
                 if (playerHeadItems.length > 0) {
                     const playerHeadPromise = (async () => {
                         try {
@@ -1318,8 +1335,15 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                     try { await playerHeadPromise; } catch { /* ignore */ }
                 }
+                const playerHeadElapsedMs = performance.now() - playerHeadStartMs;
 
                 const meshUploadElapsedMs = performance.now() - meshUploadStartMs;
+                console.log(
+                    `[PBDE] Load timings: setup=${setupElapsedMs.toFixed(2)}ms, file=${fileReadElapsedMs.toFixed(2)}ms, parse=${parseElapsedMs.toFixed(2)}ms, atlas=${atlasElapsedMs.toFixed(2)}ms, signatures=${signatureElapsedMs.toFixed(2)}ms, meshBuild=${meshBuildElapsedMs.toFixed(2)}ms, materials=${materialAwaitElapsedMs.toFixed(2)}ms, playerHeads=${playerHeadElapsedMs.toFixed(2)}ms.`
+                );
+                console.log(
+                    `[PBDE] Geometry stats: geometryItems=${geometryItemCount}, batches=${activeGeometryBatches?.length ?? 0}, signatures=${signatureGroups.size}, sourceGeometries=${instancedGeometries.size}, mergedGeometries=${mergedGeometryCache.size}, materials=${materialPromises.size}, materialUpdates=${materialUpdates.length}, instancedMeshes=${createdInstancedMeshCount}.`
+                );
                 console.log(`[PBDE] Mesh uploaded to scene in ${meshUploadElapsedMs.toFixed(2)} ms (${file.name}, ${newlyAddedSelectableMeshes.size} mesh roots, ${loadedObjectGroup.children.length} scene children).`);
                 console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
                 return newlyAddedSelectableMeshes;
