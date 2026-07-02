@@ -21,8 +21,13 @@ Renders the scene panel tree from `loadedObjectGroup.userData`, including group 
 ## Internal State
 - `scenePanelState.sceneExtraFitRaf` gates the requestAnimationFrame fit pass.
 - `scenePanelState.extraTokenCache` caches split extra-info tokens for incremental truncation.
+- Module-level render token cancels stale progressive root-row rendering when a refresh occurs.
+- Module-level delegated panel reference ensures row click/drag listeners are installed once on the list element.
 
 ## Notes
 - Root rendering respects `sceneOrder` first, then falls back to groups and object names to preserve legacy behavior.
+- Refresh renders only an initial root-row slice synchronously, then appends remaining root rows in animation-frame chunks for large scenes.
+- Collapsed groups render only their header initially; child rows are created lazily on expansion.
+- Object/group row click and drag handling uses event delegation instead of per-row listeners.
 - The fitting pass only inspects rows near the viewport to keep resize/scroll updates cheap.
 

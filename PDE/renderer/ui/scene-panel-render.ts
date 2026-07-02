@@ -18,6 +18,14 @@ import {
 } from './scene-panel-model';
 import { syncScenePanelSelection } from './scene-panel-selection';
 
+type RenderEntry = { type: 'group' | 'object'; id: string };
+
+const INITIAL_SCENE_PANEL_ROWS = 600;
+const SCENE_PANEL_RENDER_CHUNK = 1500;
+
+let scenePanelRenderToken = 0;
+let delegatedScenePanelList: HTMLElement | null = null;
+
 function makeObjectRow(uuid: string, depth: number): HTMLElement {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const objectNames = ud.objectNames;
@@ -89,15 +97,23 @@ function makeObjectRow(uuid: string, depth: number): HTMLElement {
     rightIcon.innerHTML = '&#xE0BA;';
     el.appendChild(rightIcon);
 
-    el.addEventListener('click', (e) => {
-        handleSceneItemClick(e, el);
-    });
-    el.addEventListener('dragstart', (e) => {
-        handleSceneItemDragStart(e, { type: 'object', id: uuid }, el);
-    });
-    el.addEventListener('dragend', handleSceneItemDragEnd);
-
     return el;
+}
+
+function getSceneRowFromEvent(event: Event): HTMLElement | null {
+    if (!scenePanelState.scenePanelList || !(event.target instanceof Element)) return null;
+    const row = event.target.closest('.scene-object-item, .scene-tree-group') as HTMLElement | null;
+    return row && scenePanelState.scenePanelList.contains(row) ? row : null;
+}
+
+function getSceneRowSource(row: HTMLElement): RenderEntry | null {
+    if (row.dataset.displayType === 'group') {
+        const groupId = row.dataset.groupId;
+        return groupId ? { type: 'group', id: groupId } : null;
+    }
+
+    const uuid = row.dataset.uuid;
+    return uuid ? { type: 'object', id: uuid } : null;
 }
 
 function fitSceneExtraBlocks(): void {
@@ -268,6 +284,85 @@ export function scheduleSceneExtraFit(): void {
     });
 }
 
+function populateGroupChildren(groupId: string, depth: number, childContainer: HTMLElement): void {
+    if (childContainer.dataset.populated === 'true') return;
+
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const group = ud.groups?.get(groupId);
+    if (!group) return;
+
+    const fragment = document.createDocumentFragment();
+    for (const child of (group.children || [])) {
+        if (child.type === 'group') {
+            const subEl = renderGroup(child.id, depth + 1);
+            if (subEl) fragment.appendChild(subEl);
+        } else {
+            const objectUuid = resolveChildObjectUuid(child, ud);
+            if (objectUuid && hasRenderableObject(objectUuid, ud)) {
+                fragment.appendChild(makeObjectRow(objectUuid, depth + 1));
+            }
+        }
+    }
+
+    childContainer.appendChild(fragment);
+    childContainer.dataset.populated = 'true';
+}
+
+function toggleGroupChildren(header: HTMLElement): void {
+    const groupId = header.dataset.groupId;
+    const childContainer = header.nextElementSibling as HTMLElement | null;
+    if (!groupId || !childContainer?.classList.contains('scene-tree-children')) return;
+
+    const depth = Number(header.dataset.depth || 0);
+    const isCollapsed = childContainer.classList.contains('collapsed');
+    const toggleEl = header.querySelector('.scene-toggle');
+
+    if (isCollapsed) {
+        populateGroupChildren(groupId, depth, childContainer);
+        childContainer.classList.remove('collapsed');
+        scenePanelState.expandedGroupIds.add(groupId);
+        if (toggleEl) toggleEl.innerHTML = '&#xE06D;';
+    } else {
+        childContainer.classList.add('collapsed');
+        scenePanelState.expandedGroupIds.delete(groupId);
+        if (toggleEl) toggleEl.innerHTML = '&#xE06F;';
+    }
+
+    scheduleSceneExtraFit();
+}
+
+function ensureScenePanelDelegation(list: HTMLElement): void {
+    if (delegatedScenePanelList === list) return;
+    delegatedScenePanelList = list;
+
+    list.addEventListener('click', (event) => {
+        if (event.target instanceof Element && event.target.closest('.scene-toggle')) {
+            const header = event.target.closest('.scene-tree-group') as HTMLElement | null;
+            if (header) {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleGroupChildren(header);
+            }
+            return;
+        }
+
+        const row = getSceneRowFromEvent(event);
+        if (row) handleSceneItemClick(event, row);
+    });
+
+    list.addEventListener('dragstart', (event) => {
+        const row = getSceneRowFromEvent(event);
+        if (!row) return;
+
+        const source = getSceneRowSource(row);
+        if (source) handleSceneItemDragStart(event, source, row);
+    });
+
+    list.addEventListener('dragend', () => {
+        handleSceneItemDragEnd();
+    });
+}
+
 function renderGroup(groupId: string, depth: number): HTMLElement | null {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const groups = ud.groups;
@@ -282,6 +377,7 @@ function renderGroup(groupId: string, depth: number): HTMLElement | null {
     header.style.paddingLeft = `${12 + depth * 16}px`;
     header.dataset.groupId = groupId;
     header.dataset.displayType = 'group';
+    header.dataset.depth = String(depth);
     header.draggable = true;
 
     const toggleEl = document.createElement('span');
@@ -315,46 +411,58 @@ function renderGroup(groupId: string, depth: number): HTMLElement | null {
 
     const childContainer = document.createElement('div');
     childContainer.className = 'scene-tree-children' + (isExpanded ? '' : ' collapsed');
+    childContainer.dataset.populated = 'false';
 
-    for (const child of (group.children || [])) {
-        if (child.type === 'group') {
-            const subEl = renderGroup(child.id, depth + 1);
-            if (subEl) childContainer.appendChild(subEl);
-        } else {
-            const objectUuid = resolveChildObjectUuid(child, ud);
-            if (objectUuid && hasRenderableObject(objectUuid, ud)) {
-                childContainer.appendChild(makeObjectRow(objectUuid, depth + 1));
-            }
-        }
+    if (isExpanded) {
+        populateGroupChildren(groupId, depth, childContainer);
     }
-
-    toggleEl.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const isCollapsed = childContainer.classList.toggle('collapsed');
-        if (isCollapsed) {
-            scenePanelState.expandedGroupIds.delete(groupId);
-        } else {
-            scenePanelState.expandedGroupIds.add(groupId);
-        }
-        toggleEl.innerHTML = isCollapsed ? '&#xE06F;' : '&#xE06D;';
-        scheduleSceneExtraFit();
-    });
-
-    header.addEventListener('click', (e) => {
-        handleSceneItemClick(e, header);
-    });
-    header.addEventListener('dragstart', (e) => {
-        handleSceneItemDragStart(e, { type: 'group', id: groupId }, header);
-    });
-    header.addEventListener('dragend', handleSceneItemDragEnd);
 
     wrapper.appendChild(header);
     wrapper.appendChild(childContainer);
     return wrapper;
 }
 
+function appendRenderEntry(entry: RenderEntry, target: DocumentFragment | HTMLElement): void {
+    if (entry.type === 'group') {
+        const el = renderGroup(entry.id, 0);
+        if (el) target.appendChild(el);
+        return;
+    }
+
+    target.appendChild(makeObjectRow(entry.id, 0));
+}
+
+function appendRenderEntries(entries: RenderEntry[], start: number, end: number, target: DocumentFragment | HTMLElement): void {
+    for (let i = start; i < end; i++) {
+        appendRenderEntry(entries[i], target);
+    }
+}
+
+function scheduleProgressiveRender(entries: RenderEntry[], startIndex: number, token: number): void {
+    if (startIndex >= entries.length) {
+        syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
+        scheduleSceneExtraFit();
+        return;
+    }
+
+    requestAnimationFrame(() => {
+        if (token !== scenePanelRenderToken || !scenePanelState.scenePanelList) return;
+
+        const fragment = document.createDocumentFragment();
+        const endIndex = Math.min(startIndex + SCENE_PANEL_RENDER_CHUNK, entries.length);
+        appendRenderEntries(entries, startIndex, endIndex, fragment);
+        scenePanelState.scenePanelList.appendChild(fragment);
+
+        scheduleSceneExtraFit();
+        scheduleProgressiveRender(entries, endIndex, token);
+    });
+}
+
 export function refreshScenePanel(): void {
     if (!scenePanelState.scenePanelList) return;
+    const refreshStartMs = performance.now();
+    const token = ++scenePanelRenderToken;
+    ensureScenePanelDelegation(scenePanelState.scenePanelList);
     scenePanelState.scenePanelList.innerHTML = '';
 
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
@@ -362,7 +470,7 @@ export function refreshScenePanel(): void {
     const groups = ud.groups;
     const sceneOrder = ud.sceneOrder;
 
-    const fragment = document.createDocumentFragment();
+    const entries: RenderEntry[] = [];
     const renderedRootGroups = new Set<string>();
     const renderedRootObjects = new Set<string>();
 
@@ -370,10 +478,8 @@ export function refreshScenePanel(): void {
         if (!groupId || renderedRootGroups.has(groupId)) return;
         const group = groups?.get(groupId);
         if (!group || group.parent !== null) return;
-        const el = renderGroup(groupId, 0);
-        if (!el) return;
         renderedRootGroups.add(groupId);
-        fragment.appendChild(el);
+        entries.push({ type: 'group', id: groupId });
     };
 
     const appendRootObject = (uuid: string): void => {
@@ -381,7 +487,7 @@ export function refreshScenePanel(): void {
         if (!hasRenderableObject(uuid, ud)) return;
         if (isObjectUuidGrouped(uuid, ud)) return;
         renderedRootObjects.add(uuid);
-        fragment.appendChild(makeObjectRow(uuid, 0));
+        entries.push({ type: 'object', id: uuid });
     };
 
     if (sceneOrder && sceneOrder.length > 0) {
@@ -408,7 +514,18 @@ export function refreshScenePanel(): void {
         }
     }
 
+    const fragment = document.createDocumentFragment();
+    const initialEnd = Math.min(INITIAL_SCENE_PANEL_ROWS, entries.length);
+    appendRenderEntries(entries, 0, initialEnd, fragment);
     scenePanelState.scenePanelList.appendChild(fragment);
+
+    const elapsedMs = performance.now() - refreshStartMs;
+    console.log(`[ScenePanel] Initial render: ${elapsedMs.toFixed(2)}ms (${initialEnd}/${entries.length} root rows).`);
+
     scheduleSceneExtraFit();
     syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
+
+    if (initialEnd < entries.length) {
+        scheduleProgressiveRender(entries, initialEnd, token);
+    }
 }
