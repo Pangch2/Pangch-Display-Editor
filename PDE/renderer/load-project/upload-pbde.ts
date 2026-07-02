@@ -5,9 +5,28 @@ import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, performS
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 
 export { loadedObjectGroup };
+
+function waitForNextPaint(): Promise<void> {
+    return new Promise(resolve => {
+        requestAnimationFrame(() => {
+            setTimeout(resolve, 0);
+        });
+    });
+}
+
+async function logPerceivedPbdeLoadTime(startMs: number, mode: 'open' | 'merge', fileCount: number): Promise<void> {
+    await waitForNextPaint();
+    await waitForNextPaint();
+
+    const elapsedSeconds = (performance.now() - startMs) / 1000;
+    console.log(`[PBDE] Perceived load time: ${elapsedSeconds.toFixed(2)}s (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}, after scene update + paint).`);
+}
+
 async function loadpbde(files: File | File[]): Promise<void> {
     const fileList = Array.isArray(files) ? files : [files];
     if (fileList.length === 0) return;
+
+    const perceivedLoadStartMs = performance.now();
 
     // Use a single generation ID for the batch operation to ensure textures/materials are valid for all files.
     const batchGen = beginPbdeLoadGeneration();
@@ -24,11 +43,14 @@ async function loadpbde(files: File | File[]): Promise<void> {
         console.error("Error loading project files:", e);
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    await logPerceivedPbdeLoadTime(perceivedLoadStartMs, 'open', fileList.length);
 }
 
 async function mergepbde(files: File | File[]): Promise<void> {
     const fileList = Array.isArray(files) ? files : [files];
     if (fileList.length === 0) return;
+
+    const perceivedLoadStartMs = performance.now();
 
     const batchGen = beginPbdeLoadGeneration();
     const allNewMeshes = new Set<THREE.Object3D>();
@@ -47,6 +69,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
         console.error("Error merging project files:", e);
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    await logPerceivedPbdeLoadTime(perceivedLoadStartMs, 'merge', fileList.length);
 }
 
 
