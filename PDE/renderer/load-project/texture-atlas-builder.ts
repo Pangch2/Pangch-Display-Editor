@@ -13,6 +13,7 @@ export type TextureAtlasInfo = {
 type GeometryLike = {
     texPath?: string;
     uvs: number[];
+    uvTransform?: [number, number, number, number];
 };
 
 type ModelLike = {
@@ -157,12 +158,17 @@ export async function buildTextureAtlasForRenderList(
                 if (!info) continue;
                 const originalTexPath = geometry.texPath as string;
                 const { x: packedX, y: packedY, w, h } = info;
+                const scaleX = w / atlasW;
+                const scaleY = h / atlasH;
+                const offsetX = packedX / atlasW;
+                const offsetY = (atlasH - packedY - h) / atlasH;
                 for (let i = 0; i < geometry.uvs.length; i += 2) {
                     const u = geometry.uvs[i];
                     const v = geometry.uvs[i + 1];
-                    geometry.uvs[i] = (u * w + packedX) / atlasW;
-                    geometry.uvs[i + 1] = (v * h + (atlasH - packedY - h)) / atlasH;
+                    geometry.uvs[i] = u * scaleX + offsetX;
+                    geometry.uvs[i + 1] = v * scaleY + offsetY;
                 }
+                geometry.uvTransform = [scaleX, scaleY, offsetX, offsetY];
                 geometry.texPath = textureTypes.get(originalTexPath) === 2 ? '__ATLAS_TRANSLUCENT__' : '__ATLAS__';
             }
             model.blockProps = item.blockProps;

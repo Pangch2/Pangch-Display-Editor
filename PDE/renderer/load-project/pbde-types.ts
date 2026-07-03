@@ -25,6 +25,7 @@ export interface GeometryMeta {
     geometryIndex: number;
     texPath: string;
     tintHex?: number;
+    uvTransform?: [number, number, number, number];
     isItemDisplayModel: boolean;
     posByteOffset: number;
     posLen: number;
@@ -46,6 +47,8 @@ export interface GeometryInstanceMeta {
     uuid: string;
     groupId: string | null;
     name?: string | null;
+    atlasUvTransform?: [number, number, number, number];
+    blockProps?: unknown;
 }
 
 export interface GeometryInstanceBatch {

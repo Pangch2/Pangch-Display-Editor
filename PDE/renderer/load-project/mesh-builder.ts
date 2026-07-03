@@ -27,7 +27,7 @@ const textureSlotQueue: Array<(value?: void) => void> = [];
 const signatureHashScratch = new ArrayBuffer(8);
 const signatureHashView = new DataView(signatureHashScratch);
 
-type InstanceMeta = { uuid: string, groupId: string | null };
+type InstanceMeta = { uuid: string, groupId: string | null, atlasUvTransform?: [number, number, number, number] };
 type SignatureGroup = {
     parts: GeometryMeta[];
     transforms: Array<Float32Array | number[]>;
@@ -122,6 +122,22 @@ function buildPartHashKeys(parts: GeometryMeta[]): { signature: string; geometry
 
 function getGeometryBufferKey(part: GeometryMeta): string {
     return part.geometryBufferKey ?? `${part.geometryId}|${part.geometryIndex}`;
+}
+
+function getRelativeUvTransform(
+    base: [number, number, number, number] | undefined,
+    current: [number, number, number, number] | undefined
+): [number, number, number, number] {
+    if (!base || !current) return [1, 1, 0, 0];
+
+    const scaleX = base[0] !== 0 ? current[0] / base[0] : 1;
+    const scaleY = base[1] !== 0 ? current[1] / base[1] : 1;
+    return [
+        scaleX,
+        scaleY,
+        current[2] - base[2] * scaleX,
+        current[3] - base[3] * scaleY
+    ];
 }
 
 
@@ -284,10 +300,10 @@ function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
     }
 }
 
-async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number): Promise<THREE.Material> {
+async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, useInstancedUvTransform = false): Promise<THREE.Material> {
     // undefined는 흰색(0xffffff)으로 정규화하여 캐시 키 불일치를 방지한다.
     const effectiveTint = (tintHex ?? 0xffffff) >>> 0;
-    const key = `${texPath}|${effectiveTint}`;
+    const key = `${texPath}|${effectiveTint}|${useInstancedUvTransform ? 'uvt' : 'base'}`;
     if (blockMaterialCache.has(key) && gen === currentLoadGen) {
         const mat = blockMaterialCache.get(key)!;
         // 아틀라스 텍스처가 변경되었으면 stale 항목을 캐시에서 제거하고 재생성한다.
@@ -302,7 +318,7 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
 
     const p = (async () => {
         const tex = await loadBlockTexture(texPath, gen);
-        const { material } = createEntityMaterial(tex, effectiveTint);
+        const { material } = createEntityMaterial(tex, effectiveTint, false, useInstancedUvTransform);
         material.toneMapped = false;
         material.fog = false;
         material.flatShading = true;
@@ -892,8 +908,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     objectDisplayTypes.set(instance.uuid, (firstPart as any).itemDisplayType);
                                 }
                             }
-                            if (instance.uuid && firstPart && !firstPart.isItemDisplayModel && (firstPart as any).blockProps) {
-                                objectBlockProps.set(instance.uuid, (firstPart as any).blockProps);
+                            const instanceBlockProps = (instance as any).blockProps ?? (firstPart as any)?.blockProps;
+                            if (instance.uuid && firstPart && !firstPart.isItemDisplayModel && instanceBlockProps) {
+                                objectBlockProps.set(instance.uuid, instanceBlockProps);
                             }
                         }
                     }
@@ -986,7 +1003,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const signatureStartMs = performance.now();
                 const signatureGroups = new Map<string, SignatureGroup>();
 
-                const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null }>) => {
+                const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null; atlasUvTransform?: [number, number, number, number] }>) => {
                     parts.sort((a, b) => {
                         const geometryCompare = a.geometryId.localeCompare(b.geometryId);
                         if (geometryCompare !== 0) return geometryCompare;
@@ -1006,7 +1023,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                     for (const instance of instances) {
                         group.transforms.push(instance.transform);
-                        group.instanceMetas.push({ uuid: instance.uuid, groupId: instance.groupId });
+                        group.instanceMetas.push({ uuid: instance.uuid, groupId: instance.groupId, atlasUvTransform: instance.atlasUvTransform });
                     }
                 };
 
@@ -1027,6 +1044,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         const representativeParts = group.parts;
                         const transforms = group.transforms;
                         const instanceMetas = group.instanceMetas;
+                        const usesAtlasUvTransform = !!representativeParts[0]?.uvTransform
+                            && instanceMetas.some(meta => !!meta.atlasUvTransform);
 
                         // Merge Geometries
                         const materials: THREE.Material[] = [];
@@ -1067,14 +1086,14 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                         for (const part of representativeParts) {
                             // Prepare Material
-                            const matKey = `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}`;
+                            const matKey = `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}|${usesAtlasUvTransform ? 'uvt' : 'base'}`;
                             let material = instancedMaterials.get(matKey);
                             
                             if (!material) {
                                 // If not loaded, use placeholder and load it
                                 material = placeholderMaterial;
                                 if (!materialPromises.has(matKey)) {
-                                    const p = getBlockMaterial(part.texPath, part.tintHex, myGen).then(m => {
+                                    const p = getBlockMaterial(part.texPath, part.tintHex, myGen, usesAtlasUvTransform).then(m => {
                                         if (myGen === currentLoadGen) {
                                             instancedMaterials.set(matKey, m);
                                         }
@@ -1091,7 +1110,18 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             const instanceMatrix = new THREE.Matrix4();
                             for (let chunkStart = 0; chunkStart < transforms.length; chunkStart += MAX_INSTANCES_PER_INSTANCED_MESH) {
                                 const chunkCount = Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, transforms.length - chunkStart);
-                                const instancedMesh = new THREE.InstancedMesh(mergedGeo, materials, chunkCount);
+                                const meshGeometry = usesAtlasUvTransform ? mergedGeo.clone() : mergedGeo;
+                                if (usesAtlasUvTransform) {
+                                    const baseUvTransform = representativeParts[0].uvTransform;
+                                    const uvTransforms = new Float32Array(chunkCount * 4);
+                                    for (let i = 0; i < chunkCount; i++) {
+                                        const sourceIndex = chunkStart + i;
+                                        const relativeUvTransform = getRelativeUvTransform(baseUvTransform, instanceMetas[sourceIndex].atlasUvTransform);
+                                        uvTransforms.set(relativeUvTransform, i * 4);
+                                    }
+                                    meshGeometry.setAttribute('instancedUvTransform', new THREE.InstancedBufferAttribute(uvTransforms, 4));
+                                }
+                                const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCount);
                                 
                                 // Use parser metadata to determine display type.
                                 if (representativeParts[0].isItemDisplayModel) {

@@ -22,6 +22,7 @@ interface GeometryData {
     indices: number[];
     texPath: string;
     tintHex: number;
+    uvTransform?: [number, number, number, number];
 }
 
 interface ModelData {
@@ -56,7 +57,11 @@ type GeometryBatchPartSource = {
 
 type GeometryBatchBuilder = {
     parts: GeometryBatchPartSource[];
-    instances: RenderItem[];
+    instances: Array<{
+        item: RenderItem;
+        atlasUvTransform?: [number, number, number, number];
+        transform?: Float32Array | number[];
+    }>;
 };
 
 type BlockDisplayTemplate = {
@@ -2017,11 +2022,64 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             }
             return key;
         };
+        const numberArrayKey = (values: ArrayLike<number>) => {
+            let key = '';
+            for (let i = 0; i < values.length; i++) {
+                if (i > 0) key += ',';
+                key += Math.round(values[i] * 1000000) / 1000000;
+            }
+            return key;
+        };
+        const normalizedUvKey = (geomData: GeometryData) => {
+            const uvTransform = geomData.uvTransform;
+            if (!uvTransform) return numberArrayKey(geomData.uvs);
+
+            const [scaleX, scaleY, offsetX, offsetY] = uvTransform;
+            let key = '';
+            for (let i = 0; i < geomData.uvs.length; i += 2) {
+                if (i > 0) key += ',';
+                const u = scaleX !== 0 ? (geomData.uvs[i] - offsetX) / scaleX : geomData.uvs[i];
+                const v = scaleY !== 0 ? (geomData.uvs[i + 1] - offsetY) / scaleY : geomData.uvs[i + 1];
+                key += `${Math.round(u * 1000000) / 1000000},${Math.round(v * 1000000) / 1000000}`;
+            }
+            return key;
+        };
+        const geometryShapeKey = (geomData: GeometryData) => [
+            numberArrayKey(geomData.positions),
+            numberArrayKey(geomData.normals),
+            normalizedUvKey(geomData),
+            numberArrayKey(geomData.indices)
+        ].join(';');
+        const uvTransformKey = (uvTransform?: [number, number, number, number]) => {
+            if (!uvTransform) return '';
+            return uvTransform.map(value => String(Math.round(value * 1000000) / 1000000)).join(',');
+        };
+        const getUniformPartModelMatrix = (parts: GeometryBatchPartSource[]) => {
+            if (parts.length === 0) return null;
+            const first = parts[0].modelMatrix;
+            const firstKey = matrixKey(first);
+            for (let i = 1; i < parts.length; i++) {
+                if (matrixKey(parts[i].modelMatrix) !== firstKey) return null;
+            }
+            return first;
+        };
+        const applyRelativeModelMatrixToTransform = (
+            transform: Float32Array | number[] | undefined,
+            modelMatrix: Float32Array | number[],
+            baseModelMatrix: Float32Array | number[]
+        ) => {
+            const worldMatrix = new THREE.Matrix4().fromArray(transform ?? identityMatrix).transpose();
+            const currentModelMatrix = new THREE.Matrix4().fromArray(modelMatrix);
+            const baseInverse = new THREE.Matrix4().fromArray(baseModelMatrix).invert();
+            worldMatrix.multiply(currentModelMatrix.multiply(baseInverse));
+            return new Float32Array(worldMatrix.transpose().elements);
+        };
 
         for (const item of geometryItems) {
             if (!item.models) continue;
             const parts: GeometryBatchPartSource[] = [];
-            const keyParts = [item.type, stableJson(item.blockProps), String(item.displayType ?? '')];
+            const itemUvTransformKeys = new Set<string>();
+            const keyParts = [item.type, String(item.displayType ?? '')];
 
             for (const model of item.models) {
                 const matrixArray = (Array.isArray(model.modelMatrix) || ArrayBuffer.isView(model.modelMatrix))
@@ -2030,20 +2088,44 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
 
                 model.geometries.forEach((geomData, geometryIndex) => {
                     parts.push({ model, geomData, geometryIndex, modelMatrix: matrixArray });
+                    itemUvTransformKeys.add(uvTransformKey(geomData.uvTransform));
+                });
+            }
+
+            if (parts.length === 0) continue;
+
+            const firstUvTransformKey = itemUvTransformKeys.size === 1 ? [...itemUvTransformKeys][0] : '';
+            const useInstancedAtlasUv = firstUvTransformKey !== '';
+            const atlasUvTransform = useInstancedAtlasUv ? parts[0].geomData.uvTransform : undefined;
+            const uniformModelMatrix = useInstancedAtlasUv ? getUniformPartModelMatrix(parts) : null;
+
+            if (!useInstancedAtlasUv || !uniformModelMatrix) {
+                keyParts.push(stableJson(item.blockProps));
+            }
+
+            for (const part of parts) {
+                const { model, geomData, geometryIndex, modelMatrix } = part;
+                if (useInstancedAtlasUv && uniformModelMatrix) {
+                    keyParts.push(
+                        geometryShapeKey(geomData),
+                        geomData.texPath,
+                        String((geomData.tintHex ?? 0xffffff) >>> 0),
+                        String((model as any).itemDisplayType ?? '')
+                    );
+                } else {
                     keyParts.push(
                         model.geometryId,
                         String(geometryIndex),
                         String(getGeometryRefId(geomData)),
-                        matrixKey(matrixArray),
+                        matrixKey(modelMatrix),
                         geomData.texPath,
                         String((geomData.tintHex ?? 0xffffff) >>> 0),
                         stableJson((model as any).blockProps),
                         String((model as any).itemDisplayType ?? '')
                     );
-                });
+                }
             }
 
-            if (parts.length === 0) continue;
             const batchKey = keyParts.join('|');
             let batch = geometryBatches.get(batchKey);
             if (!batch) {
@@ -2058,7 +2140,10 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     totalVertices += geomData.positions.length / 3;
                 }
             }
-            batch.instances.push(item);
+            const instanceTransform = useInstancedAtlasUv && uniformModelMatrix
+                ? applyRelativeModelMatrixToTransform(item.transform, uniformModelMatrix, batch.parts[0].modelMatrix)
+                : item.transform;
+            batch.instances.push({ item, atlasUvTransform, transform: instanceTransform });
         }
 
         const useUint32Indices = totalVertices > 65535;
@@ -2125,7 +2210,8 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     geometryIndex: geometryIndex,
                     texPath: geomData.texPath,
                     tintHex: geomData.tintHex,
-                    isItemDisplayModel: batch.instances[0]?.type === 'itemDisplayModel',
+                    uvTransform: geomData.uvTransform,
+                    isItemDisplayModel: batch.instances[0]?.item.type === 'itemDisplayModel',
                     posByteOffset: posStart * 4,
                     posLen: positions.length,
                     normByteOffset: normByteOffset + normStart * 4,
@@ -2137,18 +2223,20 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     uuid: '',
                     groupId: null,
                     name: null,
-                    blockProps: (model as any).blockProps || batch.instances[0]?.blockProps,
-                    itemDisplayType: (model as any).itemDisplayType || batch.instances[0]?.displayType
+                    blockProps: (model as any).blockProps || batch.instances[0]?.item.blockProps,
+                    itemDisplayType: (model as any).itemDisplayType || batch.instances[0]?.item.displayType
                 });
             }
 
             geometryBatchMetadata.push({
                 parts: batchParts,
-                instances: batch.instances.map(item => ({
-                    transform: item.transform,
+                instances: batch.instances.map(({ item, atlasUvTransform, transform }) => ({
+                    transform: transform ?? item.transform,
                     uuid: item.uuid,
                     groupId: item.groupId ?? null,
-                    name: (item as any).name ?? null
+                    name: (item as any).name ?? null,
+                    atlasUvTransform,
+                    blockProps: item.blockProps
                 }))
             });
         }
