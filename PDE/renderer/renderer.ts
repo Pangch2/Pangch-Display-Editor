@@ -1,6 +1,6 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { initGizmo } from './controls/gizmo';
-import type { InitGizmoResult, OrbitControlsLike } from './controls/gizmo';
+import { initGizmo } from './controls-old/gizmo-old';
+import type { InitGizmoResult, OrbitControlsLike } from './controls-old/gizmo-old';
 import {
     Group,
     BufferGeometry,

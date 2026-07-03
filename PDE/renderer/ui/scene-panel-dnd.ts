@@ -1,5 +1,5 @@
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { currentSelection } from '../controls/select';
+import { currentSelection } from '../controls-old/select-old';
 import { scheduleSceneExtraFit } from './scene-panel-render';
 import { scenePanelState } from './scene-panel-state';
 import type {

@@ -42,25 +42,25 @@ Tracked files — any time one mentioned in request while skill active, follow *
 | `mesh-builder.ts` | `load-project/mesh-builder.ts` |
 | `pbde-assets.ts` | `load-project/pbde-assets.ts` |
 | `pbde-types.ts` | `load-project/pbde-types.ts` |
-| `group.ts` | `controls/group.ts` |
-| `duplicate.ts` | `controls/duplicate.ts` |
-| `gizmo.ts` | `controls/gizmo.ts` |
-| `handle-key.ts` | `controls/handle-key.ts` |
-| `camera.ts` | `controls/camera.ts` |
-| `delete.ts` | `controls/delete.ts` |
-| `drag.ts` | `controls/drag.ts` |
-| `custom-pivot.ts` | `controls/custom-pivot.ts` |
-| `custom-pivot-remove.ts` | `controls/custom-pivot-remove.ts` |
-| `blockbench-scale.ts` | `controls/blockbench-scale.ts` |
-| `gizmo-setup.ts` | `controls/gizmo-setup.ts` |
-| `overlay.ts` | `controls/overlay.ts` |
-| `select.ts` | `controls/select.ts` |
-| `shear-remove.ts` | `controls/shear-remove.ts` |
-| `vertex-rotate.ts` | `controls/vertex-rotate.ts` |
-| `vertex-scale.ts` | `controls/vertex-scale.ts` |
-| `vertex-swap.ts` | `controls/vertex-swap.ts` |
-| `vertex-translate.ts` | `controls/vertex-translate.ts` |
-| `vertex-queue.ts` | `controls/vertex-queue.ts` |
+| `group-old.ts` | `controls/group-old.ts` |
+| `duplicate-old.ts` | `controls/duplicate-old.ts` |
+| `gizmo-old.ts` | `controls/gizmo-old.ts` |
+| `handle-key-old.ts` | `controls/handle-key-old.ts` |
+| `camera-old.ts` | `controls/camera-old.ts` |
+| `delete-old.ts` | `controls/delete-old.ts` |
+| `drag-old.ts` | `controls/drag-old.ts` |
+| `custom-pivot-old.ts` | `controls/custom-pivot-old.ts` |
+| `custom-pivot-remove-old.ts` | `controls/custom-pivot-remove-old.ts` |
+| `blockbench-scale-old.ts` | `controls/blockbench-scale-old.ts` |
+| `gizmo-setup-old.ts` | `controls/gizmo-setup-old.ts` |
+| `overlay-old.ts` | `controls/overlay-old.ts` |
+| `select-old.ts` | `controls/select-old.ts` |
+| `shear-remove-old.ts` | `controls/shear-remove-old.ts` |
+| `vertex-rotate-old.ts` | `controls/vertex-rotate-old.ts` |
+| `vertex-scale-old.ts` | `controls/vertex-scale-old.ts` |
+| `vertex-swap-old.ts` | `controls/vertex-swap-old.ts` |
+| `vertex-translate-old.ts` | `controls/vertex-translate-old.ts` |
+| `vertex-queue-old.ts` | `controls/vertex-queue-old.ts` |
 | `main.css` | `ui/main.css` |
 | `scene-panel.ts` | `ui/scene-panel.ts` |
 | `scene-panel-types.ts` | `ui/scene-panel-types.ts` |
@@ -80,7 +80,7 @@ Summaries live at:
 PDE/.agents/skills/pde/summaries/<filename>.md
 ```
 
-Example: summary for `gizmo.ts` -> `summaries/gizmo.ts.md`
+Example: summary for `gizmo-old.ts` -> `summaries/gizmo-old.ts.md`
 
 ---
 
