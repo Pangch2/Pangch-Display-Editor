@@ -49,6 +49,8 @@ export interface GeometryInstanceMeta {
     name?: string | null;
     atlasUvTransform?: [number, number, number, number];
     blockProps?: unknown;
+    isItemDisplayModel?: boolean;
+    itemDisplayType?: string | null;
 }
 
 export interface GeometryInstanceBatch {

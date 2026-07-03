@@ -19,7 +19,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Shared placeholder material and cached head geometries
 - Concurrency gate for texture decoding to avoid overload
 - Signature hash scratch buffer and per-load geometry/material update caches to reduce mesh creation allocations
-- Per-instance atlas UV transform and block-property metadata for same-shape objects that share geometry but use different atlas locations or rotation-only properties.
+- Per-instance atlas UV transform, display-type, and block-property metadata for same-shape objects that share geometry but use different atlas locations, source display types, or rotation-only properties.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
 
@@ -40,6 +40,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - During InstancedMesh creation, hashed part signatures avoid long model-matrix string joins, merged geometry is cached by geometry layout, and only placeholder material slots are tracked for batched async replacement.
 - When `atlasUvTransform` metadata is present, mesh chunks clone the merged geometry and attach `instancedUvTransform` so one mesh can render same-shape instances with different atlas texture regions.
 - Batched object metadata prefers `GeometryInstanceMeta.blockProps` over representative part props so variants grouped into one mesh still display their own properties.
+- Loaded instanced meshes populate `userData.displayTypes` per instance so mixed block/item-display batches still work with `Overlay.getDisplayType`.
 - `GeometryMeta.geometryBufferKey` is used when present so same model id/index values from different packed batches do not collide.
 - Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.

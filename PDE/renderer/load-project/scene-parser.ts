@@ -2079,7 +2079,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             if (!item.models) continue;
             const parts: GeometryBatchPartSource[] = [];
             const itemUvTransformKeys = new Set<string>();
-            const keyParts = [item.type, String(item.displayType ?? '')];
+            const keyParts: string[] = [];
 
             for (const model of item.models) {
                 const matrixArray = (Array.isArray(model.modelMatrix) || ArrayBuffer.isView(model.modelMatrix))
@@ -2100,6 +2100,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             const uniformModelMatrix = useInstancedAtlasUv ? getUniformPartModelMatrix(parts) : null;
 
             if (!useInstancedAtlasUv || !uniformModelMatrix) {
+                keyParts.push(item.type, String(item.displayType ?? ''));
                 keyParts.push(stableJson(item.blockProps));
             }
 
@@ -2109,8 +2110,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     keyParts.push(
                         geometryShapeKey(geomData),
                         geomData.texPath,
-                        String((geomData.tintHex ?? 0xffffff) >>> 0),
-                        String((model as any).itemDisplayType ?? '')
+                        String((geomData.tintHex ?? 0xffffff) >>> 0)
                     );
                 } else {
                     keyParts.push(
@@ -2236,7 +2236,9 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     groupId: item.groupId ?? null,
                     name: (item as any).name ?? null,
                     atlasUvTransform,
-                    blockProps: item.blockProps
+                    blockProps: item.blockProps,
+                    isItemDisplayModel: item.type === 'itemDisplayModel',
+                    itemDisplayType: (item as any).itemDisplayType ?? item.displayType ?? null
                 }))
             });
         }

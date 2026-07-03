@@ -27,7 +27,12 @@ const textureSlotQueue: Array<(value?: void) => void> = [];
 const signatureHashScratch = new ArrayBuffer(8);
 const signatureHashView = new DataView(signatureHashScratch);
 
-type InstanceMeta = { uuid: string, groupId: string | null, atlasUvTransform?: [number, number, number, number] };
+type InstanceMeta = {
+    uuid: string,
+    groupId: string | null,
+    atlasUvTransform?: [number, number, number, number],
+    displayType?: 'block_display' | 'item_display'
+};
 type SignatureGroup = {
     parts: GeometryMeta[];
     transforms: Array<Float32Array | number[]>;
@@ -902,14 +907,16 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             if (instance.uuid && !objectNamesMap.has(instance.uuid) && instance.name) {
                                 objectNamesMap.set(instance.uuid, instance.name);
                             }
-                            if (instance.uuid && firstPart?.isItemDisplayModel) {
+                            const instanceIsItemDisplay = (instance as any).isItemDisplayModel ?? firstPart?.isItemDisplayModel;
+                            const instanceItemDisplayType = (instance as any).itemDisplayType ?? (firstPart as any)?.itemDisplayType;
+                            if (instance.uuid && instanceIsItemDisplay) {
                                 objectIsItemDisplay.add(instance.uuid);
-                                if ((firstPart as any).itemDisplayType) {
-                                    objectDisplayTypes.set(instance.uuid, (firstPart as any).itemDisplayType);
+                                if (instanceItemDisplayType) {
+                                    objectDisplayTypes.set(instance.uuid, instanceItemDisplayType);
                                 }
                             }
                             const instanceBlockProps = (instance as any).blockProps ?? (firstPart as any)?.blockProps;
-                            if (instance.uuid && firstPart && !firstPart.isItemDisplayModel && instanceBlockProps) {
+                            if (instance.uuid && firstPart && !instanceIsItemDisplay && instanceBlockProps) {
                                 objectBlockProps.set(instance.uuid, instanceBlockProps);
                             }
                         }
@@ -1003,7 +1010,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const signatureStartMs = performance.now();
                 const signatureGroups = new Map<string, SignatureGroup>();
 
-                const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null; atlasUvTransform?: [number, number, number, number] }>) => {
+                const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null; atlasUvTransform?: [number, number, number, number]; isItemDisplayModel?: boolean }>) => {
                     parts.sort((a, b) => {
                         const geometryCompare = a.geometryId.localeCompare(b.geometryId);
                         if (geometryCompare !== 0) return geometryCompare;
@@ -1023,7 +1030,13 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                     for (const instance of instances) {
                         group.transforms.push(instance.transform);
-                        group.instanceMetas.push({ uuid: instance.uuid, groupId: instance.groupId, atlasUvTransform: instance.atlasUvTransform });
+                        const isItemDisplayModel = instance.isItemDisplayModel ?? parts[0]?.isItemDisplayModel ?? false;
+                        group.instanceMetas.push({
+                            uuid: instance.uuid,
+                            groupId: instance.groupId,
+                            atlasUvTransform: instance.atlasUvTransform,
+                            displayType: isItemDisplayModel ? 'item_display' : 'block_display'
+                        });
                     }
                 };
 
@@ -1123,12 +1136,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 }
                                 const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCount);
                                 
-                                // Use parser metadata to determine display type.
-                                if (representativeParts[0].isItemDisplayModel) {
-                                    instancedMesh.userData.displayType = 'item_display';
-                                } else {
-                                    instancedMesh.userData.displayType = 'block_display';
-                                }
+                                instancedMesh.userData.displayType = 'block_display';
+                                instancedMesh.userData.displayTypes = new Map<number, 'block_display' | 'item_display'>();
                                 
                                 instancedMesh.frustumCulled = false;
 
@@ -1138,6 +1147,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     instancedMesh.setMatrixAt(i, instanceMatrix);
                                     const meta = instanceMetas[sourceIndex];
                                     registerObject(instancedMesh, i, meta.uuid, meta.groupId);
+                                    instancedMesh.userData.displayTypes.set(i, meta.displayType ?? 'block_display');
                                 }
                                 instancedMesh.instanceMatrix.needsUpdate = true;
                                 instancedMesh.computeBoundingSphere();
