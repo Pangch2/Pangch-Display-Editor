@@ -1,44 +1,32 @@
 # gizmo-old.ts
 
 ## Purpose
-Main interaction controller for the editor. It wires transform controls, selection state, keyboard/mouse events, vertex mode, pivot handling, duplication, deletion, grouping, and overlay refresh into one orchestrator.
+Legacy full-featured gizmo controller for PDE selection, TransformControls attachment, pivot modes, custom pivots, grouping, vertex operations, overlays, duplication, deletion, and drag application.
 
 ## Exports
 
 ### Types / Interfaces
-- `OrbitControlsLike` -- minimal orbit-control contract used by the editor.
-- `GizmoState` -- shared pivot/anchor state tracked by the gizmo.
-- `InitGizmoParams` -- inputs required to initialize the gizmo system.
-- `InitGizmoResult` -- public handles returned by `initGizmo`.
+- `OrbitControlsLike` -- minimal orbit controls contract used by gizmo and keyboard handlers.
+- `GizmoState` -- serializable pivot and anchor state used by vertex tools.
+- `InitGizmoParams` -- scene, camera, renderer, controls, and loaded object group inputs.
+- `InitGizmoResult` -- public gizmo API returned from initialization.
 
 ### Functions / Methods
-- `initGizmo(params): InitGizmoResult` -- builds the editor interaction stack and installs DOM event listeners.
+- `initGizmo(params): InitGizmoResult` -- initializes TransformControls, selection state, overlays, pointer handlers, keyboard handlers, and public selection helpers.
 
 ## Internal State
-Maintains selection, pivot, drag, vertex queue, and gizmo-anchor caches at module scope.
-Tracks camera-facing `gizmoLines` and `gizmoPlanes` opacity state so transform handles can flip to the side nearest the camera.
+- Tracks current selection through `Select.currentSelection`, selected vertex keys, vertex queue, pivot mode, transform space, custom pivot flags, multi-selection anchors, drag baselines, and gizmo line/plane visibility.
+- `updateHelperPosition` positions the selection helper and sets its quaternion from world identity or local selected/group rotation using matrix-derived orthonormal basis rotation.
 
 ## Dependencies (imports)
-- `../controls/gizmo-setup` -- TransformControls initialization plus gizmo line/plane variant patching.
-- `./blockbench-scale` -- Blockbench-style scale mode and pivot-frame helpers.
-- `./group` -- group hierarchy and pivot helpers.
-- `./overlay` -- selection overlays, box math, vertex helpers.
-- `./custom-pivot` -- pivot recomputation and undo handling.
-- `./duplicate` -- duplication logic.
-- `./delete` -- deletion logic.
-- `./drag` -- marquee selection and delta application.
-- `../controls/handle-key` -- keyboard bindings for the current controls layer.
-- `./vertex-translate`, `./vertex-rotate`, `./vertex-scale`, `./vertex-queue` -- vertex snap/queue behavior.
-- `./select` -- selection state machine.
+- `three/webgpu` -- scene objects, math primitives, raycasting, and rendering types.
+- `TransformControls` -- object transform gizmo.
+- `gizmo-setup` -- creates visual gizmo lines and planes.
+- legacy control modules -- grouping, overlays, pivots, drag, keyboard, selection, deletion, duplication, blockbench scale, and vertex tools.
 
 ## Used By (known callers)
-- `renderer/renderer.ts`
+- Legacy renderer/control wiring imports `initGizmo` to provide the old editor interaction model.
 
 ## Notes
-This is the highest-risk module in the control layer: it owns the event wiring and many mutable shared references, so changes here can ripple across selection and transform behavior.
-It now listens for `pde:scene-updated` to invalidate selection caches and recompute the helper/overlay after hierarchy edits.
-After pivot-edit commit, object custom pivots derive `pivotOffset` from the pre-custom-pivot origin so follow-up transforms keep using the custom anchor.
-`SelectionCenter`: for multi-selection with a locked anchor (`_multiSelectionOriginAnchorValid`), the function short-circuits and returns `_multiSelectionOriginAnchorPosition` (refreshed from local if possible) instead of delegating to `CustomPivot.SelectionCenter`. This is necessary because `pivotOffset` is zero in the multi-selection case (only single-object/group pivots encode the offset there); without the short-circuit, shear-remove computed an erroneous delta equal to the custom-pivot → centroid offset and shifted all objects.
-Plane handles (`XY`, `YZ`, `XZ`) use the camera-to-gizmo direction in world/local space to select one of four mirrored variants, matching the existing positive/negative axis line behavior.
-Plane visibility toggling preserves each plane material's stored visible opacity instead of forcing active planes fully opaque.
-
+- WebGPU/TSL constraints are preserved by using Three.js math and controls only.
+- Local transform space derives the helper rotation from the primary selected object or group world matrix with scale removed before quaternion extraction.

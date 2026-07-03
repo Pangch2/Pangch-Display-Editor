@@ -1,9 +1,13 @@
 import type { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
 type TransformMode = 'translate' | 'rotate' | 'scale';
+type TransformSpace = 'world' | 'local';
+type PivotMode = 'origin' | 'center';
 
 export interface HandleKeyParams {
     getTransformControls(): TransformControls;
+    onTransformControlsChanged?: () => void;
+    togglePivotMode?: () => PivotMode;
     [key: string]: unknown;
 }
 
@@ -12,7 +16,7 @@ const shortcutLogs = {
     transformSpace: 'X: TransformControls Space 변경 (world / local)',
     removeShear: 'V: 객체 스케일의 Shear 제거',
     blockbenchScale: 'B: Blockbench 스케일 모드 토글',
-    customPivotCreate: 'Alt + 이동(Translate): 커스텀 피벗 생성',
+    customPivotCreate: 'Alt + 드래그: 커스텀 피벗 생성',
     customPivotReset: 'Ctrl + Alt: 커스텀 피벗 초기화',
     groupToggle: 'G: 그룹 생성 / 그룹 해제',
     ungroupSelected: 'Ctrl + G: 선택한 그룹 해제',
@@ -34,11 +38,31 @@ function setTransformMode(transformControls: TransformControls, mode: TransformM
     console.log(`TransformControls Mode: ${mode}`);
 }
 
+function toggleTransformSpace(transformControls: TransformControls): void {
+    const nextSpace: TransformSpace = transformControls.space === 'local' ? 'world' : 'local';
+    transformControls.setSpace(nextSpace);
+    console.log(`TransformControls Space: ${nextSpace}`);
+}
+
+export function isAltTabShortcut(event: KeyboardEvent, isAltPressed = false): boolean {
+    return event.key === 'Tab' && (event.altKey || isAltPressed);
+}
+
 export function initHandleKey(p: HandleKeyParams): void {
     let ctrlAltLogged = false;
+    let altPressed = false;
 
     window.addEventListener('keydown', (event: KeyboardEvent) => {
         if (isEditableTarget(event.target)) return;
+
+        if (event.key === 'Alt') {
+            altPressed = true;
+        }
+
+        if (isAltTabShortcut(event, altPressed)) {
+            ctrlAltLogged = false;
+            return;
+        }
 
         const key = event.key.toLowerCase();
 
@@ -69,12 +93,6 @@ export function initHandleKey(p: HandleKeyParams): void {
             return;
         }
 
-        if (event.altKey && key === 't') {
-            event.preventDefault();
-            console.log(shortcutLogs.customPivotCreate);
-            return;
-        }
-
         if (event.key === 'Delete') {
             event.preventDefault();
             console.log(shortcutLogs.deleteSelected);
@@ -85,22 +103,30 @@ export function initHandleKey(p: HandleKeyParams): void {
             case 't':
                 event.preventDefault();
                 setTransformMode(p.getTransformControls(), 'translate');
+                p.onTransformControlsChanged?.();
                 break;
             case 'r':
                 event.preventDefault();
                 setTransformMode(p.getTransformControls(), 'rotate');
+                p.onTransformControlsChanged?.();
                 break;
             case 's':
                 event.preventDefault();
                 setTransformMode(p.getTransformControls(), 'scale');
+                p.onTransformControlsChanged?.();
                 break;
             case 'z':
                 event.preventDefault();
-                console.log(shortcutLogs.pivotMode);
+                if (p.togglePivotMode) {
+                    console.log(`Pivot Mode: ${p.togglePivotMode()}`);
+                } else {
+                    console.log(shortcutLogs.pivotMode);
+                }
                 break;
             case 'x':
                 event.preventDefault();
-                console.log(shortcutLogs.transformSpace);
+                toggleTransformSpace(p.getTransformControls());
+                p.onTransformControlsChanged?.();
                 break;
             case 'v':
                 event.preventDefault();
@@ -109,10 +135,6 @@ export function initHandleKey(p: HandleKeyParams): void {
             case 'b':
                 event.preventDefault();
                 console.log(shortcutLogs.blockbenchScale);
-                break;
-            case 'alt':
-                event.preventDefault();
-                console.log(shortcutLogs.customPivotCreate);
                 break;
             case 'g':
                 event.preventDefault();
@@ -126,9 +148,18 @@ export function initHandleKey(p: HandleKeyParams): void {
     });
 
     window.addEventListener('keyup', (event: KeyboardEvent) => {
+        if (event.key === 'Alt') {
+            altPressed = false;
+        }
+
         if (event.key === 'Alt' || event.key === 'Control') {
             ctrlAltLogged = false;
         }
+    });
+
+    window.addEventListener('blur', () => {
+        altPressed = false;
+        ctrlAltLogged = false;
     });
 
     window.addEventListener('click', (event: MouseEvent) => {

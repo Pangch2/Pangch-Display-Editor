@@ -1,24 +1,15 @@
 # scene-panel.ts
 
 ## Purpose
-Bootstraps the scene panel module cluster while preserving the existing `./ui/scene-panel` import path. It installs scroll, resize, drag/drop, scene-update, and selection listeners and re-exports `refreshScenePanel()`.
+Temporarily disabled scene-panel entry point that preserves the existing `./ui/scene-panel` import/export surface without installing panel listeners or importing the scene-panel module cluster.
 
 ## Exports
 
 ### Functions / Methods
-- `refreshScenePanel(): void` -- Rebuilds virtual row metadata from `loadedObjectGroup.userData`, renders the current viewport, and reapplies visible selection.
-
-## Dependencies (imports)
-- `./scene-panel-state` -- shared panel DOM/state singleton used by all scene-panel modules.
-- `./scene-panel-dnd` -- drag/drop handlers for panel DOM events.
-- `./scene-panel-render` -- refresh entrypoint, viewport scheduler, and fit scheduler.
-- `./scene-panel-selection` -- selection sync listener.
-- `./scene-panel-types` -- shared selection event payload type.
-- `../controls/select` -- fallback selection snapshot for the selection-changed listener.
+- `refreshScenePanel(): void` -- no-op placeholder while the scene panel is disabled.
 
 ## Used By (known callers)
-- `renderer.ts` -- imports this module for bootstrapping side effects.
-- `window` event listeners -- `pde:scene-updated` triggers rerender; `pde:selection-changed` updates highlight state.
+- Existing callers may import `refreshScenePanel`, but `renderer.ts` currently does not side-effect import this module.
 
 ## Notes
-- Scroll events schedule virtual viewport rendering instead of full tree rendering.
+- Scene panel bootstrapping is intentionally disabled until its selection/control dependency is replaced.

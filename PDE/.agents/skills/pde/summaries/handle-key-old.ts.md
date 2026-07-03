@@ -1,26 +1,29 @@
 # handle-key-old.ts
 
 ## Purpose
-Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode, switch transform modes, toggle space, duplicate, delete, select all, group/ungroup, reset pivots, and enter/exit pivot edit mode.
+Legacy keyboard shortcut controller for gizmo interaction, transform mode/space toggles, pivot mode, vertex mode, custom pivot reset, grouping, selection, deletion, duplication, and camera focus.
 
 ## Exports
 
 ### Types / Interfaces
-- `HandleKeyParams` -- the full callback/state surface required by the keyboard handler.
+- `HandleKeyParams` -- callback-heavy contract exposing mutable gizmo, selection, pivot, drag, group, and overlay state to keyboard handlers.
 
 ### Functions / Methods
-- `initHandleKey(p): void` -- registers global keydown/keyup/blur handlers.
+- `initHandleKey(p): void` -- registers keydown, keyup, blur, visibility, and focus handlers for editor shortcuts.
+
+## Internal State
+- Keeps local handler state for Ctrl+Alt logging, Alt/pivot edit mode recovery, and key dispatch while transform dragging is active.
+- The `x` key toggles `currentSpace`, calls `TransformControls.setSpace`, then updates helper position and overlay so local-space rotation is recalculated immediately.
 
 ## Dependencies (imports)
-- `three/webgpu` -- core math and scene object types.
-- `three/examples/jsm/controls/TransformControls.js` -- transform control type reference.
-- `./custom-pivot-remove` -- pivot reset helper.
-- `./shear-remove` -- shear removal helper.
-- `./camera` -- focus camera action.
-- `./blockbench-scale` -- Blockbench scale toggle.
+- `three/webgpu` -- math and scene object types.
+- `TransformControls` -- typed transform controls interface.
+- legacy modules for custom pivot reset, shear removal, camera focus, and blockbench scale mode.
+- legacy selection, group, and vertex queue types.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
+- `gizmo-old.ts` -- passes gizmo state callbacks into `initHandleKey`.
 
 ## Notes
-This file owns a lot of hotkey policy. It also has protective logic around `Alt`/`Ctrl` interactions so pivot-edit state does not get stuck on blur or focus loss.
+- Shortcuts ignore text inputs.
+- During active dragging, handled transform keys first release TransformControls and rebuild orbit controls before applying the shortcut.

@@ -1,6 +1,6 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { initGizmo } from './controls/gizmo';
-import type { InitGizmoResult, OrbitControlsLike } from './controls/gizmo';
+import type { InitGizmoResult } from './controls/gizmo';
 import {
     Group,
     BufferGeometry,
@@ -17,7 +17,6 @@ import {
 import { initAssets } from './asset-manager';
 import { loadedObjectGroup } from './load-project/upload-pbde';
 import { openWithAnimation, closeWithAnimation } from './ui/ui-open-close';
-import './ui/scene-panel';
 
 // 전역 변수로 선언
 let scene: Scene;
@@ -205,9 +204,8 @@ async function initScene(): Promise<void> {
         scene, 
         camera, 
         renderer: renderer as unknown as Renderer, 
-        controls: controls as unknown as OrbitControlsLike, 
-        loadedObjectGroup, 
-        setControls: (c: OrbitControlsLike) => { controls = c as unknown as OrbitControls; } 
+        controls,
+        loadedObjectGroup
     });
 
     // 8. 헬퍼(Helper)

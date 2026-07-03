@@ -1,4 +1,3 @@
-import { currentSelection } from '../controls-old/select-old';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';
 import {
@@ -17,6 +16,12 @@ import {
     isObjectUuidGrouped,
     resolveChildObjectUuid
 } from './scene-panel-model';
+
+const currentSelection: ScenePanelSelectionState = {
+    groups: new Set<string>(),
+    objects: new Map(),
+    primary: null
+};
 
 function getRowKey(row: ScenePanelRow): string {
     return `${row.type}:${row.id}`;
