@@ -27,7 +27,7 @@ Tracks camera-facing `gizmoLines` and `gizmoPlanes` opacity state so transform h
 - `./duplicate` -- duplication logic.
 - `./delete` -- deletion logic.
 - `./drag` -- marquee selection and delta application.
-- `./handle-key` -- keyboard bindings.
+- `../controls/handle-key` -- keyboard bindings for the current controls layer.
 - `./vertex-translate`, `./vertex-rotate`, `./vertex-scale`, `./vertex-queue` -- vertex snap/queue behavior.
 - `./select` -- selection state machine.
 

@@ -33,7 +33,7 @@ import * as CustomPivot from './custom-pivot-old';
 import * as Duplicate from './duplicate-old';
 import * as Delete from './delete-old';
 import { initDrag, applyDeltaToSelection } from './drag-old';
-import { initHandleKey } from './handle-key-old';
+import { initHandleKey } from '../controls/handle-key';
 import type { DragInterface } from './drag-old';
 import { processVertexSnap } from './vertex-translate-old';
 import { processVertexRotate } from './vertex-rotate-old';
