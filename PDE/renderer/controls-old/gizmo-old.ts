@@ -1,5 +1,5 @@
-import { setupGizmo } from './gizmo-setup-old';
-import type { GizmoLines, GizmoMaterial } from './gizmo-setup-old';
+import { createEmptyGizmoPlanes, setupGizmo } from '../controls/gizmo-setup';
+import type { GizmoLines, GizmoMaterial, GizmoPlaneDirection, GizmoPlanes } from '../controls/gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
     InstancedMesh,
@@ -243,7 +243,7 @@ function _pushToVertexQueue(): void {
 
 let pivotMode = 'origin';
 let currentSpace: 'world' | 'local' = 'world';
-let lastDirections: Record<string, string | null> = { X: null, Y: null, Z: null };
+let lastDirections: Record<string, string | null> = { X: null, Y: null, Z: null, XY: null, YZ: null, XZ: null };
 
 const _gizmoAnchorPosition = new Vector3();
 let _gizmoAnchorValid = false;
@@ -374,6 +374,7 @@ let gizmoLines: GizmoLines = {
     Y: { original: [], negative: [] },
     Z: { original: [], negative: [] }
 };
+let gizmoPlanes: GizmoPlanes = createEmptyGizmoPlanes();
 
 const dragInitialMatrix = new Matrix4();
 const dragInitialQuaternion = new Quaternion();
@@ -446,7 +447,7 @@ function resetSelectionAndDeselect(): void {
 
         invalidateSelectionCaches();
         updateSelectionOverlay();
-        lastDirections = { X: null, Y: null, Z: null };
+        lastDirections = { X: null, Y: null, Z: null, XY: null, YZ: null, XZ: null };
         console.log('선택 제거');
     }
 }
@@ -902,6 +903,7 @@ export function initGizmo({
     const setupResult = setupGizmo(camera, renderer as Renderer, scene);
     transformControls = setupResult.transformControls;
     gizmoLines = setupResult.gizmoLines;
+    gizmoPlanes = setupResult.gizmoPlanes;
 
     transformControls.addEventListener('dragging-changed', (event: { value: boolean }) => {
         controls.enabled = !event.value;
@@ -1457,6 +1459,34 @@ export function initGizmo({
                         } else {
                             negativeLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 1; (line.material as GizmoMaterial)._opacity = 1; } });
                             originalLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 0.001; (line.material as GizmoMaterial)._opacity = 0.001; } });
+                        }
+                    }
+                }
+
+                const setMeshOpacity = (mesh: Mesh, opacity: number): void => {
+                    if (!mesh.material) return;
+                    const material = mesh.material as GizmoMaterial;
+                    const effectiveOpacity = opacity > 0.001 ? material._pdeVisibleOpacity ?? opacity : opacity;
+                    material.transparent = true;
+                    material.opacity = effectiveOpacity;
+                    material._opacity = effectiveOpacity;
+                };
+                const getPlaneDirection = (firstPositive: boolean, secondPositive: boolean): GizmoPlaneDirection =>
+                    `${firstPositive ? '+' : '-'}${secondPositive ? '+' : '-'}` as GizmoPlaneDirection;
+                const planeConfig: Record<keyof GizmoPlanes, GizmoPlaneDirection> = {
+                    XY: getPlaneDirection(direction.x > 0, direction.y > 0),
+                    YZ: getPlaneDirection(direction.y > 0, direction.z > 0),
+                    XZ: getPlaneDirection(direction.x > 0, direction.z > 0)
+                };
+
+                for (const planeName in planeConfig) {
+                    const name = planeName as keyof GizmoPlanes;
+                    const currentDirection = planeConfig[name];
+                    if (currentDirection !== lastDirections[name]) {
+                        lastDirections[name] = currentDirection;
+                        for (const directionKey in gizmoPlanes[name].variants) {
+                            const opacity = directionKey === currentDirection ? 1 : 0.001;
+                            gizmoPlanes[name].variants[directionKey as GizmoPlaneDirection].forEach(plane => setMeshOpacity(plane, opacity));
                         }
                     }
                 }

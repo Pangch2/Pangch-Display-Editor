@@ -16,9 +16,10 @@ Main interaction controller for the editor. It wires transform controls, selecti
 
 ## Internal State
 Maintains selection, pivot, drag, vertex queue, and gizmo-anchor caches at module scope.
+Tracks camera-facing `gizmoLines` and `gizmoPlanes` opacity state so transform handles can flip to the side nearest the camera.
 
 ## Dependencies (imports)
-- `./gizmo-setup` -- TransformControls initialization and gizmo line patching.
+- `../controls/gizmo-setup` -- TransformControls initialization plus gizmo line/plane variant patching.
 - `./blockbench-scale` -- Blockbench-style scale mode and pivot-frame helpers.
 - `./group` -- group hierarchy and pivot helpers.
 - `./overlay` -- selection overlays, box math, vertex helpers.
@@ -38,4 +39,6 @@ This is the highest-risk module in the control layer: it owns the event wiring a
 It now listens for `pde:scene-updated` to invalidate selection caches and recompute the helper/overlay after hierarchy edits.
 After pivot-edit commit, object custom pivots derive `pivotOffset` from the pre-custom-pivot origin so follow-up transforms keep using the custom anchor.
 `SelectionCenter`: for multi-selection with a locked anchor (`_multiSelectionOriginAnchorValid`), the function short-circuits and returns `_multiSelectionOriginAnchorPosition` (refreshed from local if possible) instead of delegating to `CustomPivot.SelectionCenter`. This is necessary because `pivotOffset` is zero in the multi-selection case (only single-object/group pivots encode the offset there); without the short-circuit, shear-remove computed an erroneous delta equal to the custom-pivot → centroid offset and shifted all objects.
+Plane handles (`XY`, `YZ`, `XZ`) use the camera-to-gizmo direction in world/local space to select one of four mirrored variants, matching the existing positive/negative axis line behavior.
+Plane visibility toggling preserves each plane material's stored visible opacity instead of forcing active planes fully opaque.
 
