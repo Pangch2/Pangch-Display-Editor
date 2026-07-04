@@ -1,5 +1,5 @@
 import { setupGizmo } from './gizmo-setup';
-import type { GizmoLines, GizmoMaterial } from './gizmo-setup';
+import type { GizmoLines, GizmoMaterial, GizmoPlaneDirection, GizmoPlaneName, GizmoPlanes } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
     InstancedMesh,
@@ -243,7 +243,7 @@ function _pushToVertexQueue(): void {
 
 let pivotMode = 'origin';
 let currentSpace: 'world' | 'local' = 'world';
-let lastDirections: Record<string, string | null> = { X: null, Y: null, Z: null };
+let lastDirections: Record<string, string | null> = { X: null, Y: null, Z: null, XY: null, YZ: null, XZ: null };
 
 const _gizmoAnchorPosition = new Vector3();
 let _gizmoAnchorValid = false;
@@ -374,6 +374,11 @@ let gizmoLines: GizmoLines = {
     Y: { original: [], negative: [] },
     Z: { original: [], negative: [] }
 };
+let gizmoPlanes: GizmoPlanes = {
+    XY: { variants: { '++': [], '+-': [], '-+': [], '--': [] } },
+    YZ: { variants: { '++': [], '+-': [], '-+': [], '--': [] } },
+    XZ: { variants: { '++': [], '+-': [], '-+': [], '--': [] } }
+};
 
 const dragInitialMatrix = new Matrix4();
 const dragInitialQuaternion = new Quaternion();
@@ -446,9 +451,25 @@ function resetSelectionAndDeselect(): void {
 
         invalidateSelectionCaches();
         updateSelectionOverlay();
-        lastDirections = { X: null, Y: null, Z: null };
+        lastDirections = { X: null, Y: null, Z: null, XY: null, YZ: null, XZ: null };
         console.log('선택 제거');
     }
+}
+
+function setGizmoMaterialOpacity(meshes: Mesh[], opacity: number): void {
+    meshes.forEach(mesh => {
+        if (!mesh.material) return;
+        const material = mesh.material as GizmoMaterial;
+        material.transparent = true;
+        material.opacity = opacity;
+        material._opacity = opacity;
+    });
+}
+
+function getPlaneDirection(planeName: GizmoPlaneName, direction: Vector3): GizmoPlaneDirection {
+    if (planeName === 'XY') return `${direction.x > 0 ? '+' : '-'}${direction.y > 0 ? '+' : '-'}` as GizmoPlaneDirection;
+    if (planeName === 'YZ') return `${direction.y > 0 ? '+' : '-'}${direction.z > 0 ? '+' : '-'}` as GizmoPlaneDirection;
+    return `${direction.x > 0 ? '+' : '-'}${direction.z > 0 ? '+' : '-'}` as GizmoPlaneDirection;
 }
 
 function updateHelperPosition(): void {
@@ -902,6 +923,7 @@ export function initGizmo({
     const setupResult = setupGizmo(camera, renderer as Renderer, scene);
     transformControls = setupResult.transformControls;
     gizmoLines = setupResult.gizmoLines;
+    gizmoPlanes = setupResult.gizmoPlanes;
 
     transformControls.addEventListener('dragging-changed', (event: { value: boolean }) => {
         controls.enabled = !event.value;
@@ -1452,14 +1474,27 @@ export function initGizmo({
                     if (currentDirection !== lastDirections[axis]) {
                         lastDirections[axis] = currentDirection;
                         if (isPositive) {
-                            originalLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 1; (line.material as GizmoMaterial)._opacity = 1; } });
-                            negativeLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 0.001; (line.material as GizmoMaterial)._opacity = 0.001; } });
+                            setGizmoMaterialOpacity(originalLines, 1);
+                            setGizmoMaterialOpacity(negativeLines, 0.001);
                         } else {
-                            negativeLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 1; (line.material as GizmoMaterial)._opacity = 1; } });
-                            originalLines.forEach(line => { if (line.material) { (line.material as GizmoMaterial).transparent = true; (line.material as GizmoMaterial).opacity = 0.001; (line.material as GizmoMaterial)._opacity = 0.001; } });
+                            setGizmoMaterialOpacity(negativeLines, 1);
+                            setGizmoMaterialOpacity(originalLines, 0.001);
                         }
                     }
                 }
+
+                (['XY', 'YZ', 'XZ'] as const).forEach(planeName => {
+                    const visibleDirection = getPlaneDirection(planeName, direction);
+                    if (visibleDirection === lastDirections[planeName]) return;
+
+                    lastDirections[planeName] = visibleDirection;
+                    Object.entries(gizmoPlanes[planeName].variants).forEach(([variantDirection, meshes]) => {
+                        const opacity = variantDirection === visibleDirection
+                            ? ((meshes[0]?.material as GizmoMaterial | undefined)?._pdeVisibleOpacity ?? 1)
+                            : 0.001;
+                        setGizmoMaterialOpacity(meshes, opacity);
+                    });
+                });
             }
         },
         resetSelection: resetSelectionAndDeselect,

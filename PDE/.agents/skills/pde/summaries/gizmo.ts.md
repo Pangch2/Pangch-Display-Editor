@@ -15,7 +15,7 @@ Main interaction controller for the editor. It wires transform controls, selecti
 - `initGizmo(params): InitGizmoResult` -- builds the editor interaction stack and installs DOM event listeners.
 
 ## Internal State
-Maintains selection, pivot, drag, vertex queue, and gizmo-anchor caches at module scope.
+Maintains selection, pivot, drag, vertex queue, gizmo-anchor caches, and cached gizmo axis/plane direction visibility at module scope.
 
 ## Dependencies (imports)
 - `./gizmo-setup` -- TransformControls initialization and gizmo line patching.
@@ -38,4 +38,4 @@ This is the highest-risk module in the control layer: it owns the event wiring a
 It now listens for `pde:scene-updated` to invalidate selection caches and recompute the helper/overlay after hierarchy edits.
 After pivot-edit commit, object custom pivots derive `pivotOffset` from the pre-custom-pivot origin so follow-up transforms keep using the custom anchor.
 `SelectionCenter`: for multi-selection with a locked anchor (`_multiSelectionOriginAnchorValid`), the function short-circuits and returns `_multiSelectionOriginAnchorPosition` (refreshed from local if possible) instead of delegating to `CustomPivot.SelectionCenter`. This is necessary because `pivotOffset` is zero in the multi-selection case (only single-object/group pivots encode the offset there); without the short-circuit, shear-remove computed an erroneous delta equal to the custom-pivot → centroid offset and shifted all objects.
-
+`updateGizmo` updates both axis helper line opacity and mirrored XY/YZ/XZ plane variant opacity from the camera direction, using local-space direction when TransformControls is in local space.
