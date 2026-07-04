@@ -1,31 +1,133 @@
 import { openWithAnimation, closeWithAnimation } from '../ui/ui-open-close.js';
 import * as THREE from 'three/webgpu';
 import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, performSelection } from './mesh-builder';
+import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
+type ScenePrecompileTrace = {
+    available: boolean;
+    profileEnabled: boolean;
+    compileMs: number;
+    profileMs: number;
+    fullCompileMs: number;
+    gpuQueueWaitMs: number;
+    objectTraces: ScenePrecompileObjectTrace[];
+};
+type ScenePrecompileObjectTrace = {
+    index: number;
+    name: string;
+    compileMs: number;
+    instanceCount: number;
+    materialCount: number;
+    attributeKey: string;
+    vertexCount: number;
+};
+type RenderSettledFrameTrace = {
+    index: number;
+    frameIntervalMs: number;
+    renderCpuMs: number;
+    gpuQueueWaitMs: number;
+    gpuQueueAvailable: boolean;
+};
+type RenderSettledTrace = {
+    requestedFrames: number;
+    renderedFrames: number;
+    frameWaitMs: number;
+    gpuWaitMs: number;
+    totalMs: number;
+    frameIntervalsMs: number[];
+    frameTraces: RenderSettledFrameTrace[];
+    gpuQueueAvailable: boolean;
+};
 type RenderSettledDetail = {
     frames: number;
-    resolve: () => void;
+    traceFrames: boolean;
+    waitForGpu: boolean;
+    resolve: (trace: RenderSettledTrace) => void;
+};
+type ScenePrecompileDetail = {
+    resolve: (trace: ScenePrecompileTrace) => void;
 };
 
 export { loadedObjectGroup };
 
-function waitForRenderSettled(frames = 3): Promise<void> {
+function waitForScenePrecompiled(): Promise<ScenePrecompileTrace> {
+    return new Promise(resolve => {
+        window.dispatchEvent(new CustomEvent<ScenePrecompileDetail>('pde:precompile-scene', {
+            detail: { resolve }
+        }));
+    });
+}
+
+function waitForRenderSettled(frames = 3, traceFrames = false, waitForGpu = false): Promise<RenderSettledTrace> {
     return new Promise(resolve => {
         window.dispatchEvent(new CustomEvent<RenderSettledDetail>('pde:wait-render-settled', {
-            detail: { frames, resolve }
+            detail: { frames, traceFrames, waitForGpu, resolve }
         }));
     });
 }
 
 async function logFinalPbdeLoadTime(startMs: number, mode: 'open' | 'merge', fileCount: number): Promise<void> {
+    const logFinalLoadTime = isPbdeLogEnabled(pbdeLogNames.finalLoadTime);
+    const logRenderSettleWait = isPbdeLogEnabled(pbdeLogNames.renderSettleWait);
+    const logRenderSettleTrace = isPbdeLogEnabled(pbdeLogNames.renderSettleTrace);
+    const logRenderSettleFrameTrace = isPbdeLogEnabled(pbdeLogNames.renderSettleFrameTrace);
+    if (!logFinalLoadTime && !logRenderSettleWait && !logRenderSettleTrace && !logRenderSettleFrameTrace) return;
+
+    const traceFrames = logRenderSettleTrace || logRenderSettleFrameTrace;
+    const waitForGpu = true;
     const renderSettleStartMs = performance.now();
-    await waitForRenderSettled();
+    const settleTrace = await waitForRenderSettled(1, traceFrames, waitForGpu);
     const renderSettleElapsedMs = performance.now() - renderSettleStartMs;
+    const firstRenderTrace = settleTrace.frameTraces[0];
+    const maxRenderCpuMs = settleTrace.frameTraces.reduce((max, trace) => Math.max(max, trace.renderCpuMs), 0);
+    const maxQueueObservedMs = settleTrace.frameTraces.reduce((max, trace) => Math.max(max, trace.gpuQueueWaitMs), 0);
 
     const elapsedSeconds = (performance.now() - startMs) / 1000;
-    console.log(`[PBDE] Render settle wait: ${renderSettleElapsedMs.toFixed(2)}ms (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}).`);
-    console.log(`[PBDE] Final load time: ${elapsedSeconds.toFixed(2)}s (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}, after materials + scene panel + rendered frames).`);
+    if (logRenderSettleWait) {
+        console.log(`[PBDE] Render settle wait: ${renderSettleElapsedMs.toFixed(2)}ms (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}).`);
+    }
+    if (logRenderSettleTrace) {
+        console.log(
+            `[PBDE][RenderSettleTrace] requestedFrames=${settleTrace.requestedFrames}, renderedFrames=${settleTrace.renderedFrames}, frameWait=${settleTrace.frameWaitMs.toFixed(2)}ms, postLastFrameGpuWait=${settleTrace.gpuWaitMs.toFixed(2)}ms, firstRenderCpu=${(firstRenderTrace?.renderCpuMs ?? 0).toFixed(2)}ms, maxRenderCpu=${maxRenderCpuMs.toFixed(2)}ms, maxQueueObserved=${settleTrace.gpuQueueAvailable ? `${maxQueueObservedMs.toFixed(2)}ms` : 'missing'}, queue=${settleTrace.gpuQueueAvailable ? 'available' : 'missing'}, frameIntervals=${settleTrace.frameIntervalsMs.map(ms => ms.toFixed(2)).join('/') || '-'}.`
+        );
+    }
+    if (logRenderSettleFrameTrace) {
+        console.log(
+            `[PBDE][RenderSettleFrameTrace] ${settleTrace.frameTraces.map(trace => `#${trace.index}: interval=${trace.frameIntervalMs.toFixed(2)}ms, renderCpu=${trace.renderCpuMs.toFixed(2)}ms, queueSinceSubmit=${trace.gpuQueueAvailable ? `${trace.gpuQueueWaitMs.toFixed(2)}ms` : 'missing'}`).join('; ') || '-'}${settleTrace.gpuQueueAvailable ? ' (queueSinceSubmit values can overlap)' : ''}.`
+        );
+    }
+    if (logFinalLoadTime) {
+        console.log(`[PBDE] Final load time: ${elapsedSeconds.toFixed(2)}s (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}, after GPU work settled).`);
+    }
+}
+
+async function precompileLoadedScene(mode: 'open' | 'merge', fileCount: number): Promise<void> {
+    if (localStorage.getItem('pdeAwaitScenePrecompile') !== '1') {
+        if (isPbdeLogEnabled(pbdeLogNames.scenePrecompileSkipped)) {
+            console.log(`[PBDE] Scene precompile skipped: set localStorage.pdeAwaitScenePrecompile='1' to await compileAsync (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}).`);
+        }
+        return;
+    }
+
+    const precompileStartMs = performance.now();
+    const trace = await waitForScenePrecompiled();
+    const elapsedMs = performance.now() - precompileStartMs;
+    const topObjectTraces = [...trace.objectTraces]
+        .sort((a, b) => b.compileMs - a.compileMs)
+        .slice(0, 10);
+    const objectCompileSumMs = trace.objectTraces.reduce((sum, item) => sum + item.compileMs, 0);
+    const topObjectCompileSumMs = topObjectTraces.reduce((sum, item) => sum + item.compileMs, 0);
+    if (isPbdeLogEnabled(pbdeLogNames.scenePrecompile)) {
+        console.log(
+            `[PBDE] Scene precompile: total=${elapsedMs.toFixed(2)}ms, compile=${trace.compileMs.toFixed(2)}ms, profile=${trace.profileMs.toFixed(2)}ms, fullCompile=${trace.fullCompileMs.toFixed(2)}ms, gpuWait=${trace.gpuQueueWaitMs.toFixed(2)}ms, profiled=${trace.profileEnabled ? 'yes' : 'no'}, objectProfiles=${trace.objectTraces.length}, objectSum=${objectCompileSumMs.toFixed(2)}ms, top10Sum=${topObjectCompileSumMs.toFixed(2)}ms, available=${trace.available ? 'yes' : 'no'} (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}).`
+        );
+    }
+    if (trace.profileEnabled && isPbdeLogEnabled(pbdeLogNames.precompileTrace)) {
+        console.log(
+            `[PBDE][PrecompileTrace] ${topObjectTraces.map(item => `#${item.index}: compile=${item.compileMs.toFixed(2)}ms, instances=${item.instanceCount}, materials=${item.materialCount}, vertices=${item.vertexCount}, attrs=${item.attributeKey}, name=${item.name}`).join('; ') || '-'}.`
+        );
+    }
 }
 
 async function loadpbde(files: File | File[]): Promise<void> {
@@ -49,6 +151,7 @@ async function loadpbde(files: File | File[]): Promise<void> {
         console.error("Error loading project files:", e);
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    await precompileLoadedScene('open', fileList.length);
     await logFinalPbdeLoadTime(perceivedLoadStartMs, 'open', fileList.length);
 }
 
@@ -75,6 +178,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
         console.error("Error merging project files:", e);
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    await precompileLoadedScene('merge', fileList.length);
     await logFinalPbdeLoadTime(perceivedLoadStartMs, 'merge', fileList.length);
 }
 

@@ -12,7 +12,8 @@ import {
     PerspectiveCamera,
     WebGPURenderer,
     GridHelper,
-    Renderer
+    Renderer,
+    Object3D
 } from 'three/webgpu';
 import { initAssets } from './asset-manager';
 import { loadedObjectGroup } from './load-project/upload-pbde';
@@ -27,32 +28,248 @@ let controls: OrbitControls;
 let gizmoModule: InitGizmoResult | null = null;
 type GpuQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike } } };
-const renderSettledRequests = new Set<{ framesRemaining: number; resolve: () => void }>();
+type ScenePrecompileTrace = {
+    available: boolean;
+    profileEnabled: boolean;
+    compileMs: number;
+    profileMs: number;
+    fullCompileMs: number;
+    gpuQueueWaitMs: number;
+    objectTraces: ScenePrecompileObjectTrace[];
+};
+type ScenePrecompileObjectTrace = {
+    index: number;
+    name: string;
+    compileMs: number;
+    instanceCount: number;
+    materialCount: number;
+    attributeKey: string;
+    vertexCount: number;
+};
+type RenderSettledFrameTrace = {
+    index: number;
+    frameIntervalMs: number;
+    renderCpuMs: number;
+    gpuQueueWaitMs: number;
+    gpuQueueAvailable: boolean;
+};
+type RenderSettledTrace = {
+    requestedFrames: number;
+    renderedFrames: number;
+    frameWaitMs: number;
+    gpuWaitMs: number;
+    totalMs: number;
+    frameIntervalsMs: number[];
+    frameTraces: RenderSettledFrameTrace[];
+    gpuQueueAvailable: boolean;
+};
+type RenderSettledRequest = {
+    requestedFrames: number;
+    framesRemaining: number;
+    renderedFrames: number;
+    startMs: number;
+    lastFrameEndMs: number;
+    traceFrames: boolean;
+    waitForGpu: boolean;
+    frameTraces: RenderSettledFrameTrace[];
+    queueWaitPromises: Promise<void>[];
+    resolve: (trace: RenderSettledTrace) => void;
+};
+const renderSettledRequests = new Set<RenderSettledRequest>();
+let scenePrecompileInProgress = false;
+
+window.addEventListener('pde:precompile-scene', (event: Event) => {
+    const detail = (event as CustomEvent<{ resolve?: (trace: ScenePrecompileTrace) => void }>).detail;
+    if (!detail || typeof detail.resolve !== 'function') return;
+    precompileScene().then(detail.resolve, () => {
+        detail.resolve({ available: false, profileEnabled: false, compileMs: 0, profileMs: 0, fullCompileMs: 0, gpuQueueWaitMs: 0, objectTraces: [] });
+    });
+});
 
 window.addEventListener('pde:wait-render-settled', (event: Event) => {
-    const detail = (event as CustomEvent<{ frames?: number; resolve?: () => void }>).detail;
+    const detail = (event as CustomEvent<{ frames?: number; traceFrames?: boolean; waitForGpu?: boolean; resolve?: (trace: RenderSettledTrace) => void }>).detail;
     if (!detail || typeof detail.resolve !== 'function') return;
+    const requestedFrames = Math.max(1, detail.frames ?? 3);
 
     renderSettledRequests.add({
-        framesRemaining: Math.max(1, detail.frames ?? 3),
+        requestedFrames,
+        framesRemaining: requestedFrames,
+        renderedFrames: 0,
+        startMs: performance.now(),
+        lastFrameEndMs: performance.now(),
+        traceFrames: detail.traceFrames === true,
+        waitForGpu: detail.waitForGpu === true,
+        frameTraces: [],
+        queueWaitPromises: [],
         resolve: detail.resolve
     });
 });
 
-function resolveRenderSettledRequests(): void {
+async function precompileScene(): Promise<ScenePrecompileTrace> {
+    if (!renderer || !scene || !camera || typeof renderer.compileAsync !== 'function') {
+        return { available: false, profileEnabled: false, compileMs: 0, profileMs: 0, fullCompileMs: 0, gpuQueueWaitMs: 0, objectTraces: [] };
+    }
+
+    const profileEnabled = localStorage.getItem('pdePrecompileProfile') === '1';
+    const compileStartMs = performance.now();
+    scenePrecompileInProgress = true;
+    const objectTraces: ScenePrecompileObjectTrace[] = [];
+    let profileMs = 0;
+    let fullCompileMs = 0;
+    try {
+        if (profileEnabled) {
+            const profileStartMs = performance.now();
+            objectTraces.push(...await profileLoadedObjectPrecompile());
+            profileMs = performance.now() - profileStartMs;
+        }
+
+        const fullCompileStartMs = performance.now();
+        await renderer.compileAsync(scene, camera);
+        fullCompileMs = performance.now() - fullCompileStartMs;
+    } finally {
+        scenePrecompileInProgress = false;
+    }
+    const compileMs = performance.now() - compileStartMs;
+
+    const queue = (renderer as unknown as WebGpuRendererWithBackend).backend?.device?.queue;
+    const queueDone = queue?.onSubmittedWorkDone;
+    if (typeof queueDone !== 'function') {
+        return { available: true, profileEnabled, compileMs, profileMs, fullCompileMs, gpuQueueWaitMs: 0, objectTraces };
+    }
+
+    const queueStartMs = performance.now();
+    try {
+        await queueDone.call(queue);
+    } catch {
+        // Timing aid only; load flow should continue if the backend rejects the wait.
+    }
+
+    return {
+        available: true,
+        profileEnabled,
+        compileMs,
+        profileMs,
+        fullCompileMs,
+        gpuQueueWaitMs: performance.now() - queueStartMs,
+        objectTraces
+    };
+}
+
+async function profileLoadedObjectPrecompile(): Promise<ScenePrecompileObjectTrace[]> {
+    if (!renderer || !scene || !camera || loadedObjectGroup.children.length === 0) return [];
+
+    const sceneVisibility = scene.children.map(child => ({ child, visible: child.visible }));
+    const loadedVisibility = loadedObjectGroup.children.map(child => ({ child, visible: child.visible }));
+    const traces: ScenePrecompileObjectTrace[] = [];
+
+    try {
+        for (const child of scene.children) {
+            child.visible = child === loadedObjectGroup;
+        }
+        for (const child of loadedObjectGroup.children) {
+            child.visible = false;
+        }
+
+        for (let i = 0; i < loadedObjectGroup.children.length; i++) {
+            const child = loadedObjectGroup.children[i];
+            child.visible = true;
+            const startMs = performance.now();
+            await renderer.compileAsync(scene, camera);
+            traces.push(createPrecompileObjectTrace(child, i, performance.now() - startMs));
+            child.visible = false;
+        }
+    } finally {
+        for (const entry of sceneVisibility) {
+            entry.child.visible = entry.visible;
+        }
+        for (const entry of loadedVisibility) {
+            entry.child.visible = entry.visible;
+        }
+    }
+
+    return traces;
+}
+
+function createPrecompileObjectTrace(object: Object3D, index: number, compileMs: number): ScenePrecompileObjectTrace {
+    const meshLike = object as Object3D & {
+        geometry?: { attributes?: Record<string, unknown>; getAttribute?: (name: string) => { count?: number } | undefined };
+        material?: unknown;
+        count?: number;
+    };
+    const attributes = meshLike.geometry?.attributes ?? {};
+    const material = meshLike.material;
+    const materialCount = Array.isArray(material) ? material.length : material ? 1 : 0;
+    const position = meshLike.geometry?.getAttribute?.('position');
+
+    return {
+        index,
+        name: object.name || object.type || 'Object3D',
+        compileMs,
+        instanceCount: typeof meshLike.count === 'number' ? meshLike.count : 0,
+        materialCount,
+        attributeKey: Object.keys(attributes).sort().join('+') || '-',
+        vertexCount: typeof position?.count === 'number' ? position.count : 0
+    };
+}
+
+function resolveRenderSettledRequests(renderStartMs: number, renderEndMs: number): void {
     if (!renderer || renderSettledRequests.size === 0) return;
 
+    const queue = (renderer as unknown as WebGpuRendererWithBackend).backend?.device?.queue;
+    const queueDone = queue?.onSubmittedWorkDone;
+    const hasQueue = typeof queueDone === 'function';
+
     for (const request of [...renderSettledRequests]) {
+        request.renderedFrames++;
+        if (request.traceFrames) {
+            request.frameTraces.push({
+                index: request.renderedFrames,
+                frameIntervalMs: renderEndMs - request.lastFrameEndMs,
+                renderCpuMs: renderEndMs - renderStartMs,
+                gpuQueueWaitMs: 0,
+                gpuQueueAvailable: hasQueue
+            });
+        }
+        request.lastFrameEndMs = renderEndMs;
+
+        if (request.waitForGpu && hasQueue) {
+            const frameTrace = request.frameTraces[request.frameTraces.length - 1];
+            const queueWaitStartMs = performance.now();
+            request.queueWaitPromises.push(
+                queueDone.call(queue).then(
+                    () => {
+                        if (frameTrace) frameTrace.gpuQueueWaitMs = performance.now() - queueWaitStartMs;
+                    },
+                    () => {
+                        if (frameTrace) frameTrace.gpuQueueWaitMs = performance.now() - queueWaitStartMs;
+                    }
+                )
+            );
+        }
+
         request.framesRemaining--;
         if (request.framesRemaining > 0) continue;
 
         renderSettledRequests.delete(request);
-        const queue = (renderer as unknown as WebGpuRendererWithBackend).backend?.device?.queue;
+        const frameWaitMs = renderEndMs - request.startMs;
+        const resolveWithTrace = () => {
+            const totalMs = performance.now() - request.startMs;
+            request.resolve({
+                requestedFrames: request.requestedFrames,
+                renderedFrames: request.renderedFrames,
+                frameWaitMs,
+                gpuWaitMs: totalMs - frameWaitMs,
+                totalMs,
+                frameIntervalsMs: request.frameTraces.map(trace => trace.frameIntervalMs),
+                frameTraces: request.frameTraces,
+                gpuQueueAvailable: request.waitForGpu && hasQueue
+            });
+        };
 
-        if (queue && typeof queue.onSubmittedWorkDone === 'function') {
-            queue.onSubmittedWorkDone().then(request.resolve, request.resolve);
+        if (request.queueWaitPromises.length > 0) {
+            Promise.allSettled(request.queueWaitPromises).then(resolveWithTrace, resolveWithTrace);
         } else {
-            request.resolve();
+            resolveWithTrace();
         }
     }
 }
@@ -254,9 +471,10 @@ function animate(): void {
     
     // Update gizmo: overlay and axis orientation
     if (gizmoModule) gizmoModule.updateGizmo();
-    if (renderer && scene && camera) {
+    if (renderer && scene && camera && !scenePrecompileInProgress) {
+        const renderStartMs = performance.now();
         renderer.render(scene, camera);
-        resolveRenderSettledRequests();
+        resolveRenderSettledRequests(renderStartMs, performance.now());
     }
 }
 

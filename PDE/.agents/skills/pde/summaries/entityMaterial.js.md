@@ -6,13 +6,13 @@ Builds the shared node-based material used for entity-style rendering. It combin
 ## Exports
 
 ### Functions / Methods
-- `createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false)` -- returns `{ material, blockLightLevel, skyLightLevel }` for entity rendering and light-level control.
+- `createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1)` -- returns `{ material, blockLightLevel, skyLightLevel }` for entity rendering and light-level control.
 
 ## Internal State
 - Creates `uniform` nodes for block and sky light so callers can adjust brightness through node values.
 - Caches converted tint `vec3` nodes by normalized hex color to avoid rebuilding constant TSL nodes for repeated materials.
 - Reuses module-level TSL nodes for static directional lighting.
-- Switches UV lookup to `instancedUvTransform` vec4 scale/offset when requested, otherwise to `instancedUvOffset` when `useInstancedUv` is true.
+- Switches UV lookup to `instancedUvTransform` or `instancedUvTransform0..N` vec4 scale/offset attributes when requested, otherwise to `instancedUvOffset` when `useInstancedUv` is true.
 
 ## Dependencies (imports)
 - `three/webgpu` -- `MeshBasicNodeMaterial` base material.
@@ -24,6 +24,6 @@ Builds the shared node-based material used for entity-style rendering. It combin
 
 ## Notes
 - Material is configured with `transparent = true`, `fog = false`, `flatShading = true`, and `alphaTest = 0.1`.
-- `useInstancedUvTransform` expects geometry to provide `instancedUvTransform` as `[scaleU, scaleV, offsetU, offsetV]`.
+- `useInstancedUvTransform` expects geometry to provide `instancedUvTransform` for single-transform meshes, or `geometryPartIndex` plus `instancedUvTransform0..N` for per-part atlas transform meshes.
 - Lighting is intentionally lightweight and non-physical, tuned for game-like entity rendering.
 - Texture sampling and per-material light uniforms remain per material; static tint/light graph parts are shared.

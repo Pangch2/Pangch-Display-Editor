@@ -19,6 +19,7 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 
 ## Dependencies (imports)
 - `../controls/select` -- provides the current selection snapshot for highlight sync.
+- `../load-project/pbde-log` -- gates optional scene-panel timing logs via localStorage flags.
 - `../load-project/upload-pbde` -- source scene data used to build row metadata.
 - `./scene-panel-dnd` -- drag handlers for rendered rows.
 - `./scene-panel-model` -- label cleanup, object visibility, grouping, and child resolution helpers.
@@ -33,4 +34,4 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 ## Notes
 - Root rendering respects `sceneOrder` first, then falls back to groups and object names.
 - Group expand/collapse rebuilds the flat row list and spacer height, not the full scene DOM.
-- Logs `[PBDE] Scene panel timings` for refresh cost and logs slow viewport renders over 8 ms.
+- Optional `Scene panel timings` and slow `Scene panel viewport render` logs are disabled by default and can be enabled through `localStorage` using the human-readable log name.

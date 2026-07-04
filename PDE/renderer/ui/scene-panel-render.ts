@@ -1,4 +1,5 @@
 import { currentSelection } from '../controls/select';
+import { isPbdeLogEnabled } from '../load-project/pbde-log';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';
 import {
@@ -410,7 +411,7 @@ export function renderVisibleSceneRows(): void {
     scheduleSceneExtraFit();
 
     const elapsed = performance.now() - renderStartMs;
-    if (elapsed > 8) {
+    if (elapsed > 8 && isPbdeLogEnabled('Scene panel viewport render')) {
         console.log(`[PBDE] Scene panel viewport render=${elapsed.toFixed(2)}ms, rows=${scenePanelState.renderedRowEls.size}/${rows.length}.`);
     }
 }
@@ -447,7 +448,9 @@ export function refreshScenePanel(): void {
     const domElapsedMs = performance.now() - domStartMs;
     const totalElapsedMs = performance.now() - totalStartMs;
 
-    console.log(
-        `[PBDE] Scene panel timings: rows=${scenePanelState.visibleRows.length}, model=${modelElapsedMs.toFixed(2)}ms, viewport=${domElapsedMs.toFixed(2)}ms, total=${totalElapsedMs.toFixed(2)}ms.`
-    );
+    if (isPbdeLogEnabled('Scene panel timings')) {
+        console.log(
+            `[PBDE] Scene panel timings: rows=${scenePanelState.visibleRows.length}, model=${modelElapsedMs.toFixed(2)}ms, viewport=${domElapsedMs.toFixed(2)}ms, total=${totalElapsedMs.toFixed(2)}ms.`
+        );
+    }
 }

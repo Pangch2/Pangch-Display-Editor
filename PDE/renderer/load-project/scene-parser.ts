@@ -2,6 +2,7 @@ import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
 import { buildTextureAtlasForRenderList } from './texture-atlas-builder';
 import type { TexturePixelData } from './texture-atlas-builder';
+import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GroupData as ParserGroupData } from './pbde-types';
 
 interface ResolvedModel {
@@ -60,6 +61,7 @@ type GeometryBatchBuilder = {
     instances: Array<{
         item: RenderItem;
         atlasUvTransform?: [number, number, number, number];
+        atlasUvTransforms?: [number, number, number, number][];
         transform?: Float32Array | number[];
     }>;
 };
@@ -100,6 +102,8 @@ const blocksUsingDefaultFoliageColors = [
   'vine',
   'mangrove_leaves',
 ];
+
+const MAX_PART_UV_TRANSFORMS = 8;
 
 function getTextureColor(modelResourceLocation: string, textureLayer?: string | number, tintindex?: number) {
   try {
@@ -1951,9 +1955,11 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         sceneOrder.sort((a, b) => a.rootIndex - b.rootIndex);
         const sceneOrderElapsedMs = performance.now() - sceneOrderStartMs;
         const sceneElapsedMs = performance.now() - sceneStartMs;
-        console.log(
-            `[PBDE] Scene timings: prep=${scenePrepElapsedMs.toFixed(2)}ms, traverse=${sceneTraverseElapsedMs.toFixed(2)}ms, order=${sceneOrderElapsedMs.toFixed(2)}ms, total=${sceneElapsedMs.toFixed(2)}ms.`
-        );
+        if (isPbdeLogEnabled(pbdeLogNames.sceneTimings)) {
+            console.log(
+                `[PBDE] Scene timings: prep=${scenePrepElapsedMs.toFixed(2)}ms, traverse=${sceneTraverseElapsedMs.toFixed(2)}ms, order=${sceneOrderElapsedMs.toFixed(2)}ms, total=${sceneElapsedMs.toFixed(2)}ms.`
+            );
+        }
 
         const atlasStartMs = performance.now();
         let atlasInfo = null;
@@ -1995,31 +2001,11 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         };
 
         const matrixKeyCache = new WeakMap<object, string>();
-        const stableJsonCache = new WeakMap<object, string>();
         const matrixKey = (matrix: number[] | Float32Array) => {
             const cached = matrixKeyCache.get(matrix);
             if (cached !== undefined) return cached;
             const key = Array.from(matrix).join(',');
             matrixKeyCache.set(matrix, key);
-            return key;
-        };
-        const stableJson = (value: unknown) => {
-            if (value == null) return '';
-            if (typeof value === 'object') {
-                const cached = stableJsonCache.get(value);
-                if (cached !== undefined) return cached;
-            }
-            
-            let key: string;
-            try {
-                key = JSON.stringify(value, Object.keys(value as any).sort());
-            } catch {
-                key = String(value);
-            }
-
-            if (typeof value === 'object') {
-                stableJsonCache.set(value, key);
-            }
             return key;
         };
         const numberArrayKey = (values: ArrayLike<number>) => {
@@ -2050,9 +2036,14 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             normalizedUvKey(geomData),
             numberArrayKey(geomData.indices)
         ].join(';');
-        const uvTransformKey = (uvTransform?: [number, number, number, number]) => {
-            if (!uvTransform) return '';
-            return uvTransform.map(value => String(Math.round(value * 1000000) / 1000000)).join(',');
+        const geometryShapeKeys = new WeakMap<GeometryData, string>();
+        const cachedGeometryShapeKey = (geomData: GeometryData) => {
+            let key = geometryShapeKeys.get(geomData);
+            if (!key) {
+                key = geometryShapeKey(geomData);
+                geometryShapeKeys.set(geomData, key);
+            }
+            return key;
         };
         const getUniformPartModelMatrix = (parts: GeometryBatchPartSource[]) => {
             if (parts.length === 0) return null;
@@ -2078,7 +2069,6 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         for (const item of geometryItems) {
             if (!item.models) continue;
             const parts: GeometryBatchPartSource[] = [];
-            const itemUvTransformKeys = new Set<string>();
             const keyParts: string[] = [];
 
             for (const model of item.models) {
@@ -2088,27 +2078,26 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
 
                 model.geometries.forEach((geomData, geometryIndex) => {
                     parts.push({ model, geomData, geometryIndex, modelMatrix: matrixArray });
-                    itemUvTransformKeys.add(uvTransformKey(geomData.uvTransform));
                 });
             }
 
             if (parts.length === 0) continue;
 
-            const firstUvTransformKey = itemUvTransformKeys.size === 1 ? [...itemUvTransformKeys][0] : '';
-            const useInstancedAtlasUv = firstUvTransformKey !== '';
+            const uniformPartModelMatrix = getUniformPartModelMatrix(parts);
+            const allPartsHaveAtlasUv = parts.every(part => !!part.geomData.uvTransform);
+            const useInstancedAtlasUv = allPartsHaveAtlasUv
+                && !!uniformPartModelMatrix
+                && parts.length <= MAX_PART_UV_TRANSFORMS;
             const atlasUvTransform = useInstancedAtlasUv ? parts[0].geomData.uvTransform : undefined;
-            const uniformModelMatrix = useInstancedAtlasUv ? getUniformPartModelMatrix(parts) : null;
-
-            if (!useInstancedAtlasUv || !uniformModelMatrix) {
-                keyParts.push(item.type, String(item.displayType ?? ''));
-                keyParts.push(stableJson(item.blockProps));
-            }
-
+            const atlasUvTransforms = useInstancedAtlasUv
+                ? parts.map(part => part.geomData.uvTransform as [number, number, number, number])
+                : undefined;
+            const uniformModelMatrix = useInstancedAtlasUv ? uniformPartModelMatrix : null;
             for (const part of parts) {
                 const { model, geomData, geometryIndex, modelMatrix } = part;
                 if (useInstancedAtlasUv && uniformModelMatrix) {
                     keyParts.push(
-                        geometryShapeKey(geomData),
+                        cachedGeometryShapeKey(geomData),
                         geomData.texPath,
                         String((geomData.tintHex ?? 0xffffff) >>> 0)
                     );
@@ -2119,9 +2108,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                         String(getGeometryRefId(geomData)),
                         matrixKey(modelMatrix),
                         geomData.texPath,
-                        String((geomData.tintHex ?? 0xffffff) >>> 0),
-                        stableJson((model as any).blockProps),
-                        String((model as any).itemDisplayType ?? '')
+                        String((geomData.tintHex ?? 0xffffff) >>> 0)
                     );
                 }
             }
@@ -2143,7 +2130,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             const instanceTransform = useInstancedAtlasUv && uniformModelMatrix
                 ? applyRelativeModelMatrixToTransform(item.transform, uniformModelMatrix, batch.parts[0].modelMatrix)
                 : item.transform;
-            batch.instances.push({ item, atlasUvTransform, transform: instanceTransform });
+            batch.instances.push({ item, atlasUvTransform, atlasUvTransforms, transform: instanceTransform });
         }
 
         const useUint32Indices = totalVertices > 65535;
@@ -2230,12 +2217,13 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
 
             geometryBatchMetadata.push({
                 parts: batchParts,
-                instances: batch.instances.map(({ item, atlasUvTransform, transform }) => ({
+                instances: batch.instances.map(({ item, atlasUvTransform, atlasUvTransforms, transform }) => ({
                     transform: transform ?? item.transform,
                     uuid: item.uuid,
                     groupId: item.groupId ?? null,
                     name: (item as any).name ?? null,
                     atlasUvTransform,
+                    atlasUvTransforms,
                     blockProps: item.blockProps,
                     isItemDisplayModel: item.type === 'itemDisplayModel',
                     itemDisplayType: (item as any).itemDisplayType ?? item.displayType ?? null
@@ -2254,9 +2242,11 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         };
         const packElapsedMs = performance.now() - packStartMs;
         const parseElapsedMs = performance.now() - parseStartMs;
-        console.log(
-            `[PBDE] Parse timings: archive=${archiveElapsedMs.toFixed(2)}ms, scene=${sceneElapsedMs.toFixed(2)}ms, atlas=${atlasElapsedMs.toFixed(2)}ms, pack=${packElapsedMs.toFixed(2)}ms, total=${parseElapsedMs.toFixed(2)}ms.`
-        );
+        if (isPbdeLogEnabled(pbdeLogNames.parseTimings)) {
+            console.log(
+                `[PBDE] Parse timings: archive=${archiveElapsedMs.toFixed(2)}ms, scene=${sceneElapsedMs.toFixed(2)}ms, atlas=${atlasElapsedMs.toFixed(2)}ms, pack=${packElapsedMs.toFixed(2)}ms, total=${parseElapsedMs.toFixed(2)}ms.`
+            );
+        }
 
         return {
             metadata: metadataPayload,

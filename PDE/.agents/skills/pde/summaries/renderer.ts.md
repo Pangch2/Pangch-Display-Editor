@@ -11,6 +11,10 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 ## Internal State
 - Holds the live `scene`, `camera`, `renderer`, `controls`, and optional `gizmoModule` used by the animation loop and resize handler.
 - Tracks FPS with `lastTime`, `frameCount`, and `fpsCounterElement`.
+- Tracks whether a scene precompile is in progress so the normal animation render loop does not race `renderer.compileAsync()`.
+- Captures scene precompile timings split into optional per-root profile time, final full-scene compile time, and optional WebGPU queue wait.
+- Captures per-root scene precompile traces only when `localStorage.pdePrecompileProfile === '1'`, temporarily hiding loaded mesh roots one at a time and timing `renderer.compileAsync()`.
+- Tracks pending `pde:wait-render-settled` requests; per-frame render CPU timing and WebGPU queue completion waits are collected only when the request explicitly enables trace/GPU waiting.
 
 ## Dependencies (imports)
 - `three/examples/jsm/controls/OrbitControls.js` -- orbit camera controls.
@@ -28,3 +32,5 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - Uses `WebGPURenderer`; WebGL is not used.
 - `initScene()` is only called after assets finish initializing.
 - `animate()` renders the scene continuously and updates the gizmo each frame.
+- Handles `pde:precompile-scene` by optionally profiling loaded mesh root compile costs, awaiting full `renderer.compileAsync(scene, camera)`, and optional WebGPU queue completion before resolving split timing details to `upload-pbde.ts`.
+- `pde:wait-render-settled` resolves after the requested number of rendered frames; callers can opt into per-frame trace collection and WebGPU queue waiting for diagnostics.

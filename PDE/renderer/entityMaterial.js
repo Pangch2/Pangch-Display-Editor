@@ -47,14 +47,27 @@ const scaledLight = mul(lightSum, float(0.6));
 const biasedLight = add(scaledLight, float(0.4));
 const directionalLight = pow(min(float(1.0), biasedLight), 2.2);
 
-export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false) {
+export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1) {
   const blockLightLevel = uniform(1.0);
   const skyLightLevel = uniform(1.0);
 
   // Instanced UV 지원
   // useInstancedUvTransform은 atlas 내 texture scale/offset까지 instance별로 적용한다.
   const uvNode = uv();
-  const uvTransformNode = useInstancedUvTransform ? attribute('instancedUvTransform', 'vec4') : null;
+  const uvTransformCount = Math.max(1, instancedUvTransformCount | 0);
+  let uvTransformNode = null;
+  if (useInstancedUvTransform) {
+    if (uvTransformCount === 1) {
+      uvTransformNode = attribute('instancedUvTransform', 'vec4');
+    } else {
+      const geometryPartIndex = attribute('geometryPartIndex', 'float');
+      uvTransformNode = attribute('instancedUvTransform0', 'vec4');
+      for (let i = 1; i < uvTransformCount; i++) {
+        const candidate = attribute(`instancedUvTransform${i}`, 'vec4');
+        uvTransformNode = geometryPartIndex.greaterThan(float(i - 0.5)).select(candidate, uvTransformNode);
+      }
+    }
+  }
   const finalUv = useInstancedUvTransform
     ? uvNode.mul(uvTransformNode.xy).add(uvTransformNode.zw)
     : useInstancedUv

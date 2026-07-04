@@ -48,6 +48,7 @@ export interface GeometryInstanceMeta {
     groupId: string | null;
     name?: string | null;
     atlasUvTransform?: [number, number, number, number];
+    atlasUvTransforms?: [number, number, number, number][];
     blockProps?: unknown;
     isItemDisplayModel?: boolean;
     itemDisplayType?: string | null;

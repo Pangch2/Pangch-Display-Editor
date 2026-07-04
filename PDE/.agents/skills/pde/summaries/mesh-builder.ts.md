@@ -19,7 +19,8 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Shared placeholder material and cached head geometries
 - Concurrency gate for texture decoding to avoid overload
 - Signature hash scratch buffer and per-load geometry/material update caches to reduce mesh creation allocations
-- Per-instance atlas UV transform, display-type, and block-property metadata for same-shape objects that share geometry but use different atlas locations, source display types, or rotation-only properties.
+- Per-load material preload cache resolves unique signature-group materials before `InstancedMesh` creation, with placeholder material updates retained only as a fallback for failed or late material loads.
+- Per-instance atlas UV transform arrays, display-type, and block-property metadata for same-shape objects that share geometry but use different atlas locations, source display types, or rotation-only properties.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
 
@@ -28,6 +29,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `../entityMaterial.js` -- entity/player-head material creation
 - `./scene-parser` -- parses PBDE archive into metadata
 - `./pbde-assets` -- IPC asset decoding helpers and provider
+- `./pbde-log` -- central PBDE log registry plus localStorage flag helpers for load/stat timing logs
 - `./pbde-types` -- geometry, group, and metadata types
 
 ## Used By (known callers)
@@ -37,11 +39,11 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Uses WebGPU-only Three.js path; no WebGL fallback.
 - Clears caches and scene state on non-merge load, then builds block and item display objects as InstancedMesh roots.
 - Mesh building prefers `WorkerMetadata.geometryBatches`; if absent, it groups legacy geometry metadata by `itemId` before signature matching so all parts of one scene object merge into the same InstancedMesh geometry.
-- During InstancedMesh creation, hashed part signatures avoid long model-matrix string joins, merged geometry is cached by geometry layout, and only placeholder material slots are tracked for batched async replacement.
-- When `atlasUvTransform` metadata is present, mesh chunks clone the merged geometry and attach `instancedUvTransform` so one mesh can render same-shape instances with different atlas texture regions.
+- During InstancedMesh creation, hashed part signatures avoid long model-matrix string joins, merged geometry is cached by geometry layout, and materials are normally preloaded before meshes enter the scene to avoid placeholder-to-real material swaps.
+- When `atlasUvTransform` or `atlasUvTransforms` metadata is present, mesh chunks clone the merged geometry and attach one or more instanced UV transform attributes; merged geometry includes `geometryPartIndex` so TSL materials can select the correct per-part atlas transform.
 - Batched object metadata prefers `GeometryInstanceMeta.blockProps` over representative part props so variants grouped into one mesh still display their own properties.
 - Loaded instanced meshes populate `userData.displayTypes` per instance so mixed block/item-display batches still work with `Overlay.getDisplayType`.
 - `GeometryMeta.geometryBufferKey` is used when present so same model id/index values from different packed batches do not collide.
 - Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
-- Logs per-file setup, file read, parse, atlas, signature grouping, mesh build, material wait, player-head timings, plus geometry/root/material stats before the total mesh upload time.
+- Logs are controlled through `pbde-log.ts` registry helpers. `Processing items` defaults to enabled; optional `Load timings`, `Geometry stats`, `Mesh uploaded`, and `Finished processing` logs default to disabled.

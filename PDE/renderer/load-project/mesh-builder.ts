@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { createEntityMaterial } from '../entityMaterial.js';
 import { parsePbdeProject } from './scene-parser';
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
+import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GeometryInstanceBatch, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
@@ -22,6 +23,7 @@ let sharedPlaceholderMaterial: THREE.Material | null = null;
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
 const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
 const MAX_INSTANCES_PER_INSTANCED_MESH = 32768;
+const MAX_PART_UV_TRANSFORMS = 8;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 const signatureHashScratch = new ArrayBuffer(8);
@@ -31,6 +33,7 @@ type InstanceMeta = {
     uuid: string,
     groupId: string | null,
     atlasUvTransform?: [number, number, number, number],
+    atlasUvTransforms?: [number, number, number, number][],
     displayType?: 'block_display' | 'item_display'
 };
 type SignatureGroup = {
@@ -143,6 +146,28 @@ function getRelativeUvTransform(
         current[2] - base[2] * scaleX,
         current[3] - base[3] * scaleY
     ];
+}
+
+function getInstancePartUvTransform(
+    meta: InstanceMeta,
+    partIndex: number
+): [number, number, number, number] | undefined {
+    return meta.atlasUvTransforms?.[partIndex] ?? meta.atlasUvTransform;
+}
+
+function getInstancedUvTransformCount(parts: GeometryMeta[], instanceMetas: InstanceMeta[]): number {
+    const usesAtlasUvTransform = !!parts[0]?.uvTransform
+        && instanceMetas.some(meta => !!meta.atlasUvTransform || !!meta.atlasUvTransforms?.length);
+    if (!usesAtlasUvTransform) return 0;
+
+    return Math.min(
+        MAX_PART_UV_TRANSFORMS,
+        Math.max(1, parts.length, ...instanceMetas.map(meta => meta.atlasUvTransforms?.length ?? 0))
+    );
+}
+
+function getMaterialKey(part: GeometryMeta, instancedUvTransformCount: number): string {
+    return `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}` : 'base'}`;
 }
 
 
@@ -305,10 +330,10 @@ function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
     }
 }
 
-async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, useInstancedUvTransform = false): Promise<THREE.Material> {
+async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, instancedUvTransformCount = 0): Promise<THREE.Material> {
     // undefined는 흰색(0xffffff)으로 정규화하여 캐시 키 불일치를 방지한다.
     const effectiveTint = (tintHex ?? 0xffffff) >>> 0;
-    const key = `${texPath}|${effectiveTint}|${useInstancedUvTransform ? 'uvt' : 'base'}`;
+    const key = `${texPath}|${effectiveTint}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}` : 'base'}`;
     if (blockMaterialCache.has(key) && gen === currentLoadGen) {
         const mat = blockMaterialCache.get(key)!;
         // 아틀라스 텍스처가 변경되었으면 stale 항목을 캐시에서 제거하고 재생성한다.
@@ -323,7 +348,7 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
 
     const p = (async () => {
         const tex = await loadBlockTexture(texPath, gen);
-        const { material } = createEntityMaterial(tex, effectiveTint, false, useInstancedUvTransform);
+        const { material } = createEntityMaterial(tex, effectiveTint, false, instancedUvTransformCount > 0, instancedUvTransformCount);
         material.toneMapped = false;
         material.fog = false;
         material.flatShading = true;
@@ -875,7 +900,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const geometryItemCount = activeGeometryBatches
                     ? activeGeometryBatches.reduce((sum, batch) => sum + batch.instances.length, 0)
                     : geometryMetas.length;
-                console.log(`[Debug] Processing ${geometryItemCount + otherItems.length} items from parser (binary).`);
+                if (isPbdeLogEnabled(pbdeLogNames.processingItems)) {
+                    console.log(`[Debug] Processing ${geometryItemCount + otherItems.length} items from parser (binary).`);
+                }
 
                 // uuid → 표시 이름 맵 구성
                 if (!isMerge) {
@@ -971,6 +998,27 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 ensureSharedPlaceholder();
                 const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
 
+                const ensureInstancedMaterialPromise = (
+                    part: GeometryMeta,
+                    instancedUvTransformCount: number
+                ): Promise<THREE.Material> => {
+                    const matKey = getMaterialKey(part, instancedUvTransformCount);
+                    const cachedMaterial = instancedMaterials.get(matKey);
+                    if (cachedMaterial) return Promise.resolve(cachedMaterial);
+
+                    let promise = materialPromises.get(matKey);
+                    if (!promise) {
+                        promise = getBlockMaterial(part.texPath, part.tintHex, myGen, instancedUvTransformCount).then(material => {
+                            if (myGen === currentLoadGen) {
+                                instancedMaterials.set(matKey, material);
+                            }
+                            return material;
+                        });
+                        materialPromises.set(matKey, promise);
+                    }
+                    return promise;
+                };
+
                 const ensureBufferGeometry = (meta: GeometryMeta): void => {
                     const geomKey = getGeometryBufferKey(meta);
                     let geometry = instancedGeometries.get(geomKey);
@@ -1010,7 +1058,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const signatureStartMs = performance.now();
                 const signatureGroups = new Map<string, SignatureGroup>();
 
-                const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null; atlasUvTransform?: [number, number, number, number]; isItemDisplayModel?: boolean }>) => {
+                const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null; atlasUvTransform?: [number, number, number, number]; atlasUvTransforms?: [number, number, number, number][]; isItemDisplayModel?: boolean }>) => {
                     parts.sort((a, b) => {
                         const geometryCompare = a.geometryId.localeCompare(b.geometryId);
                         if (geometryCompare !== 0) return geometryCompare;
@@ -1035,6 +1083,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             uuid: instance.uuid,
                             groupId: instance.groupId,
                             atlasUvTransform: instance.atlasUvTransform,
+                            atlasUvTransforms: instance.atlasUvTransforms,
                             displayType: isItemDisplayModel ? 'item_display' : 'block_display'
                         });
                     }
@@ -1051,14 +1100,29 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 }
                 const signatureElapsedMs = performance.now() - signatureStartMs;
 
+                const materialAwaitStartMs = performance.now();
+                const materialPreloadPromises: Promise<THREE.Material>[] = [];
+                for (const group of signatureGroups.values()) {
+                    const instancedUvTransformCount = getInstancedUvTransformCount(group.parts, group.instanceMetas);
+                    for (const part of group.parts) {
+                        materialPreloadPromises.push(ensureInstancedMaterialPromise(part, instancedUvTransformCount));
+                    }
+                }
+                const materialPreloadResults = await Promise.allSettled(materialPreloadPromises);
+                const failedMaterialPreloads = materialPreloadResults.filter(result => result.status === 'rejected').length;
+                if (failedMaterialPreloads > 0) {
+                    console.warn(`[PBDE] Material preload failed for ${failedMaterialPreloads} slot${failedMaterialPreloads === 1 ? '' : 's'}; falling back to async material updates.`);
+                }
+                let materialAwaitElapsedMs = performance.now() - materialAwaitStartMs;
+
                 // Create InstancedMesh for each signature group
                 const meshBuildStartMs = performance.now();
                 for (const [signature, group] of signatureGroups) {
                         const representativeParts = group.parts;
                         const transforms = group.transforms;
                         const instanceMetas = group.instanceMetas;
-                        const usesAtlasUvTransform = !!representativeParts[0]?.uvTransform
-                            && instanceMetas.some(meta => !!meta.atlasUvTransform);
+                        const instancedUvTransformCount = getInstancedUvTransformCount(representativeParts, instanceMetas);
+                        const usesAtlasUvTransform = instancedUvTransformCount > 0;
 
                         // Merge Geometries
                         const materials: THREE.Material[] = [];
@@ -1075,6 +1139,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 
                                 // Clone and apply local transform (modelMatrix)
                                 const clonedGeo = baseGeo.clone();
+                                const position = clonedGeo.getAttribute('position') as THREE.BufferAttribute;
+                                const partIndices = new Float32Array(position.count);
+                                partIndices.fill(geometriesToMerge.length);
+                                clonedGeo.setAttribute('geometryPartIndex', new THREE.BufferAttribute(partIndices, 1));
                                 localMatrix.fromArray(part.modelMatrix);
                                 clonedGeo.applyMatrix4(localMatrix);
                                 geometriesToMerge.push(clonedGeo);
@@ -1099,21 +1167,12 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                         for (const part of representativeParts) {
                             // Prepare Material
-                            const matKey = `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}|${usesAtlasUvTransform ? 'uvt' : 'base'}`;
+                            const matKey = getMaterialKey(part, instancedUvTransformCount);
                             let material = instancedMaterials.get(matKey);
                             
                             if (!material) {
-                                // If not loaded, use placeholder and load it
                                 material = placeholderMaterial;
-                                if (!materialPromises.has(matKey)) {
-                                    const p = getBlockMaterial(part.texPath, part.tintHex, myGen, usesAtlasUvTransform).then(m => {
-                                        if (myGen === currentLoadGen) {
-                                            instancedMaterials.set(matKey, m);
-                                        }
-                                        return m;
-                                    });
-                                    materialPromises.set(matKey, p);
-                                }
+                                ensureInstancedMaterialPromise(part, instancedUvTransformCount);
                                 pendingMaterialSlots.push({ index: materials.length, promise: materialPromises.get(matKey)! });
                             }
                             materials.push(material);
@@ -1125,14 +1184,20 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 const chunkCount = Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, transforms.length - chunkStart);
                                 const meshGeometry = usesAtlasUvTransform ? mergedGeo.clone() : mergedGeo;
                                 if (usesAtlasUvTransform) {
-                                    const baseUvTransform = representativeParts[0].uvTransform;
-                                    const uvTransforms = new Float32Array(chunkCount * 4);
-                                    for (let i = 0; i < chunkCount; i++) {
-                                        const sourceIndex = chunkStart + i;
-                                        const relativeUvTransform = getRelativeUvTransform(baseUvTransform, instanceMetas[sourceIndex].atlasUvTransform);
-                                        uvTransforms.set(relativeUvTransform, i * 4);
+                                    for (let partIndex = 0; partIndex < instancedUvTransformCount; partIndex++) {
+                                        const baseUvTransform = representativeParts[partIndex]?.uvTransform ?? representativeParts[0]?.uvTransform;
+                                        const uvTransforms = new Float32Array(chunkCount * 4);
+                                        for (let i = 0; i < chunkCount; i++) {
+                                            const sourceIndex = chunkStart + i;
+                                            const currentUvTransform = getInstancePartUvTransform(instanceMetas[sourceIndex], partIndex);
+                                            const relativeUvTransform = getRelativeUvTransform(baseUvTransform, currentUvTransform);
+                                            uvTransforms.set(relativeUvTransform, i * 4);
+                                        }
+                                        const attributeName = instancedUvTransformCount === 1
+                                            ? 'instancedUvTransform'
+                                            : `instancedUvTransform${partIndex}`;
+                                        meshGeometry.setAttribute(attributeName, new THREE.InstancedBufferAttribute(uvTransforms, 4));
                                     }
-                                    meshGeometry.setAttribute('instancedUvTransform', new THREE.InstancedBufferAttribute(uvTransforms, 4));
                                 }
                                 const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCount);
                                 
@@ -1168,8 +1233,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     }
                 const meshBuildElapsedMs = performance.now() - meshBuildStartMs;
 
-                const materialAwaitStartMs = performance.now();
                 if (materialUpdates.length > 0) {
+                    const materialUpdateStartMs = performance.now();
                     await Promise.all(materialUpdates.map(async update => {
                         try {
                             const loadedMats = await Promise.all(update.pendingMaterialSlots.map(slot => slot.promise));
@@ -1185,8 +1250,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             console.warn(`[Texture] Error loading materials for ${update.signature}:`, e);
                         }
                     }));
+                    materialAwaitElapsedMs += performance.now() - materialUpdateStartMs;
                 }
-                const materialAwaitElapsedMs = performance.now() - materialAwaitStartMs;
 
                 const playerHeadItems: Array<OtherItem> = [];
                 otherItems.forEach((item) => {
@@ -1378,14 +1443,22 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const playerHeadElapsedMs = performance.now() - playerHeadStartMs;
 
                 const meshUploadElapsedMs = performance.now() - meshUploadStartMs;
-                console.log(
-                    `[PBDE] Load timings: setup=${setupElapsedMs.toFixed(2)}ms, file=${fileReadElapsedMs.toFixed(2)}ms, parse=${parseElapsedMs.toFixed(2)}ms, atlas=${atlasElapsedMs.toFixed(2)}ms, signatures=${signatureElapsedMs.toFixed(2)}ms, meshBuild=${meshBuildElapsedMs.toFixed(2)}ms, materials=${materialAwaitElapsedMs.toFixed(2)}ms, playerHeads=${playerHeadElapsedMs.toFixed(2)}ms.`
-                );
-                console.log(
-                    `[PBDE] Geometry stats: geometryItems=${geometryItemCount}, batches=${activeGeometryBatches?.length ?? 0}, signatures=${signatureGroups.size}, sourceGeometries=${instancedGeometries.size}, mergedGeometries=${mergedGeometryCache.size}, materials=${materialPromises.size}, materialUpdates=${materialUpdates.length}, instancedMeshes=${createdInstancedMeshCount}.`
-                );
-                console.log(`[PBDE] Mesh uploaded to scene in ${meshUploadElapsedMs.toFixed(2)} ms (${file.name}, ${newlyAddedSelectableMeshes.size} mesh roots, ${loadedObjectGroup.children.length} scene children).`);
-                console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
+                if (isPbdeLogEnabled(pbdeLogNames.loadTimings)) {
+                    console.log(
+                        `[PBDE] Load timings: setup=${setupElapsedMs.toFixed(2)}ms, file=${fileReadElapsedMs.toFixed(2)}ms, parse=${parseElapsedMs.toFixed(2)}ms, atlas=${atlasElapsedMs.toFixed(2)}ms, signatures=${signatureElapsedMs.toFixed(2)}ms, meshBuild=${meshBuildElapsedMs.toFixed(2)}ms, materials=${materialAwaitElapsedMs.toFixed(2)}ms, playerHeads=${playerHeadElapsedMs.toFixed(2)}ms.`
+                    );
+                }
+                if (isPbdeLogEnabled(pbdeLogNames.geometryStats)) {
+                    console.log(
+                        `[PBDE] Geometry stats: geometryItems=${geometryItemCount}, batches=${activeGeometryBatches?.length ?? 0}, signatures=${signatureGroups.size}, sourceGeometries=${instancedGeometries.size}, mergedGeometries=${mergedGeometryCache.size}, materials=${materialPromises.size}, materialUpdates=${materialUpdates.length}, instancedMeshes=${createdInstancedMeshCount}.`
+                    );
+                }
+                if (isPbdeLogEnabled(pbdeLogNames.meshUploaded)) {
+                    console.log(`[PBDE] Mesh uploaded to scene in ${meshUploadElapsedMs.toFixed(2)} ms (${file.name}, ${newlyAddedSelectableMeshes.size} mesh roots, ${loadedObjectGroup.children.length} scene children).`);
+                }
+                if (isPbdeLogEnabled(pbdeLogNames.finishedProcessing)) {
+                    console.log(`[Debug] Finished processing. Total objects in group: ${loadedObjectGroup.children.length}`);
+                }
                 return newlyAddedSelectableMeshes;
 
 }
