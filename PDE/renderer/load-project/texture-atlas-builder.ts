@@ -35,7 +35,15 @@ type LoadedTexture = {
     pixels: TexturePixelData;
 };
 
-const MAX_ATLAS_TEXTURE_LOAD_CONCURRENCY = 32;
+type PackedTextureInfo = { x: number; y: number; w: number; h: number };
+
+type CachedAtlasBuild = TextureAtlasInfo & {
+    packed: Map<string, PackedTextureInfo>;
+    textureTypes: Map<string, number>;
+};
+
+const MAX_ATLAS_TEXTURE_LOAD_CONCURRENCY = 256;
+const atlasBuildCache = new Map<string, CachedAtlasBuild>();
 
 function getTransparencyType(pixels: TexturePixelData): number {
     const data = pixels.data;
@@ -70,7 +78,7 @@ function collectTexturePaths(renderList: RenderItemLike[]): string[] {
             }
         }
     }
-    return [...texturePaths];
+    return [...texturePaths].sort();
 }
 
 async function loadTexturesWithLimit(
@@ -107,6 +115,13 @@ export async function buildTextureAtlasForRenderList(
     const texturePaths = collectTexturePaths(renderList);
     if (texturePaths.length === 0) return null;
 
+    const atlasCacheKey = texturePaths.join('|');
+    const cachedAtlas = atlasBuildCache.get(atlasCacheKey);
+    if (cachedAtlas) {
+        applyAtlasUvTransforms(renderList, cachedAtlas.packed, cachedAtlas.textureTypes, cachedAtlas.width, cachedAtlas.height);
+        return cachedAtlas;
+    }
+
     const { loadedTextures, textureTypes } = await loadTexturesWithLimit(texturePaths, loadTexturePixels);
     if (loadedTextures.length === 0) return null;
 
@@ -117,7 +132,7 @@ export async function buildTextureAtlasForRenderList(
     const maxW = Math.max(...loadedTextures.map(texture => texture.pixels.w));
     if (atlasW < maxW) atlasW = Math.pow(2, Math.ceil(Math.log2(maxW)));
 
-    const packed = new Map<string, { x: number; y: number; w: number; h: number }>();
+    const packed = new Map<string, PackedTextureInfo>();
     let x = 0;
     let y = 0;
     let rowH = 0;
@@ -150,6 +165,27 @@ export async function buildTextureAtlasForRenderList(
         }
     }
 
+    applyAtlasUvTransforms(renderList, packed, textureTypes, atlasW, atlasH);
+
+    const atlasInfo: CachedAtlasBuild = {
+        width: atlasW,
+        height: atlasH,
+        data: atlasData,
+        packed,
+        textureTypes
+    };
+    atlasBuildCache.set(atlasCacheKey, atlasInfo);
+
+    return atlasInfo;
+}
+
+function applyAtlasUvTransforms(
+    renderList: RenderItemLike[],
+    packed: Map<string, PackedTextureInfo>,
+    textureTypes: Map<string, number>,
+    atlasW: number,
+    atlasH: number
+): void {
     for (const item of renderList) {
         if (!isGeometryRenderItem(item) || !item.models) continue;
         for (const model of item.models) {
@@ -175,10 +211,4 @@ export async function buildTextureAtlasForRenderList(
             model.itemDisplayType = item.itemDisplayType || item.displayType;
         }
     }
-
-    return {
-        width: atlasW,
-        height: atlasH,
-        data: atlasData
-    };
 }
