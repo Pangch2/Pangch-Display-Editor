@@ -3,7 +3,6 @@ import type { GizmoLines, GizmoMaterial, GizmoPlaneDirection, GizmoPlaneName, Gi
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
     InstancedMesh,
-    BatchedMesh,
     Mesh,
     Vector3,
     Scene,
@@ -50,7 +49,7 @@ import {
 
 // Interfaces 
 
-type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
+type PdeMesh = InstancedMesh | Mesh;
 
 export interface OrbitControlsLike {
     enabled: boolean;
@@ -505,7 +504,7 @@ function updateHelperPosition(): void {
             const { mesh, instanceId } = prim;
             if (mesh) {
                 let custom: Vector3 | null = null;
-                if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+                if ((mesh as InstancedMesh).isInstancedMesh) {
                     if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
                         custom = mesh.userData.customPivots.get(instanceId);
                     }

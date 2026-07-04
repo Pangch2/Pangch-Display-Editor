@@ -7,8 +7,7 @@ import {
     Object3D,
     InstancedMesh,
     Quaternion,
-    Mesh,
-    BatchedMesh
+    Mesh
 } from 'three/webgpu';
 import * as Select from './select';
 import type { SelectionCallbacks } from './select';
@@ -173,11 +172,11 @@ export function initDrag({
         getControls().enabled = marqueePrevControlsEnabled;
     };
 
-    function _replaceSelectionWithObjectsMap(meshToIds: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
+    function _replaceSelectionWithObjectsMap(meshToIds: Map<Mesh | InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
         Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
     }
 
-    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
+    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<Mesh | InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
         Select.replaceSelectionWithGroupsAndObjects(groupIds!, meshToIds, getSelectionCallbacks(), options);
     }
 
@@ -261,26 +260,26 @@ export function initDrag({
                 const maxY = bottom - canvasRect.top;
 
                 const groupIds = ignoreGroups ? null : new Set<string>();
-                const meshToIds = new Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>();
+                const meshToIds = new Map<Mesh | InstancedMesh, Set<number>>();
                 const tmpMat = _TMP_MAT4_A;
 
                 const objectToGroup = ignoreGroups ? null : getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
                 loadedObjectGroup.traverse((obj: Object3D) => {
-                    if (!obj || (!(obj as InstancedMesh).isInstancedMesh && !(obj as BatchedMesh).isBatchedMesh)) return;
+                    if (!obj || !(obj as InstancedMesh).isInstancedMesh) return;
                     if (obj.visible === false) return;
 
-                    const instanceCount = getInstanceCount(obj as InstancedMesh | BatchedMesh);
+                    const instanceCount = getInstanceCount(obj as InstancedMesh);
                     if (instanceCount <= 0) return;
 
                     for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                        if (!isInstanceValid(obj as InstancedMesh | BatchedMesh, instanceId)) continue;
+                        if (!isInstanceValid(obj as InstancedMesh, instanceId)) continue;
 
-                        const bbox = getInstanceLocalBox(obj as InstancedMesh | BatchedMesh, instanceId);
+                        const bbox = getInstanceLocalBox(obj as InstancedMesh, instanceId);
                         if (!bbox) continue;
 
-                        getInstanceWorldMatrixForOrigin(obj as InstancedMesh | BatchedMesh, instanceId, tmpMat);
-                        const localYOffset = isItemDisplayHatEnabled(obj as InstancedMesh | BatchedMesh, instanceId) ? 0.03125 : 0;
+                        getInstanceWorldMatrixForOrigin(obj as InstancedMesh, instanceId, tmpMat);
+                        const localYOffset = isItemDisplayHatEnabled(obj as InstancedMesh, instanceId) ? 0.03125 : 0;
 
                         // 투영된 바운딩 박스 계산을 위한 코너 좌표
                         _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y + localYOffset, bbox.min.z);
@@ -317,7 +316,7 @@ export function initDrag({
                         if (minSx > maxX || maxSx < minX || minSy > maxY || maxSy < minY) continue;
 
                         if (!ignoreGroups && objectToGroup) {
-                            const key = getGroupKey(obj as InstancedMesh | BatchedMesh, instanceId);
+                            const key = getGroupKey(obj as InstancedMesh, instanceId);
                             const immediateGroupId = objectToGroup.get(key);
                             if (immediateGroupId) {
                                 const chain = getGroupChain(loadedObjectGroup, immediateGroupId) as string[];
@@ -327,10 +326,10 @@ export function initDrag({
                             }
                         }
 
-                        let set = meshToIds.get(obj as InstancedMesh | BatchedMesh);
+                        let set = meshToIds.get(obj as InstancedMesh);
                         if (!set) {
                             set = new Set<number>();
-                            meshToIds.set(obj as InstancedMesh | BatchedMesh, set);
+                            meshToIds.set(obj as InstancedMesh, set);
                         }
                         set.add(instanceId);
                     }

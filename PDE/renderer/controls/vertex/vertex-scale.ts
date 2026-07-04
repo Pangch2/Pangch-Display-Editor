@@ -2,7 +2,6 @@ import {
     Matrix4,
     Vector3,
     InstancedMesh,
-    BatchedMesh,
     Mesh,
     Object3D,
     Group,
@@ -20,10 +19,10 @@ const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();
 const _TMP_INSTANCE_MATRIX = new Matrix4();
 
-type MeshType = InstancedMesh | BatchedMesh | Mesh;
+type MeshType = InstancedMesh | Mesh;
 
 interface SelectedItem {
-    mesh: InstancedMesh | BatchedMesh;
+    mesh: InstancedMesh;
     instanceId: number;
 }
 
@@ -148,7 +147,7 @@ export function processVertexScale(
 
     if (src.type === 'object') {
         const { mesh, instanceId } = src;
-        if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+        if ((mesh as InstancedMesh).isInstancedMesh) {
             (mesh as InstancedMesh).getMatrixAt(instanceId, objectWorldMatrix);
         } else {
             objectWorldMatrix.copy(mesh.matrix);
@@ -172,14 +171,14 @@ export function processVertexScale(
 
         if (src.type === 'object') {
             try {
-                const items = isSrcEffectiveSelected ? getSelectedItems() : [{ mesh: src.mesh as InstancedMesh | BatchedMesh, instanceId: src.instanceId }];
+                const items = isSrcEffectiveSelected ? getSelectedItems() : [{ mesh: src.mesh as InstancedMesh, instanceId: src.instanceId }];
                 const state = getGizmoState();
                 removeShearFromSelection(
                     items, selectionHelper, currentSelection, loadedObjectGroup,
                     state.pivotMode, state.isCustomPivot, state.pivotOffset,
                     { SelectionCenter, updateHelperPosition, updateSelectionOverlay }
                 );
-                if ((src.mesh as BatchedMesh).isBatchedMesh || (src.mesh as InstancedMesh).isInstancedMesh) {
+                if ((src.mesh as InstancedMesh).isInstancedMesh) {
                     (src.mesh as InstancedMesh).getMatrixAt(src.instanceId, objectWorldMatrix);
                 } else {
                     objectWorldMatrix.copy(src.mesh.matrix);
@@ -308,7 +307,7 @@ export function processVertexScale(
             if (Math.abs(_TMP_INSTANCE_MATRIX.determinant()) > 1e-12) {
                 (mesh as InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
 
-                if (!(mesh as InstancedMesh).isInstancedMesh && !(mesh as BatchedMesh).isBatchedMesh) {
+                if (!(mesh as InstancedMesh).isInstancedMesh) {
                     mesh.matrixAutoUpdate = false;
                     _TMP_INSTANCE_MATRIX.decompose(mesh.position, mesh.quaternion, mesh.scale);
                 }

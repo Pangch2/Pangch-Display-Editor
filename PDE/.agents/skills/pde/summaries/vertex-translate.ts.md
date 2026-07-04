@@ -1,7 +1,7 @@
 # vertex-translate.ts
 
 ## Purpose
-Handles vertex-mode translation snapping. It can snap a gizmo or object pivot to another vertex, move the affected selection, and then hand off selection/queue swapping.
+Handles vertex-mode translation snapping. It can snap a gizmo or object pivot to another vertex, move the affected selection, and then hand off selection and queue swapping.
 
 ## Exports
 
@@ -20,4 +20,4 @@ Handles vertex-mode translation snapping. It can snap a gizmo or object pivot to
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Supports three snap cases: snapped gizmo pivot, moving a selected source to a target, and bundle-aware queue swaps. It preserves multi-selection state when appropriate.
+Supports snap-to-gizmo, move-target, and queue-swap cases. The object path now assumes InstancedMesh objects only.

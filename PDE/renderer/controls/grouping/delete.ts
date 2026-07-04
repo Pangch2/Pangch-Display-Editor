@@ -1,5 +1,4 @@
 import {
-    BatchedMesh,
     Matrix4,
     Group,
     Mesh,
@@ -9,16 +8,6 @@ import {
 import * as GroupUtils from './group';
 import type { GroupData, GroupChild } from './group';
 
-/**
- * Three.js BatchedMesh의 확장 인터페이스 (userData 및 메서드 포함)
- */
-interface ExtendedBatchedMesh extends BatchedMesh {
-    isBatchedMesh: boolean;
-    userData: { [key: string]: unknown };
-    deleteInstance?(instanceId: number): void;
-    setVisibleAt?(instanceId: number, visible: boolean): void;
-}
-
 interface SceneOrderEntry {
     type: 'group' | 'object';
     id: string;
@@ -26,7 +15,7 @@ interface SceneOrderEntry {
 
 interface DeleteUserData {
     instanceKeyToObjectUuid?: Map<string, string>;
-    objectUuidToInstance?: Map<string, { mesh: Mesh | InstancedMesh | BatchedMesh; instanceId: number }>;
+    objectUuidToInstance?: Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }>;
     objectNames?: Map<string, string>;
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
@@ -56,38 +45,6 @@ function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, inst
 
     if (Array.isArray(ud.sceneOrder)) {
         ud.sceneOrder = ud.sceneOrder.filter(entry => !(entry.type === 'object' && entry.id === objectUuid));
-    }
-}
-
-/**
- * BatchedMesh 인스턴스 삭제 및 관련 데이터 정리
- */
-function _deleteBatchedMeshInstances(mesh: ExtendedBatchedMesh, instanceIds: number[]): void {
-    if (!mesh || !mesh.isBatchedMesh) return;
-
-    for (const instanceId of instanceIds) {
-        // 1. 실제 인스턴스 삭제 또는 숨김
-        if (typeof mesh.deleteInstance === 'function') {
-            mesh.deleteInstance(instanceId);
-        } else if (typeof mesh.setVisibleAt === 'function') {
-            mesh.setVisibleAt(instanceId, false);
-        }
-
-        // 2. UserData 내의 Map/Array 정리
-        if (mesh.userData) {
-            if (Array.isArray(mesh.userData.instanceGeometryIds)) {
-                mesh.userData.instanceGeometryIds[instanceId] = undefined;
-            }
-            if (mesh.userData.localMatrices instanceof Map) {
-                mesh.userData.localMatrices.delete(instanceId);
-            }
-            if (mesh.userData.displayTypes instanceof Map) {
-                mesh.userData.displayTypes.delete(instanceId);
-            }
-            if (mesh.userData.customPivots instanceof Map) {
-                mesh.userData.customPivots.delete(instanceId);
-            }
-        }
     }
 }
 
@@ -245,12 +202,9 @@ export function deleteSelectedItems(
     resetSelectionAndDeselect();
 
     // 5. 실제 메쉬 인스턴스 제거 실행
-    // BatchedMesh: 직접 삭제 또는 도시 표본방식(setVisibleAt) 사용
     // InstancedMesh: lastIdx를 삭제 지에 복사하는 Swap-Pop 방식 — 이동된 ID는 _updateGroupReferenceForMovedInstance로 갱신
     for (const [mesh, idSet] of byMesh) {
-        if ((mesh as BatchedMesh).isBatchedMesh) {
-            _deleteBatchedMeshInstances(mesh as ExtendedBatchedMesh, Array.from(idSet));
-        } else if ((mesh as InstancedMesh).isInstancedMesh) {
+        if ((mesh as InstancedMesh).isInstancedMesh) {
             const sortedIds = Array.from(idSet).sort((a, b) => b - a);
             _deleteInstancedMeshInstances(loadedObjectGroup, mesh as InstancedMesh, sortedIds);
         }

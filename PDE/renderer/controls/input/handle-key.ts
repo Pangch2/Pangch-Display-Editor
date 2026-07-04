@@ -1,6 +1,5 @@
 import {
     InstancedMesh,
-    BatchedMesh,
     Mesh,
     Vector3,
     Matrix4,
@@ -22,7 +21,7 @@ import type { QueueItem } from '../vertex/vertex-swap';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
-type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
+type PdeMesh = InstancedMesh | Mesh;
 
 interface OrbitControlsLike {
     enabled: boolean;
@@ -366,7 +365,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             if (p.loadedObjectGroup) {
                 const objectToGroup = p.getObjectToGroup();
                 p.loadedObjectGroup.traverse((obj: Object3D) => {
-                    if (!obj || (!(obj as InstancedMesh).isInstancedMesh && !(obj as BatchedMesh).isBatchedMesh)) return;
+                    if (!obj || !(obj as InstancedMesh).isInstancedMesh) return;
                     if (obj.visible === false) return;
 
                     const instanceCount = p.getInstanceCount(obj as PdeMesh);

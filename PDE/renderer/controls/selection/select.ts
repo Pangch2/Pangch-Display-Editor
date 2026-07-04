@@ -1,6 +1,5 @@
 import {
     Mesh,
-    BatchedMesh,
     InstancedMesh,
     Group,
     Vector3,
@@ -14,11 +13,11 @@ import * as Overlay from './overlay';
 
 export type PrimarySelection = 
     | { type: 'group'; id: string }
-    | { type: 'object'; mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number };
+    | { type: 'object'; mesh: Mesh | InstancedMesh; instanceId: number };
 
 export interface SelectionState {
     groups: Set<string>;
-    objects: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>;
+    objects: Map<Mesh | InstancedMesh, Set<number>>;
     primary: PrimarySelection | null;
 }
 
@@ -39,7 +38,7 @@ export interface SelectionCallbacks {
 
 export interface SelectedItem {
     type: 'object';
-    mesh: Mesh | BatchedMesh | InstancedMesh;
+    mesh: Mesh | InstancedMesh;
     instanceId: number;
 }
 
@@ -47,7 +46,7 @@ export interface SelectedItem {
 
 export const currentSelection: SelectionState = {
     groups: new Set<string>(),
-    objects: new Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>(),
+    objects: new Map<Mesh | InstancedMesh, Set<number>>(),
     primary: null
 };
 
@@ -149,20 +148,20 @@ export function calculateAvgOrigin(): Vector3 {
 export function pickInstanceByOverlayBox(
     raycaster: Raycaster, 
     rootGroup: Group
-): { mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number } | null {
+): { mesh: Mesh | InstancedMesh; instanceId: number } | null {
     const rayWorld = raycaster.ray.clone();
-    const best: { mesh: Mesh | BatchedMesh | InstancedMesh | null; instanceId: number | undefined; distance: number } = { 
+    const best: { mesh: Mesh | InstancedMesh | null; instanceId: number | undefined; distance: number } = { 
         mesh: null, 
         instanceId: undefined, 
         distance: Infinity 
     };
 
     rootGroup.traverse((obj) => {
-        if (!obj || (!('isInstancedMesh' in obj) && !('isBatchedMesh' in obj))) return;
+        if (!obj || !('isInstancedMesh' in obj)) return;
         if (obj.visible === false) return;
         if (!raycaster.layers.test(obj.layers)) return;
 
-        const mesh = obj as InstancedMesh | BatchedMesh;
+        const mesh = obj as InstancedMesh;
         const instanceCount = Overlay.getInstanceCount(mesh);
 
         if (instanceCount <= 0) return;
@@ -201,14 +200,14 @@ export function getSingleSelectedGroupId(): string | null {
     return Array.from(currentSelection.groups)[0] || null;
 }
 
-export function getSingleSelectedMeshEntry(): { mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number } | null {
+export function getSingleSelectedMeshEntry(): { mesh: Mesh | InstancedMesh; instanceId: number } | null {
     if (currentSelection.groups && currentSelection.groups.size > 0) return null;
     if (!currentSelection.objects || currentSelection.objects.size !== 1) return null;
     
     const entry = currentSelection.objects.entries().next().value;
     if (!entry) return null;
     
-    const [mesh, ids] = entry as [Mesh | BatchedMesh | InstancedMesh, Set<number>];
+    const [mesh, ids] = entry as [Mesh | InstancedMesh, Set<number>];
     return (mesh && ids && ids.size === 1) ? { mesh, instanceId: Array.from(ids)[0] as number } : null;
 }
 
@@ -271,7 +270,7 @@ export function setPrimaryToFirstAvailable(): void {
 }
 
 export function replaceSelectionWithObjectsMap(
-    meshToIds: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>, 
+    meshToIds: Map<Mesh | InstancedMesh, Set<number>>, 
     callbacks: SelectionCallbacks, 
     { anchorMode = 'default' } = {}
 ): void {
@@ -294,7 +293,7 @@ export function replaceSelectionWithObjectsMap(
 
 export function replaceSelectionWithGroupsAndObjects(
     groupIds: Set<string>, 
-    meshToIds: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>, 
+    meshToIds: Map<Mesh | InstancedMesh, Set<number>>, 
     callbacks: SelectionCallbacks, 
     {
         anchorMode = 'default',
@@ -318,7 +317,7 @@ export function replaceSelectionWithGroupsAndObjects(
     beginSelectionReplace(callbacks, { anchorMode, detachTransform: true, preserveAnchors });
 
     let firstGroupId: string | null = null;
-    let firstObjectMesh: Mesh | BatchedMesh | InstancedMesh | null = null;
+    let firstObjectMesh: Mesh | InstancedMesh | null = null;
     let firstObjectInstanceId: number | null = null;
 
     if (hasGroups) {
@@ -364,15 +363,15 @@ export function replaceSelectionWithGroupsAndObjects(
     if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
 }
 
-export function selectAllObjectsVisibleInScene(loadedObjectGroup: Group): Map<Mesh | BatchedMesh | InstancedMesh, Set<number>> {
-    const meshToIds = new Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>();
+export function selectAllObjectsVisibleInScene(loadedObjectGroup: Group): Map<Mesh | InstancedMesh, Set<number>> {
+    const meshToIds = new Map<Mesh | InstancedMesh, Set<number>>();
     if (!loadedObjectGroup) return meshToIds;
 
     loadedObjectGroup.traverse((obj) => {
-        if (!obj || (!('isInstancedMesh' in obj) && !('isBatchedMesh' in obj))) return;
+        if (!obj || !('isInstancedMesh' in obj)) return;
         if (obj.visible === false) return;
 
-        const mesh = obj as InstancedMesh | BatchedMesh;
+        const mesh = obj as InstancedMesh;
         const instanceCount = Overlay.getInstanceCount(mesh);
         if (instanceCount <= 0) return;
 
@@ -447,7 +446,7 @@ export function handleSelectionClick(
 
     const bypassGroupSelection = !!(event.ctrlKey || event.metaKey);
 
-    let target: { type: 'object'; mesh: Mesh | BatchedMesh | InstancedMesh; ids: number[] } | { type: 'group'; id: string } = { 
+    let target: { type: 'object'; mesh: Mesh | InstancedMesh; ids: number[] } | { type: 'group'; id: string } = { 
         type: 'object', mesh: object, ids: idsToSelect 
     };
     let groupToDeselect: string | null = null;

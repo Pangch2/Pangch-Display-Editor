@@ -1,6 +1,5 @@
 import {
     Mesh,
-    BatchedMesh,
     InstancedMesh,
     Box3,
     Vector3,
@@ -18,7 +17,7 @@ import * as Overlay from '../selection/overlay';
 export interface SelectionElement {
     type: 'group' | 'object';
     id?: string;
-    mesh?: Mesh | BatchedMesh | InstancedMesh;
+    mesh?: Mesh | InstancedMesh;
     instanceId?: number;
 }
 
@@ -28,7 +27,7 @@ export interface SelectionElement {
 export interface CurrentSelection {
     primary?: SelectionElement;
     groups?: Set<string>;
-    objects?: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>;
+    objects?: Map<Mesh | InstancedMesh, Set<number>>;
 }
 
 /**
@@ -36,7 +35,7 @@ export interface CurrentSelection {
  */
 export interface CustomPivotCallbacks {
     getSingleSelectedGroupId: () => string | null;
-    getSingleSelectedMeshEntry: () => { mesh: Mesh | BatchedMesh | InstancedMesh, instanceId: number } | null;
+    getSingleSelectedMeshEntry: () => { mesh: Mesh | InstancedMesh, instanceId: number } | null;
     getSelectedItems: () => SelectionElement[];
     getSelectionBoundingBox: () => Box3 | null;
     calculateAvgOrigin: () => Vector3;
@@ -94,7 +93,6 @@ export function capturePivotUndoForCurrentSelection(currentSelection: CurrentSel
             });
 
             const isInstancedLike = !!(
-                (mesh as BatchedMesh).isBatchedMesh ||
                 (mesh as InstancedMesh).isInstancedMesh
             );
             if (isInstancedLike) {
@@ -202,7 +200,6 @@ export function recomputePivotStateForSelection(
     let customPivot: Vector3 | null = null;
     const userData = mesh.userData;
     if ((
-        (mesh as BatchedMesh).isBatchedMesh ||
         (mesh as InstancedMesh).isInstancedMesh
     ) && userData['customPivots']) {
         if ((userData['customPivots'] as Map<number, Vector3>).has(instanceId)) {
@@ -357,8 +354,8 @@ export interface CommitPivotEditParams {
     isMultiPivotEdit: boolean;
     singleGroupId: string | null;
     currentSelection: {
-        primary?: { type: string; id?: string; mesh?: Mesh | BatchedMesh | InstancedMesh; instanceId?: number } | null;
-        objects?: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>;
+        primary?: { type: string; id?: string; mesh?: Mesh | InstancedMesh; instanceId?: number } | null;
+        objects?: Map<Mesh | InstancedMesh, Set<number>>;
     };
     loadedObjectGroup: Group;
 }
@@ -407,7 +404,7 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
                 const invWorldMatrix = worldMatrix.clone().invert();
                 const localPivot = pivotWorldPos.clone().applyMatrix4(invWorldMatrix);
 
-                if (mesh.isBatchedMesh || mesh.isInstancedMesh) {
+                if (mesh.isInstancedMesh) {
                     if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
                     for (const id of ids) {
                         mesh.userData.customPivots.set(id, localPivot.clone());

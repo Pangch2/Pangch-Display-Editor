@@ -1,6 +1,5 @@
 import {
     InstancedMesh,
-    BatchedMesh,
     Vector3,
     Object3D,
     Group,
@@ -9,13 +8,13 @@ import {
 import * as GroupUtils from '../grouping/group';
 
 export interface ShearItem {
-    mesh: InstancedMesh | BatchedMesh;
+    mesh: InstancedMesh;
     instanceId: number;
 }
 
 export interface ShearSelection {
     groups?: Set<string>;
-    objects?: Map<InstancedMesh | BatchedMesh, Set<number>>;
+    objects?: Map<InstancedMesh, Set<number>>;
     primary?: {
         type: 'group' | 'object';
     } | null;
@@ -176,7 +175,7 @@ export function removeShearFromSelection(
             ) {
                 for (const [mesh, ids] of currentSelection.objects) {
                     if (!mesh || !ids || ids.size === 0) continue;
-                    if (!(mesh as BatchedMesh).isBatchedMesh && !(mesh as InstancedMesh).isInstancedMesh) continue;
+                    if (!(mesh as InstancedMesh).isInstancedMesh) continue;
 
                     const worldMatrix = new Matrix4();
                     const invWorldMatrix = new Matrix4();

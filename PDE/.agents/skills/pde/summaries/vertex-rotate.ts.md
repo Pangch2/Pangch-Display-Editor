@@ -1,7 +1,7 @@
 # vertex-rotate.ts
 
 ## Purpose
-Handles vertex-mode rotate snapping. It derives a rotation around a selected pivot corner and then swaps selection/queue state so the editor keeps the expected active item.
+Handles vertex-mode rotate snapping. It derives a rotation around a selected pivot corner and then swaps selection and queue state so the editor keeps the expected active item.
 
 ## Exports
 
@@ -18,4 +18,4 @@ Handles vertex-mode rotate snapping. It derives a rotation around a selected piv
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Requires exactly two selected vertex keys. It has separate logic for object and group sources, and preserves multi-selection behavior when snapping from a queued bundle.
+Requires exactly two selected vertex keys. Object sources are limited to InstancedMesh instances.

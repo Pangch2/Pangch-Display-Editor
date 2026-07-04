@@ -1,6 +1,5 @@
 import {
     InstancedMesh,
-    BatchedMesh,
     Mesh,
     Matrix4,
     Vector3,
@@ -11,7 +10,7 @@ import * as Overlay from '../selection/overlay';
 import type { SelectionState } from '../selection/select';
 import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 
-type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
+type PdeMesh = InstancedMesh | Mesh;
 
 // ─── Shared temporaries ──────────────────────────────────────────────────────
 

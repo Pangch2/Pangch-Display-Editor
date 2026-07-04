@@ -1,6 +1,5 @@
 import {
     Mesh,
-    BatchedMesh,
     InstancedMesh,
     Vector3,
     Quaternion,
@@ -12,7 +11,7 @@ import {
 // Types
 export interface GroupChildObject {
     type: 'object';
-    mesh: Mesh | BatchedMesh | InstancedMesh;
+    mesh: Mesh | InstancedMesh;
     instanceId: number;
     id?: string;
 }
@@ -44,14 +43,14 @@ export interface SceneOrderEntry {
 }
 
 export interface CloneJobEntry {
-    mesh: Mesh | BatchedMesh | InstancedMesh;
+    mesh: Mesh | InstancedMesh;
     instanceId: number;
     targetGroupId: string;
     coveredByGroup: boolean;
 }
 
 export interface CollectCloneContext {
-    planBatchCallback?: (mesh: Mesh | BatchedMesh | InstancedMesh, instanceId: number, targetGroupId: string) => void;
+    planBatchCallback?: (mesh: Mesh | InstancedMesh, instanceId: number, targetGroupId: string) => void;
     _groupIdMap?: Map<string, string>;
 }
 
@@ -186,7 +185,7 @@ function _findObjectLocationForCreate(
     const groups = getGroups(loadedObjectGroup);
     const ud = loadedObjectGroup.userData;
     const objectKey = ud?.objectUuidToInstance?.get(objectUuid)
-        ? getGroupKey(ud.objectUuidToInstance.get(objectUuid)!.mesh as Mesh | BatchedMesh | InstancedMesh, ud.objectUuidToInstance.get(objectUuid)!.instanceId)
+        ? getGroupKey(ud.objectUuidToInstance.get(objectUuid)!.mesh as Mesh | InstancedMesh, ud.objectUuidToInstance.get(objectUuid)!.instanceId)
         : null;
     const mappedParentId = objectKey ? (ud?.objectToGroup?.get(objectKey) ?? null) : null;
 
@@ -293,7 +292,7 @@ export function getObjectToGroup(loadedObjectGroup: Group): Map<string, string> 
     return loadedObjectGroup.userData.objectToGroup;
 }
 
-export function getGroupKey(mesh: Mesh | BatchedMesh | InstancedMesh, instanceId: number): string {
+export function getGroupKey(mesh: Mesh | InstancedMesh, instanceId: number): string {
     return `${mesh.uuid}_${instanceId}`;
 }
 
@@ -377,7 +376,7 @@ export function getGroupWorldMatrix(group: GroupData | null | undefined, out: Ma
 // Structure Modification
 export function updateGroupReferenceForMovedInstance(
     loadedObjectGroup: Group,
-    mesh: Mesh | BatchedMesh | InstancedMesh,
+    mesh: Mesh | InstancedMesh,
     oldInstanceId: number,
     newInstanceId: number
 ): void {
@@ -385,7 +384,7 @@ export function updateGroupReferenceForMovedInstance(
     const groups = getGroups(loadedObjectGroup);
     const keyToUuid = loadedObjectGroup?.userData?.instanceKeyToObjectUuid as Map<string, string> | undefined;
     const uuidToInstance = loadedObjectGroup?.userData?.objectUuidToInstance as
-        | Map<string, { mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number }>
+        | Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }>
         | undefined;
 
     const oldKey = getGroupKey(mesh, oldInstanceId);
@@ -425,7 +424,7 @@ export function updateGroupReferenceForMovedInstance(
 export function createGroupStructure(
     loadedObjectGroup: Group,
     selectedGroupIds: string[],
-    selectedObjects: { mesh: Mesh | BatchedMesh | InstancedMesh; instanceId: number }[],
+    selectedObjects: { mesh: Mesh | InstancedMesh; instanceId: number }[],
     initialPosition: Vector3,
     primaryId?: string | null
 ): string {

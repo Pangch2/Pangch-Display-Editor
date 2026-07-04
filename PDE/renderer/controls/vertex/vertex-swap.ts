@@ -2,7 +2,6 @@ import {
     Matrix4,
     Vector3,
     InstancedMesh,
-    BatchedMesh,
     Mesh,
     Quaternion,
     Object3D,
@@ -17,12 +16,12 @@ const _ZERO_VEC3 = new Vector3(0, 0, 0);
 
 export type SelectionSource = 
     | { type: 'group'; id: string }
-    | { type: 'object'; mesh: InstancedMesh | BatchedMesh | Mesh; instanceId: number };
+    | { type: 'object'; mesh: InstancedMesh | Mesh; instanceId: number };
 
 export interface QueueEntry {
     type: 'group' | 'object';
     id?: string;
-    mesh?: InstancedMesh | BatchedMesh | Mesh;
+    mesh?: InstancedMesh | Mesh;
     instanceId?: number;
     gizmoLocalPosition: Vector3;
     gizmoLocalQuaternion: Quaternion;
@@ -95,7 +94,7 @@ export function performSelectionSwap(
         if (!a || !b || a.type !== b.type) return false;
         if (a.type === 'group') return (a as { type: 'group'; id?: string }).id === (b.type === 'group' ? b.id : undefined);
         return a.type === 'object' && b.type === 'object'
-            && (a as { type: 'object'; mesh?: InstancedMesh | BatchedMesh | Mesh }).mesh === b.mesh
+            && (a as { type: 'object'; mesh?: InstancedMesh | Mesh }).mesh === b.mesh
             && (a as { type: 'object'; instanceId?: number }).instanceId === b.instanceId;
     };
 
@@ -165,7 +164,7 @@ export function performSelectionSwap(
                 }
                 if (local) {
                     const m = _TMP_MAT4_A;
-                    if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+                    if ((mesh as InstancedMesh).isInstancedMesh) {
                         (mesh as InstancedMesh).getMatrixAt(id, m);
                     } else {
                         m.copy(mesh.matrix);
@@ -176,7 +175,7 @@ export function performSelectionSwap(
                 return null;
             };
 
-            if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+            if ((mesh as InstancedMesh).isInstancedMesh) {
                 pivotWorld = getWorldPivot(instanceId);
             } else if (mesh.userData.customPivot) {
                 pivotWorld = mesh.userData.customPivot.clone().applyMatrix4(mesh.matrixWorld);
@@ -206,7 +205,7 @@ export function performSelectionSwap(
         }
 
         const { mesh, instanceId } = source;
-        if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+        if ((mesh as InstancedMesh).isInstancedMesh) {
             (mesh as InstancedMesh).getMatrixAt(instanceId, target);
         } else {
             target.copy(mesh.matrix);
@@ -289,7 +288,7 @@ export function performSelectionSwap(
         if (!hasCustomPivot && state.pivotMode !== 'center') {
             if (source.type === 'object') {
                 const { mesh, instanceId } = source;
-                if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+                if ((mesh as InstancedMesh).isInstancedMesh) {
                     let pivot: Vector3 | null = null;
                     if (mesh.userData.customPivots) {
                         pivot = mesh.userData.customPivots.get(instanceId);
@@ -466,7 +465,7 @@ export function performSelectionSwap(
             }
             if (currentSelection.objects) {
                 for (const [mesh, ids] of currentSelection.objects) {
-                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as InstancedMesh | BatchedMesh | Mesh, instanceId: id });
+                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as InstancedMesh | Mesh, instanceId: id });
                 }
             }
             const currentSelectionAnchorWorld = getCurrentSelectionAnchorWorld(itemsToQueue.length);
@@ -575,7 +574,7 @@ export function performSelectionSwap(
             const itemsToQueue: SelectionSource[] = [];
             for (const gid of currentSelection.groups) itemsToQueue.push({ type: 'group', id: gid });
             for (const [mesh, ids] of currentSelection.objects) {
-                for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as InstancedMesh | BatchedMesh | Mesh, instanceId: id });
+                for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as InstancedMesh | Mesh, instanceId: id });
             }
             const currentSelectionAnchorWorld = getCurrentSelectionAnchorWorld(itemsToQueue.length);
             const currentStateSnapshot = deriveEffectivePivotSnapshot(getGizmoState(), itemsToQueue.length);

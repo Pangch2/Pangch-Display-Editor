@@ -1,5 +1,4 @@
 import {
-    BatchedMesh,
     Group,
     InstancedMesh,
     Mesh,
@@ -13,7 +12,7 @@ import * as Select from '../selection/select';
 import type { SelectionState, SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 
-type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
+type PdeMesh = InstancedMesh | Mesh;
 
 export interface GizmoCommandCallbacks {
     getSelectedItems(): SelectedItem[];

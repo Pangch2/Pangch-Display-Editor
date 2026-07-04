@@ -2,7 +2,6 @@ import {
     Matrix4,
     Vector3,
     InstancedMesh,
-    BatchedMesh,
     Mesh,
     Object3D,
     Group,
@@ -20,7 +19,7 @@ const _TMP_MAT4_B = new Matrix4();
 const _TMP_INSTANCE_MATRIX = new Matrix4();
 const _ZERO_VEC3 = new Vector3(0, 0, 0);
 
-type MeshType = InstancedMesh | BatchedMesh | Mesh;
+type MeshType = InstancedMesh | Mesh;
 
 interface VertexTranslateContext {
     isVertexMode: boolean;
@@ -150,7 +149,7 @@ export function processVertexSnap(
                 const { mesh, instanceId } = src;
                 const instanceMatrix = _TMP_MAT4_A;
 
-                if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+                if ((mesh as InstancedMesh).isInstancedMesh) {
                     (mesh as InstancedMesh).getMatrixAt(instanceId, instanceMatrix);
                 } else {
                     instanceMatrix.copy(mesh.matrix);
@@ -159,7 +158,7 @@ export function processVertexSnap(
                 const inv = worldMatrix.clone().invert();
                 const localPivot = targetPos.clone().applyMatrix4(inv);
 
-                if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+                if ((mesh as InstancedMesh).isInstancedMesh) {
                     if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
                     mesh.userData.customPivots.set(instanceId, localPivot);
                 } else {
@@ -265,7 +264,7 @@ export function processVertexSnap(
                             const inv = worldMatrix.clone().invert();
                             const localPivot = targetPos.clone().applyMatrix4(inv);
 
-                            if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+                            if ((mesh as InstancedMesh).isInstancedMesh) {
                                 if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
                                 mesh.userData.customPivots.set(id, localPivot);
                             } else {

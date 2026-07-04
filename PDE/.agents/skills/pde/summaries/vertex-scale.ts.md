@@ -19,4 +19,4 @@ Handles vertex-mode scale snapping. It computes a scale transform from two selec
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Has distinct behavior for Ctrl-modified scaling versus plain scaling. It preserves selection state for multi-selection snaps and queued bundles.
+Ctrl-modified scaling still removes shear first. The selection and queue logic now target InstancedMesh objects only.

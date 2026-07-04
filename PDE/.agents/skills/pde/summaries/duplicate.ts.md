@@ -1,7 +1,7 @@
 # duplicate.ts
 
 ## Purpose
-Duplicates selected groups and objects, preserving group hierarchy, custom metadata, instance transforms, scene ordering, and special handling for player-head meshes and batched geometry.
+Duplicates selected groups and object instances, preserving group hierarchy, custom metadata, instance transforms, and scene ordering. Object duplication now uses InstancedMesh or Mesh clones instead of batched writable pools.
 
 ## Exports
 
@@ -9,8 +9,8 @@ Duplicates selected groups and objects, preserving group hierarchy, custom metad
 - `DuplicationSelection` -- the cloned groups and object instances to select after duplication.
 
 ### Functions / Methods
-- `flushPendingHeadClones(loadedObjectGroup, ctx)` -- resolves deferred player-head clones into writable pooled meshes.
-- `duplicateGroupsAndObjects(loadedObjectGroup, groupIds, objectEntries): DuplicationSelection` -- clones selected groups and/or objects into new writable batches.
+- `flushPendingHeadClones(loadedObjectGroup, ctx)` -- resolves deferred player-head clones into pooled InstancedMesh meshes.
+- `duplicateGroupsAndObjects(loadedObjectGroup, groupIds, objectEntries): DuplicationSelection` -- clones selected groups and/or object instances.
 
 ## Internal State
 Maintains a module-level queue for pending player-head clones.
@@ -25,4 +25,4 @@ Maintains a module-level queue for pending player-head clones.
 - `renderer/controls/gizmo/gizmo-commands.ts`
 
 ## Notes
-Uses writable batch pooling to keep draw calls low. Clone metadata mirrors the source object when possible, including names, display type, block props, and scene order. Root-level object duplicates are inserted next to the source row when the original location can be resolved; clones being written into a newly duplicated group still append in source traversal order.
+The old BatchedMesh writable-pool path is removed. Standard InstancedMesh clones and the player-head bulk path remain.

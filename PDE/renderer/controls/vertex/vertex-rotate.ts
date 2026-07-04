@@ -3,7 +3,6 @@ import {
     Vector3,
     Quaternion,
     InstancedMesh,
-    BatchedMesh,
     Mesh,
     Object3D,
     Group,
@@ -23,7 +22,7 @@ const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
 const _TMP_QUAT = new Quaternion();
 
-type MeshType = InstancedMesh | BatchedMesh | Mesh;
+type MeshType = InstancedMesh | Mesh;
 
 interface VertexRotateContext {
     isVertexMode: boolean;
@@ -117,7 +116,7 @@ export function processVertexRotate(
         // 1. Resolve effective World Matrix and Local Bounding Box (similar to vertex-scale)
         if (src.type === 'object') {
             const { mesh, instanceId } = src;
-            if ((mesh as BatchedMesh).isBatchedMesh || (mesh as InstancedMesh).isInstancedMesh) {
+            if ((mesh as InstancedMesh).isInstancedMesh) {
                 (mesh as InstancedMesh).getMatrixAt(instanceId, objectWorldMatrix);
             } else {
                 objectWorldMatrix.copy(mesh.matrix);

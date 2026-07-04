@@ -1,6 +1,5 @@
 import {
     Mesh,
-    BatchedMesh,
     InstancedMesh,
     Vector3
 } from 'three/webgpu';
@@ -9,14 +8,14 @@ import type { GroupData } from '../grouping/group';
 interface SelectionElement {
     type: 'group' | 'object';
     id?: string;
-    mesh?: Mesh | BatchedMesh | InstancedMesh;
+    mesh?: Mesh | InstancedMesh;
     instanceId?: number;
 }
 
 interface CurrentSelection {
     primary?: SelectionElement;
     groups?: Set<string>;
-    objects?: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>;
+    objects?: Map<Mesh | InstancedMesh, Set<number>>;
 }
 
 interface PivotFlags {
@@ -86,7 +85,7 @@ export function resetCustomPivot(
             if (currentSelection.objects && currentSelection.objects.size > 0) {
                 for (const [mesh, ids] of currentSelection.objects) {
                     if (!mesh) continue;
-                    if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData['customPivots']) {
+                    if (mesh.isInstancedMesh && mesh.userData['customPivots']) {
                         for (const id of ids) (mesh.userData['customPivots'] as Map<number, Vector3>).delete(id);
                     }
                     delete mesh.userData['customPivot'];
@@ -117,7 +116,7 @@ export function resetCustomPivot(
         if (currentSelection.objects && currentSelection.objects.size > 0) {
             for (const [mesh, ids] of currentSelection.objects) {
                 if (!mesh) continue;
-                if ((mesh.isBatchedMesh || mesh.isInstancedMesh) && mesh.userData['customPivots']) {
+                if (mesh.isInstancedMesh && mesh.userData['customPivots']) {
                     for (const id of ids) (mesh.userData['customPivots'] as Map<number, Vector3>).delete(id);
                 }
                 delete mesh.userData['customPivot'];

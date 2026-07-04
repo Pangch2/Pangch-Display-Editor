@@ -1,12 +1,12 @@
 # vertex-swap.ts
 
 ## Purpose
-Owns the queue-aware selection swap logic used by vertex snapping. It translates between selection items, queued bundles, and gizmo anchor/pivot state so swaps keep the right item active.
+Owns the queue-aware selection swap logic used by vertex snapping. It translates between selection items, queued bundles, and gizmo anchor and pivot state so swaps keep the right item active.
 
 ## Exports
 
 ### Types / Interfaces
-- `SelectionSource` -- group or object instance used as a swap target/source.
+- `SelectionSource` -- group or object instance used as a swap target or source.
 - `QueueEntry` -- single queued item with local gizmo pivot data.
 - `QueueBundle` -- bundled queue entry containing multiple items.
 - `QueueItem` -- union of queue entry and bundle.
@@ -14,10 +14,10 @@ Owns the queue-aware selection swap logic used by vertex snapping. It translates
 - `SwapOptions` -- flags for preserving selection and specifying an anchor world position.
 
 ### Functions / Methods
-- `performSelectionSwap(src, targetSrc, context, options?): void` -- swaps selection/queue membership and updates pivot/anchor state.
+- `performSelectionSwap(src, targetSrc, context, options?): void` -- swaps selection and queue membership and updates pivot and anchor state.
 
 ## Internal State
-Uses a shared temporary matrix and zero vector for source/world conversions.
+Uses a shared temporary matrix and zero vector for source and world conversions.
 
 ## Dependencies (imports)
 - `three/webgpu` -- matrix, vector, quaternion, mesh, and group types.
@@ -31,4 +31,4 @@ Uses a shared temporary matrix and zero vector for source/world conversions.
 - `renderer/controls/vertex/vertex-scale.ts`
 
 ## Notes
-This module is the bridge between geometric snap actions and persistent selection state. It also keeps the vertex queue in sync with selection transitions.
+This module is the bridge between geometric snap actions and persistent selection state. It now handles InstancedMesh-only object sources in controls.

@@ -6,7 +6,7 @@ Removes shear from selected instance transforms, preserving scale and keeping gi
 ## Exports
 
 ### Types / Interfaces
-- `ShearItem` -- target mesh/instance pair.
+- `ShearItem` -- target mesh and instance pair.
 - `ShearSelection` -- minimal selection shape needed for group clearing and custom-pivot reseat handling.
 - `ShearCallbacks` -- callbacks needed to recompute selection center and redraw the UI.
 
@@ -22,4 +22,4 @@ Removes shear from selected instance transforms, preserving scale and keeping gi
 - `renderer/controls/vertex/vertex-scale.ts`
 
 ## Notes
-Uses Gram-Schmidt orthogonalization to eliminate shear in one pass. For group selections it clears cached group matrices first so center recalculation stays consistent. Translation correction (keep gizmo at `targetPosition`) is skipped in Center mode — in that mode the gizmo is the bbox center, which shifts when the basis is orthogonalized; compensating would snap the object origin to the old (sheared) bbox center. In Origin mode the offset is ~0 so the object stays put. Custom pivot rewrite (single-object) is also gated behind the `pivotMode !== 'center'` guard.
+Uses Gram-Schmidt orthogonalization to eliminate shear in one pass. The selection logic assumes InstancedMesh object instances only.

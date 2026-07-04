@@ -1,6 +1,5 @@
 import {
     InstancedMesh,
-    BatchedMesh,
     Mesh,
     Vector3,
     Quaternion,
@@ -32,11 +31,11 @@ import type { GroupChildObject } from '../grouping/group';
 
 // --- Types & Interfaces ---
 
-type PdeMesh = InstancedMesh | BatchedMesh | Mesh;
+type PdeMesh = InstancedMesh | Mesh;
 
 export interface SelectionState {
     groups: Set<string>;
-    objects: Map<Mesh | BatchedMesh | InstancedMesh, Set<number>>;
+    objects: Map<Mesh | InstancedMesh, Set<number>>;
 }
 
 export type QueueItemType = 'group' | 'object' | 'bundle';
@@ -44,7 +43,7 @@ export type QueueItemType = 'group' | 'object' | 'bundle';
 export interface QueueItem {
     type: QueueItemType;
     id?: string;
-    mesh?: Mesh | BatchedMesh | InstancedMesh;
+    mesh?: Mesh | InstancedMesh;
     instanceId?: number;
     items?: QueueItem[];
     gizmoLocalPosition?: Vector3;
@@ -56,7 +55,7 @@ export interface QueueItem {
 interface OverlayItemSource {
     type: 'group' | 'object';
     id?: string;
-    mesh?: Mesh | BatchedMesh | InstancedMesh;
+    mesh?: Mesh | InstancedMesh;
     instanceId?: number;
     cachedLocalCenter?: Vector3;
     cachedLocalSize?: Vector3;
@@ -183,24 +182,14 @@ export function createEdgesGeometryFromBox3(box: Box3): EdgesGeometry | null {
 
 // --- Helper Functions ---
 
-export function getInstanceCount(mesh: Mesh | InstancedMesh | BatchedMesh): number {
+export function getInstanceCount(mesh: Mesh | InstancedMesh): number {
     if (!mesh) return 0;
     if ((mesh as InstancedMesh).isInstancedMesh) return (mesh as InstancedMesh).count ?? 0;
-    if ((mesh as BatchedMesh).isBatchedMesh) {
-        const geomIds = (mesh as BatchedMesh).userData?.instanceGeometryIds;
-        return Array.isArray(geomIds) ? geomIds.length : 0;
-    }
     return 0;
 }
 
-export function isInstanceValid(mesh: Mesh | InstancedMesh | BatchedMesh, instanceId: number): boolean {
+export function isInstanceValid(mesh: Mesh | InstancedMesh, instanceId: number): boolean {
     if (!mesh) return false;
-    if ((mesh as BatchedMesh).isBatchedMesh) {
-        if (mesh.userData?.instanceGeometryIds) {
-            return mesh.userData.instanceGeometryIds[instanceId] !== undefined;
-        }
-        return true;
-    }
     if ((mesh as InstancedMesh).isInstancedMesh) {
         return instanceId < ((mesh as InstancedMesh).count ?? 0);
     }
@@ -300,16 +289,6 @@ export function unionTransformedBox3(targetBox: Box3, localBox: Box3, matrix: Ma
 
 export function getInstanceLocalBox(mesh: PdeMesh, instanceId: number): Box3 | null {
     if (!mesh) return null;
-
-    if (mesh.isBatchedMesh) {
-        const geomIds = mesh.userData?.instanceGeometryIds;
-        const bounds = mesh.userData?.geometryBounds;
-        if (!geomIds || !bounds) return null;
-        const geomId = geomIds[instanceId];
-        if (geomId === undefined || geomId === null) return null;
-        const box = bounds.get(geomId);
-        return box ? box.clone() : null;
-    }
 
     if (!mesh.geometry) return null;
     if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();

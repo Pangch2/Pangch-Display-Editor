@@ -1,7 +1,7 @@
 import {
-    BatchedMesh,
     InstancedMesh,
     BufferGeometry,
+    BufferAttribute,
     Matrix4,
     Color,
     Object3D,
@@ -18,30 +18,14 @@ import { createEntityMaterial } from '../../entityMaterial.js';
 
 const getDisplayType = Overlay.getDisplayType;
 
-const _WRITABLE_BATCH_SIZE = 512;
-const _WRITABLE_BATCH_MAX_VERTS = _WRITABLE_BATCH_SIZE * 512;
-const _WRITABLE_BATCH_MAX_INDICES = _WRITABLE_BATCH_SIZE * 768;
-
-interface BatchPlan {
-    instanceCount: number;
-    maxVerts: number;
-    maxIndices: number;
-    geometries: Set<BufferGeometry>;
-}
-
 interface DuplicationContext {
-    batchPool: Map<string, BatchedMesh>; // key -> BatchedMesh
-    batchWorldInv: WeakMap<BatchedMesh, Matrix4>; // BatchedMesh -> Matrix4
-    batchGeometryToId: WeakMap<BatchedMesh, Map<BufferGeometry, number>>; // BatchedMesh -> Map<BufferGeometry, number>
-    batchPlans: Map<string, BatchPlan>; // key -> plan
-    fullBatches: WeakSet<BatchedMesh>; // BatchedMesh that hit max during this duplication pass
     headPool: Map<string, InstancedMesh>; // key -> InstancedMesh (player_head)
     tmpSourceWorld: Matrix4;
     tmpTargetLocal: Matrix4;
     tmpInv: Matrix4;
     tmpColor: Color;
     _groupIdMap?: Map<string, string>;
-    planBatchCallback?: (mesh: Mesh | InstancedMesh | BatchedMesh, instanceId: number, targetGroupId: string | null) => void;
+    planBatchCallback?: (mesh: Mesh | InstancedMesh, instanceId: number, targetGroupId: string | null) => void;
 }
 
 interface PendingHeadClone {
@@ -52,7 +36,7 @@ interface PendingHeadClone {
 }
 
 interface CloneResult {
-    mesh?: BatchedMesh | InstancedMesh;
+    mesh?: InstancedMesh | Mesh;
     instanceId?: number;
     objectUuid?: string;
     isPending?: boolean;
@@ -83,7 +67,7 @@ interface SourceObjectLocation {
 
 export interface DuplicationSelection {
     groups: Set<string>;
-    objects: Map<BatchedMesh | InstancedMesh, Set<number>>;
+    objects: Map<InstancedMesh | Mesh, Set<number>>;
 }
 
 let _pendingHeadClones: PendingHeadClone[] = [];
@@ -135,9 +119,9 @@ function _ensureDuplicateUserDataStores(loadedObjectGroup: Group): Required<Pick
 
 function _registerClonedObjectMetadata(
     loadedObjectGroup: Group,
-    sourceMesh: BatchedMesh | InstancedMesh,
+    sourceMesh: Mesh | InstancedMesh,
     sourceInstanceId: number,
-    targetMesh: BatchedMesh | InstancedMesh,
+    targetMesh: Mesh | InstancedMesh,
     targetInstanceId: number
 ): string {
     const stores = _ensureDuplicateUserDataStores(loadedObjectGroup);
@@ -174,7 +158,7 @@ function _registerClonedObjectMetadata(
 
 function _findSourceObjectLocation(
     loadedObjectGroup: Group,
-    sourceMesh: BatchedMesh | InstancedMesh,
+    sourceMesh: Mesh | InstancedMesh,
     sourceInstanceId: number
 ): SourceObjectLocation | null {
     const stores = _ensureDuplicateUserDataStores(loadedObjectGroup);
@@ -217,10 +201,10 @@ function _findSourceObjectLocation(
 
 function _insertClonedObjectEntry(
     loadedObjectGroup: Group,
-    sourceMesh: BatchedMesh | InstancedMesh,
+    sourceMesh: Mesh | InstancedMesh,
     sourceInstanceId: number,
     targetGroupId: string | null,
-    targetMesh: BatchedMesh | InstancedMesh,
+    targetMesh: Mesh | InstancedMesh,
     targetInstanceId: number,
     newObjectUuid: string,
     coveredByGroup: boolean
@@ -266,11 +250,6 @@ function _insertClonedObjectEntry(
 
 function createDuplicationContext(): DuplicationContext {
     return {
-        batchPool: new Map(),
-        batchWorldInv: new WeakMap(),
-        batchGeometryToId: new WeakMap(),
-        batchPlans: new Map(),
-        fullBatches: new WeakSet(),
         headPool: new Map(),
         tmpSourceWorld: new Matrix4(),
         tmpTargetLocal: new Matrix4(),
@@ -401,126 +380,134 @@ function _getOrCreateWritableHeadMesh(loadedObjectGroup: Group, sourceMesh: Inst
     return mesh;
 }
 
-function _getBatchMaxInstances(batch: BatchedMesh): number | null {
-    if (!batch) return null;
-    if (batch.userData && typeof batch.userData._pdeMaxInstances === 'number') return batch.userData._pdeMaxInstances;
-    
-    // @ts-ignore - maxInstanceCount exists on BatchedMesh in newer versions
-    const publicMax = batch.maxInstanceCount;
-    if (typeof publicMax === 'number') {
-        if (!batch.userData) batch.userData = {};
-        batch.userData._pdeMaxInstances = publicMax;
-        return publicMax;
-    }
-    // @ts-ignore
-    const internalMax = batch._maxInstanceCount;
-    if (typeof internalMax === 'number') {
-        if (!batch.userData) batch.userData = {};
-        batch.userData._pdeMaxInstances = internalMax;
-        return internalMax;
-    }
-    return null;
-}
-
-function _getBatchCurrentInstances(batch: BatchedMesh): number {
-    if (!batch) return 0;
-    if (batch.userData && Array.isArray(batch.userData.instanceGeometryIds)) return batch.userData.instanceGeometryIds.length;
-    // @ts-ignore
-    const internalCount = batch._instanceCount;
-    if (typeof internalCount === 'number') return internalCount;
-    return 0;
-}
-
-function _batchHasSpace(batch: BatchedMesh): boolean {
-    const max = _getBatchMaxInstances(batch);
-    if (!max) return true; // Unknown: allow and rely on retry path
-    return _getBatchCurrentInstances(batch) < max;
-}
-
-function _planWritableBatchFor(mesh: InstancedMesh | BatchedMesh, instanceId: number, _targetGroupId: string | null, ctx: DuplicationContext): void {
+function _planWritableBatchFor(mesh: InstancedMesh, _instanceId: number, _targetGroupId: string | null, ctx: DuplicationContext): void {
     if (!ctx || !mesh) return;
-
-    // Player heads are handled by a dedicated bulk path (InstancedMesh with instancedUvOffset)
     if (mesh.isInstancedMesh && mesh.geometry && mesh.geometry.attributes && mesh.geometry.attributes.instancedUvOffset) {
         return;
     }
+}
 
-    let geometry: BufferGeometry | null = null;
-    let material = mesh.material;
+function _copyInstanceMetadata(
+    loadedObjectGroup: Group,
+    sourceMesh: Mesh | InstancedMesh,
+    sourceInstanceId: number,
+    targetMesh: Mesh | InstancedMesh,
+    targetInstanceId: number
+): string {
+    return _registerClonedObjectMetadata(loadedObjectGroup, sourceMesh, sourceInstanceId, targetMesh, targetInstanceId);
+}
+
+function _clonePlainMesh(
+    loadedObjectGroup: Group,
+    sourceMesh: Mesh,
+    sourceInstanceId: number,
+    targetGroupId: string | null,
+    coveredByGroup: boolean
+): CloneResult | null {
+    const clone = sourceMesh.clone() as Mesh;
+    loadedObjectGroup.add(clone);
+    const objectUuid = _copyInstanceMetadata(loadedObjectGroup, sourceMesh, sourceInstanceId, clone, 0);
+    _insertClonedObjectEntry(loadedObjectGroup, sourceMesh, sourceInstanceId, targetGroupId, clone, 0, objectUuid, coveredByGroup);
+    return { mesh: clone, instanceId: 0, objectUuid };
+}
+
+function _cloneInstancedMesh(
+    loadedObjectGroup: Group,
+    sourceMesh: InstancedMesh,
+    sourceInstanceId: number,
+    targetGroupId: string | null,
+    ctx: DuplicationContext,
+    coveredByGroup: boolean
+): CloneResult | null {
+    if (!sourceMesh || !sourceMesh.isInstancedMesh) return null;
+
+    const geometry = sourceMesh.geometry;
+    if (!geometry) return null;
+
+    let material = sourceMesh.material;
     if (Array.isArray(material)) material = material[0];
 
-    if (mesh.isBatchedMesh) {
-        const geomId = mesh.userData && mesh.userData.instanceGeometryIds ? mesh.userData.instanceGeometryIds[instanceId] : null;
-        if (geomId !== null && mesh.userData && mesh.userData.originalGeometries) {
-            geometry = mesh.userData.originalGeometries.get(geomId);
-        }
-    } else if (mesh.isInstancedMesh) {
-        geometry = mesh.geometry;
-    }
+    let cloneGeometry = geometry;
+    let cloneMaterial = material;
 
-    if (!geometry || !material) return;
-
-    // Pool writable batches globally by material (not by group) to keep draw calls low,
-    // matching how the loader batches blocks while storing group membership separately.
-    const key = _batchPoolKey(material);
-    let plan = ctx.batchPlans.get(key);
-    if (!plan) {
-        plan = { instanceCount: 0, maxVerts: 0, maxIndices: 0, geometries: new Set() };
-        ctx.batchPlans.set(key, plan);
-    }
-
-    plan.instanceCount++;
-
-    if (!plan.geometries.has(geometry)) {
-        plan.geometries.add(geometry);
-        const pos = geometry.attributes && geometry.attributes.position;
-        const idx = geometry.index;
-        plan.maxVerts += pos ? pos.count : 0;
-        plan.maxIndices += idx ? idx.count : 0;
-    }
-}
-
-function _batchPoolKey(material: Material): string {
-    const matKey = material && material.uuid ? material.uuid : String(material);
-    return `${matKey}`;
-}
-
-function _getBatchWorldInverse(batch: BatchedMesh, ctx: DuplicationContext): Matrix4 {
-    const cached = ctx.batchWorldInv.get(batch);
-    if (cached) return cached;
-    const inv = new Matrix4().copy(batch.matrixWorld).invert();
-    ctx.batchWorldInv.set(batch, inv);
-    return inv;
-}
-
-function _getOrCreateBatchGeometryId(batch: BatchedMesh, geometry: BufferGeometry, ctx: DuplicationContext): number {
-    if (!batch || !geometry) return -1;
-
-    let map = ctx.batchGeometryToId.get(batch);
-    if (!map) {
-        map = new Map();
-        // Seed from existing geometries once (avoids scanning originalGeometries per clone)
-        if (batch.userData && batch.userData.originalGeometries) {
-            for (const [id, geo] of batch.userData.originalGeometries) {
-                if (geo) map.set(geo, id);
+    if (geometry.attributes && geometry.attributes.instancedUvOffset) {
+        cloneGeometry = geometry.clone();
+        const uv = cloneGeometry.attributes.uv as BufferAttribute | undefined;
+        if (uv) {
+            const sourceAttr = geometry.attributes.instancedUvOffset as InstancedBufferAttribute;
+            const u = sourceAttr.getX(sourceInstanceId);
+            const v = sourceAttr.getY(sourceInstanceId);
+            for (let i = 0; i < uv.count; i++) {
+                uv.setXY(i, uv.getX(i) + u, uv.getY(i) + v);
             }
+            uv.needsUpdate = true;
         }
-        ctx.batchGeometryToId.set(batch, map);
+        cloneGeometry.deleteAttribute('instancedUvOffset');
+
+        if (material && (material as Material).map) {
+            const sourceMat = material as Material;
+            if (!sourceMat.userData.bakedVariant) {
+                const { material: newMat } = createEntityMaterial(sourceMat.map, 0xffffff, false);
+                newMat.side = sourceMat.side;
+                newMat.alphaTest = sourceMat.alphaTest;
+                newMat.transparent = sourceMat.transparent;
+                newMat.depthWrite = sourceMat.depthWrite;
+                newMat.toneMapped = sourceMat.toneMapped;
+                newMat.fog = sourceMat.fog;
+                newMat.flatShading = sourceMat.flatShading;
+                sourceMat.userData.bakedVariant = newMat;
+            }
+            cloneMaterial = sourceMat.userData.bakedVariant;
+        }
     }
 
-    const existing = map.get(geometry);
-    if (existing !== undefined) return existing;
+    const cloneMesh = new InstancedMesh(cloneGeometry, cloneMaterial, 1);
+    cloneMesh.frustumCulled = false;
+    cloneMesh.userData.displayType = getDisplayType(sourceMesh, sourceInstanceId) ?? sourceMesh.userData?.displayType ?? 'block_display';
+    cloneMesh.userData.displayTypes = new Map();
+    cloneMesh.userData.geometryBounds = new Map();
+    cloneMesh.userData.localMatrices = new Map();
+    cloneMesh.userData.originalGeometries = new Map();
+    cloneMesh.userData.customPivots = new Map();
 
-    const newId = batch.addGeometry(geometry);
-    if (!batch.userData.originalGeometries) batch.userData.originalGeometries = new Map();
-    batch.userData.originalGeometries.set(newId, geometry);
+    const sourceWorld = ctx ? ctx.tmpSourceWorld : new Matrix4();
+    sourceMesh.getMatrixAt(sourceInstanceId, sourceWorld);
+    sourceWorld.premultiply(sourceMesh.matrixWorld);
+    const targetLocal = ctx ? ctx.tmpTargetLocal : new Matrix4();
+    const parentInv = loadedObjectGroup.matrixWorld.clone().invert();
+    targetLocal.copy(sourceWorld).premultiply(parentInv);
+    cloneMesh.setMatrixAt(0, targetLocal);
 
-    if (!batch.userData.geometryBounds) batch.userData.geometryBounds = new Map();
-    if (!geometry.boundingBox) geometry.computeBoundingBox();
-    if (geometry.boundingBox) batch.userData.geometryBounds.set(newId, geometry.boundingBox.clone());
+    if (sourceMesh.getColorAt) {
+        try {
+            const c = ctx ? ctx.tmpColor : new Color();
+            sourceMesh.getColorAt(sourceInstanceId, c);
+            cloneMesh.setColorAt(0, c);
+        } catch {
+            // ignore color copy failures
+        }
+    }
 
-    map.set(geometry, newId);
-    return newId;
+    if (sourceMesh.userData.hasHat && sourceMesh.userData.hasHat[sourceInstanceId] !== undefined) {
+        cloneMesh.userData.hasHat = { 0: sourceMesh.userData.hasHat[sourceInstanceId] };
+    }
+
+    if (sourceMesh.userData.customPivots && sourceMesh.userData.customPivots.has(sourceInstanceId)) {
+        cloneMesh.userData.customPivots.set(0, sourceMesh.userData.customPivots.get(sourceInstanceId).clone());
+    } else if (sourceMesh.userData.customPivot) {
+        cloneMesh.userData.customPivots.set(0, sourceMesh.userData.customPivot.clone());
+    }
+
+    if (sourceMesh.userData.localMatrices && sourceMesh.userData.localMatrices.has(sourceInstanceId)) {
+        cloneMesh.userData.localMatrices.set(0, sourceMesh.userData.localMatrices.get(sourceInstanceId).clone());
+    }
+
+    loadedObjectGroup.add(cloneMesh);
+    const objectUuid = _copyInstanceMetadata(loadedObjectGroup, sourceMesh, sourceInstanceId, cloneMesh, 0);
+    _insertClonedObjectEntry(loadedObjectGroup, sourceMesh, sourceInstanceId, targetGroupId, cloneMesh, 0, objectUuid, coveredByGroup);
+
+    cloneMesh.instanceMatrix.needsUpdate = true;
+    return { mesh: cloneMesh, instanceId: 0, objectUuid };
 }
 
 export function flushPendingHeadClones(loadedObjectGroup: Group, ctx: DuplicationContext): Array<{ mesh: InstancedMesh, instanceId: number, targetGroupId: string | null, coveredByGroup: boolean }> {
@@ -621,318 +608,26 @@ export function flushPendingHeadClones(loadedObjectGroup: Group, ctx: Duplicatio
     return newSelectionItems;
 }
 
-function getOrCreateWritableBatch(loadedObjectGroup: Group, _targetGroupId: string | null, material: Material, _geometry: BufferGeometry, ctx: DuplicationContext): BatchedMesh | null {
-    if (ctx) {
-        const key = _batchPoolKey(material);
-        const cached = ctx.batchPool.get(key);
-        if (cached) {
-            if (ctx.fullBatches && ctx.fullBatches.has(cached)) {
-                ctx.batchPool.delete(key);
-            } else if (!_batchHasSpace(cached)) {
-                ctx.fullBatches && ctx.fullBatches.add(cached);
-                ctx.batchPool.delete(key);
-            } else {
-                return cached;
-            }
-        }
-    }
-
-    let candidateMesh: BatchedMesh | null = null;
-
-    // Always search globally for a reusable writable batch.
-    // Group membership is tracked in the custom group maps, not in the Three.js scene graph.
-    for (const child of loadedObjectGroup.children) {
-        if (!child || !(child instanceof BatchedMesh)) continue;
-        if (!child.userData || !child.userData.isWritable) continue;
-        if (child.material !== material) continue;
-        if (ctx && ctx.fullBatches && ctx.fullBatches.has(child)) continue;
-        const maxInstances = _getBatchMaxInstances(child);
-        const currentInstances = _getBatchCurrentInstances(child);
-        if (!maxInstances || currentInstances < maxInstances) {
-            candidateMesh = child;
-            break;
-        }
-    }
-
-    if (candidateMesh) {
-        if (ctx) ctx.batchPool.set(_batchPoolKey(material), candidateMesh);
-        return candidateMesh;
-    }
-
-    // 2. Create new batch (size from plan when available to avoid reallocation / overflow)
-    const planKey = ctx ? _batchPoolKey(material) : null;
-    const plan = (ctx && planKey) ? ctx.batchPlans.get(planKey) : null;
-
-    let maxInstances = _WRITABLE_BATCH_SIZE;
-    let maxVerts = _WRITABLE_BATCH_MAX_VERTS;
-    let maxIndices = _WRITABLE_BATCH_MAX_INDICES;
-
-    if (plan) {
-        // Small slack to prevent edge overflow while still being tight.
-        const inst = Math.max(1, plan.instanceCount);
-        const verts = Math.max(64, plan.maxVerts);
-        const indices = Math.max(64, plan.maxIndices);
-
-        maxInstances = Math.ceil(inst * 1.1) + 8;
-        maxVerts = Math.ceil(verts * 1.1) + 64;
-        maxIndices = Math.ceil(indices * 1.1) + 64;
-    }
-
-    const batch = new BatchedMesh(maxInstances, maxVerts, maxIndices, material);
-    batch.frustumCulled = false;
-    batch.userData.isWritable = true;
-    batch.userData._pdeMaxInstances = maxInstances;
-    batch.userData.displayType = 'block_display';
-    batch.userData.displayTypes = new Map();
-    batch.userData.geometryBounds = new Map();
-    batch.userData.instanceGeometryIds = [];
-    batch.userData.localMatrices = new Map();
-    batch.userData.originalGeometries = new Map();
-    batch.userData.customPivots = new Map();
-
-    loadedObjectGroup.add(batch);
-
-    if (ctx) ctx.batchPool.set(_batchPoolKey(material), batch);
-    return batch;
-}
-
-function cloneInstance(loadedObjectGroup: Group, mesh: InstancedMesh | BatchedMesh, instanceId: number, targetGroupId: string | null, ctx: DuplicationContext, coveredByGroup: boolean = false): CloneResult | null {
+function cloneInstance(
+    loadedObjectGroup: Group,
+    mesh: Mesh | InstancedMesh,
+    instanceId: number,
+    targetGroupId: string | null,
+    ctx: DuplicationContext,
+    coveredByGroup: boolean = false
+): CloneResult | null {
     if (!mesh) return null;
 
-    // Detect Player Head (InstancedMesh with instancedUvOffset) for Bulk Cloning
-    if (mesh.isInstancedMesh && mesh.geometry && mesh.geometry.attributes.instancedUvOffset) {
+    if (mesh.isInstancedMesh && mesh.geometry && mesh.geometry.attributes && mesh.geometry.attributes.instancedUvOffset) {
         _pendingHeadClones.push({ sourceMesh: mesh, sourceId: instanceId, targetGroupId, coveredByGroup });
         return { isPending: true };
     }
 
-    let geometry: BufferGeometry | null = null;
-    let material = mesh.material;
-
-    // Extract Geometry
-    if (mesh.isBatchedMesh) {
-        const geomId = mesh.userData.instanceGeometryIds ? mesh.userData.instanceGeometryIds[instanceId] : null;
-        if (geomId !== null && mesh.userData.originalGeometries) {
-            geometry = mesh.userData.originalGeometries.get(geomId);
-        }
-    } else if (mesh.isInstancedMesh) {
-        geometry = mesh.geometry;
-
-        // Player Head: Bake UV offset from instanced attribute to geometry UVs
-        if (geometry && geometry.attributes.instancedUvOffset) {
-            const attr = geometry.attributes.instancedUvOffset;
-            const u = attr.getX(instanceId);
-            const v = attr.getY(instanceId);
-
-            // Always clone to separate from the shared instanced geometry and strip the attribute
-            geometry = geometry.clone();
-            const uv = geometry.attributes.uv;
-            if (uv) {
-                for (let i = 0; i < uv.count; i++) {
-                    uv.setXY(i, uv.getX(i) + u, uv.getY(i) + v);
-                }
-                // @ts-ignore
-                uv.needsUpdate = true;
-            }
-            geometry.deleteAttribute('instancedUvOffset');
-
-            // Replace material with one that doesn't use instancedUvOffset
-            // (The original material expects the attribute, which we just deleted)
-            let sourceMat = mesh.material;
-            if (Array.isArray(sourceMat)) sourceMat = sourceMat[0];
-
-            if (sourceMat && sourceMat.map) {
-                if (!sourceMat.userData.bakedVariant) {
-                    const { material: newMat } = createEntityMaterial(sourceMat.map, 0xffffff, false);
-                    newMat.side = sourceMat.side;
-                    newMat.alphaTest = sourceMat.alphaTest;
-                    newMat.transparent = sourceMat.transparent;
-                    newMat.depthWrite = sourceMat.depthWrite;
-                    newMat.toneMapped = sourceMat.toneMapped;
-                    newMat.fog = sourceMat.fog;
-                    newMat.flatShading = sourceMat.flatShading;
-                    sourceMat.userData.bakedVariant = newMat;
-                }
-                material = sourceMat.userData.bakedVariant;
-            }
-        }
+    if (mesh.isInstancedMesh) {
+        return _cloneInstancedMesh(loadedObjectGroup, mesh, instanceId, targetGroupId, ctx, coveredByGroup);
     }
 
-    if (!geometry) {
-        console.warn('Cannot duplicate: Geometry not found');
-        return null;
-    }
-
-    if (Array.isArray(material)) material = material[0];
-
-    // Find target batch
-    let targetBatch = getOrCreateWritableBatch(loadedObjectGroup, targetGroupId, material, geometry, ctx);
-    if (!targetBatch) {
-        console.error('Failed to create writable batch');
-        return null;
-    }
-
-    // If the cached/candidate batch is already full, force rollover before adding.
-    if (ctx && !_batchHasSpace(targetBatch)) {
-        const key = _batchPoolKey(material);
-        ctx.fullBatches && ctx.fullBatches.add(targetBatch);
-        ctx.batchPool && ctx.batchPool.delete(key);
-        targetBatch = getOrCreateWritableBatch(loadedObjectGroup, targetGroupId, material, geometry, ctx);
-        if (!targetBatch) {
-            console.error('Failed to create writable batch (rollover)');
-            return null;
-        }
-    }
-
-    // Add Geometry (reuse if exists in target) - O(1) via per-duplication cache
-    let targetGeomId = -1;
-    let attempts = 0;
-    while (true) {
-        attempts++;
-        try {
-            if (ctx) {
-                targetGeomId = _getOrCreateBatchGeometryId(targetBatch, geometry, ctx);
-            } else {
-                // Fallback (should be rare)
-                let id = -1;
-                if (targetBatch.userData && targetBatch.userData.originalGeometries) {
-                    for (const [gid, geo] of targetBatch.userData.originalGeometries) {
-                        if (geo === geometry) { id = gid; break; }
-                    }
-                }
-                if (id === -1) {
-                    id = targetBatch.addGeometry(geometry);
-                    if (!targetBatch.userData.originalGeometries) targetBatch.userData.originalGeometries = new Map();
-                    targetBatch.userData.originalGeometries.set(id, geometry);
-                    if (!targetBatch.userData.geometryBounds) targetBatch.userData.geometryBounds = new Map();
-                    if (!geometry.boundingBox) geometry.computeBoundingBox();
-                    if (geometry.boundingBox) targetBatch.userData.geometryBounds.set(id, geometry.boundingBox.clone());
-                }
-                targetGeomId = id;
-            }
-            break;
-        } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : String(e);
-            if (ctx && attempts < 100 && msg && (msg.includes('Reserved space request exceeds') || msg.includes('maximum buffer size'))) {
-                const key = _batchPoolKey(material);
-                if (ctx.fullBatches) ctx.fullBatches.add(targetBatch);
-                if (ctx.batchPool && ctx.batchPool.get(key) === targetBatch) ctx.batchPool.delete(key);
-
-                targetBatch = getOrCreateWritableBatch(loadedObjectGroup, targetGroupId, material, geometry, ctx);
-                if (!targetBatch) {
-                    console.error('Failed to create writable batch (geometry rollover)');
-                    return null;
-                }
-                continue;
-            }
-            throw e;
-        }
-    }
-
-    // Add Instance (retry once on capacity error)
-    let newInstanceId: number;
-    let usedGeomId = targetGeomId;
-    try {
-        newInstanceId = targetBatch.addInstance(targetGeomId);
-    } catch (e: unknown) {
-        const msg = (e instanceof Error && e.message) ? String(e.message) : '';
-        if (ctx && msg.includes('Maximum item count reached')) {
-            const key = _batchPoolKey(material);
-            ctx.fullBatches && ctx.fullBatches.add(targetBatch);
-            ctx.batchPool && ctx.batchPool.delete(key);
-
-            // Create/resolve a new batch and retry once
-            targetBatch = getOrCreateWritableBatch(loadedObjectGroup, targetGroupId, material, geometry, ctx);
-            if (!targetBatch) return null;
-            const retryGeomId = ctx ? _getOrCreateBatchGeometryId(targetBatch, geometry, ctx) : targetGeomId;
-            usedGeomId = retryGeomId;
-            newInstanceId = targetBatch.addInstance(retryGeomId);
-        } else {
-            throw e;
-        }
-    }
-    targetBatch.userData.instanceGeometryIds[newInstanceId] = usedGeomId;
-
-    // Copy Transforms
-    // 1. World Matrix of source instance
-    const sourceWorld = ctx ? ctx.tmpSourceWorld : new Matrix4();
-    mesh.getMatrixAt(instanceId, sourceWorld);
-    sourceWorld.premultiply(mesh.matrixWorld); // World space
-
-    // 2. Target Local Matrix (Target Batch World Inverse * Source World)
-    const targetLocal = ctx ? ctx.tmpTargetLocal : new Matrix4();
-    const invTargetWorld = ctx ? _getBatchWorldInverse(targetBatch, ctx) : targetBatch.matrixWorld.clone().invert();
-    targetLocal.copy(sourceWorld).premultiply(invTargetWorld);
-    targetBatch.setMatrixAt(newInstanceId, targetLocal);
-
-    // Copy UserData
-    // Local Matrices (Blockstates)
-    if (mesh.isBatchedMesh && mesh.userData.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
-        targetBatch.userData.localMatrices.set(newInstanceId, mesh.userData.localMatrices.get(instanceId).clone());
-    }
-
-    // Color
-    if (mesh.getColorAt) {
-        // InstancedMesh.getColorAt throws if instanceColor is null
-        if (mesh.isInstancedMesh && !mesh.instanceColor) {
-            // No instance colors to copy
-        } else {
-            try {
-                const c = ctx ? ctx.tmpColor : new Color();
-                mesh.getColorAt(instanceId, c);
-                targetBatch.setColorAt(newInstanceId, c);
-            } catch (e) {
-                // Ignore color copy errors
-            }
-        }
-    }
-
-    // Display Types
-    const displayType = getDisplayType(mesh, instanceId);
-    if (displayType) {
-        if (!targetBatch.userData.displayTypes) targetBatch.userData.displayTypes = new Map();
-        targetBatch.userData.displayTypes.set(newInstanceId, displayType);
-    }
-
-    // Has Hat (Player Head)
-    if (mesh.userData.hasHat && mesh.userData.hasHat[instanceId] !== undefined) {
-         if (!targetBatch.userData.hasHat) targetBatch.userData.hasHat = {};
-         targetBatch.userData.hasHat[newInstanceId] = mesh.userData.hasHat[instanceId];
-    }
-
-    // Custom Pivot
-    if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
-         targetBatch.userData.customPivots.set(newInstanceId, mesh.userData.customPivots.get(instanceId).clone());
-    } else if (mesh.userData.customPivot) {
-         targetBatch.userData.customPivots.set(newInstanceId, mesh.userData.customPivot.clone());
-    }
-
-    const newObjectUuid = _registerClonedObjectMetadata(
-        loadedObjectGroup,
-        mesh,
-        instanceId,
-        targetBatch,
-        newInstanceId
-    );
-
-    _insertClonedObjectEntry(
-        loadedObjectGroup,
-        mesh,
-        instanceId,
-        targetGroupId,
-        targetBatch,
-        newInstanceId,
-        newObjectUuid,
-        coveredByGroup
-    );
-
-    // Register in LoadedObjectGroup hierarchy if group exists
-    if (targetGroupId) {
-        const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
-        const key = GroupUtils.getGroupKey(targetBatch, newInstanceId);
-        objectToGroup.set(key, targetGroupId);
-    }
-
-    return { mesh: targetBatch, instanceId: newInstanceId, objectUuid: newObjectUuid };
+    return _clonePlainMesh(loadedObjectGroup, mesh, instanceId, targetGroupId, coveredByGroup);
 }
 
 function cloneGroup(loadedObjectGroup: Group, groupId: string, parentId: string | null, idMap: Map<string, string>, _ctx: DuplicationContext): string | null {
@@ -948,7 +643,7 @@ function _collectCloneJobsFromGroup(loadedObjectGroup: Group, groupId: string, n
     GroupUtils.collectCloneJobsFromGroup(loadedObjectGroup, groupId, newGroupId, ctxWithCallback, outJobs);
 }
 
-export function duplicateGroupsAndObjects(loadedObjectGroup: Group, groupIds: Set<string> | null, objectEntries: Array<{ mesh: BatchedMesh | InstancedMesh, instanceId: number }> | null): DuplicationSelection {
+export function duplicateGroupsAndObjects(loadedObjectGroup: Group, groupIds: Set<string> | null, objectEntries: Array<{ mesh: Mesh | InstancedMesh, instanceId: number }> | null): DuplicationSelection {
     const ctx = createDuplicationContext();
     _pendingHeadClones = [];
 
