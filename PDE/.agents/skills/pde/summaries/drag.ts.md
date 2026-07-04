@@ -21,11 +21,11 @@ Creates and removes a temporary DOM marquee element during drag selection.
 - `three/webgpu` -- math and scene object types.
 - `./select` -- selection replacement helpers.
 - `./overlay` -- instance bounds and projection helpers.
-- `./group` -- group hierarchy access.
+- `../grouping/group` -- group hierarchy access.
 - `three/examples/jsm/controls/TransformControls.js` -- drag-state integration.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
+- `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
 Ctrl/meta drag starts marquee selection; shift modifies whether groups are included. Selection updates are deferred until the drag finishes.

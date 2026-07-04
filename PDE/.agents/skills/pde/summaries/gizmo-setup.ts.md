@@ -24,7 +24,7 @@ Creates the TransformControls instance and patches internal gizmo geometry so th
 - `three/webgpu` -- camera, renderer, scene, mesh, material, object, and matrix types.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
+- `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
 The patch is best-effort and wrapped in a try/catch because it reaches into TransformControls internals. Plane variants are created for visible gizmo planes and picker planes; visible variants start transparent until caller logic chooses which direction to show.

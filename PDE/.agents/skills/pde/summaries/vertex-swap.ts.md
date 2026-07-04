@@ -21,14 +21,14 @@ Uses a shared temporary matrix and zero vector for source/world conversions.
 
 ## Dependencies (imports)
 - `three/webgpu` -- matrix, vector, quaternion, mesh, and group types.
-- `./overlay` -- display type, bounds, and world-matrix helpers.
-- `./group` -- group hierarchy and world-matrix helpers.
-- `./gizmo` -- gizmo state shape.
+- `../selection/overlay` -- display type, bounds, and world-matrix helpers.
+- `../grouping/group` -- group hierarchy and world-matrix helpers.
+- `../gizmo/gizmo` -- gizmo state shape.
 
 ## Used By (known callers)
-- `renderer/controls/vertex-translate.ts`
-- `renderer/controls/vertex-rotate.ts`
-- `renderer/controls/vertex-scale.ts`
+- `renderer/controls/vertex/vertex-translate.ts`
+- `renderer/controls/vertex/vertex-rotate.ts`
+- `renderer/controls/vertex/vertex-scale.ts`
 
 ## Notes
 This module is the bridge between geometric snap actions and persistent selection state. It also keeps the vertex queue in sync with selection transitions.

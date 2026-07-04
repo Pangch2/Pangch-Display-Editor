@@ -10,14 +10,14 @@ Handles vertex-mode translation snapping. It can snap a gizmo or object pivot to
 
 ## Dependencies (imports)
 - `three/webgpu` -- matrix, vector, quaternion, mesh, and box types.
-- `./group` -- group hierarchy and world-matrix helpers.
-- `./overlay` -- vertex, bounds, and world-matrix helpers.
+- `../grouping/group` -- group hierarchy and world-matrix helpers.
+- `../selection/overlay` -- vertex, bounds, and world-matrix helpers.
 - `./vertex-swap` -- selection swap logic.
-- `./shear-remove` -- optional shear cleanup hook.
-- `./gizmo` -- gizmo state shape.
+- `../pivot/shear-remove` -- optional shear cleanup hook.
+- `../gizmo/gizmo` -- gizmo state shape.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
+- `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
 Supports three snap cases: snapped gizmo pivot, moving a selected source to a target, and bundle-aware queue swaps. It preserves multi-selection state when appropriate.

@@ -4,7 +4,7 @@ import {
     InstancedMesh,
     Vector3
 } from 'three/webgpu';
-import type { GroupData } from './group';
+import type { GroupData } from '../grouping/group';
 
 interface SelectionElement {
     type: 'group' | 'object';

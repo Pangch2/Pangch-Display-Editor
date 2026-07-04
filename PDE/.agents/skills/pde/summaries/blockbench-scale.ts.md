@@ -24,8 +24,8 @@ Cached `Matrix4`/`Matrix3` instances are reused to avoid allocations during drag
 - `three/webgpu` -- matrix/vector math and scene object types.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts` -- uses the mode and pivot-frame helpers during transform handling.
-- `renderer/controls/handle-key.ts` -- toggles the mode from keyboard input.
+- `renderer/controls/gizmo/gizmo.ts` -- uses the mode and pivot-frame helpers during transform handling.
+- `renderer/controls/input/handle-key.ts` -- toggles the mode from keyboard input.
 
 ## Notes
 World-space and local-space are handled differently when resolving the pivot frame. The module is stateful and intentionally reuses mutable cached matrices.

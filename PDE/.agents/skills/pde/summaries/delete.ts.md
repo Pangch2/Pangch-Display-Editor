@@ -19,8 +19,8 @@ Uses a shared temporary matrix for swap-pop instance handling.
 - `./group` -- hierarchy and metadata bookkeeping.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
-- `renderer/controls/handle-key.ts`
+- `renderer/controls/gizmo/gizmo.ts`
+- `renderer/controls/input/handle-key.ts`
 
 ## Notes
 Instanced meshes are removed with swap-pop logic, so group/object references must be updated after compaction.

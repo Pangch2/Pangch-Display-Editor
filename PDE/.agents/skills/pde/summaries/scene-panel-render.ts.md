@@ -18,7 +18,7 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 - `scenePanelState.sceneExtraFitRaf` and `scenePanelRenderRaf` gate deferred work.
 
 ## Dependencies (imports)
-- `../controls/select` -- provides the current selection snapshot for highlight sync.
+- `../controls/selection/select` -- provides the current selection snapshot for highlight sync.
 - `../load-project/pbde-log` -- gates optional scene-panel timing logs via localStorage flags.
 - `../load-project/upload-pbde` -- source scene data used to build row metadata.
 - `./scene-panel-dnd` -- drag handlers for rendered rows.

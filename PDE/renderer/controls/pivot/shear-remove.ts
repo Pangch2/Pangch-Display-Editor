@@ -6,7 +6,7 @@ import {
     Group,
     Matrix4
 } from 'three/webgpu';
-import * as GroupUtils from './group';
+import * as GroupUtils from '../grouping/group';
 
 export interface ShearItem {
     mesh: InstancedMesh | BatchedMesh;

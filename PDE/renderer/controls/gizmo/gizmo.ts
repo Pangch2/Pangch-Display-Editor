@@ -27,22 +27,26 @@ import {
     detectBlockbenchScaleAxes,
     computeBlockbenchScaleShift
 } from './blockbench-scale';
-import * as GroupUtils from './group';
-import * as Overlay from './overlay';
-import * as CustomPivot from './custom-pivot';
-import * as Duplicate from './duplicate';
-import * as Delete from './delete';
-import { initDrag, applyDeltaToSelection } from './drag';
-import { initHandleKey } from './handle-key';
-import type { DragInterface } from './drag';
-import { processVertexSnap } from './vertex-translate';
-import { processVertexRotate } from './vertex-rotate';
-import { processVertexScale } from './vertex-scale';
-import * as Select from './select';
-import type { SelectionState } from './select';
-import type { GroupData } from './group';
-import type { QueueItem } from './vertex-swap';
-import * as VertexQueue from './vertex-queue';
+import * as GroupUtils from '../grouping/group';
+import * as Overlay from '../selection/overlay';
+import * as CustomPivot from '../pivot/custom-pivot';
+import { initDrag, applyDeltaToSelection } from '../selection/drag';
+import { initHandleKey } from '../input/handle-key';
+import type { DragInterface } from '../selection/drag';
+import { processVertexSnap } from '../vertex/vertex-translate';
+import { processVertexRotate } from '../vertex/vertex-rotate';
+import { processVertexScale } from '../vertex/vertex-scale';
+import * as Select from '../selection/select';
+import type { SelectionState } from '../selection/select';
+import type { GroupData } from '../grouping/group';
+import type { QueueItem } from '../vertex/vertex-swap';
+import * as VertexQueue from '../vertex/vertex-queue';
+import {
+    createGroupCommand,
+    deleteSelectedItemsCommand,
+    duplicateSelectedCommand,
+    ungroupGroupCommand
+} from './gizmo-commands';
 
 // Interfaces 
 
@@ -715,152 +719,67 @@ function _handleSceneUpdated(): void {
     updateSelectionOverlay();
 }
 
-function createGroup(): string | undefined {
+function _runWithoutVertexQueue<T>(fn: () => T): T {
     suppressVertexQueue = true;
     vertexQueue.length = 0;
-
-    const items = getSelectedItems();
-    if (items.length === 0 && !_hasAnySelection()) {
+    try {
+        return fn();
+    } finally {
         suppressVertexQueue = false;
-        return undefined;
     }
+}
 
-    const groups = getGroups();
+function _getGizmoCommandCallbacks() {
+    return {
+        getSelectedItems,
+        hasAnySelection: _hasAnySelection,
+        getGroups,
+        getSingleSelectedGroupId: _getSingleSelectedGroupId,
+        getGroupKey,
+        invalidateSelectionCaches,
+        applySelection,
+        resetSelectionAndDeselect,
+        emitSceneUpdated: _emitSceneUpdated
+    };
+}
 
-    let initialPosition = new Vector3();
-    const singleGroupId = _getSingleSelectedGroupId();
-    if (singleGroupId) {
-        const existingGroup = groups.get(singleGroupId);
-        if (existingGroup && existingGroup.position) initialPosition.copy(existingGroup.position);
-        else initialPosition = Select.calculateAvgOrigin();
-    } else {
-        initialPosition = Select.calculateAvgOrigin();
-    }
-
-    const selectedGroupIds = currentSelection.groups ? Array.from(currentSelection.groups).filter(Boolean) : [];
-    const selectedObjects: Array<{ mesh: PdeMesh; instanceId: number }> = [];
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids) continue;
-            for (const id of ids) {
-                selectedObjects.push({ mesh, instanceId: id });
-            }
-        }
-    }
-
-    let primaryId: string | null = null;
-    if (currentSelection.primary) {
-        if (currentSelection.primary.type === 'group') {
-            primaryId = currentSelection.primary.id;
-        } else {
-            const key = getGroupKey(currentSelection.primary.mesh, currentSelection.primary.instanceId);
-            const keyToUuid = loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
-            primaryId = keyToUuid?.get(key) || null;
-        }
-    }
-
-    const newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition, primaryId);
-
-    invalidateSelectionCaches();
-    applySelection(null, [], newGroupId);
-    _emitSceneUpdated();
-    suppressVertexQueue = false;
-
-    console.log(`Group created: ${newGroupId}`);
-    return newGroupId;
+function createGroup(): string | undefined {
+    return _runWithoutVertexQueue(() => (
+        createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks())
+    ));
 }
 
 function ungroupGroup(groupId: string): void {
-    suppressVertexQueue = true;
-    vertexQueue.length = 0;
-
-    if (!groupId) { suppressVertexQueue = false; return; }
-
-    const result = GroupUtils.ungroupGroupStructure(loadedObjectGroup, groupId);
-    if (!result) { suppressVertexQueue = false; return; }
-
-    const { parentId } = result;
-
-    invalidateSelectionCaches();
-
-    if (parentId && getGroups().has(parentId)) {
-        applySelection(null, [], parentId);
-    } else {
-        resetSelectionAndDeselect();
-    }
-
-    _emitSceneUpdated();
-
-    suppressVertexQueue = false;
-    console.log(`Group removed: ${groupId}`);
+    _runWithoutVertexQueue(() => {
+        ungroupGroupCommand(loadedObjectGroup, groupId, _getGizmoCommandCallbacks());
+    });
 }
 
 function deleteSelectedItems(): void {
-    suppressVertexQueue = true;
-    vertexQueue.length = 0;
-
-    if (!_hasAnySelection()) {
-        suppressVertexQueue = false;
-        return;
-    }
-
-    try {
-        Delete.deleteSelectedItems(loadedObjectGroup, currentSelection, { resetSelectionAndDeselect });
-        _emitSceneUpdated();
-    } finally {
-        suppressVertexQueue = false;
-    }
+    _runWithoutVertexQueue(() => {
+        deleteSelectedItemsCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
+    });
 }
 
 function duplicateSelected(): void {
-    suppressVertexQueue = true;
-    vertexQueue.length = 0;
-    try {
-        if (!_hasAnySelection()) return;
-
-        // 복제 후에도 커스텀 피벗 상태 유지: duplicate 후 선택 교체 시에도 커스텀 피벗 오프셋 보존.
-        const savedIsCustomPivot = isCustomPivot;
-        const savedPivotOffset = pivotOffset.clone();
-        const hadPrimary = !!currentSelection.primary;
-
-        const selectedGroupIds = currentSelection.groups;
-        const selectedObjects: Array<{ mesh: PdeMesh; instanceId: number }> = [];
-        if (currentSelection.objects) {
-            for (const [mesh, ids] of currentSelection.objects) {
-                for (const id of ids) selectedObjects.push({ mesh, instanceId: id });
+    _runWithoutVertexQueue(() => {
+        duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, {
+            hasAnySelection: _hasAnySelection,
+            isMultiSelection: _isMultiSelection,
+            beginSelectionReplace: _beginSelectionReplace,
+            setPrimaryToFirstAvailable: _setPrimaryToFirstAvailable,
+            invalidateSelectionCaches,
+            recomputePivotStateForSelection: _recomputePivotStateForSelection,
+            updateHelperPosition,
+            updateSelectionOverlay,
+            emitSceneUpdated: _emitSceneUpdated,
+            getCustomPivotState: () => ({ isCustomPivot, pivotOffset: pivotOffset.clone() }),
+            restoreCustomPivotState: (state) => {
+                isCustomPivot = true;
+                pivotOffset.copy(state.pivotOffset);
             }
-        }
-
-        const newSel = Duplicate.duplicateGroupsAndObjects(loadedObjectGroup, selectedGroupIds, selectedObjects);
-
-        const preserveAnchors = _isMultiSelection();
-        const anchorMode = _selectionAnchorMode;
-        _beginSelectionReplace({ anchorMode, detachTransform: false, preserveAnchors });
-        currentSelection.groups = newSel.groups;
-        currentSelection.objects = newSel.objects;
-
-        if (hadPrimary || !_isMultiSelection()) {
-            _setPrimaryToFirstAvailable();
-        } else {
-            currentSelection.primary = null;
-        }
-
-        invalidateSelectionCaches();
-        _recomputePivotStateForSelection();
-
-        if (savedIsCustomPivot) {
-            isCustomPivot = true;
-            pivotOffset.copy(savedPivotOffset);
-        }
-
-        updateHelperPosition();
-        _emitSceneUpdated();
-        updateSelectionOverlay();
-
-        console.log('Duplication complete');
-    } finally {
-        suppressVertexQueue = false;
-    }
+        });
+    });
 }
 
 //  Main entry point 

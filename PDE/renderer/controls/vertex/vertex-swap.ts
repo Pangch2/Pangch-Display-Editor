@@ -8,9 +8,9 @@ import {
     Object3D,
     Box3
 } from 'three/webgpu';
-import * as Overlay from './overlay';
-import { GroupData } from './group';
-import type { GizmoState } from './gizmo';
+import * as Overlay from '../selection/overlay';
+import { GroupData } from '../grouping/group';
+import type { GizmoState } from '../gizmo/gizmo';
 
 const _TMP_MAT4_A = new Matrix4();
 const _ZERO_VEC3 = new Vector3(0, 0, 0);

@@ -10,13 +10,13 @@ Handles vertex-mode scale snapping. It computes a scale transform from two selec
 
 ## Dependencies (imports)
 - `three/webgpu` -- matrix, vector, quaternion, box, and mesh types.
-- `./group` -- group hierarchy traversal and lookups.
-- `./overlay` -- vertex, bounds, and world-matrix helpers.
+- `../grouping/group` -- group hierarchy traversal and lookups.
+- `../selection/overlay` -- vertex, bounds, and world-matrix helpers.
 - `./vertex-swap` -- selection swap logic.
-- `./shear-remove` -- optional shear cleanup before Ctrl-based scaling.
+- `../pivot/shear-remove` -- optional shear cleanup before Ctrl-based scaling.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
+- `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
 Has distinct behavior for Ctrl-modified scaling versus plain scaling. It preserves selection state for multi-selection snaps and queued bundles.

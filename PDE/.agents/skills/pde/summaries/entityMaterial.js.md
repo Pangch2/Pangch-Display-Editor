@@ -20,7 +20,7 @@ Builds the shared node-based material used for entity-style rendering. It combin
 
 ## Used By (known callers)
 - `renderer/load-project/mesh-builder.ts` -- creates materials for loaded PBDE geometry, atlas-based meshes, and instanced atlas UV transform batches.
-- `renderer/controls/duplicate.ts` -- clones entity materials during duplication flows.
+- `renderer/controls/grouping/duplicate.ts` -- clones entity materials during duplication flows.
 
 ## Notes
 - Material is configured with `transparent = true`, `fog = false`, `flatShading = true`, and `alphaTest = 0.1`.

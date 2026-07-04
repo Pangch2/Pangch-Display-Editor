@@ -9,11 +9,11 @@ import {
     Sprite,
     Quaternion
 } from 'three/webgpu';
-import * as GroupUtils from './group';
-import * as Overlay from './overlay';
+import * as GroupUtils from '../grouping/group';
+import * as Overlay from '../selection/overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
-import type { GroupData } from './group';
-import type { GizmoState } from './gizmo';
+import type { GroupData } from '../grouping/group';
+import type { GizmoState } from '../gizmo/gizmo';
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();

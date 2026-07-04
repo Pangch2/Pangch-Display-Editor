@@ -19,7 +19,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 ## Dependencies (imports)
 - `three/examples/jsm/controls/OrbitControls.js` -- orbit camera controls.
 - `three/webgpu` -- WebGPU renderer, scene graph, camera, helpers, and math primitives.
-- `./controls/gizmo` -- initializes and updates the gizmo overlay.
+- `./controls/gizmo/gizmo` -- initializes and updates the gizmo overlay.
 - `./asset-manager` -- preloads/caches assets before scene start.
 - `./load-project/upload-pbde` -- provides `loadedObjectGroup` for the scene root.
 - `./ui/ui-open-close` -- loading overlay open/close animations.

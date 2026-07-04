@@ -10,12 +10,12 @@ Handles vertex-mode rotate snapping. It derives a rotation around a selected piv
 
 ## Dependencies (imports)
 - `three/webgpu` -- matrix, vector, quaternion, box, and mesh types.
-- `./group` -- group hierarchy traversal and lookups.
-- `./overlay` -- vertex, bounds, and world-matrix helpers.
+- `../grouping/group` -- group hierarchy traversal and lookups.
+- `../selection/overlay` -- vertex, bounds, and world-matrix helpers.
 - `./vertex-swap` -- selection swap logic.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
+- `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
 Requires exactly two selected vertex keys. It has separate logic for object and group sources, and preserves multi-selection behavior when snapping from a queued bundle.

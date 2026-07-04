@@ -36,12 +36,12 @@ Implements the selection state machine: caches selected items, resolves click hi
 
 ## Dependencies (imports)
 - `three/webgpu` -- mesh, group, vector, matrix, and raycaster types.
-- `./group` -- group hierarchy and object-to-group lookup.
+- `../grouping/group` -- group hierarchy and object-to-group lookup.
 - `./overlay` -- bounds, instance validity, and origin math.
 
 ## Used By (known callers)
-- `renderer/controls/drag.ts`
-- `renderer/controls/gizmo.ts`
+- `renderer/controls/selection/drag.ts`
+- `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
 Selection can represent groups, concrete object instances, or both. Callers should use the replacement helpers rather than mutating `currentSelection` directly unless they are already inside the selection state machine.

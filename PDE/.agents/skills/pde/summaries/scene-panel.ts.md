@@ -14,7 +14,7 @@ Bootstraps the scene panel module cluster while preserving the existing `./ui/sc
 - `./scene-panel-render` -- refresh entrypoint, viewport scheduler, and fit scheduler.
 - `./scene-panel-selection` -- selection sync listener.
 - `./scene-panel-types` -- shared selection event payload type.
-- `../controls/select` -- fallback selection snapshot for the selection-changed listener.
+- `../controls/selection/select` -- fallback selection snapshot for the selection-changed listener.
 
 ## Used By (known callers)
 - `renderer.ts` -- imports this module for bootstrapping side effects.

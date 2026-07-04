@@ -7,8 +7,8 @@ import {
     Box3,
     Quaternion
 } from 'three/webgpu';
-import * as Overlay from './overlay';
-import type { SelectionState } from './select';
+import * as Overlay from '../selection/overlay';
+import type { SelectionState } from '../selection/select';
 import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 
 type PdeMesh = InstancedMesh | BatchedMesh | Mesh;

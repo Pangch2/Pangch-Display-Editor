@@ -12,13 +12,13 @@ import {
     Box3
 } from 'three/webgpu';
 import type { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import { resetCustomPivot } from './custom-pivot-remove';
-import { removeShearFromSelection } from './shear-remove';
+import { resetCustomPivot } from '../pivot/custom-pivot-remove';
+import { removeShearFromSelection } from '../pivot/shear-remove';
 import { focusCameraOnSelection } from './camera';
-import { toggleBlockbenchScaleMode } from './blockbench-scale';
-import type { SelectionState, SelectedItem } from './select';
-import type { GroupData } from './group';
-import type { QueueItem } from './vertex-swap';
+import { toggleBlockbenchScaleMode } from '../gizmo/blockbench-scale';
+import type { SelectionState, SelectedItem } from '../selection/select';
+import type { GroupData } from '../grouping/group';
+import type { QueueItem } from '../vertex/vertex-swap';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 

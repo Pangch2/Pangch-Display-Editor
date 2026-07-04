@@ -16,7 +16,7 @@ Implements scene-panel drag/drop behavior for rendered virtual rows, including b
 - Uses `scenePanelState.sceneDragBundle`, `sceneDropHint`, `sceneDropMarkerEl`, `sceneDragPreviewEl`, and auto-expand fields.
 
 ## Dependencies (imports)
-- `../controls/select` -- reads current global selection to build drag bundles.
+- `../controls/selection/select` -- reads current global selection to build drag bundles.
 - `../load-project/upload-pbde` -- scene data source used to validate and move items.
 - `./scene-panel-model` -- location, parent lookup, ancestry, and mutation helpers.
 - `./scene-panel-render` -- schedules label fitting after drag auto-expansion.

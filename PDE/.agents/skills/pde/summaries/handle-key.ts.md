@@ -14,13 +14,13 @@ Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode, sw
 ## Dependencies (imports)
 - `three/webgpu` -- core math and scene object types.
 - `three/examples/jsm/controls/TransformControls.js` -- transform control type reference.
-- `./custom-pivot-remove` -- pivot reset helper.
-- `./shear-remove` -- shear removal helper.
+- `../pivot/custom-pivot-remove` -- pivot reset helper.
+- `../pivot/shear-remove` -- shear removal helper.
 - `./camera` -- focus camera action.
-- `./blockbench-scale` -- Blockbench scale toggle.
+- `../gizmo/blockbench-scale` -- Blockbench scale toggle.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
+- `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
 This file owns a lot of hotkey policy. It also has protective logic around `Alt`/`Ctrl` interactions so pivot-edit state does not get stuck on blur or focus loss.

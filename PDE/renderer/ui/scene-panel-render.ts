@@ -1,4 +1,4 @@
-import { currentSelection } from '../controls/select';
+import { currentSelection } from '../controls/selection/select';
 import { isPbdeLogEnabled } from '../load-project/pbde-log';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';

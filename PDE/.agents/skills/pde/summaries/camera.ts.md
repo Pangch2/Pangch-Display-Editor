@@ -12,7 +12,7 @@ Centers the camera on the current selection using the selection bounds when avai
 - `three/webgpu` -- vector math, camera type, and bounding-box support.
 
 ## Used By (known callers)
-- `renderer/controls/handle-key.ts` -- bound to the `F` hotkey.
+- `renderer/controls/input/handle-key.ts` -- bound to the `F` hotkey.
 
 ## Notes
 Distance is derived from the camera FOV and selection size, with a fallback distance when nothing is selected.

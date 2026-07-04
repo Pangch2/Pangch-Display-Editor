@@ -28,12 +28,12 @@ Tracks two module-level undo hooks for transient pivot edits.
 
 ## Dependencies (imports)
 - `three/webgpu` -- vector, matrix, mesh, and group types.
-- `./group` -- group pivot and hierarchy helpers.
-- `./overlay` -- world-matrix and bounding-box helpers.
+- `../grouping/group` -- group pivot and hierarchy helpers.
+- `../selection/overlay` -- world-matrix and bounding-box helpers.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
-- `renderer/controls/handle-key.ts`
+- `renderer/controls/gizmo/gizmo.ts`
+- `renderer/controls/input/handle-key.ts`
 
 ## Notes
 Handles both single-object and grouped selection pivots, including instanced/batched meshes via `customPivots` maps.

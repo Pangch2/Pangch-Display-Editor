@@ -47,7 +47,7 @@ Caches group/root references and drag overlay geometry buffers for performance.
 
 ## Dependencies (imports)
 - `three/webgpu` -- all geometry, material, and scene types.
-- `./group` -- group hierarchy and bounds helpers.
+- `../grouping/group` -- group hierarchy and bounds helpers.
 
 ## Used By (known callers)
 - Nearly every control module: `select.ts`, `drag.ts`, `gizmo.ts`, `custom-pivot.ts`, `delete.ts`, `duplicate.ts`, `vertex-*`, and `handle-key.ts`.

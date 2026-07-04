@@ -21,12 +21,13 @@ Maintains the current queue and key caches externally via caller-owned arrays/se
 
 ## Dependencies (imports)
 - `three/webgpu` -- matrix, vector, box, and mesh types.
-- `./overlay` -- world-matrix, bounds, and vertex helper access.
-- `./group` -- group hierarchy helpers.
+- `../selection/overlay` -- world-matrix, bounds, and vertex helper access.
+- `../selection/select` -- selection state shape.
+- `./vertex-swap` -- queue item and bundle types.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts`
-- `renderer/controls/handle-key.ts`
+- `renderer/controls/gizmo/gizmo.ts`
+- `renderer/controls/input/handle-key.ts`
 
 ## Notes
 Queue items preserve local gizmo position/quaternion so later swaps can reconstruct a consistent anchor world position.

@@ -18,8 +18,8 @@ Removes shear from selected instance transforms, preserving scale and keeping gi
 - `./group` -- group lookup and descendant traversal.
 
 ## Used By (known callers)
-- `renderer/controls/handle-key.ts`
-- `renderer/controls/vertex-scale.ts`
+- `renderer/controls/input/handle-key.ts`
+- `renderer/controls/vertex/vertex-scale.ts`
 
 ## Notes
 Uses Gram-Schmidt orthogonalization to eliminate shear in one pass. For group selections it clears cached group matrices first so center recalculation stays consistent. Translation correction (keep gizmo at `targetPosition`) is skipped in Center mode — in that mode the gizmo is the bbox center, which shifts when the basis is orthogonalized; compensating would snap the object origin to the old (sheared) bbox center. In Origin mode the offset is ~0 so the object stays put. Custom pivot rewrite (single-object) is also gated behind the `pivotMode !== 'center'` guard.

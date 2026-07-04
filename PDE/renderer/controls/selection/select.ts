@@ -7,7 +7,7 @@ import {
     Matrix4,
     Raycaster
 } from 'three/webgpu';
-import * as GroupUtils from './group';
+import * as GroupUtils from '../grouping/group';
 import * as Overlay from './overlay';
 
 // --- Types ---

@@ -9,12 +9,12 @@ import {
     Box3,
     Quaternion
 } from 'three/webgpu';
-import * as GroupUtils from './group';
-import * as Overlay from './overlay';
+import * as GroupUtils from '../grouping/group';
+import * as Overlay from '../selection/overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
-import { removeShearFromSelection } from './shear-remove';
-import type { GroupData } from './group';
-import type { GizmoState } from './gizmo';
+import { removeShearFromSelection } from '../pivot/shear-remove';
+import type { GroupData } from '../grouping/group';
+import type { GizmoState } from '../gizmo/gizmo';
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();

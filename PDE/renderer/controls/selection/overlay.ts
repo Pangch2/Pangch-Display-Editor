@@ -27,8 +27,8 @@ import {
     Camera,
     Vector2
 } from 'three/webgpu';
-import * as GroupUtils from './group';
-import type { GroupChildObject } from './group';
+import * as GroupUtils from '../grouping/group';
+import type { GroupChildObject } from '../grouping/group';
 
 // --- Types & Interfaces ---
 

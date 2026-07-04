@@ -13,7 +13,7 @@ import {
 import * as Select from './select';
 import type { SelectionCallbacks } from './select';
 import * as Overlay from './overlay';
-import * as GroupUtils from './group';
+import * as GroupUtils from '../grouping/group';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
 // Helper aliases

@@ -1,4 +1,4 @@
-import { currentSelection } from '../controls/select';
+import { currentSelection } from '../controls/selection/select';
 import { scenePanelState } from './scene-panel-state';
 import type { ScenePanelSelectionState } from './scene-panel-types';
 import {
