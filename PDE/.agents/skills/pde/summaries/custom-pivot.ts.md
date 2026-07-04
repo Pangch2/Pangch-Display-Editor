@@ -1,37 +1,39 @@
 # custom-pivot.ts
 
 ## Purpose
-Owns custom pivot behavior for the controls layer. It tracks Alt-driven pivot edit state, temporarily switches TransformControls to translate while Alt is held, restores the previous gizmo mode on Alt release, stores custom pivots from Alt-drag, and resolves stored custom pivot positions back to world space.
+Owns custom-pivot state for selections. It captures undo for pivot edits, recomputes pivot offsets for groups and objects, and commits pivot edits from drag interactions.
 
 ## Exports
 
 ### Types / Interfaces
-- `MatrixInstanceObject` -- structural type for objects exposing `getMatrixAt`/`setMatrixAt` instance transforms.
-- `CustomPivotState` -- Alt/pivot-drag state plus the previous transform mode to restore.
+- `SelectionElement` -- selected group/object entry.
+- `CurrentSelection` -- current selection snapshot for pivot logic.
+- `CustomPivotCallbacks` -- callbacks needed to compute selection centers and group/object pivots.
+- `CommitPivotEditParams` -- payload for committing a pivot drag.
+- `CommitPivotEditResult` -- resulting pivot state after a commit.
 
 ### Functions / Methods
-- `createCustomPivotState(): CustomPivotState` -- creates default custom pivot state.
-- `setAltPressed(state, isPressed): void` -- updates Alt pressed state from pointer events.
-- `handleCustomPivotKeyDown(state, event, hasSelection, transformControls): void` -- records the previous mode and switches to translate when Alt is pressed with a selection.
-- `handleCustomPivotKeyUp(state, event, transformControls): void` -- clears Alt state and restores the previous mode.
-- `cancelCustomPivotMode(state, transformControls): void` -- clears Alt/pivot-drag state and restores the previous transform mode.
-- `beginCustomPivotDrag(state): boolean` -- marks drag as pivot editing if Alt is currently pressed.
-- `endCustomPivotDrag(state, selectedObjects, pivotWorld): boolean` -- commits the pivot world position to selected objects when ending an Alt drag.
-- `restorePreviousTransformMode(state, transformControls): void` -- restores the pre-Alt transform mode if one is stored.
-- `getCustomPivotWorld(mesh, instanceId, target): boolean` -- resolves stored per-instance or per-object custom pivot data to world coordinates.
+- `clearEphemeralPivotUndo(): void` -- clears captured undo hooks.
+- `revertEphemeralPivotUndoIfAny(): void` -- replays and clears any pending pivot undo.
+- `capturePivotUndoForCurrentSelection(currentSelection): (() => void) | null` -- snapshots per-object custom pivot writes.
+- `recomputePivotStateForSelection(pivotMode, isMultiSelection, isCustomPivot, pivotOffset, currentSelection, loadedObjectGroup, callbacks): boolean` -- recalculates the effective pivot offset/state.
+- `SelectionCenter(pivotMode, isCustomPivot, pivotOffset, currentSelection, loadedObjectGroup, callbacks): Vector3` -- computes the world-space center/origin used by gizmo placement.
+- `setEphemeralPivotUndo(undoFn): void` -- stores a temporary undo closure.
+- `setPivotEditUndoCapture(undoFn): void` -- stores a deferred pivot-edit undo capture.
+- `getPivotEditUndoCapture(): (() => void) | null` -- retrieves the deferred undo capture.
+- `commitPivotEditFromDragEnd(params): CommitPivotEditResult` -- applies a dragged pivot into group/object metadata.
 
 ## Internal State
-- Reuses module-level `Matrix4` temporaries for inverse, instance, and world matrix calculations.
+Tracks two module-level undo hooks for transient pivot edits.
 
 ## Dependencies (imports)
-- `three/webgpu` -- matrix, object, and vector primitives.
-- `three/examples/jsm/controls/TransformControls.js` -- type-only dependency for transform mode control.
-- `./handle-key` -- reuses Alt+Tab detection, including Alt-first then Tab, so OS/app switching cancels temporary pivot mode instead of starting a pivot edit.
+- `three/webgpu` -- vector, matrix, mesh, and group types.
+- `./group` -- group pivot and hierarchy helpers.
+- `./overlay` -- world-matrix and bounding-box helpers.
 
 ## Used By (known callers)
-- `renderer/controls/gizmo.ts` -- delegates Alt pivot edit state and pivot storage/lookup.
+- `renderer/controls/gizmo.ts`
+- `renderer/controls/handle-key.ts`
 
 ## Notes
-- Custom pivots are stored in `mesh.userData.customPivots` for instance-like objects and `mesh.userData.customPivot` for normal objects.
-- Alt release restores the previous transform mode immediately, even if the pointer drag is still active.
-- Alt+Tab clears custom pivot Alt state, cancels pivot drag state, and restores the previous transform mode even when Alt was pressed before Tab.
+Handles both single-object and grouped selection pivots, including instanced/batched meshes via `customPivots` maps.

@@ -1,7 +1,7 @@
 # scene-panel-render.ts
 
 ## Purpose
-Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userData` when the panel is re-enabled. It rebuilds visible row metadata on scene updates, only creates DOM rows around the current viewport, preserves selection highlighting against a temporary empty selection placeholder, and keeps the extra-label fitting pass scoped to rendered rows.
+Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userData`. It rebuilds visible row metadata on scene updates, only creates DOM rows around the current viewport, preserves selection highlighting, and keeps the extra-label fitting pass scoped to rendered rows.
 
 ## Exports
 
@@ -16,9 +16,9 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 - Uses `scenePanelState.renderedRowEls` to track mounted virtual rows by visible index.
 - Uses `scenePanelState.scenePanelSpacerEl` and `scenePanelContentEl` to maintain scroll height while rendering only visible rows.
 - `scenePanelState.sceneExtraFitRaf` and `scenePanelRenderRaf` gate deferred work.
-- Uses a local empty `currentSelection` placeholder while the old controls selection module is removed.
 
 ## Dependencies (imports)
+- `../controls/select` -- provides the current selection snapshot for highlight sync.
 - `../load-project/upload-pbde` -- source scene data used to build row metadata.
 - `./scene-panel-dnd` -- drag handlers for rendered rows.
 - `./scene-panel-model` -- label cleanup, object visibility, grouping, and child resolution helpers.

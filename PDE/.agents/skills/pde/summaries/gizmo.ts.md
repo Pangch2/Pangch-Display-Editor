@@ -1,39 +1,41 @@
 # gizmo.ts
 
 ## Purpose
-Lightweight gizmo entry point for the editor control layer. It installs canvas click selection and global keyboard shortcuts, exposes minimal selection hooks on `loadedObjectGroup.userData`, attaches `TransformControls` to a center/origin/custom-pivot anchor using the selected object's world rotation, applies gizmo drag deltas to selected object/instance matrices, and delegates selection overlay state/box rendering to `overlay.ts` and custom pivot behavior to `custom-pivot.ts`.
+Main interaction controller for the editor. It wires transform controls, selection state, keyboard/mouse events, vertex mode, pivot handling, duplication, deletion, grouping, and overlay refresh into one orchestrator.
 
 ## Exports
 
 ### Types / Interfaces
-- `InitGizmoParams` -- scene, camera, renderer, orbit-controls enabled flag, and loaded object group needed to wire selection/gizmo behavior.
-- `InitGizmoResult` -- render-loop compatibility object with `updateGizmo()`.
+- `OrbitControlsLike` -- minimal orbit-control contract used by the editor.
+- `GizmoState` -- shared pivot/anchor state tracked by the gizmo.
+- `InitGizmoParams` -- inputs required to initialize the gizmo system.
+- `InitGizmoResult` -- public handles returned by `initGizmo`.
 
 ### Functions / Methods
-- `initGizmo(params): InitGizmoResult` -- sets up `TransformControls`, keyboard shortcuts, pointer/click selection, transform delta application, Alt-drag custom pivot editing, selection reset/replacement hooks, and gizmo attachment.
+- `initGizmo(params): InitGizmoResult` -- builds the editor interaction stack and installs DOM event listeners.
+
+## Internal State
+Maintains selection, pivot, drag, vertex queue, and gizmo-anchor caches at module scope.
 
 ## Dependencies (imports)
-- `three/webgpu` -- scene, camera, renderer, group, object, raycaster, matrix, and pointer math classes.
-- `./gizmo-setup` -- creates and patches `TransformControls`.
-- `./overlay` -- selection state mutation and selection box overlay helpers.
-- `./handle-key` -- installs global editor shortcuts using the active `TransformControls` instance.
-- `./custom-pivot` -- manages Alt-driven pivot mode state and custom pivot storage/lookup.
+- `./gizmo-setup` -- TransformControls initialization and gizmo line patching.
+- `./blockbench-scale` -- Blockbench-style scale mode and pivot-frame helpers.
+- `./group` -- group hierarchy and pivot helpers.
+- `./overlay` -- selection overlays, box math, vertex helpers.
+- `./custom-pivot` -- pivot recomputation and undo handling.
+- `./duplicate` -- duplication logic.
+- `./delete` -- deletion logic.
+- `./drag` -- marquee selection and delta application.
+- `./handle-key` -- keyboard bindings.
+- `./vertex-translate`, `./vertex-rotate`, `./vertex-scale`, `./vertex-queue` -- vertex snap/queue behavior.
+- `./select` -- selection state machine.
 
 ## Used By (known callers)
 - `renderer/renderer.ts`
 
-## Internal State
-- Tracks `pivotMode` inside `initGizmo()` as `center` or `origin`; `z` toggles it through `handle-key.ts` and updates the active gizmo anchor.
-
 ## Notes
-- Click selection ignores pointer movement over 4 px squared distance to avoid selecting after orbit drags.
-- Selected instanced/batched hits use `instanceId` or `batchId`, falling back to `0`.
-- During gizmo drag, the anchor world-matrix delta is converted into each selected object's local space and written via `setMatrixAt()` for instance-like objects or decomposed onto normal `Object3D` transforms.
-- Alt keydown, keyup, and window blur are forwarded to `custom-pivot.ts`; Alt switches to translate, keyup/blur restores the previous gizmo mode, and blur covers Alt+Tab focus loss.
-- Alt + gizmo drag stores the dragged anchor as custom pivot without transforming the selected object.
-- `initHandleKey()` is called once during gizmo initialization so `t`, `r`, and `s` switch translate/rotate/scale, `x` toggles world/local space, and `z` toggles center/origin pivot placement.
-- Custom pivots take precedence over the center/origin pivot mode when a selected object or instance has one stored.
-- The gizmo anchor uses identity rotation whenever `TransformControls.space` is `world`, matching the old controls behavior.
-- The gizmo anchor derives local rotation from normalized world-matrix basis vectors so local space follows object/instance rotation without directly decomposing scale-heavy matrices.
-- World-space scale on normal `Object3D` preserves the pre-scale local quaternion after matrix decomposition to avoid shear-induced rotation drift changing the gizmo angle.
-- `handle-key.ts` calls back after mode/space changes so the current selection reattaches with the correct anchor rotation immediately.
+This is the highest-risk module in the control layer: it owns the event wiring and many mutable shared references, so changes here can ripple across selection and transform behavior.
+It now listens for `pde:scene-updated` to invalidate selection caches and recompute the helper/overlay after hierarchy edits.
+After pivot-edit commit, object custom pivots derive `pivotOffset` from the pre-custom-pivot origin so follow-up transforms keep using the custom anchor.
+`SelectionCenter`: for multi-selection with a locked anchor (`_multiSelectionOriginAnchorValid`), the function short-circuits and returns `_multiSelectionOriginAnchorPosition` (refreshed from local if possible) instead of delegating to `CustomPivot.SelectionCenter`. This is necessary because `pivotOffset` is zero in the multi-selection case (only single-object/group pivots encode the offset there); without the short-circuit, shear-remove computed an erroneous delta equal to the custom-pivot → centroid offset and shifted all objects.
+

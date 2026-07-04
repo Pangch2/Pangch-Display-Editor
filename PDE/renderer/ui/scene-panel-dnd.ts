@@ -1,12 +1,12 @@
 import { loadedObjectGroup } from '../load-project/upload-pbde';
+import { currentSelection } from '../controls/select';
 import { scheduleSceneExtraFit } from './scene-panel-render';
 import { scenePanelState } from './scene-panel-state';
 import type {
     LoadedObjectUserData,
     SceneDragBundle,
     SceneDragSource,
-    SceneDropHint,
-    ScenePanelSelectionState
+    SceneDropHint
 } from './scene-panel-types';
 import {
     getObjectGroupKeyByUuid,
@@ -14,12 +14,6 @@ import {
     isGroupAncestorOf,
     moveSceneItemsByDropHint
 } from './scene-panel-model';
-
-const currentSelection: ScenePanelSelectionState = {
-    groups: new Set<string>(),
-    objects: new Map(),
-    primary: null
-};
 
 function getSceneDragItemKey(item: SceneDragSource): string {
     return `${item.type}:${item.id}`;

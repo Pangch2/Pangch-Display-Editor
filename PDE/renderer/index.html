@@ -26,19 +26,11 @@
   <script type="module" src="./renderer.ts"></script>
 
   <script>
-    const SCENE_PANEL_ENABLED = false;
     const scenePanel  = document.getElementById('scene-panel');
     const mainContent = document.getElementById('main-content');
     const resizer     = document.getElementById('scene-resizer');
 
     function applyLayout() {
-      if (!SCENE_PANEL_ENABLED) {
-        scenePanel.hidden = true;
-        mainContent.style.right = '0px';
-        window.dispatchEvent(new Event('resize'));
-        return;
-      }
-
       mainContent.style.right = scenePanel.offsetWidth + 'px';
       window.dispatchEvent(new Event('resize'));
     }
@@ -46,15 +38,13 @@
     // Scene 패널 리사이저
     let startX = 0, startWidth = 0;
 
-    if (SCENE_PANEL_ENABLED) {
-      resizer.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        startX     = e.clientX;
-        startWidth = scenePanel.offsetWidth;
-        window.addEventListener('mousemove', onMouseMove);
-        window.addEventListener('mouseup',   onMouseUp);
-      });
-    }
+    resizer.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startX     = e.clientX;
+      startWidth = scenePanel.offsetWidth;
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup',   onMouseUp);
+    });
 
     function onMouseMove(e) {
       const newWidth = startWidth - (e.clientX - startX);
@@ -72,7 +62,7 @@
 
     // 저장된 너비 복원
     const savedWidth = localStorage.getItem('scene-panel-width');
-    if (SCENE_PANEL_ENABLED && savedWidth) scenePanel.style.width = savedWidth;
+    if (savedWidth) scenePanel.style.width = savedWidth;
     applyLayout();
   </script>
 </body>
