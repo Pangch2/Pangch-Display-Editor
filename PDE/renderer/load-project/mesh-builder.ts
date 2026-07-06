@@ -23,6 +23,7 @@ let sharedPlaceholderMaterial: THREE.Material | null = null;
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
 const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
 const MAX_INSTANCES_PER_INSTANCED_MESH = 32768;
+const INITIAL_INSTANCES_PER_INSTANCED_MESH = MAX_INSTANCES_PER_INSTANCED_MESH >> 1;
 const MAX_PART_UV_TRANSFORMS = 8;
 let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
@@ -164,6 +165,10 @@ function getInstancedUvTransformCount(parts: GeometryMeta[], instanceMetas: Inst
         MAX_PART_UV_TRANSFORMS,
         Math.max(1, parts.length, ...instanceMetas.map(meta => meta.atlasUvTransforms?.length ?? 0))
     );
+}
+
+function getAppendableInstanceCapacity(count: number): number {
+    return Math.max(count, Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, Math.max(64, count * 2)));
 }
 
 function getMaterialKey(part: GeometryMeta, instancedUvTransformCount: number): string {
@@ -1180,13 +1185,14 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                         if (mergedGeo) {
                             const instanceMatrix = new THREE.Matrix4();
-                            for (let chunkStart = 0; chunkStart < transforms.length; chunkStart += MAX_INSTANCES_PER_INSTANCED_MESH) {
-                                const chunkCount = Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, transforms.length - chunkStart);
+                            for (let chunkStart = 0; chunkStart < transforms.length; chunkStart += INITIAL_INSTANCES_PER_INSTANCED_MESH) {
+                                const chunkCount = Math.min(INITIAL_INSTANCES_PER_INSTANCED_MESH, transforms.length - chunkStart);
+                                const chunkCapacity = getAppendableInstanceCapacity(chunkCount);
                                 const meshGeometry = usesAtlasUvTransform ? mergedGeo.clone() : mergedGeo;
                                 if (usesAtlasUvTransform) {
                                     for (let partIndex = 0; partIndex < instancedUvTransformCount; partIndex++) {
                                         const baseUvTransform = representativeParts[partIndex]?.uvTransform ?? representativeParts[0]?.uvTransform;
-                                        const uvTransforms = new Float32Array(chunkCount * 4);
+                                        const uvTransforms = new Float32Array(chunkCapacity * 4);
                                         for (let i = 0; i < chunkCount; i++) {
                                             const sourceIndex = chunkStart + i;
                                             const currentUvTransform = getInstancePartUvTransform(instanceMetas[sourceIndex], partIndex);
@@ -1199,7 +1205,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                         meshGeometry.setAttribute(attributeName, new THREE.InstancedBufferAttribute(uvTransforms, 4));
                                     }
                                 }
-                                const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCount);
+                                const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCapacity);
+                                instancedMesh.count = chunkCount;
                                 
                                 instancedMesh.userData.displayType = 'block_display';
                                 instancedMesh.userData.displayTypes = new Map<number, 'block_display' | 'item_display'>();
@@ -1388,8 +1395,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             newUvAttr.needsUpdate = true;
 
                             const totalInstances = playerHeadItems.length;
-                            const matrices = new Float32Array(totalInstances * 16);
-                            const uvOffsets = new Float32Array(totalInstances * 2);
+                            const headCapacity = getAppendableInstanceCapacity(totalInstances);
+                            const matrices = new Float32Array(headCapacity * 16);
+                            const uvOffsets = new Float32Array(headCapacity * 2);
                             const hasHatArray = new Array(totalInstances).fill(false);
 
                             let i = 0;
@@ -1417,7 +1425,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             
                             sharedGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
 
-                            const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, totalInstances);
+                            const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, headCapacity);
+                            instancedMesh.count = totalInstances;
                             instancedMesh.userData.displayType = 'item_display';
                             instancedMesh.userData.hasHat = hasHatArray; // Store hat info for gizmo
                             instancedMesh.instanceMatrix.needsUpdate = true;

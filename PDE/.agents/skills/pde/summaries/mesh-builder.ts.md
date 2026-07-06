@@ -23,6 +23,8 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Per-instance atlas UV transform arrays, display-type, and block-property metadata for same-shape objects that share geometry but use different atlas locations, source display types, or rotation-only properties.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
+- `INITIAL_INSTANCES_PER_INSTANCED_MESH` starts block chunks at half capacity so duplicated instances can append without resizing WebGPU buffers
+- Small instanced chunks allocate at least 64 capacity so repeated duplication avoids WebGPU buffer resizing for matrix/UV attributes.
 
 ## Dependencies (imports)
 - `three/webgpu` -- scene graph, geometry, material, and texture classes
@@ -45,5 +47,6 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Loaded instanced meshes populate `userData.displayTypes` per instance so mixed block/item-display batches still work with `Overlay.getDisplayType`.
 - `GeometryMeta.geometryBufferKey` is used when present so same model id/index values from different packed batches do not collide.
 - Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
+- Instanced meshes are allocated with spare capacity and then `mesh.count` is lowered to the active instance count so duplicate append can reuse existing matrix/UV buffers without rebinding texture attributes; tiny chunks still get 64 slots minimum to cover copied-copy duplication.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items` defaults to enabled; optional `Load timings`, `Geometry stats`, `Mesh uploaded`, and `Finished processing` logs default to disabled.

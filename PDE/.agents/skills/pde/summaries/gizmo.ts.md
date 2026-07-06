@@ -31,4 +31,4 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `renderer/controls/vertex/vertex-*`
 
 ## Notes
-This remains the highest-risk control module because it owns event wiring and mutable shared state. It now routes only through InstancedMesh-based object selection and duplication.
+This remains the highest-risk control module because it owns event wiring and mutable shared state. It routes object selection and duplication through InstancedMesh paths and passes most overlay helpers directly.

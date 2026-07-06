@@ -16,8 +16,7 @@ import {
     Vector2,
     Raycaster,
     BoxGeometry,
-    MeshBasicMaterial,
-    Sprite
+    MeshBasicMaterial
 } from 'three/webgpu';
 import {
     blockbenchScaleMode,
@@ -92,18 +91,6 @@ export interface InitGizmoResult {
 }
 
 //  Aliases 
-const getInstanceCount = Overlay.getInstanceCount;
-const isInstanceValid = Overlay.isInstanceValid;
-const getDisplayType = Overlay.getDisplayType;
-const isItemDisplayHatEnabled = Overlay.isItemDisplayHatEnabled;
-const getInstanceLocalBoxMin = Overlay.getInstanceLocalBoxMin;
-const getInstanceWorldMatrixForOrigin = Overlay.getInstanceWorldMatrixForOrigin;
-const getGroupWorldMatrixWithFallback = Overlay.getGroupWorldMatrixWithFallback;
-const unionTransformedBox3 = Overlay.unionTransformedBox3;
-const getInstanceLocalBox = Overlay.getInstanceLocalBox;
-const getInstanceWorldMatrix = Overlay.getInstanceWorldMatrix;
-const getGroupLocalBoundingBox = Overlay.getGroupLocalBoundingBox;
-const getRotationFromMatrix = Overlay.getRotationFromMatrix;
 const getSelectionBoundingBox = () => Overlay.getSelectionBoundingBox(currentSelection);
 
 //  Shared temporaries 
@@ -388,7 +375,6 @@ const dragInitialQuaternion = new Quaternion();
 const dragInitialScale = new Vector3();
 const dragInitialPosition = new Vector3();
 const dragInitialBoundingBox = new Box3();
-const dragStartAvgOrigin = new Vector3();
 const dragStartPivotBaseWorld = new Vector3();
 let draggingMode: string | null = null;
 let isGizmoBusy = false;
@@ -408,8 +394,8 @@ const _meshToInstanceIds = new Map<Object3D, number[]>();
 
 function getGroupRotationQuaternion(groupId: string | null, out = new Quaternion()): Quaternion {
     if (!groupId) return out.set(0, 0, 0, 1);
-    const m = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
-    const q = getRotationFromMatrix(m);
+    const m = Overlay.getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
+    const q = Overlay.getRotationFromMatrix(m);
     return out.copy(q);
 }
 
@@ -518,18 +504,18 @@ function updateHelperPosition(): void {
                     tempMat.premultiply(mesh.matrixWorld);
                     primaryPivotWorld = custom.clone().applyMatrix4(tempMat);
                 } else {
-                    const displayType = getDisplayType(mesh, instanceId);
+                    const displayType = Overlay.getDisplayType(mesh, instanceId);
                     if (displayType === 'block_display') {
-                        const localPivot = getInstanceLocalBoxMin(mesh, instanceId, _TMP_VEC3_B);
+                        const localPivot = Overlay.getInstanceLocalBoxMin(mesh, instanceId, _TMP_VEC3_B);
                         if (localPivot) {
-                            const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
+                            const worldMatrix = Overlay.getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
                             primaryPivotWorld = localPivot.applyMatrix4(worldMatrix);
                         }
                     }
                     if (!primaryPivotWorld) {
                         const tempMat = _TMP_MAT4_A;
-                        getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
-                        const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
+                        Overlay.getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
+                        const localY = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
                         primaryPivotWorld = _TMP_VEC3_B.set(0, localY, 0).applyMatrix4(tempMat);
                     }
                 }
@@ -593,9 +579,9 @@ function updateHelperPosition(): void {
         const prim = currentSelection.primary;
         const tempMat = _TMP_MAT4_A;
         if (prim.type === 'group') {
-            getGroupWorldMatrixWithFallback(prim.id, tempMat);
+            Overlay.getGroupWorldMatrixWithFallback(prim.id, tempMat);
         } else {
-            getInstanceWorldMatrix(prim.mesh, prim.instanceId, tempMat);
+            Overlay.getInstanceWorldMatrix(prim.mesh, prim.instanceId, tempMat);
         }
 
         const inv = _TMP_MAT4_B.copy(tempMat).invert();
@@ -638,7 +624,7 @@ function updateHelperPosition(): void {
                         const instanceMatrix = _TMP_MAT4_A;
                         (mesh as InstancedMesh).getMatrixAt(instanceId, instanceMatrix);
                         const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
-                        selectionHelper!.quaternion.copy(getRotationFromMatrix(worldMatrix));
+                        selectionHelper!.quaternion.copy(Overlay.getRotationFromMatrix(worldMatrix));
                     }
                 }
             } else {
@@ -870,7 +856,6 @@ export function initGizmo({
 
             if (isPivotEditMode) {
                 dragStartPivotBaseWorld.copy(SelectionCenter('origin', false, _ZERO_VEC3));
-                dragStartAvgOrigin.copy(Select.calculateAvgOrigin());
                 CustomPivot.setPivotEditUndoCapture(null);
             }
 
@@ -882,22 +867,22 @@ export function initGizmo({
 
                 const singleGroupId = _getSingleSelectedGroupId();
                 if (singleGroupId) {
-                    const groupLocalBox = getGroupLocalBoundingBox(singleGroupId);
+                    const groupLocalBox = Overlay.getGroupLocalBoundingBox(singleGroupId);
                     if (!groupLocalBox.isEmpty()) {
-                        const groupWorldMat = getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
+                        const groupWorldMat = Overlay.getGroupWorldMatrixWithFallback(singleGroupId, _TMP_MAT4_A);
                         const combinedMat = transformBoxToPivotFrame(groupWorldMat, _TMP_MAT4_B);
-                        unionTransformedBox3(dragInitialBoundingBox, groupLocalBox, combinedMat);
+                        Overlay.unionTransformedBox3(dragInitialBoundingBox, groupLocalBox, combinedMat);
                     }
                 } else {
                     const items = getSelectedItems();
                     if (items.length > 0) {
                         const tempMat = new Matrix4();
                         items.forEach(({ mesh, instanceId }) => {
-                            const localBox = getInstanceLocalBox(mesh, instanceId);
+                            const localBox = Overlay.getInstanceLocalBox(mesh, instanceId);
                             if (!localBox) return;
-                            getInstanceWorldMatrix(mesh, instanceId, tempMat);
+                            Overlay.getInstanceWorldMatrix(mesh, instanceId, tempMat);
                             const combinedMat = transformBoxToPivotFrame(tempMat, _TMP_MAT4_A);
-                            unionTransformedBox3(dragInitialBoundingBox, localBox, combinedMat);
+                            Overlay.unionTransformedBox3(dragInitialBoundingBox, localBox, combinedMat);
                         });
                     }
                 }
@@ -1114,12 +1099,12 @@ export function initGizmo({
         shouldUseGroupPivot,
         normalizePivotToVector3,
 
-        getInstanceCount,
-        isInstanceValid,
-        getDisplayType,
-        getInstanceLocalBoxMin,
-        getInstanceWorldMatrixForOrigin,
-        isItemDisplayHatEnabled,
+        getInstanceCount:                         Overlay.getInstanceCount,
+        isInstanceValid:                          Overlay.isInstanceValid,
+        getDisplayType:                           Overlay.getDisplayType,
+        getInstanceLocalBoxMin:                   Overlay.getInstanceLocalBoxMin,
+        getInstanceWorldMatrixForOrigin:          Overlay.getInstanceWorldMatrixForOrigin,
+        isItemDisplayHatEnabled:                  Overlay.isItemDisplayHatEnabled,
         prepareMultiSelectionDrag:                Overlay.prepareMultiSelectionDrag,
     });
 
@@ -1128,11 +1113,6 @@ export function initGizmo({
     const mouse = new Vector2();
     let mouseDownPos: { x: number; y: number } | null = null;
     const cameraMatrixOnPointerDown = new Matrix4();
-
-    function getHoveredVertex(mouseNDC: Vector2): Sprite | null {
-        if (!isVertexMode) return null;
-        return Overlay.getHoveredVertex(mouseNDC, camera, renderer);
-    }
 
     const dragControls: DragInterface = initDrag({
         renderer,
@@ -1153,7 +1133,7 @@ export function initGizmo({
                 -((event.clientY - rect.top) / rect.height) * 2 + 1
             );
 
-            const hovered = getHoveredVertex(m);
+            const hovered = Overlay.getHoveredVertex(m, camera, renderer);
             Overlay.updateVertexHoverHighlight(hovered, selectedVertexKeys);
 
             if (hovered) {
@@ -1232,7 +1212,7 @@ export function initGizmo({
                 -((event.clientY - rect.top) / rect.height) * 2 + 1
             );
 
-            const v = getHoveredVertex(m);
+            const v = Overlay.getHoveredVertex(m, camera, renderer);
             if (v && v.userData && v.userData.key) {
                 const key = v.userData.key as string;
 
@@ -1269,7 +1249,7 @@ export function initGizmo({
                             gizmoMode: transformControls!.mode,
                             currentSelection, loadedObjectGroup, selectionHelper: selectionHelper!,
                             getGizmoState, setGizmoState, setMultiAnchorInitial: _setMultiAnchorInitial,
-                            getGroups, getGroupWorldMatrixWithFallback, getGroupWorldMatrix,
+                            getGroups, getGroupWorldMatrixWithFallback: Overlay.getGroupWorldMatrixWithFallback, getGroupWorldMatrix,
                             updateHelperPosition, updateSelectionOverlay,
                             _isMultiSelection, _getSingleSelectedGroupId, SelectionCenter,
                             vertexQueue
@@ -1281,7 +1261,7 @@ export function initGizmo({
                                 gizmoMode: transformControls!.mode,
                                 currentSelection, loadedObjectGroup, selectionHelper: selectionHelper!,
                                 getGizmoState, setGizmoState, setMultiAnchorInitial: _setMultiAnchorInitial,
-                                getGroups, getGroupWorldMatrixWithFallback,
+                                getGroups, getGroupWorldMatrixWithFallback: Overlay.getGroupWorldMatrixWithFallback,
                                 updateHelperPosition, updateSelectionOverlay,
                                 SelectionCenter,
                                 vertexQueue
@@ -1295,7 +1275,7 @@ export function initGizmo({
                                 isCtrlDown: event.ctrlKey || event.metaKey,
                                 currentSelection, loadedObjectGroup, selectionHelper: selectionHelper!,
                                 getGizmoState, setGizmoState, setMultiAnchorInitial: _setMultiAnchorInitial,
-                                getGroups, getGroupWorldMatrixWithFallback,
+                                getGroups, getGroupWorldMatrixWithFallback: Overlay.getGroupWorldMatrixWithFallback,
                                 updateHelperPosition, updateSelectionOverlay,
                                 SelectionCenter,
                                 vertexQueue,
@@ -1338,7 +1318,7 @@ export function initGizmo({
             return;
         }
 
-        const dist = Math.sqrt((event.clientX - mouseDownPos.x) ** 2 + (event.clientY - mouseDownPos.y) ** 2);
+        const dist = Math.hypot(event.clientX - mouseDownPos.x, event.clientY - mouseDownPos.y);
         if (dist > 5) { mouseDownPos = null; return; }
         mouseDownPos = null;
 
@@ -1379,24 +1359,17 @@ export function initGizmo({
                 const direction = camPos.clone().sub(gizmoPos).normalize();
                 if (currentSpace === 'local') direction.applyQuaternion(transformControls!.object.quaternion.clone().invert());
 
-                const axesConfig: Record<string, { originalLines: Mesh[]; negativeLines: Mesh[]; getDirection: () => boolean }> = {
-                    X: { originalLines: gizmoLines.X.original, negativeLines: gizmoLines.X.negative, getDirection: () => direction.x > 0 },
-                    Y: { originalLines: gizmoLines.Y.original, negativeLines: gizmoLines.Y.negative, getDirection: () => direction.y > 0 },
-                    Z: { originalLines: gizmoLines.Z.original, negativeLines: gizmoLines.Z.negative, getDirection: () => direction.z > 0 }
-                };
-
-                for (const axis in axesConfig) {
-                    const { originalLines, negativeLines, getDirection } = axesConfig[axis];
-                    const isPositive = getDirection();
+                for (const axis of ['X', 'Y', 'Z'] as const) {
+                    const isPositive = direction[axis.toLowerCase() as 'x' | 'y' | 'z'] > 0;
                     const currentDirection = isPositive ? 'positive' : 'negative';
                     if (currentDirection !== lastDirections[axis]) {
                         lastDirections[axis] = currentDirection;
                         if (isPositive) {
-                            setGizmoMaterialOpacity(originalLines, 1);
-                            setGizmoMaterialOpacity(negativeLines, 0.001);
+                            setGizmoMaterialOpacity(gizmoLines[axis].original, 1);
+                            setGizmoMaterialOpacity(gizmoLines[axis].negative, 0.001);
                         } else {
-                            setGizmoMaterialOpacity(negativeLines, 1);
-                            setGizmoMaterialOpacity(originalLines, 0.001);
+                            setGizmoMaterialOpacity(gizmoLines[axis].negative, 1);
+                            setGizmoMaterialOpacity(gizmoLines[axis].original, 0.001);
                         }
                     }
                 }
