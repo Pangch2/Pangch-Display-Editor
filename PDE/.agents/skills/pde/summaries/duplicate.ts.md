@@ -14,6 +14,7 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 
 ## Internal State
 - Module-level matrix and color scratch objects reduce per-clone allocations.
+- Group duplication creates one shared `CloneGroupContext` so cloned group names do not rescan the full group map per group.
 - Instanced clone jobs are grouped per source mesh so each source mesh appends all duplicate instances in one batch, spilling into new chunk meshes when full and marking changed GPU attributes once per batch.
 - A WeakMap-backed spare chunk pool keeps at most one prewarmed InstancedMesh chunk per source mesh; idle prewarm starts when remaining capacity drops below 25%.
 - `cloneData` preserves Maps, Sets, and Three-style `clone()` values used by copied plain-mesh `userData`.
@@ -22,6 +23,7 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 - `three/webgpu` -- mesh, geometry, matrix, color, UUID, and instancing primitives.
 - `./group` -- canonical group tree, object mapping, and clone job helpers.
 - `../selection/overlay` -- resolves per-instance display type.
+- `../../load-project/pbde-log` -- gates optional duplicate performance timing logs.
 
 ## Used By (known callers)
 - `renderer/controls/gizmo/gizmo-commands.ts` -- calls `duplicateGroupsAndObjects` from duplicate-selected command handling.
@@ -33,3 +35,4 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 - New chunks clone the source geometry/materials and reset per-instance `userData` maps so copied copies remain selectable and duplicable; idle prewarm skips stale source meshes removed by project reloads.
 - Normal append path expects meshes created by `mesh-builder.ts` to have spare capacity; chunk spillover handles unlimited repeated duplication without rebinding existing buffers.
 - Group clone jobs rely on `group.ts` for structure cloning and object traversal.
+- `Duplicate timings` pbde log emits one summary line with job counts and timing buckets when enabled.

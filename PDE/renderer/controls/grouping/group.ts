@@ -54,6 +54,11 @@ export interface CollectCloneContext {
     _groupIdMap?: Map<string, string>;
 }
 
+export interface CloneGroupContext {
+    existingNames: Set<string>;
+    nextNameByPrefix: Map<string, number>;
+}
+
 type SceneItemContainer = GroupChild[] | SceneOrderEntry[];
 
 interface SceneItemLocation {
@@ -97,7 +102,8 @@ function _getNextGroupName(groups: Map<string, GroupData>): string {
     return next === 1 ? 'group' : `group${next}`;
 }
 
-function _getCloneName(sourceName: string | null | undefined, groups: Map<string, GroupData>): string {
+function _getCloneName(sourceName: string | null | undefined, cloneCtx: CloneGroupContext): string {
+    const existingNames = cloneCtx.existingNames;
     const base = (sourceName || 'Group').trim();
     // 이름 끝에 숫자가 있는지 확인 (공백 유무 상관없이 매칭)
     const match = base.match(/^(.*?)\s*(\d+)$/);
@@ -111,18 +117,23 @@ function _getCloneName(sourceName: string | null | undefined, groups: Map<string
         nextNum = parseInt(match[2], 10) + 1;
     }
 
-    const existingNames = new Set<string>();
-    for (const g of groups.values()) {
-        if (g.name) existingNames.add(g.name);
-    }
-
-    // 고유한 이름을 찾을 때까지 숫자 증가
+    nextNum = Math.max(nextNum, cloneCtx.nextNameByPrefix.get(namePart) ?? nextNum);
     let candidate = `${namePart} ${nextNum}`.trim();
     while (existingNames.has(candidate)) {
         nextNum++;
         candidate = `${namePart} ${nextNum}`.trim();
     }
+    existingNames.add(candidate);
+    cloneCtx.nextNameByPrefix.set(namePart, nextNum + 1);
     return candidate;
+}
+
+export function createCloneGroupContext(loadedObjectGroup: Group): CloneGroupContext {
+    const existingNames = new Set<string>();
+    for (const group of getGroups(loadedObjectGroup).values()) {
+        if (group.name) existingNames.add(group.name);
+    }
+    return { existingNames, nextNameByPrefix: new Map() };
 }
 
 function _findGroupLocationForCreate(
@@ -631,11 +642,13 @@ export function cloneGroupStructure(
     loadedObjectGroup: Group,
     groupId: string,
     parentId: string | null,
-    idMap?: Map<string, string>
+    idMap?: Map<string, string>,
+    cloneCtx?: CloneGroupContext
 ): string | null {
     const groups = getGroups(loadedObjectGroup);
     const sourceGroup = groups.get(groupId);
     if (!sourceGroup) return null;
+    const ctx = cloneCtx ?? createCloneGroupContext(loadedObjectGroup);
 
     const newGroupId = MathUtils.generateUUID();
     if (idMap) idMap.set(groupId, newGroupId);
@@ -650,7 +663,7 @@ export function cloneGroupStructure(
         isCollection: true,
         children: [],
         parent: parentId,
-        name: _getCloneName(sourceGroup.name, groups),
+        name: _getCloneName(sourceGroup.name, ctx),
         position: sourceGroup.position ? sourceGroup.position.clone() : new Vector3(),
         quaternion: sourceGroup.quaternion ? sourceGroup.quaternion.clone() : new Quaternion(),
         scale: sourceGroup.scale ? sourceGroup.scale.clone() : new Vector3(1, 1, 1),
@@ -693,7 +706,7 @@ export function cloneGroupStructure(
         for (const child of sourceGroup.children) {
             if (!child) continue;
             if (child.type === 'group') {
-                cloneGroupStructure(loadedObjectGroup, child.id, newGroupId, idMap);
+                cloneGroupStructure(loadedObjectGroup, child.id, newGroupId, idMap, ctx);
             }
         }
     }

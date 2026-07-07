@@ -15,7 +15,8 @@ export const pbdeLogNames = {
     meshUploaded: 'Mesh uploaded',
     finishedProcessing: 'Finished processing',
     sceneTimings: 'Scene timings',
-    parseTimings: 'Parse timings'
+    parseTimings: 'Parse timings',
+    duplicateTimings: 'Duplicate timings'
 } as const;
 
 type PbdeLogName = typeof pbdeLogNames[keyof typeof pbdeLogNames];
@@ -38,7 +39,8 @@ const pbdeLogDefinitions: Record<PbdeLogName, PbdeLogDefinition> = {
     [pbdeLogNames.meshUploaded]: { defaultEnabled: false },
     [pbdeLogNames.finishedProcessing]: { defaultEnabled: false },
     [pbdeLogNames.sceneTimings]: { defaultEnabled: false },
-    [pbdeLogNames.parseTimings]: { defaultEnabled: false }
+    [pbdeLogNames.parseTimings]: { defaultEnabled: false },
+    [pbdeLogNames.duplicateTimings]: { defaultEnabled: true }
 };
 
 function normalizeLogName(name: string): string {

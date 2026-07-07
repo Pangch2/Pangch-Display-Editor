@@ -13,6 +13,7 @@ Owns the editor custom group tree model, including group creation, cloning, ungr
 - `SceneOrderEntry` -- root-level ordering entry for groups and objects.
 - `CloneJobEntry` -- clone job produced while duplicating group contents.
 - `CollectCloneContext` -- callback context for clone planning.
+- `CloneGroupContext` -- cached group-name set and per-prefix next-name counters reused across group subtree cloning.
 
 ### Variables / Constants
 - `DEFAULT_GROUP_PIVOT: Vector3` -- default pivot used when a group has no custom pivot.
@@ -29,7 +30,8 @@ Owns the editor custom group tree model, including group creation, cloning, ungr
 - `updateGroupReferenceForMovedInstance(...)` -- updates group/object metadata after InstancedMesh swap-pop.
 - `createGroupStructure(...)` -- inserts a new group and moves selected items under it.
 - `ungroupGroupStructure(...)` -- removes a group while preserving its children.
-- `cloneGroupStructure(...)` -- recursively clones a group subtree.
+- `createCloneGroupContext(loadedObjectGroup)` -- snapshots existing group names and initializes duplicate-name counters.
+- `cloneGroupStructure(...)` -- recursively clones a group subtree, optionally reusing `CloneGroupContext`.
 - `collectCloneJobsFromGroup(...)` -- walks a group subtree and emits object clone jobs.
 
 ## Dependencies (imports)
@@ -39,4 +41,4 @@ Owns the editor custom group tree model, including group creation, cloning, ungr
 - Most control modules, especially `select.ts`, `overlay.ts`, `duplicate.ts`, `delete.ts`, `drag.ts`, `custom-pivot.ts`, `gizmo.ts`, and `vertex-*` files.
 
 ## Notes
-This module is the canonical access point for group metadata. Callers should use its accessors rather than mutating `loadedObjectGroup.userData` directly.
+This module is the canonical access point for group metadata. Callers should use its accessors rather than mutating `loadedObjectGroup.userData` directly. Duplicate callers should share one `CloneGroupContext` across related `cloneGroupStructure` calls to avoid rescanning all group names and retrying duplicate name prefixes from low numbers per cloned group.

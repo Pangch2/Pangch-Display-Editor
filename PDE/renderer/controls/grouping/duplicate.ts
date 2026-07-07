@@ -11,6 +11,7 @@ import {
 import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
 import * as Overlay from '../selection/overlay';
+import { isPbdeLogEnabled, pbdeLogNames } from '../../load-project/pbde-log';
 
 const getDisplayType = Overlay.getDisplayType;
 
@@ -42,6 +43,12 @@ interface CloneResult {
     instanceId: number;
     objectUuid: string;
     coveredByGroup: boolean;
+}
+
+interface DuplicateTimingStats {
+    attrsMs: number;
+    metadataMs: number;
+    chunks: number;
 }
 
 export interface DuplicationSelection {
@@ -328,7 +335,8 @@ function maybePrewarmNextInstancedChunk(loadedObjectGroup: Group, sourceMesh: In
 function cloneInstancedBatch(
     loadedObjectGroup: Group,
     sourceMesh: InstancedMesh,
-    jobs: CloneJobEntry[]
+    jobs: CloneJobEntry[],
+    timings?: DuplicateTimingStats
 ): CloneResult[] {
     if (!sourceMesh.geometry || jobs.length === 0) return [];
 
@@ -344,12 +352,15 @@ function cloneInstancedBatch(
             targetMesh = takeSpareInstancedChunk(loadedObjectGroup, sourceMesh);
             targetCapacity = getInstancedCapacity(targetMesh);
             scheduleInstancedChunkPrewarm(loadedObjectGroup, sourceMesh);
+            if (timings) timings.chunks++;
         }
 
         const targetId = targetMesh.count;
         sourceMesh.getMatrixAt(job.instanceId, tmpTargetLocal);
         targetMesh.setMatrixAt(targetId, tmpTargetLocal);
+        const attrsStart = timings ? performance.now() : 0;
         copyInstancedGeometryAttributes(sourceMesh, job.instanceId, targetMesh, targetId, updatedAttributes);
+        if (timings) timings.attrsMs += performance.now() - attrsStart;
 
         if (sourceMesh.instanceColor && sourceMesh.getColorAt) {
             sourceMesh.getColorAt(job.instanceId, tmpColor);
@@ -357,6 +368,7 @@ function cloneInstancedBatch(
             updatedColorMeshes.add(targetMesh);
         }
 
+        const metadataStart = timings ? performance.now() : 0;
         copyUserDataForInstance(sourceMesh, job.instanceId, targetMesh, targetId);
 
         const objectUuid = registerClone(loadedObjectGroup, sourceMesh, job.instanceId, targetMesh, targetId);
@@ -370,6 +382,7 @@ function cloneInstancedBatch(
             objectUuid,
             job.coveredByGroup
         );
+        if (timings) timings.metadataMs += performance.now() - metadataStart;
         results.push({ mesh: targetMesh, instanceId: targetId, objectUuid, coveredByGroup: job.coveredByGroup });
         targetMesh.count++;
         updatedMeshes.add(targetMesh);
@@ -400,20 +413,33 @@ export function duplicateGroupsAndObjects(
     groupIds: Set<string> | null,
     objectEntries: Array<{ mesh: Mesh | InstancedMesh, instanceId: number }> | null
 ): DuplicationSelection {
+    const logTimings = isPbdeLogEnabled(pbdeLogNames.duplicateTimings);
+    const totalStart = logTimings ? performance.now() : 0;
+    const timings: DuplicateTimingStats | undefined = logTimings ? { attrsMs: 0, metadataMs: 0, chunks: 0 } : undefined;
+    let groupCloneMs = 0;
+    let collectMs = 0;
+    let plainCloneMs = 0;
+    let instancedCloneMs = 0;
+    let plainJobs = 0;
+
     const newSelection: DuplicationSelection = { groups: new Set(), objects: new Map() };
     const groups = GroupUtils.getGroups(loadedObjectGroup);
     const idMap = new Map<string, string>();
     const jobs: CloneJobEntry[] = [];
+    const cloneGroupCtx = groupIds ? GroupUtils.createCloneGroupContext(loadedObjectGroup) : undefined;
 
     if (groupIds) {
+        const groupCloneStart = logTimings ? performance.now() : 0;
         for (const groupId of groupIds) {
             const group = groups.get(groupId);
             if (!group || getAncestorSelected(groups, group.parent, groupIds)) continue;
 
-            const newGroupId = GroupUtils.cloneGroupStructure(loadedObjectGroup, groupId, group.parent, idMap);
+            const newGroupId = GroupUtils.cloneGroupStructure(loadedObjectGroup, groupId, group.parent, idMap, cloneGroupCtx);
             if (newGroupId) newSelection.groups.add(newGroupId);
         }
+        if (logTimings) groupCloneMs += performance.now() - groupCloneStart;
 
+        const collectStart = logTimings ? performance.now() : 0;
         for (const groupId of groupIds) {
             const group = groups.get(groupId);
             const newGroupId = idMap.get(groupId);
@@ -427,15 +453,18 @@ export function duplicateGroupsAndObjects(
                 jobs
             );
         }
+        if (logTimings) collectMs += performance.now() - collectStart;
     }
 
     if (objectEntries) {
+        const collectStart = logTimings ? performance.now() : 0;
         const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
         for (const { mesh, instanceId } of objectEntries) {
             const parentGroupId = objectToGroup.get(GroupUtils.getGroupKey(mesh, instanceId)) ?? null;
             if (getAncestorSelected(groups, parentGroupId, groupIds)) continue;
             jobs.push({ mesh, instanceId, targetGroupId: parentGroupId as string, coveredByGroup: false });
         }
+        if (logTimings) collectMs += performance.now() - collectStart;
     }
 
     const instancedJobs = new Map<InstancedMesh, CloneJobEntry[]>();
@@ -448,6 +477,8 @@ export function duplicateGroupsAndObjects(
             }
             bucket.push(job);
         } else {
+            plainJobs++;
+            const plainStart = logTimings ? performance.now() : 0;
             addSelection(newSelection, clonePlainMesh(
                 loadedObjectGroup,
                 job.mesh as Mesh,
@@ -455,13 +486,29 @@ export function duplicateGroupsAndObjects(
                 job.targetGroupId,
                 job.coveredByGroup
             ));
+            if (logTimings) plainCloneMs += performance.now() - plainStart;
         }
     }
 
     for (const [sourceMesh, batchJobs] of instancedJobs) {
-        for (const result of cloneInstancedBatch(loadedObjectGroup, sourceMesh, batchJobs)) {
+        const instancedStart = logTimings ? performance.now() : 0;
+        const results = cloneInstancedBatch(loadedObjectGroup, sourceMesh, batchJobs, timings);
+        if (logTimings) instancedCloneMs += performance.now() - instancedStart;
+        for (const result of results) {
             addSelection(newSelection, result);
         }
+    }
+
+    if (logTimings && timings) {
+        const instancedJobsCount = jobs.length - plainJobs;
+        console.log(
+            `[PBDE] Duplicate timings: total=${(performance.now() - totalStart).toFixed(2)}ms ` +
+            `jobs=${jobs.length} plain=${plainJobs} instanced=${instancedJobsCount} ` +
+            `groups=${newSelection.groups.size} batches=${instancedJobs.size} chunks=${timings.chunks} ` +
+            `groupClone=${groupCloneMs.toFixed(2)}ms collect=${collectMs.toFixed(2)}ms ` +
+            `plainClone=${plainCloneMs.toFixed(2)}ms instancedClone=${instancedCloneMs.toFixed(2)}ms ` +
+            `attrs=${timings.attrsMs.toFixed(2)}ms metadata=${timings.metadataMs.toFixed(2)}ms`
+        );
     }
 
     return newSelection;
