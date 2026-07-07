@@ -51,6 +51,9 @@ export interface DuplicationSelection {
 
 const tmpTargetLocal = new Matrix4();
 const tmpColor = new Color();
+const PREWARM_CHUNK_REMAINING_RATIO = 0.25;
+const spareInstancedChunks = new WeakMap<InstancedMesh, InstancedMesh[]>();
+const pendingChunkPrewarms = new WeakSet<InstancedMesh>();
 
 function cloneData<T>(value: T): T {
     if (value === null || value === undefined) return value;
@@ -208,7 +211,13 @@ function getInstancedCapacity(mesh: InstancedMesh): number {
     return capacity;
 }
 
-function copyInstancedGeometryAttributes(sourceMesh: InstancedMesh, sourceId: number, targetMesh: InstancedMesh, targetId: number): void {
+function copyInstancedGeometryAttributes(
+    sourceMesh: InstancedMesh,
+    sourceId: number,
+    targetMesh: InstancedMesh,
+    targetId: number,
+    updatedAttributes: Set<InstancedBufferAttribute>
+): void {
     for (const [name, attribute] of Object.entries(sourceMesh.geometry.attributes)) {
         const sourceAttribute = attribute as InstancedBufferAttribute;
         if (!sourceAttribute.isInstancedBufferAttribute) continue;
@@ -219,10 +228,8 @@ function copyInstancedGeometryAttributes(sourceMesh: InstancedMesh, sourceId: nu
         const itemSize = Math.min(sourceAttribute.itemSize, targetAttribute.itemSize);
         const srcOffset = sourceId * sourceAttribute.itemSize;
         const dstOffset = targetId * targetAttribute.itemSize;
-        for (let i = 0; i < itemSize; i++) {
-            targetAttribute.array[dstOffset + i] = sourceAttribute.array[srcOffset + i];
-        }
-        targetAttribute.needsUpdate = true;
+        targetAttribute.array.set(sourceAttribute.array.subarray(srcOffset, srcOffset + itemSize), dstOffset);
+        updatedAttributes.add(targetAttribute);
     }
 }
 
@@ -281,6 +288,43 @@ function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMes
     return chunk;
 }
 
+function takeSpareInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMesh): InstancedMesh {
+    return spareInstancedChunks.get(sourceMesh)?.pop() ?? createInstancedChunk(loadedObjectGroup, sourceMesh);
+}
+
+function scheduleInstancedChunkPrewarm(loadedObjectGroup: Group, sourceMesh: InstancedMesh): void {
+    if (pendingChunkPrewarms.has(sourceMesh)) return;
+    if ((spareInstancedChunks.get(sourceMesh)?.length ?? 0) > 0) return;
+
+    pendingChunkPrewarms.add(sourceMesh);
+    const prewarm = () => {
+        pendingChunkPrewarms.delete(sourceMesh);
+        if (sourceMesh.parent !== loadedObjectGroup) return;
+        if ((spareInstancedChunks.get(sourceMesh)?.length ?? 0) > 0) return;
+        const chunk = createInstancedChunk(loadedObjectGroup, sourceMesh);
+        const chunks = spareInstancedChunks.get(sourceMesh) ?? [];
+        chunks.push(chunk);
+        spareInstancedChunks.set(sourceMesh, chunks);
+    };
+
+    const requestIdle = (globalThis as {
+        requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    }).requestIdleCallback;
+    if (requestIdle) {
+        requestIdle(prewarm, { timeout: 250 });
+    } else {
+        setTimeout(prewarm, 0);
+    }
+}
+
+function maybePrewarmNextInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMesh, targetMesh: InstancedMesh, targetCapacity: number): void {
+    if (targetCapacity <= 0) return;
+    const remaining = targetCapacity - targetMesh.count;
+    if (remaining <= Math.max(1, Math.floor(targetCapacity * PREWARM_CHUNK_REMAINING_RATIO))) {
+        scheduleInstancedChunkPrewarm(loadedObjectGroup, sourceMesh);
+    }
+}
+
 function cloneInstancedBatch(
     loadedObjectGroup: Group,
     sourceMesh: InstancedMesh,
@@ -291,20 +335,26 @@ function cloneInstancedBatch(
     let targetMesh = sourceMesh;
     let targetCapacity = getInstancedCapacity(targetMesh);
     const results: CloneResult[] = [];
+    const updatedMeshes = new Set<InstancedMesh>();
+    const updatedColorMeshes = new Set<InstancedMesh>();
+    const updatedAttributes = new Set<InstancedBufferAttribute>();
+
     for (const job of jobs) {
         if (targetMesh.count >= targetCapacity) {
-            targetMesh = createInstancedChunk(loadedObjectGroup, sourceMesh);
+            targetMesh = takeSpareInstancedChunk(loadedObjectGroup, sourceMesh);
             targetCapacity = getInstancedCapacity(targetMesh);
+            scheduleInstancedChunkPrewarm(loadedObjectGroup, sourceMesh);
         }
 
         const targetId = targetMesh.count;
         sourceMesh.getMatrixAt(job.instanceId, tmpTargetLocal);
         targetMesh.setMatrixAt(targetId, tmpTargetLocal);
-        copyInstancedGeometryAttributes(sourceMesh, job.instanceId, targetMesh, targetId);
+        copyInstancedGeometryAttributes(sourceMesh, job.instanceId, targetMesh, targetId, updatedAttributes);
 
         if (sourceMesh.instanceColor && sourceMesh.getColorAt) {
             sourceMesh.getColorAt(job.instanceId, tmpColor);
             targetMesh.setColorAt(targetId, tmpColor);
+            updatedColorMeshes.add(targetMesh);
         }
 
         copyUserDataForInstance(sourceMesh, job.instanceId, targetMesh, targetId);
@@ -322,9 +372,15 @@ function cloneInstancedBatch(
         );
         results.push({ mesh: targetMesh, instanceId: targetId, objectUuid, coveredByGroup: job.coveredByGroup });
         targetMesh.count++;
-        targetMesh.instanceMatrix.needsUpdate = true;
-        if (targetMesh.instanceColor) targetMesh.instanceColor.needsUpdate = true;
+        updatedMeshes.add(targetMesh);
+        maybePrewarmNextInstancedChunk(loadedObjectGroup, sourceMesh, targetMesh, targetCapacity);
     }
+
+    for (const mesh of updatedMeshes) mesh.instanceMatrix.needsUpdate = true;
+    for (const mesh of updatedColorMeshes) {
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    }
+    for (const attribute of updatedAttributes) attribute.needsUpdate = true;
 
     return results;
 }
@@ -385,9 +441,12 @@ export function duplicateGroupsAndObjects(
     const instancedJobs = new Map<InstancedMesh, CloneJobEntry[]>();
     for (const job of jobs) {
         if (job.mesh.isInstancedMesh) {
-            const bucket = instancedJobs.get(job.mesh) ?? [];
+            let bucket = instancedJobs.get(job.mesh);
+            if (!bucket) {
+                bucket = [];
+                instancedJobs.set(job.mesh, bucket);
+            }
             bucket.push(job);
-            instancedJobs.set(job.mesh, bucket);
         } else {
             addSelection(newSelection, clonePlainMesh(
                 loadedObjectGroup,

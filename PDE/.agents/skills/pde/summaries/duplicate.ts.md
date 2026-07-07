@@ -1,7 +1,7 @@
 # duplicate.ts
 
 ## Purpose
-Duplicates selected groups and objects in the editor scene while preserving group membership, scene order, returned selection, object UUID metadata, display metadata, block properties, custom pivots, colors, and per-instance attributes. Instanced objects append into their current InstancedMesh until capacity is full, then continue in a new chunk mesh with cloned geometry/materials.
+Duplicates selected groups and objects in the editor scene while preserving group membership, scene order, returned selection, object UUID metadata, display metadata, block properties, custom pivots, colors, and per-instance attributes. Instanced objects append into their current InstancedMesh until capacity is full, then continue in a spare or newly-created chunk mesh with cloned geometry/materials.
 
 ## Exports
 
@@ -14,7 +14,8 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 
 ## Internal State
 - Module-level matrix and color scratch objects reduce per-clone allocations.
-- Instanced clone jobs are grouped per source mesh so each source mesh appends all duplicate instances in one batch, spilling into new chunk meshes when full.
+- Instanced clone jobs are grouped per source mesh so each source mesh appends all duplicate instances in one batch, spilling into new chunk meshes when full and marking changed GPU attributes once per batch.
+- A WeakMap-backed spare chunk pool keeps at most one prewarmed InstancedMesh chunk per source mesh; idle prewarm starts when remaining capacity drops below 25%.
 - `cloneData` preserves Maps, Sets, and Three-style `clone()` values used by copied plain-mesh `userData`.
 
 ## Dependencies (imports)
@@ -23,12 +24,12 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 - `../selection/overlay` -- resolves per-instance display type.
 
 ## Used By (known callers)
-- Control/key handling paths that invoke object or group duplicate actions.
+- `renderer/controls/gizmo/gizmo-commands.ts` -- calls `duplicateGroupsAndObjects` from duplicate-selected command handling.
 
 ## Notes
 - Plain Mesh objects use `clone()`, then restore editor `userData` with `cloneData` so repeated duplication keeps metadata.
-- InstancedMesh objects copy matrix/color/instanced attribute rows into available slots and increase `mesh.count`; when capacity is full, duplication creates another InstancedMesh chunk instead of resizing existing WebGPU buffers.
-- Per-instance geometry attributes such as atlas UV offsets/transforms are copied row-for-row from source instance to appended instance so texture mapping is preserved.
-- New chunks clone the source geometry/materials and reset per-instance `userData` maps so copied copies remain selectable and duplicable.
+- InstancedMesh objects copy matrix/color/instanced attribute rows into available slots and increase `mesh.count`; when capacity is full, duplication first consumes a prewarmed spare chunk, otherwise creates another InstancedMesh chunk instead of resizing existing WebGPU buffers.
+- Per-instance geometry attributes such as atlas UV offsets/transforms are copied with typed-array slices from source instance to appended instance so texture mapping is preserved.
+- New chunks clone the source geometry/materials and reset per-instance `userData` maps so copied copies remain selectable and duplicable; idle prewarm skips stale source meshes removed by project reloads.
 - Normal append path expects meshes created by `mesh-builder.ts` to have spare capacity; chunk spillover handles unlimited repeated duplication without rebinding existing buffers.
 - Group clone jobs rely on `group.ts` for structure cloning and object traversal.

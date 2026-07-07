@@ -168,7 +168,7 @@ function getInstancedUvTransformCount(parts: GeometryMeta[], instanceMetas: Inst
 }
 
 function getAppendableInstanceCapacity(count: number): number {
-    return Math.max(count, Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, Math.max(64, count * 2)));
+    return Math.max(count, Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, Math.max(256, count * 2)));
 }
 
 function getMaterialKey(part: GeometryMeta, instancedUvTransformCount: number): string {
