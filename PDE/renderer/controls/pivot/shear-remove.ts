@@ -43,6 +43,15 @@ export function removeShearFromSelection(
     const { SelectionCenter, updateHelperPosition, updateSelectionOverlay } = callbacks;
 
     if (items.length > 0) {
+        const getSelectionItemCount = (): number => {
+            let count = currentSelection.groups?.size ?? 0;
+            if (currentSelection.objects) {
+                for (const ids of currentSelection.objects.values()) count += ids.size;
+            }
+            return count;
+        };
+
+        const isMultiSelection = getSelectionItemCount() > 1;
         const targetPosition = selectionHelper.position.clone();
         
         // Store original custom pivot world positions before any matrix modifications
@@ -136,11 +145,11 @@ export function removeShearFromSelection(
             }
         }
 
-        // In Center mode the gizmo sits at the bbox center, which shifts when the basis is
-        // orthogonalized. Translating objects to chase the old center snaps the object origin
-        // to the pivot. Leave objects in place; updateHelperPosition() will reposition the
-        // gizmo at the new bbox center.
-        if (pivotMode !== 'center') {
+        // Keep the current gizmo position as the visual anchor. For multi-selection origin
+        // mode, the gizmo is managed by separate anchor state, so SelectionCenter can disagree
+        // with that anchor and create drift if used as a translation source.
+        const shouldKeepGizmoPosition = !isMultiSelection || pivotMode === 'center';
+        if (shouldKeepGizmoPosition) {
             // Keep gizmo world position fixed, move objects to match it.
             const currentCenter = SelectionCenter(pivotMode, isCustomPivot, pivotOffset);
             const offset = new Vector3().subVectors(targetPosition, currentCenter);
