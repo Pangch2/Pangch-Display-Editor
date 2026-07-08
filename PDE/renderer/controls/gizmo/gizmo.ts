@@ -29,7 +29,7 @@ import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
 import * as CustomPivot from '../pivot/custom-pivot';
 import { initDrag, applyDeltaToSelection } from '../selection/drag';
-import { initHandleKey } from '../input/handle-key';
+import { initHandleKey, type HandleKeyState } from '../input/handle-key';
 import type { DragInterface } from '../selection/drag';
 import { processVertexSnap } from '../vertex/vertex-translate';
 import { processVertexRotate } from '../vertex/vertex-rotate';
@@ -1012,37 +1012,41 @@ export function initGizmo({
         }
     });
 
+    const handleKeyState: HandleKeyState = {
+        get isVertexMode() { return isVertexMode; },
+        set isVertexMode(v) { isVertexMode = v; },
+        get currentSpace() { return currentSpace; },
+        set currentSpace(v) { currentSpace = v; },
+        get pivotMode() { return pivotMode; },
+        set pivotMode(v) { pivotMode = v; },
+        get isCustomPivot() { return isCustomPivot; },
+        set isCustomPivot(v) { isCustomPivot = v; },
+        get isGizmoBusy() { return isGizmoBusy; },
+        set isGizmoBusy(v) { isGizmoBusy = v; },
+        get isPivotEditMode() { return isPivotEditMode; },
+        set isPivotEditMode(v) { isPivotEditMode = v; },
+        get previousGizmoMode() { return previousGizmoMode; },
+        set previousGizmoMode(v) { previousGizmoMode = v; },
+        get pivotEditPreviousPivotMode() { return _pivotEditPreviousPivotMode; },
+        set pivotEditPreviousPivotMode(v) { _pivotEditPreviousPivotMode = v; },
+        get multiSelectionExplicitPivot() { return _multiSelectionExplicitPivot; },
+        set multiSelectionExplicitPivot(v) { _multiSelectionExplicitPivot = v; },
+        get multiSelectionOriginAnchorValid() { return _multiSelectionOriginAnchorValid; },
+        set multiSelectionOriginAnchorValid(v) { _multiSelectionOriginAnchorValid = v; },
+        get multiSelectionOriginAnchorInitialValid() { return _multiSelectionOriginAnchorInitialValid; },
+        set multiSelectionOriginAnchorInitialValid(v) { _multiSelectionOriginAnchorInitialValid = v; },
+        get multiSelectionOriginAnchorInitialLocalValid() { return _multiSelectionOriginAnchorInitialLocalValid; },
+        set multiSelectionOriginAnchorInitialLocalValid(v) { _multiSelectionOriginAnchorInitialLocalValid = v; },
+        get gizmoAnchorValid() { return _gizmoAnchorValid; },
+        set gizmoAnchorValid(v) { _gizmoAnchorValid = v; },
+        get selectionAnchorMode() { return _selectionAnchorMode; },
+        set selectionAnchorMode(v) { _selectionAnchorMode = v; },
+        get controls() { return controls; },
+        set controls(v) { controls = v; }
+    };
+
     initHandleKey({
-        getIsVertexMode:                          () => isVertexMode,
-        setIsVertexMode:                          (v) => { isVertexMode = v; },
-        getCurrentSpace:                          () => currentSpace,
-        setCurrentSpace:                          (v) => { currentSpace = v; },
-        getPivotMode:                             () => pivotMode,
-        setPivotMode:                             (v) => { pivotMode = v; },
-        getIsCustomPivot:                         () => isCustomPivot,
-        setIsCustomPivot:                         (v) => { isCustomPivot = v; },
-        getIsGizmoBusy:                           () => isGizmoBusy,
-        setIsGizmoBusy:                           (v) => { isGizmoBusy = v; },
-        getIsPivotEditMode:                       () => isPivotEditMode,
-        setIsPivotEditMode:                       (v) => { isPivotEditMode = v; },
-        getPreviousGizmoMode:                     () => previousGizmoMode,
-        setPreviousGizmoMode:                     (v) => { previousGizmoMode = v; },
-        getPivotEditPreviousPivotMode:            () => _pivotEditPreviousPivotMode,
-        setPivotEditPreviousPivotMode:            (v) => { _pivotEditPreviousPivotMode = v; },
-        getMultiSelectionExplicitPivot:           () => _multiSelectionExplicitPivot,
-        setMultiSelectionExplicitPivot:           (v) => { _multiSelectionExplicitPivot = v; },
-        getMultiSelectionOriginAnchorValid:       () => _multiSelectionOriginAnchorValid,
-        setMultiSelectionOriginAnchorValid:       (v) => { _multiSelectionOriginAnchorValid = v; },
-        getMultiSelectionOriginAnchorInitialValid:      () => _multiSelectionOriginAnchorInitialValid,
-        setMultiSelectionOriginAnchorInitialValid:      (v) => { _multiSelectionOriginAnchorInitialValid = v; },
-        getMultiSelectionOriginAnchorInitialLocalValid:  () => _multiSelectionOriginAnchorInitialLocalValid,
-        setMultiSelectionOriginAnchorInitialLocalValid:  (v) => { _multiSelectionOriginAnchorInitialLocalValid = v; },
-        getGizmoAnchorValid:                      () => _gizmoAnchorValid,
-        setGizmoAnchorValid:                      (v) => { _gizmoAnchorValid = v; },
-        getSelectionAnchorMode:                   () => _selectionAnchorMode,
-        setSelectionAnchorMode:                   (v) => { _selectionAnchorMode = v; },
-        getControls:                              () => controls,
-        setInternalControls:                      (v) => { controls = v; },
+        state: handleKeyState,
 
         pivotOffset,
         multiSelectionOriginAnchorPosition:       _multiSelectionOriginAnchorPosition,

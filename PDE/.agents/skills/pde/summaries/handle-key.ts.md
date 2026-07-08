@@ -6,6 +6,7 @@ Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode, sw
 ## Exports
 
 ### Types / Interfaces
+- `HandleKeyState` -- mutable primitive keyboard/gizmo state surface shared with `gizmo.ts`.
 - `HandleKeyParams` -- the callback/state surface required by the keyboard handler.
 
 ### Functions / Methods
@@ -22,4 +23,4 @@ Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode, sw
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Selection hotkeys now assume InstancedMesh-only object handling in the control layer.
+Primitive state is read/written through `p.state`; object references and callbacks remain direct `HandleKeyParams` fields. Selection hotkeys now assume InstancedMesh-only object handling in the control layer.

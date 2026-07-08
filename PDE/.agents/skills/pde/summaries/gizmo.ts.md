@@ -23,7 +23,7 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `../selection/select` -- selection state machine.
 - `../selection/drag` -- marquee selection and delta application.
 - `../pivot/custom-pivot` -- pivot recomputation and undo handling.
-- `../input/handle-key` -- keyboard bindings.
+- `../input/handle-key` -- keyboard bindings and `HandleKeyState` adapter type.
 - `../vertex/vertex-translate`, `../vertex/vertex-rotate`, `../vertex/vertex-scale`, `../vertex/vertex-queue` -- vertex snap and queue behavior.
 
 ## Used By (known callers)
@@ -31,4 +31,4 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `renderer/controls/vertex/vertex-*`
 
 ## Notes
-This remains the highest-risk control module because it owns event wiring and mutable shared state. It routes object selection and duplication through InstancedMesh paths and passes most overlay helpers directly.
+This remains the highest-risk control module because it owns event wiring and mutable shared state. `initGizmo` now passes primitive keyboard state to `initHandleKey` through a local accessor-backed `HandleKeyState` object instead of individual getter/setter callbacks. It routes object selection and duplication through InstancedMesh paths and passes most overlay helpers directly.

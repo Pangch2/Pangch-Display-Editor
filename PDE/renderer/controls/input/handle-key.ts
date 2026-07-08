@@ -43,38 +43,27 @@ interface PivotResetFlags {
 
 // ─── Public interface ─────────────────────────────────────────────────────────
 
+export interface HandleKeyState {
+    isVertexMode: boolean;
+    currentSpace: 'world' | 'local';
+    pivotMode: string;
+    isCustomPivot: boolean;
+    isGizmoBusy: boolean;
+    isPivotEditMode: boolean;
+    previousGizmoMode: string;
+    pivotEditPreviousPivotMode: string | null;
+    multiSelectionExplicitPivot: boolean;
+    multiSelectionOriginAnchorValid: boolean;
+    multiSelectionOriginAnchorInitialValid: boolean;
+    multiSelectionOriginAnchorInitialLocalValid: boolean;
+    gizmoAnchorValid: boolean;
+    selectionAnchorMode: 'default' | 'center';
+    controls: OrbitControlsLike;
+}
+
 export interface HandleKeyParams {
-    // -- Primitive state (getter/setter) --
-    getIsVertexMode(): boolean;
-    setIsVertexMode(v: boolean): void;
-    getCurrentSpace(): 'world' | 'local';
-    setCurrentSpace(v: 'world' | 'local'): void;
-    getPivotMode(): string;
-    setPivotMode(v: string): void;
-    getIsCustomPivot(): boolean;
-    setIsCustomPivot(v: boolean): void;
-    getIsGizmoBusy(): boolean;
-    setIsGizmoBusy(v: boolean): void;
-    getIsPivotEditMode(): boolean;
-    setIsPivotEditMode(v: boolean): void;
-    getPreviousGizmoMode(): string;
-    setPreviousGizmoMode(v: string): void;
-    getPivotEditPreviousPivotMode(): string | null;
-    setPivotEditPreviousPivotMode(v: string | null): void;
-    getMultiSelectionExplicitPivot(): boolean;
-    setMultiSelectionExplicitPivot(v: boolean): void;
-    getMultiSelectionOriginAnchorValid(): boolean;
-    setMultiSelectionOriginAnchorValid(v: boolean): void;
-    getMultiSelectionOriginAnchorInitialValid(): boolean;
-    setMultiSelectionOriginAnchorInitialValid(v: boolean): void;
-    getMultiSelectionOriginAnchorInitialLocalValid(): boolean;
-    setMultiSelectionOriginAnchorInitialLocalValid(v: boolean): void;
-    getGizmoAnchorValid(): boolean;
-    setGizmoAnchorValid(v: boolean): void;
-    getSelectionAnchorMode(): 'default' | 'center';
-    setSelectionAnchorMode(v: 'default' | 'center'): void;
-    getControls(): OrbitControlsLike;
-    setInternalControls(v: OrbitControlsLike): void;
+    // -- Primitive state --
+    state: HandleKeyState;
 
     // -- Object references (mutated in-place) --
     pivotOffset: Vector3;
@@ -167,25 +156,25 @@ export function initHandleKey(p: HandleKeyParams): void {
             // Entering vertex mode should match a fresh reselect baseline.
             p.revertEphemeralPivotUndoIfAny();
 
-            p.setMultiSelectionExplicitPivot(false);
-            p.setMultiSelectionOriginAnchorValid(false);
-            p.setMultiSelectionOriginAnchorInitialValid(false);
-            p.setMultiSelectionOriginAnchorInitialLocalValid(false);
-            p.setGizmoAnchorValid(false);
+            p.state.multiSelectionExplicitPivot = false;
+            p.state.multiSelectionOriginAnchorValid = false;
+            p.state.multiSelectionOriginAnchorInitialValid = false;
+            p.state.multiSelectionOriginAnchorInitialLocalValid = false;
+            p.state.gizmoAnchorValid = false;
 
             p.multiSelectionOriginAnchorPosition.set(0, 0, 0);
             p.gizmoAnchorPosition.set(0, 0, 0);
 
-            p.setSelectionAnchorMode('default');
+            p.state.selectionAnchorMode = 'default';
             p.pivotOffset.set(0, 0, 0);
-            p.setIsCustomPivot(false);
+            p.state.isCustomPivot = false;
 
             p.recomputePivotStateForSelection();
             p.updateHelperPosition();
         };
 
         const resetHelperRotationForWorldSpace = () => {
-            if (p.getCurrentSpace() !== 'world') return;
+            if (p.state.currentSpace !== 'world') return;
             const items = p.getSelectedItems();
             if (items.length > 0) {
                 p.getSelectionHelper().quaternion.set(0, 0, 0, 1);
@@ -196,11 +185,10 @@ export function initHandleKey(p: HandleKeyParams): void {
 
         switch (key) {
             case 'v':
-                const nextVertexMode = !p.getIsVertexMode();
-                p.setIsVertexMode(nextVertexMode);
-                console.log(p.getIsVertexMode() ? 'Vertex mode activated' : 'Vertex mode deactivated');
+                p.state.isVertexMode = !p.state.isVertexMode;
+                console.log(p.state.isVertexMode ? 'Vertex mode activated' : 'Vertex mode deactivated');
 
-                if (p.getIsVertexMode()) {
+                if (p.state.isVertexMode) {
                     normalizeSelectionStateForVertexEntry();
                     p.vertexQueue.length = 0;
                     p.selectedVertexKeys.clear();
@@ -231,8 +219,8 @@ export function initHandleKey(p: HandleKeyParams): void {
                 p.duplicateSelected();
                 break;
             case 'x': {
-                const newSpace = p.getCurrentSpace() === 'world' ? 'local' : 'world';
-                p.setCurrentSpace(newSpace);
+                const newSpace = p.state.currentSpace === 'world' ? 'local' : 'world';
+                p.state.currentSpace = newSpace;
                 p.getTransformControls().setSpace(newSpace);
                 p.updateHelperPosition();
                 p.updateSelectionOverlay();
@@ -244,16 +232,16 @@ export function initHandleKey(p: HandleKeyParams): void {
                 const oldKey = `CENTER_${oldPos.x.toFixed(4)}_${oldPos.y.toFixed(4)}_${oldPos.z.toFixed(4)}`;
                 const wasCenterSelected = p.selectedVertexKeys.has(oldKey);
 
-                if (p.getPivotMode() === 'center') {
+                if (p.state.pivotMode === 'center') {
                     const prevPos = p.getSelectionHelper().position.clone();
                     p.updateHelperPosition();
                     if (prevPos.distanceTo(p.getSelectionHelper().position) < 0.001) {
-                        p.setPivotMode('origin');
+                        p.state.pivotMode = 'origin';
                         p.recomputePivotStateForSelection();
                         p.updateHelperPosition();
                     }
                 } else {
-                    p.setPivotMode('center');
+                    p.state.pivotMode = 'center';
                     p.recomputePivotStateForSelection();
                     // center 모드 진입 시 origin 앵커 초기값 무효화:
                     // 이후 이동 → origin 복귀 시 Block 1이 현재 primary 위치로 재캡처하게 함.
@@ -261,10 +249,10 @@ export function initHandleKey(p: HandleKeyParams): void {
                     // 단, explicit multi-selection pivot이 있는 경우는 앵커를 보존:
                     //   보존해야 _resolveMultiAnchorInitialWorld가 커스텀 피벗 위치로 복귀 가능.
                     //   explicit pivot은 local 좌표 추적이므로 이동 후에도 올바른 world 위치 반환.
-                    if (p.isMultiSelection() && !p.getMultiSelectionExplicitPivot()) {
-                        p.setMultiSelectionOriginAnchorValid(false);
-                        p.setMultiSelectionOriginAnchorInitialValid(false);
-                        p.setMultiSelectionOriginAnchorInitialLocalValid(false);
+                    if (p.isMultiSelection() && !p.state.multiSelectionExplicitPivot) {
+                        p.state.multiSelectionOriginAnchorValid = false;
+                        p.state.multiSelectionOriginAnchorInitialValid = false;
+                        p.state.multiSelectionOriginAnchorInitialLocalValid = false;
                     }
                     p.updateHelperPosition();
                 }
@@ -277,7 +265,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                 }
 
                 p.updateSelectionOverlay();
-                console.log('Pivot Mode:', p.getPivotMode());
+                console.log('Pivot Mode:', p.state.pivotMode);
                 break;
             }
             case 'q': {
@@ -288,8 +276,8 @@ export function initHandleKey(p: HandleKeyParams): void {
                         p.getSelectionHelper(),
                         p.currentSelection,
                         p.loadedObjectGroup,
-                        p.getPivotMode(),
-                        p.getIsCustomPivot(),
+                        p.state.pivotMode,
+                        p.state.isCustomPivot,
                         p.pivotOffset,
                         {
                             SelectionCenter: p.SelectionCenter,
@@ -331,7 +319,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             event.preventDefault();
             focusCameraOnSelection(
                 p.camera,
-                p.getControls(),
+                p.state.controls,
                 p.hasAnySelection(),
                 p.getSelectionBoundingBox,
                 (out) => p.getSelectionCenterWorld(out)
@@ -417,10 +405,10 @@ export function initHandleKey(p: HandleKeyParams): void {
 
         if (event.key === 'Alt') {
             event.preventDefault();
-            if (!p.getIsPivotEditMode()) {
-                p.setIsPivotEditMode(true);
-                p.setPreviousGizmoMode(p.getTransformControls().mode);
-                p.setPivotEditPreviousPivotMode(p.getPivotMode());
+            if (!p.state.isPivotEditMode) {
+                p.state.isPivotEditMode = true;
+                p.state.previousGizmoMode = p.getTransformControls().mode;
+                p.state.pivotEditPreviousPivotMode = p.state.pivotMode;
                 p.getTransformControls().setMode('translate');
             }
         }
@@ -430,13 +418,13 @@ export function initHandleKey(p: HandleKeyParams): void {
                 event.preventDefault();
 
                 const _pivotResetFlags: PivotResetFlags = {
-                    isCustomPivot:               p.getIsCustomPivot(),
-                    multiExplicitPivot:          p.getMultiSelectionExplicitPivot(),
-                    multiAnchorValid:             p.getMultiSelectionOriginAnchorValid(),
-                    multiAnchorInitialValid:      p.getMultiSelectionOriginAnchorInitialValid(),
-                    multiAnchorInitialLocalValid: p.getMultiSelectionOriginAnchorInitialLocalValid(),
-                    gizmoAnchorValid:             p.getGizmoAnchorValid(),
-                    selectionAnchorMode:          p.getSelectionAnchorMode(),
+                    isCustomPivot:               p.state.isCustomPivot,
+                    multiExplicitPivot:          p.state.multiSelectionExplicitPivot,
+                    multiAnchorValid:             p.state.multiSelectionOriginAnchorValid,
+                    multiAnchorInitialValid:      p.state.multiSelectionOriginAnchorInitialValid,
+                    multiAnchorInitialLocalValid: p.state.multiSelectionOriginAnchorInitialLocalValid,
+                    gizmoAnchorValid:             p.state.gizmoAnchorValid,
+                    selectionAnchorMode:          p.state.selectionAnchorMode,
                 };
 
                 resetCustomPivot(
@@ -453,13 +441,13 @@ export function initHandleKey(p: HandleKeyParams): void {
                     }
                 );
 
-                p.setIsCustomPivot(_pivotResetFlags.isCustomPivot);
-                p.setMultiSelectionExplicitPivot(_pivotResetFlags.multiExplicitPivot);
-                p.setMultiSelectionOriginAnchorValid(_pivotResetFlags.multiAnchorValid);
-                p.setMultiSelectionOriginAnchorInitialValid(_pivotResetFlags.multiAnchorInitialValid);
-                p.setMultiSelectionOriginAnchorInitialLocalValid(_pivotResetFlags.multiAnchorInitialLocalValid);
-                p.setGizmoAnchorValid(_pivotResetFlags.gizmoAnchorValid);
-                p.setSelectionAnchorMode(_pivotResetFlags.selectionAnchorMode);
+                p.state.isCustomPivot = _pivotResetFlags.isCustomPivot;
+                p.state.multiSelectionExplicitPivot = _pivotResetFlags.multiExplicitPivot;
+                p.state.multiSelectionOriginAnchorValid = _pivotResetFlags.multiAnchorValid;
+                p.state.multiSelectionOriginAnchorInitialValid = _pivotResetFlags.multiAnchorInitialValid;
+                p.state.multiSelectionOriginAnchorInitialLocalValid = _pivotResetFlags.multiAnchorInitialLocalValid;
+                p.state.gizmoAnchorValid = _pivotResetFlags.gizmoAnchorValid;
+                p.state.selectionAnchorMode = _pivotResetFlags.selectionAnchorMode;
 
                 p.recomputePivotStateForSelection();
                 p.updateHelperPosition();
@@ -472,21 +460,21 @@ export function initHandleKey(p: HandleKeyParams): void {
                     p.dragInitialScale.copy(p.getSelectionHelper().scale);
                 }
 
-                if (p.getIsVertexMode()) p.pushToVertexQueue();
+                if (p.state.isVertexMode) p.pushToVertexQueue();
                 p.updateSelectionOverlay();
 
                 console.log('Pivot reset to origin');
             }
         }
 
-        if (p.getIsGizmoBusy()) return;
+        if (p.state.isGizmoBusy) return;
         const key = event.key.toLowerCase();
         const keysToHandle = ['t', 'r', 's', 'x', 'z', 'q', 'b', 'g', 'd', 'v'];
         if (p.getTransformControls().dragging && keysToHandle.includes(key)) {
-            p.setIsGizmoBusy(true);
+            p.state.isGizmoBusy = true;
             const attachedObject = p.getTransformControls().object;
             p.getTransformControls().pointerUp({ button: 0 } as PointerEvent);
-            const currentControls = p.getControls();
+            const currentControls = p.state.controls;
             const oldTarget = currentControls.target.clone();
             currentControls.dispose();
             const newControls = new (currentControls.constructor as any)(p.camera, (p.renderer as any).domElement);
@@ -494,21 +482,21 @@ export function initHandleKey(p: HandleKeyParams): void {
             newControls.target.copy(oldTarget);
             newControls.update();
             if (p.setExternalControls) p.setExternalControls(newControls);
-            p.setInternalControls(newControls);
+            p.state.controls = newControls;
             setTimeout(() => {
                 if (attachedObject) {
                     p.getTransformControls().detach();
                     p.getTransformControls().attach(attachedObject);
                 }
                 handleKeyPress(key);
-                p.setIsGizmoBusy(false);
+                p.state.isGizmoBusy = false;
             }, 0);
             return;
         }
         if (keysToHandle.includes(key)) {
-            p.setIsGizmoBusy(true);
+            p.state.isGizmoBusy = true;
             handleKeyPress(key);
-            setTimeout(() => { p.setIsGizmoBusy(false); }, 50);
+            setTimeout(() => { p.state.isGizmoBusy = false; }, 50);
         }
     });
 
@@ -516,15 +504,15 @@ export function initHandleKey(p: HandleKeyParams): void {
 
     window.addEventListener('keyup', (event: KeyboardEvent) => {
         if (event.key === 'Alt') {
-            if (p.getIsPivotEditMode()) {
+            if (p.state.isPivotEditMode) {
                 if (p.getTransformControls().dragging) {
                     p.getSelectionHelper().updateMatrixWorld();
                     p.previousHelperMatrix.copy(p.getSelectionHelper().matrixWorld);
                 }
 
-                p.setIsPivotEditMode(false);
-                p.getTransformControls().setMode(p.getPreviousGizmoMode());
-                p.setPivotEditPreviousPivotMode(null);
+                p.state.isPivotEditMode = false;
+                p.getTransformControls().setMode(p.state.previousGizmoMode);
+                p.state.pivotEditPreviousPivotMode = null;
 
                 if (p.getTransformControls().dragging) {
                     p.prepareMultiSelectionDrag(p.currentSelection);
@@ -541,15 +529,15 @@ export function initHandleKey(p: HandleKeyParams): void {
     // ── blur / visibilitychange / focus ──────────────────────────────────────
 
     const clearAltState = () => {
-        if (p.getIsPivotEditMode()) {
-            p.setIsPivotEditMode(false);
+        if (p.state.isPivotEditMode) {
+            p.state.isPivotEditMode = false;
             try {
-                p.getTransformControls().setMode(p.getPreviousGizmoMode());
+                p.getTransformControls().setMode(p.state.previousGizmoMode);
             } catch (err) {
                 console.warn('Failed to restore transformControls mode on blur/visibility change', err);
             }
         }
-        p.setIsGizmoBusy(false);
+        p.state.isGizmoBusy = false;
         try {
             if (p.getTransformControls() && p.getTransformControls().dragging) {
                 p.getTransformControls().pointerUp({ button: 0 } as PointerEvent);
@@ -558,7 +546,7 @@ export function initHandleKey(p: HandleKeyParams): void {
     };
 
     const resetOrbitControls = () => {
-        const currentControls = p.getControls();
+        const currentControls = p.state.controls;
         if (currentControls && p.setExternalControls) {
             const oldTarget = currentControls.target.clone();
             const oldScreenSpacePanning = currentControls.screenSpacePanning;
@@ -570,7 +558,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             newControls.update();
 
             p.setExternalControls(newControls);
-            p.setInternalControls(newControls);
+            p.state.controls = newControls;
         }
     };
 
