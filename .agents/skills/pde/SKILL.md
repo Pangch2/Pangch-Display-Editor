@@ -31,7 +31,7 @@ If the session state is not available, assume the skill is active for this works
 
 Tracked files — any time one mentioned in request while skill active, follow **Workflow** below.
 
-| File | Path (relative to `PDE/renderer/`) |
+| File | Path (relative to workspace `renderer/`) |
 |---|---|
 | `index.html` | `index.html` |
 | `renderer.ts` | `renderer.ts` |
@@ -77,7 +77,7 @@ Tracked files — any time one mentioned in request while skill active, follow *
 Summaries live at:
 
 ```
-PDE/.agents/skills/pde/summaries/<filename>.md
+.agents/skills/pde/summaries/<filename>.md
 ```
 
 Example: summary for `gizmo.ts` -> `summaries/gizmo.ts.md`

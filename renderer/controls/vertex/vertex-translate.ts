@@ -41,6 +41,7 @@ interface VertexTranslateContext {
     getGroupWorldMatrix: (group: GroupData, out?: Matrix4) => Matrix4;
     updateHelperPosition: () => void;
     updateSelectionOverlay: () => void;
+    recomputePivotStateForSelection: () => void;
     _isMultiSelection: () => boolean;
     _getSingleSelectedGroupId: () => string | null;
     SelectionCenter: (mode: string, useOffset: boolean, target: Vector3) => Vector3;
@@ -67,6 +68,7 @@ export function processVertexSnap(
         getGroupWorldMatrix: _getGroupWorldMatrix,
         updateHelperPosition,
         updateSelectionOverlay,
+        recomputePivotStateForSelection,
         _isMultiSelection,
         _getSingleSelectedGroupId: __getSingleSelectedGroupId,
         SelectionCenter,
@@ -203,6 +205,7 @@ export function processVertexSnap(
             });
 
             selectedVertexKeys.clear();
+            recomputePivotStateForSelection();
             updateHelperPosition();
             updateSelectionOverlay();
 
@@ -278,6 +281,7 @@ export function processVertexSnap(
             }
 
             selectedVertexKeys.clear();
+            recomputePivotStateForSelection();
             updateHelperPosition();
             updateSelectionOverlay();
             console.log("Gizmo snapped to vertex (Custom Pivot set)");
@@ -462,6 +466,7 @@ export function processVertexSnap(
         });
 
         selectedVertexKeys.clear();
+        recomputePivotStateForSelection();
         updateHelperPosition();
         updateSelectionOverlay();
     }

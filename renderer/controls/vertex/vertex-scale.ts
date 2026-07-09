@@ -44,6 +44,7 @@ interface VertexScaleContext {
     getGroupWorldMatrixWithFallback: (id: string, target: Matrix4) => Matrix4;
     updateHelperPosition: () => void;
     updateSelectionOverlay: () => void;
+    recomputePivotStateForSelection: () => void;
     SelectionCenter: (mode: string, useOffset: boolean, target: Vector3) => Vector3;
     vertexQueue: QueueItem[];
     getSelectedItems: () => SelectedItem[];
@@ -65,6 +66,7 @@ export function processVertexScale(
         getGroupWorldMatrixWithFallback,
         updateHelperPosition,
         updateSelectionOverlay,
+        recomputePivotStateForSelection,
         SelectionCenter,
         vertexQueue,
         getSelectedItems
@@ -350,6 +352,7 @@ export function processVertexScale(
     });
 
     selectedVertexKeys.clear();
+    recomputePivotStateForSelection();
     updateHelperPosition();
     updateSelectionOverlay();
     return true;

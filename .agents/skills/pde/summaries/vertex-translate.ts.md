@@ -20,4 +20,4 @@ Handles vertex-mode translation snapping. It can snap a gizmo or object pivot to
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Supports snap-to-gizmo, move-target, and queue-swap cases. The object path now assumes InstancedMesh objects only.
+Supports snap-to-gizmo, move-target, and queue-swap cases. The object path now assumes InstancedMesh objects only. Successful snap paths recompute pivot state before refreshing the helper so the vertex-mode pivot matches the deactivated vertex-mode position.

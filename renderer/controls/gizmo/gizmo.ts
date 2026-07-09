@@ -1255,6 +1255,7 @@ export function initGizmo({
                             getGizmoState, setGizmoState, setMultiAnchorInitial: _setMultiAnchorInitial,
                             getGroups, getGroupWorldMatrixWithFallback: Overlay.getGroupWorldMatrixWithFallback, getGroupWorldMatrix,
                             updateHelperPosition, updateSelectionOverlay,
+                            recomputePivotStateForSelection: _recomputePivotStateForSelection,
                             _isMultiSelection, _getSingleSelectedGroupId, SelectionCenter,
                             vertexQueue
                         });
@@ -1281,6 +1282,7 @@ export function initGizmo({
                                 getGizmoState, setGizmoState, setMultiAnchorInitial: _setMultiAnchorInitial,
                                 getGroups, getGroupWorldMatrixWithFallback: Overlay.getGroupWorldMatrixWithFallback,
                                 updateHelperPosition, updateSelectionOverlay,
+                                recomputePivotStateForSelection: _recomputePivotStateForSelection,
                                 SelectionCenter,
                                 vertexQueue,
                                 getSelectedItems
