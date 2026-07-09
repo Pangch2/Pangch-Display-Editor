@@ -43,6 +43,7 @@ interface VertexRotateContext {
     getGroupWorldMatrixWithFallback: (id: string, target: Matrix4) => Matrix4;
     updateHelperPosition: () => void;
     updateSelectionOverlay: () => void;
+    recomputePivotStateForSelection: () => void;
     SelectionCenter: (mode: string, useOffset: boolean, target: Vector3) => Vector3;
     vertexQueue: QueueItem[];
 }
@@ -66,6 +67,7 @@ export function processVertexRotate(
         getGroupWorldMatrixWithFallback,
         updateHelperPosition,
         updateSelectionOverlay,
+        recomputePivotStateForSelection,
         SelectionCenter,
         vertexQueue
     }: VertexRotateContext
@@ -336,6 +338,7 @@ export function processVertexRotate(
         });
         
         selectedVertexKeys.clear();
+        recomputePivotStateForSelection();
         updateHelperPosition();
         updateSelectionOverlay();
     } 

@@ -153,21 +153,28 @@ export function initHandleKey(p: HandleKeyParams): void {
         const normalizeSelectionStateForVertexEntry = () => {
             if (!p.hasAnySelection()) return;
 
-            // Entering vertex mode should match a fresh reselect baseline.
-            p.revertEphemeralPivotUndoIfAny();
+            const preserveMultiExplicitPivot =
+                p.isMultiSelection() &&
+                p.state.multiSelectionExplicitPivot &&
+                p.state.multiSelectionOriginAnchorValid;
 
-            p.state.multiSelectionExplicitPivot = false;
-            p.state.multiSelectionOriginAnchorValid = false;
-            p.state.multiSelectionOriginAnchorInitialValid = false;
-            p.state.multiSelectionOriginAnchorInitialLocalValid = false;
-            p.state.gizmoAnchorValid = false;
+            if (!preserveMultiExplicitPivot) {
+                // Entering vertex mode should match a fresh reselect baseline.
+                p.revertEphemeralPivotUndoIfAny();
 
-            p.multiSelectionOriginAnchorPosition.set(0, 0, 0);
-            p.gizmoAnchorPosition.set(0, 0, 0);
+                p.state.multiSelectionExplicitPivot = false;
+                p.state.multiSelectionOriginAnchorValid = false;
+                p.state.multiSelectionOriginAnchorInitialValid = false;
+                p.state.multiSelectionOriginAnchorInitialLocalValid = false;
+                p.state.gizmoAnchorValid = false;
 
-            p.state.selectionAnchorMode = 'default';
-            p.pivotOffset.set(0, 0, 0);
-            p.state.isCustomPivot = false;
+                p.multiSelectionOriginAnchorPosition.set(0, 0, 0);
+                p.gizmoAnchorPosition.set(0, 0, 0);
+
+                p.state.selectionAnchorMode = 'default';
+                p.pivotOffset.set(0, 0, 0);
+                p.state.isCustomPivot = false;
+            }
 
             p.recomputePivotStateForSelection();
             p.updateHelperPosition();

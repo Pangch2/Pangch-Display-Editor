@@ -1268,6 +1268,7 @@ export function initGizmo({
                                 getGizmoState, setGizmoState, setMultiAnchorInitial: _setMultiAnchorInitial,
                                 getGroups, getGroupWorldMatrixWithFallback: Overlay.getGroupWorldMatrixWithFallback,
                                 updateHelperPosition, updateSelectionOverlay,
+                                recomputePivotStateForSelection: _recomputePivotStateForSelection,
                                 SelectionCenter,
                                 vertexQueue
                             });

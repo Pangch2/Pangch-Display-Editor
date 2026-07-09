@@ -24,7 +24,7 @@ Owns custom-pivot state for selections. It captures undo for pivot edits, recomp
 - `commitPivotEditFromDragEnd(params): CommitPivotEditResult` -- applies a dragged pivot into group/object metadata.
 
 ## Internal State
-Tracks two module-level undo hooks for transient pivot edits.
+Tracks two module-level undo hooks for transient pivot edits. Uses one internal object-origin helper so block_display origin stays at local box min while item_display origin stays at overlay box center.
 
 ## Dependencies (imports)
 - `three/webgpu` -- vector, matrix, mesh, and group types.
@@ -36,4 +36,4 @@ Tracks two module-level undo hooks for transient pivot edits.
 - `renderer/controls/input/handle-key.ts`
 
 ## Notes
-Handles both single-object and grouped selection pivots using InstancedMesh customPivots maps.
+Handles both single-object and grouped selection pivots using InstancedMesh customPivots maps. Object pivot offsets must be computed from the same type-specific origin used by `SelectionCenter`; custom offsets apply only in origin mode so pivot mode changes still move the gizmo.

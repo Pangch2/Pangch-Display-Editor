@@ -18,4 +18,4 @@ Handles vertex-mode rotate snapping. It derives a rotation around a selected piv
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Requires exactly two selected vertex keys. Object sources are limited to InstancedMesh instances.
+Requires exactly two selected vertex keys. Object sources are limited to InstancedMesh instances. Successful rotate snaps recompute pivot state before refreshing the helper so the active vertex-mode pivot matches the deactivated vertex-mode position.

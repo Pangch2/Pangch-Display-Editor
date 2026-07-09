@@ -56,6 +56,27 @@ let _pivotEditUndoCapture: (() => void) | null = null;
 // Small shared temporaries
 const _TMP_MAT4_A = new Matrix4();
 
+function getObjectOriginWorld(mesh: Mesh | InstancedMesh, instanceId: number, out = new Vector3()): Vector3 {
+    const displayType = getDisplayType(mesh, instanceId);
+    if (displayType === 'block_display') {
+        const localPivot = getInstanceLocalBoxMin(mesh, instanceId, out);
+        if (localPivot) {
+            return localPivot.applyMatrix4(getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A));
+        }
+    }
+    if (displayType === 'item_display') {
+        const box = Overlay.getInstanceLocalBox(mesh, instanceId);
+        if (box) {
+            box.getCenter(out);
+            return out.applyMatrix4(Overlay.getInstanceWorldMatrix(mesh, instanceId, _TMP_MAT4_A));
+        }
+    }
+
+    getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
+    const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
+    return out.set(0, localY, 0).applyMatrix4(_TMP_MAT4_A);
+}
+
 
 // --- Public API Functions ---
 
@@ -213,19 +234,13 @@ export function recomputePivotStateForSelection(
 
     newIsCustomPivot = true;
     
-    const center = new Vector3();
     const tempMat = new Matrix4();
-    const tempPos = new Vector3();
-    
-    getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
-    const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
-    tempPos.set(0, localY, 0).applyMatrix4(tempMat);
-    center.add(tempPos);
+    const baseWorld = getObjectOriginWorld(mesh, instanceId);
 
     (mesh as InstancedMesh).getMatrixAt(instanceId, tempMat);
     const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
     const targetWorld = customPivot.clone().applyMatrix4(worldMatrix);
-    pivotOffset.subVectors(targetWorld, center);
+    pivotOffset.subVectors(targetWorld, baseWorld);
 
     return newIsCustomPivot;
 }
@@ -235,7 +250,7 @@ export function recomputePivotStateForSelection(
  */
 export function SelectionCenter(
     pivotMode: string, 
-    isCustomPivot: boolean, 
+    _isCustomPivot: boolean,
     pivotOffset: Vector3, 
     currentSelection: CurrentSelection,
     loadedObjectGroup: Group,
@@ -252,12 +267,7 @@ export function SelectionCenter(
 
     if (items.length === 0 && !hasGroups && !hasObjects) return center;
 
-    // When a custom pivot is active, pivotOffset already encodes the world-space
-    // displacement from the object/group origin to the custom pivot. The offset is
-    // only applied in origin mode (see below), so treat center mode as origin mode
-    // whenever isCustomPivot is true. This keeps the gizmo at the custom pivot
-    // position even when the user has switched pivotMode to 'center'.
-    const effectivePivotMode = isCustomPivot ? 'origin' : pivotMode;
+    const effectivePivotMode = pivotMode;
 
     if (effectivePivotMode === 'center') {
         const singleGroupId = getSingleSelectedGroupId();
@@ -311,25 +321,11 @@ export function SelectionCenter(
         } else {
              const firstItem = items[0];
              const mesh = firstItem.mesh;
-             const displayType = getDisplayType(mesh, firstItem.instanceId);
-
-             const isBlockDisplayWithoutCustomPivot = displayType === 'block_display' && !isCustomPivot; 
-             if (isBlockDisplayWithoutCustomPivot) {
-                 const localPivot = getInstanceLocalBoxMin(mesh, firstItem.instanceId, new Vector3(0, 0, 0));
-                 if (localPivot) {
-                     const worldMatrix = getInstanceWorldMatrixForOrigin(mesh, firstItem.instanceId, new Matrix4());
-                     center.copy(localPivot.applyMatrix4(worldMatrix));
-                 } else {
-                     center.copy(calculateAvgOrigin());
-                 }
-             } else {
-                 center.copy(calculateAvgOrigin());
-             }
+             center.copy(getObjectOriginWorld(mesh, firstItem.instanceId));
         }
     }
 
-    // Apply offset in origin mode, or whenever a custom pivot is active
-    // (custom pivot overrides center mode above, so effectivePivotMode will be 'origin').
+    // Apply custom pivot offset only in origin mode.
     if (effectivePivotMode === 'origin') {
         center.add(pivotOffset);
     }
