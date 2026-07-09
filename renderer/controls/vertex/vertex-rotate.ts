@@ -6,8 +6,7 @@ import {
     Mesh,
     Object3D,
     Group,
-    Sprite,
-    Box3
+    Sprite
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
@@ -20,9 +19,50 @@ const _TMP_MAT4_B = new Matrix4();
 const _TMP_INSTANCE_MATRIX = new Matrix4();
 const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
+const _TMP_VEC3_C = new Vector3();
+const _TMP_VEC3_D = new Vector3();
 const _TMP_QUAT = new Quaternion();
+const _TMP_QUAT_B = new Quaternion();
 
 type MeshType = InstancedMesh | Mesh;
+
+function computeBlockbenchRotateTransform(
+    objectWorldMatrix: Matrix4,
+    startWorld: Vector3,
+    targetWorld: Vector3,
+    out: Matrix4
+): Matrix4 | null {
+    const objectWorldInv = _TMP_MAT4_A.copy(objectWorldMatrix).invert();
+    const localStart = _TMP_VEC3_A.copy(startWorld).applyMatrix4(objectWorldInv);
+    const localTarget = _TMP_VEC3_B.copy(targetWorld).applyMatrix4(objectWorldInv);
+    const targetDistanceSq = localTarget.lengthSq();
+    if (targetDistanceSq < 1e-9) return null;
+
+    let longestAxis: 'x' | 'y' | 'z' = 'x';
+    if (localStart.y > localStart.x) longestAxis = 'y';
+    if (localStart.z > localStart.y) longestAxis = 'z';
+
+    const offAxes = (['x', 'y', 'z'] as const).filter(axis => axis !== longestAxis);
+    const adjustedAxisSq = targetDistanceSq
+        - localStart[offAxes[0]] * localStart[offAxes[0]]
+        - localStart[offAxes[1]] * localStart[offAxes[1]];
+    if (adjustedAxisSq < 1e-9) return null;
+
+    localStart[longestAxis] = Math.sqrt(adjustedAxisSq);
+    if (localStart.lengthSq() < 1e-9) return null;
+
+    localStart.normalize();
+    localTarget.normalize();
+
+    const localRotation = _TMP_QUAT.setFromUnitVectors(localStart, localTarget);
+    objectWorldMatrix.decompose(_TMP_VEC3_C, _TMP_QUAT_B, _TMP_VEC3_D);
+    const worldRotation = localRotation.clone().premultiply(_TMP_QUAT_B).multiply(_TMP_QUAT_B.clone().invert());
+
+    return out
+        .makeTranslation(_TMP_VEC3_C.x, _TMP_VEC3_C.y, _TMP_VEC3_C.z)
+        .multiply(_TMP_MAT4_A.makeRotationFromQuaternion(worldRotation))
+        .multiply(_TMP_MAT4_B.makeTranslation(-_TMP_VEC3_C.x, -_TMP_VEC3_C.y, -_TMP_VEC3_C.z));
+}
 
 interface VertexRotateContext {
     isVertexMode: boolean;
@@ -109,75 +149,26 @@ export function processVertexRotate(
     }
 
     // CASE 2: First Click = Object Vertex, Second Click = (Gizmo OR Object Vertex)
-    // -> Rotate Object around Opposite Corner (Pivot) logic
+    // -> Rotate each target like Blockbench vertex snap rotate: object local origin, not active pivot.
     if (sprite1 && sprite2 && sprite1.userData.source && (sprite2.userData.isCenter || sprite2.userData.source)) {
         const src: SelectionSource = sprite1.userData.source;
-        let objectWorldMatrix = new Matrix4();
-        let localBox: Box3 | null = null;
-
-        // 1. Resolve effective World Matrix and Local Bounding Box (similar to vertex-scale)
-        if (src.type === 'object') {
-            const { mesh, instanceId } = src;
-            if ((mesh as InstancedMesh).isInstancedMesh) {
-                (mesh as InstancedMesh).getMatrixAt(instanceId, objectWorldMatrix);
-            } else {
-                objectWorldMatrix.copy(mesh.matrix);
-            }
-            objectWorldMatrix.premultiply(mesh.matrixWorld);
-            localBox = Overlay.getInstanceLocalBox(mesh, instanceId);
-        } else if (src.type === 'group') {
-            getGroupWorldMatrixWithFallback(src.id, objectWorldMatrix);
-            localBox = Overlay.getGroupLocalBoundingBox(src.id);
-        }
-
-        if (!localBox || localBox.isEmpty()) {
-            selectedVertexKeys.clear();
-            return false;
-        }
-
         const p1 = sprite1.position;
         const p2 = sprite2.position;
 
-        // Compute Pivot: Opposite Corner in Local Space -> World Space
-        const invMatrix = objectWorldMatrix.clone().invert();
-        const p1Local = p1.clone().applyMatrix4(invMatrix);
+        const sourceWorldMatrix = new Matrix4();
+        if (src.type === 'object') {
+            (src.mesh as InstancedMesh).getMatrixAt(src.instanceId, sourceWorldMatrix);
+            sourceWorldMatrix.premultiply(src.mesh.matrixWorld);
+        } else {
+            getGroupWorldMatrixWithFallback(src.id, sourceWorldMatrix);
+        }
 
-        const min = localBox.min;
-        const max = localBox.max;
-        const center = new Vector3().addVectors(min, max).multiplyScalar(0.5);
-        const eps = 1e-4;
-
-        const fixedLocal = new Vector3();
-        fixedLocal.x = (p1Local.x > center.x + eps) ? min.x : ((p1Local.x < center.x - eps) ? max.x : p1Local.x);
-        fixedLocal.y = (p1Local.y > center.y + eps) ? min.y : ((p1Local.y < center.y - eps) ? max.y : p1Local.y);
-        fixedLocal.z = (p1Local.z > center.z + eps) ? min.z : ((p1Local.z < center.z - eps) ? max.z : p1Local.z);
-
-        const pivot = fixedLocal.clone().applyMatrix4(objectWorldMatrix);
-        
-        // Vectors from Pivot to Clicked Points
-        const v1 = _TMP_VEC3_A.subVectors(p1, pivot);
-        const v2 = _TMP_VEC3_B.subVectors(p2, pivot);
-
-        // Check for zero length to avoid NaN
-        if (v1.lengthSq() < 1e-9 || v2.lengthSq() < 1e-9) {
+        const sourceTransformMat = computeBlockbenchRotateTransform(sourceWorldMatrix, p1, p2, new Matrix4());
+        if (!sourceTransformMat) {
             selectedVertexKeys.clear();
             updateSelectionOverlay();
             return false;
         }
-
-        v1.normalize();
-        v2.normalize();
-
-        // Calculate Rotation Quaternion from v1 to v2
-        const q = _TMP_QUAT.setFromUnitVectors(v1, v2);
-
-        // Build Rotation Matrix around Pivot: T(P) * R(q) * T(-P)
-        const tMat = _TMP_MAT4_A.makeTranslation(pivot.x, pivot.y, pivot.z);
-        const rMat = _TMP_MAT4_B.makeRotationFromQuaternion(q);
-        const tInvMat = new Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
-
-        // Combine: M = T * R * T_inv
-        const transformMat = tMat.multiply(rMat).multiply(tInvMat);
 
         // 1. Identify effective selection (same as vertex-translate)
         const isSrcEffectiveSelected = (() => {
@@ -264,10 +255,10 @@ export function processVertexRotate(
             const state = getGizmoState();
             const updates: Partial<GizmoState> = {};
             if (state._gizmoAnchorValid && state._gizmoAnchorPosition) {
-                updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().applyMatrix4(transformMat);
+                updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().applyMatrix4(sourceTransformMat);
             }
             if (state._multiSelectionOriginAnchorValid && state._multiSelectionOriginAnchorPosition) {
-                updates._multiSelectionOriginAnchorPosition = state._multiSelectionOriginAnchorPosition.clone().applyMatrix4(transformMat);
+                updates._multiSelectionOriginAnchorPosition = state._multiSelectionOriginAnchorPosition.clone().applyMatrix4(sourceTransformMat);
             }
             if (Object.keys(updates).length > 0) setGizmoState(updates);
 
@@ -286,12 +277,14 @@ export function processVertexRotate(
         
         // A. Update Instances (Visuals)
         for (const [mesh, ids] of targets.instances) {
-            const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
-            const localTransform = new Matrix4().multiplyMatrices(meshWorldInv, transformMat);
-            localTransform.multiply(mesh.matrixWorld);
-
             for (const id of ids) {
                 (mesh as InstancedMesh).getMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                const objectWorldMatrix = new Matrix4().copy(_TMP_INSTANCE_MATRIX).premultiply(mesh.matrixWorld);
+                const transformMat = computeBlockbenchRotateTransform(objectWorldMatrix, p1, p2, new Matrix4());
+                if (!transformMat) continue;
+
+                const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
+                const localTransform = new Matrix4().multiplyMatrices(meshWorldInv, transformMat).multiply(mesh.matrixWorld);
                 _TMP_INSTANCE_MATRIX.premultiply(localTransform);
                 (mesh as InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
             }
@@ -309,6 +302,10 @@ export function processVertexRotate(
                     const gScale = group.scale || new Vector3(1, 1, 1);
                     group.matrix = new Matrix4().compose(gPos, gQuat, gScale);
                 }
+                const groupWorldMatrix = getGroupWorldMatrixWithFallback(groupId, new Matrix4());
+                const transformMat = computeBlockbenchRotateTransform(groupWorldMatrix, p1, p2, new Matrix4());
+                if (!transformMat) continue;
+
                 group.matrix.premultiply(transformMat);
                 if (!group.position) group.position = new Vector3();
                 if (!group.quaternion) group.quaternion = new Quaternion();
