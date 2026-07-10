@@ -418,10 +418,24 @@ export function performSelectionSwap(
     
     const isSwap = !!options.preserveSelection;
 
-    // Swap이나 처리가 일어난 후 다중 선택 명시적 피벗 상태 해제
+    // Preserve an explicit multi pivot; otherwise force the transformed selection
+    // to rebuild its origin anchor before the caller refreshes the helper.
     const clearExplicitPivot = () => {
         const finalState = getGizmoState();
-        setGizmoState({ ...finalState, _multiSelectionExplicitPivot: false });
+        let selectionCount = currentSelection.groups.size;
+        for (const ids of currentSelection.objects.values()) selectionCount += ids.size;
+
+        if (selectionCount > 1 && finalState.isCustomPivot) {
+            setGizmoState({ ...finalState, _multiSelectionExplicitPivot: true });
+            return;
+        }
+
+        setGizmoState({
+            ...finalState,
+            _multiSelectionExplicitPivot: false,
+            _multiSelectionOriginAnchorValid: false,
+            _multiSelectionOriginAnchorInitialValid: false
+        });
     };
 
     if (isSwap && src) {

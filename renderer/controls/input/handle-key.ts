@@ -150,36 +150,6 @@ export function initHandleKey(p: HandleKeyParams): void {
     // ── Inner key handler ────────────────────────────────────────────────────
 
     const handleKeyPress = (key: string): void => {
-        const normalizeSelectionStateForVertexEntry = () => {
-            if (!p.hasAnySelection()) return;
-
-            const preserveMultiExplicitPivot =
-                p.isMultiSelection() &&
-                p.state.multiSelectionExplicitPivot &&
-                p.state.multiSelectionOriginAnchorValid;
-
-            if (!preserveMultiExplicitPivot) {
-                // Entering vertex mode should match a fresh reselect baseline.
-                p.revertEphemeralPivotUndoIfAny();
-
-                p.state.multiSelectionExplicitPivot = false;
-                p.state.multiSelectionOriginAnchorValid = false;
-                p.state.multiSelectionOriginAnchorInitialValid = false;
-                p.state.multiSelectionOriginAnchorInitialLocalValid = false;
-                p.state.gizmoAnchorValid = false;
-
-                p.multiSelectionOriginAnchorPosition.set(0, 0, 0);
-                p.gizmoAnchorPosition.set(0, 0, 0);
-
-                p.state.selectionAnchorMode = 'default';
-                p.pivotOffset.set(0, 0, 0);
-                p.state.isCustomPivot = false;
-            }
-
-            p.recomputePivotStateForSelection();
-            p.updateHelperPosition();
-        };
-
         const resetHelperRotationForWorldSpace = () => {
             if (p.state.currentSpace !== 'world') return;
             const items = p.getSelectedItems();
@@ -196,7 +166,6 @@ export function initHandleKey(p: HandleKeyParams): void {
                 console.log(p.state.isVertexMode ? 'Vertex mode activated' : 'Vertex mode deactivated');
 
                 if (p.state.isVertexMode) {
-                    normalizeSelectionStateForVertexEntry();
                     p.vertexQueue.length = 0;
                     p.selectedVertexKeys.clear();
                     p.getTransformControls().detach();

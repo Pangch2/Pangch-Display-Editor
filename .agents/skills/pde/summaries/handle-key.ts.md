@@ -23,4 +23,4 @@ Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode, sw
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Primitive state is read/written through `p.state`; object references and callbacks remain direct `HandleKeyParams` fields. Selection hotkeys now assume InstancedMesh-only object handling in the control layer. Vertex-mode entry preserves an existing multi-selection explicit pivot anchor instead of resetting it to the fresh-reselect baseline.
+Primitive state is read/written through `p.state`; object references and callbacks remain direct `HandleKeyParams` fields. Selection hotkeys assume InstancedMesh-only object handling in the control layer. Entering vertex mode preserves the current selection pivot and anchor state.

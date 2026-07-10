@@ -1,12 +1,11 @@
 # vertex-rotate.ts
 
 ## Purpose
-Handles vertex-mode rotate snapping. It matches Blockbench-style rotate snapping by deriving each target's rotation from object-local start/target vertex directions, then swaps selection and queue state so the editor keeps the expected active item.
+Handles vertex-mode rotate snapping. It derives one Blockbench-style rotation from the clicked vertices around the active pivot, applies that shared world delta to all targets, and swaps selection/queue state.
 
 ## Exports
 
 ### Functions / Methods
-- `computeBlockbenchRotateTransform(objectWorldMatrix, startWorld, targetWorld, out): Matrix4 | null` -- computes the world-space delta for Blockbench-style local-origin vertex rotate snapping.
 - `processVertexRotate(selectedVertexKeys, context): boolean` -- applies vertex-based rotation snapping when vertex mode and rotate gizmo are active.
 
 ## Dependencies (imports)
@@ -19,4 +18,4 @@ Handles vertex-mode rotate snapping. It matches Blockbench-style rotate snapping
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Requires exactly two selected vertex keys. Rotation is computed per target from its own world matrix/local origin instead of the active gizmo pivot. Object sources are limited to InstancedMesh instances. Successful rotate snaps recompute pivot state before refreshing the helper so the active vertex-mode pivot matches the deactivated vertex-mode position.
+Requires exactly two selected vertex keys. A stored object/group custom pivot takes precedence and is converted from local to world coordinates; otherwise an effectively selected source uses the active gizmo anchor, then falls back to its world origin. Direction conversion excludes instance scale because Blockbench cube dimensions live in geometry while PDE encodes object dimensions in instance scale. The resulting shared world rotation moves positions and orientations together around the pivot. Object sources are limited to InstancedMesh instances. Successful rotate snaps recompute pivot state before refreshing the helper.
