@@ -195,6 +195,7 @@ export function processVertexRotate(
         })();
 
         const state = getGizmoState();
+        let transformedMultiAnchorWorld: Vector3 | null = null;
         sourceWorldMatrix.decompose(_TMP_VEC3_C, _TMP_QUAT_B, _TMP_VEC3_D);
         const sourceGroup = src.type === 'group' ? getGroups().get(src.id) : null;
         const customPivot = src.type === 'object'
@@ -280,7 +281,8 @@ export function processVertexRotate(
                 updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().applyMatrix4(sourceTransformMat);
             }
             if (state._multiSelectionOriginAnchorValid && state._multiSelectionOriginAnchorPosition) {
-                updates._multiSelectionOriginAnchorPosition = state._multiSelectionOriginAnchorPosition.clone().applyMatrix4(sourceTransformMat);
+                transformedMultiAnchorWorld = state._multiSelectionOriginAnchorPosition.clone().applyMatrix4(sourceTransformMat);
+                updates._multiSelectionOriginAnchorPosition = transformedMultiAnchorWorld;
             }
             if (Object.keys(updates).length > 0) setGizmoState(updates);
 
@@ -327,6 +329,10 @@ export function processVertexRotate(
                 group.matrix.premultiply(sourceTransformMat);
                 group.matrix.decompose(group.position, group.quaternion, group.scale);
             }
+        }
+
+        if (transformedMultiAnchorWorld) {
+            setMultiAnchorInitial(transformedMultiAnchorWorld);
         }
 
         // Swapping selection state

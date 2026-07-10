@@ -418,15 +418,17 @@ export function performSelectionSwap(
     
     const isSwap = !!options.preserveSelection;
 
-    // Preserve an explicit multi pivot; otherwise force the transformed selection
-    // to rebuild its origin anchor before the caller refreshes the helper.
+    // Transform snap callers already update a valid multi anchor in world space;
+    // its primary-local capture remains valid because the primary gets the same transform.
     const clearExplicitPivot = () => {
         const finalState = getGizmoState();
         let selectionCount = currentSelection.groups.size;
         for (const ids of currentSelection.objects.values()) selectionCount += ids.size;
 
-        if (selectionCount > 1 && finalState.isCustomPivot) {
-            setGizmoState({ ...finalState, _multiSelectionExplicitPivot: true });
+        if (selectionCount > 1 && finalState._multiSelectionOriginAnchorValid) {
+            if (finalState.isCustomPivot) {
+                setGizmoState({ ...finalState, _multiSelectionExplicitPivot: true });
+            }
             return;
         }
 
@@ -526,23 +528,16 @@ export function performSelectionSwap(
             if (queuedPivotSnapshot) {
                 const state = getGizmoState();
 
-                // 큐에 들어갈 당시 mode=center 였다면 queuedAnchorWorld가 'center' 위치로 오염되어 있을 수 있음
-                // isCustomPivot일 경우, offset을 이용해 진정한 MultiSelectionOriginAnchor를 역산해서 원상복구함
-                if (queuedPivotSnapshot.isCustomPivot && itemsToSelect.length > 1) {
+                if (queuedPivotSnapshot.isCustomPivot && itemsToSelect.length > 1 && queuedAnchorWorld) {
                     const originBase = SelectionCenter('origin', false, _ZERO_VEC3);
-                    const reconstructedAnchor = originBase.clone().add(queuedPivotSnapshot.pivotOffset);
+                    const pivotOffset = queuedAnchorWorld.clone().sub(originBase);
                     
                     setGizmoState({
                         ...state,
                         isCustomPivot: true,
-                        pivotOffset: queuedPivotSnapshot.pivotOffset.clone(),
-                        _multiSelectionExplicitPivot: true,
-                        _multiSelectionOriginAnchorPosition: reconstructedAnchor,
-                        _multiSelectionOriginAnchorValid: true
+                        pivotOffset,
+                        _multiSelectionExplicitPivot: true
                     });
-                    
-                    // 내부 World->Local 매핑 시스템에도 진짜 Origin을 등록해 복구
-                    setMultiAnchorInitial?.(reconstructedAnchor);
                 } else {
                     setGizmoState({
                         ...state,

@@ -303,7 +303,10 @@ function _captureMultiAnchorInitialIfNeeded(worldPos: Vector3): void {
 function _resolveMultiAnchorInitialWorld(out = new Vector3()): Vector3 | null {
     if (_multiSelectionOriginAnchorInitialLocalValid) {
         const mat = _getPrimaryWorldMatrix(_TMP_MAT4_B);
-        if (mat) return out.copy(_multiSelectionOriginAnchorInitialLocal).applyMatrix4(mat);
+        if (mat) {
+            out.copy(_multiSelectionOriginAnchorInitialLocal).applyMatrix4(mat);
+            return out;
+        }
     }
     return null;
 }
@@ -504,20 +507,7 @@ function updateHelperPosition(): void {
                     tempMat.premultiply(mesh.matrixWorld);
                     primaryPivotWorld = custom.clone().applyMatrix4(tempMat);
                 } else {
-                    const displayType = Overlay.getDisplayType(mesh, instanceId);
-                    if (displayType === 'block_display') {
-                        const localPivot = Overlay.getInstanceLocalBoxMin(mesh, instanceId, _TMP_VEC3_B);
-                        if (localPivot) {
-                            const worldMatrix = Overlay.getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
-                            primaryPivotWorld = localPivot.applyMatrix4(worldMatrix);
-                        }
-                    }
-                    if (!primaryPivotWorld) {
-                        const tempMat = _TMP_MAT4_A;
-                        Overlay.getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
-                        const localY = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
-                        primaryPivotWorld = _TMP_VEC3_B.set(0, localY, 0).applyMatrix4(tempMat);
-                    }
+                    primaryPivotWorld = CustomPivot.getObjectOriginWorld(mesh, instanceId, _TMP_VEC3_B);
                 }
             }
         }

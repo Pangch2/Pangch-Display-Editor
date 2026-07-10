@@ -56,7 +56,7 @@ let _pivotEditUndoCapture: (() => void) | null = null;
 // Small shared temporaries
 const _TMP_MAT4_A = new Matrix4();
 
-function getObjectOriginWorld(mesh: Mesh | InstancedMesh, instanceId: number, out = new Vector3()): Vector3 {
+export function getObjectOriginWorld(mesh: Mesh | InstancedMesh, instanceId: number, out = new Vector3()): Vector3 {
     const displayType = getDisplayType(mesh, instanceId);
     if (displayType === 'block_display') {
         const localPivot = getInstanceLocalBoxMin(mesh, instanceId, out);

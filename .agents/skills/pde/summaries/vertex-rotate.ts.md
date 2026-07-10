@@ -18,4 +18,4 @@ Handles vertex-mode rotate snapping. It derives one Blockbench-style rotation fr
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Requires exactly two selected vertex keys. A stored object/group custom pivot takes precedence and is converted from local to world coordinates; otherwise an effectively selected source uses the active gizmo anchor, then falls back to its world origin. Direction conversion excludes instance scale because Blockbench cube dimensions live in geometry while PDE encodes object dimensions in instance scale. The resulting shared world rotation moves positions and orientations together around the pivot. Object sources are limited to InstancedMesh instances. Successful rotate snaps recompute pivot state before refreshing the helper.
+Requires exactly two selected vertex keys. A stored object/group custom pivot takes precedence and is converted from local to world coordinates; otherwise an effectively selected source uses the active gizmo anchor, then falls back to its world origin. After applying rotation matrices, a transformed multi-selection anchor is explicitly recaptured in primary-local coordinates.

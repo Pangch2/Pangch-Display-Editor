@@ -31,4 +31,4 @@ Implements the selection state machine: caches selected items, resolves click hi
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Selection now only considers InstancedMesh objects in the control layer. The replacement helpers remain the normal way to mutate selection state.
+Selection now only considers InstancedMesh objects in the control layer. The replacement helpers remain the normal way to mutate selection state. Shift-click additions preserve the first selected primary anchor.

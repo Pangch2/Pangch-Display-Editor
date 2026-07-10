@@ -13,6 +13,7 @@ Owns custom-pivot state for selections. It captures undo for pivot edits, recomp
 - `CommitPivotEditResult` -- resulting pivot state after a commit.
 
 ### Functions / Methods
+- `getObjectOriginWorld(mesh, instanceId, out?): Vector3` -- returns the type-specific object origin: block bounds minimum, item bounds center, or matrix origin fallback.
 - `clearEphemeralPivotUndo(): void` -- clears captured undo hooks.
 - `revertEphemeralPivotUndoIfAny(): void` -- replays and clears any pending pivot undo.
 - `capturePivotUndoForCurrentSelection(currentSelection): (() => void) | null` -- snapshots per-object custom pivot writes.
@@ -36,4 +37,4 @@ Tracks two module-level undo hooks for transient pivot edits. Uses one internal 
 - `renderer/controls/input/handle-key.ts`
 
 ## Notes
-Handles both single-object and grouped selection pivots using InstancedMesh customPivots maps. Object pivot offsets must be computed from the same type-specific origin used by `SelectionCenter`; custom offsets apply only in origin mode so pivot mode changes still move the gizmo.
+Handles both single-object and grouped selection pivots using InstancedMesh customPivots maps. Object and multi-selection anchor pivots must use `getObjectOriginWorld` so type-specific origins stay consistent; custom offsets apply only in origin mode so pivot mode changes still move the gizmo.

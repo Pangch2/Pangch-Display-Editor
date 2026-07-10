@@ -259,6 +259,7 @@ export function processVertexScale(
     }
 
     // 4. Resolve Targets
+    let transformedMultiAnchorWorld: Vector3 | null = null;
     const targets = {
         groups: new Set<string>(),
         instances: new Map<MeshType, Set<number>>()
@@ -285,7 +286,10 @@ export function processVertexScale(
         const state = getGizmoState();
         const updates: Partial<GizmoState> = {};
         if (state._gizmoAnchorValid) updates._gizmoAnchorPosition = state._gizmoAnchorPosition.clone().applyMatrix4(transformMatrix);
-        if (state._multiSelectionOriginAnchorValid) updates._multiSelectionOriginAnchorPosition = state._multiSelectionOriginAnchorPosition.clone().applyMatrix4(transformMatrix);
+        if (state._multiSelectionOriginAnchorValid) {
+            transformedMultiAnchorWorld = state._multiSelectionOriginAnchorPosition.clone().applyMatrix4(transformMatrix);
+            updates._multiSelectionOriginAnchorPosition = transformedMultiAnchorWorld;
+        }
         setGizmoState(updates);
     } else if (containingBundle) {
         containingBundle.items.forEach(item => {
@@ -340,6 +344,10 @@ export function processVertexScale(
                 );
             }
         }
+    }
+
+    if (transformedMultiAnchorWorld) {
+        setMultiAnchorInitial(transformedMultiAnchorWorld);
     }
 
     // 6. Swap
