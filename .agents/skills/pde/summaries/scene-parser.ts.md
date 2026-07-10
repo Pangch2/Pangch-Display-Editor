@@ -1,7 +1,7 @@
 # scene-parser.ts
 
 ## Purpose
-Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content, resolves model trees and blockstate variants, delegates texture atlas packing, builds packed geometry buffers, and emits batched geometry, atlas UV transform, group, and scene-order metadata for `mesh-builder.ts`.
+Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content, resolves model trees and blockstate variants, delegates texture atlas packing, builds packed geometry buffers, and emits batched geometry, project details, atlas UV transform, group, and scene-order metadata for `mesh-builder.ts`.
 
 ## Exports
 
@@ -43,3 +43,4 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Per-instance `blockProps` are emitted for batched geometry so scene-panel metadata remains correct when different properties share one mesh root.
 - Per-instance item-display flags/types are emitted so block display and item display objects can share one mesh root without losing downstream display-type behavior.
 - Optional `Scene timings` and `Parse timings` logs are controlled through `pbde-log.ts` registry helpers and default to disabled.
+- Root `name`, `mainNBT`, and `nbt` values are normalized to strings in `metadata.projectDetails`.

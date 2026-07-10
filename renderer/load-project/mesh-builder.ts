@@ -786,7 +786,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     console.error('[Debug] Invalid metadata payload from parser.');
                     return new Set<THREE.Object3D>();
                 }
-                const { geometries: geometryMetas, geometryBatches, otherItems, useUint32Indices, atlas, groups, sceneOrder } = metadataPayload;
+                const { geometries: geometryMetas, geometryBatches, otherItems, useUint32Indices, atlas, groups, sceneOrder, projectDetails } = metadataPayload;
+                if (!isMerge) loadedObjectGroup.userData.projectDetails = projectDetails;
                 const activeGeometryBatches = Array.isArray(geometryBatches) && geometryBatches.length > 0 ? geometryBatches : null;
 
                 const newlyAddedSelectableMeshes = new Set<THREE.Object3D>();

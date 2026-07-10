@@ -1,7 +1,7 @@
 # upload-pbde.ts
 
 ## Purpose
-Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal, then routes files to `loadpbde` or `mergepbde`.
+Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal, routes files to `loadpbde` or `mergepbde`, and refreshes the project-details panel after opening a project.
 
 ## Exports
 
@@ -19,6 +19,7 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - `waitForRenderSettled(frames, traceFrames, waitForGpu): Promise<RenderSettledTrace>` -- dispatches a render-settled request; frame tracing and GPU queue waiting are opt-in
 - `logFinalPbdeLoadTime(startMs, mode, fileCount): Promise<void>` -- logs render-settle wait time and open/merge perceived load duration after the GPU queue has drained
 - `precompileLoadedScene(mode, fileCount): Promise<void>` -- optionally waits for `renderer.compileAsync(scene, camera)` when `localStorage.pdeAwaitScenePrecompile === '1'`
+- `updateProjectDetails(): void` -- fills the Scene panel project name/NBT inputs and writes edits back to `loadedObjectGroup.userData.projectDetails`.
 
 ## Internal State
 - `ModalOverlayElement` -- local `HTMLDivElement` extension with optional ESC handler
@@ -40,3 +41,4 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - Scene precompile is skipped by default and can be enabled with `localStorage.pdeAwaitScenePrecompile = '1'`; per-root profiling still requires `localStorage.pdePrecompileProfile = '1'`.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Final load time` defaults to enabled; optional scene precompile and render-settle diagnostics default to disabled. Final load time now always waits for GPU queue drain after the next rendered frame, while trace logs still control extra render-settle detail collection.
 - Files without `.bdengine` or `.pdengine` extension are ignored.
+- Opening replaces displayed project details; merging leaves the original project's details unchanged.

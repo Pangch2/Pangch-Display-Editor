@@ -89,6 +89,12 @@ export interface GroupData {
     pivot?: [number, number, number] | number[];
 }
 
+export interface ProjectDetails {
+    name: string;
+    mainNBT: string;
+    nbt: string;
+}
+
 export interface WorkerMetadata {
     geometries: GeometryMeta[];
     geometryBatches?: GeometryInstanceBatch[];
@@ -97,4 +103,5 @@ export interface WorkerMetadata {
     atlas?: { width: number; height: number; data: Uint8ClampedArray<ArrayBuffer> };
     groups?: Map<string, GroupData>;
     sceneOrder?: { type: 'group' | 'object'; id: string }[];
+    projectDetails: ProjectDetails;
 }

@@ -1,7 +1,7 @@
 # mesh-builder.ts
 
 ## Purpose
-Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes batched or legacy geometry metadata, builds textures/materials/InstancedMesh roots, applies optional per-instance atlas UV transforms, manages scene clearing and merging, and handles selection state for newly created objects.
+Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes batched or legacy geometry metadata, builds textures/materials/InstancedMesh roots, applies optional per-instance atlas UV transforms, manages scene clearing and merging, stores current project details, and handles selection state for newly created objects.
 
 ## Exports
 
@@ -49,4 +49,5 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
 - Instanced meshes are allocated with spare capacity and then `mesh.count` is lowered to the active instance count so duplicate append can reuse existing matrix/UV buffers without rebinding texture attributes; tiny chunks still get 256 slots minimum to reduce duplicate-time chunk creation.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
+- Fresh loads store parser-provided project details on `loadedObjectGroup.userData`; merges preserve the current details.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items` defaults to enabled; optional `Load timings`, `Geometry stats`, `Mesh uploaded`, and `Finished processing` logs default to disabled.

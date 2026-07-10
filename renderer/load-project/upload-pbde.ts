@@ -51,6 +51,20 @@ type ScenePrecompileDetail = {
 
 export { loadedObjectGroup };
 
+function updateProjectDetails(): void {
+    const details = loadedObjectGroup.userData.projectDetails as Record<string, string> | undefined;
+    const panel = document.getElementById('project-details');
+    if (!details || !panel) return;
+
+    panel.hidden = false;
+    for (const key of ['name', 'mainNBT', 'nbt']) {
+        const input = document.getElementById(`project-${key}`) as HTMLInputElement | null;
+        if (!input) continue;
+        input.value = details[key] || '';
+        input.oninput = () => details[key] = input.value;
+    }
+}
+
 function waitForScenePrecompiled(): Promise<ScenePrecompileTrace> {
     return new Promise(resolve => {
         window.dispatchEvent(new CustomEvent<ScenePrecompileDetail>('pde:precompile-scene', {
@@ -146,6 +160,7 @@ async function loadpbde(files: File | File[]): Promise<void> {
             const isMerge = (i > 0); 
             await loadAndRenderPbde(fileList[i], isMerge, batchGen);
         }
+        updateProjectDetails();
         // Requirement: Do not perform multi-selection for "Open" (loadpbde) even with multiple files.
     } catch (e) {
         console.error("Error loading project files:", e);

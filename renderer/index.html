@@ -17,8 +17,18 @@
 
   <div id="scene-panel">
     <div id="scene-resizer"></div>
-    <div id="scene-panel-header">Scene</div>
-    <div id="scene-object-list"></div>
+    <section id="scene-objects">
+      <div id="scene-panel-header">씬 오브젝트</div>
+      <div id="scene-object-list"></div>
+    </section>
+    <section id="project-details">
+      <div id="project-details-header">프로젝트 세부 정보</div>
+      <dl>
+        <div><dt>이름</dt><dd><input id="project-name" type="text"></dd></div>
+        <div><dt>프로젝트 NBT</dt><dd><input id="project-mainNBT" type="text"></dd></div>
+        <div><dt>전체 NBT</dt><dd><input id="project-nbt" type="text"></dd></div>
+      </dl>
+    </section>
   </div>
 
   <div id="fps-counter">FPS: --</div>

@@ -1929,11 +1929,12 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         const jsonStartIndex = sizeIndex + 4;
         const jsonBytes = decompressedU8.subarray(jsonStartIndex, jsonStartIndex + dataSize);
         const jsonData = JSON.parse(strFromU8(jsonBytes));
+        const project = jsonData[0] ?? {};
         const archiveElapsedMs = performance.now() - archiveStartMs;
 
         // 렌더링에 필요한 필드만 남기도록 씬 트리를 단순화한다.
         const sceneStartMs = performance.now();
-        const processedChildren = split_children(jsonData[0].children);
+        const processedChildren = split_children(project.children);
 
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         // 루트 자식 노드를 병렬로 처리해 렌더 항목을 구성한다.
@@ -2238,7 +2239,12 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             useUint32Indices: useUint32Indices,
             atlas: atlasInfo,
             groups: groups,
-            sceneOrder: sceneOrder.map(({ type, id }) => ({ type, id }))
+            sceneOrder: sceneOrder.map(({ type, id }) => ({ type, id })),
+            projectDetails: {
+                name: typeof project.name === 'string' ? project.name : '',
+                mainNBT: typeof project.mainNBT === 'string' ? project.mainNBT : '',
+                nbt: typeof project.nbt === 'string' ? project.nbt : ''
+            }
         };
         const packElapsedMs = performance.now() - packStartMs;
         const parseElapsedMs = performance.now() - parseStartMs;

@@ -15,7 +15,8 @@ Shared type layer for load-project pipeline. Keeps parser output, batched geomet
 - `OtherItem` -- non-geometry render item such as player head display data
 - `GroupChild` -- child entry in `GroupData.children`
 - `GroupData` -- group node with transform, children, parent, and optional pivot
-- `WorkerMetadata` -- parser output consumed by `loadAndRenderPbde`, with optional `geometryBatches`
+- `ProjectDetails` -- normalized project name, project NBT, and full NBT strings.
+- `WorkerMetadata` -- parser output consumed by `loadAndRenderPbde`, with optional `geometryBatches` and required project details.
 
 ## Dependencies (imports)
 - `three/webgpu` -- type-only `BufferGeometry`, `Object3D`, `Vector3`, `Quaternion`
