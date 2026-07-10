@@ -15,14 +15,20 @@
     <canvas id="renderCanvas"></canvas>
   </div>
 
-  <div id="scene-panel">
-    <div id="scene-resizer"></div>
-    <section id="scene-objects">
-      <div id="scene-panel-header">씬 오브젝트</div>
+  <div id="left-panel-dock" class="panel-dock dock-left empty">
+    <div class="scene-resizer"></div>
+    <div class="details-resizer"></div>
+  </div>
+
+  <div id="right-panel-dock" class="panel-dock dock-right">
+    <div class="scene-resizer"></div>
+    <section id="scene-objects" class="panel-section">
+      <div id="scene-panel-header" draggable="true">씬 오브젝트</div>
       <div id="scene-object-list"></div>
     </section>
-    <section id="project-details">
-      <div id="project-details-header">프로젝트 세부 정보</div>
+    <div class="details-resizer"></div>
+    <section id="project-details" class="panel-section">
+      <div id="project-details-header" draggable="true">프로젝트 세부 정보</div>
       <dl>
         <div><dt>이름</dt><dd><input id="project-name" type="text"></dd></div>
         <div><dt>프로젝트 NBT</dt><dd><input id="project-mainNBT" type="text"></dd></div>
@@ -34,46 +40,5 @@
   <div id="fps-counter">FPS: --</div>
 
   <script type="module" src="./renderer.ts"></script>
-
-  <script>
-    const scenePanel  = document.getElementById('scene-panel');
-    const mainContent = document.getElementById('main-content');
-    const resizer     = document.getElementById('scene-resizer');
-
-    function applyLayout() {
-      mainContent.style.right = scenePanel.offsetWidth + 'px';
-      window.dispatchEvent(new Event('resize'));
-    }
-
-    // Scene 패널 리사이저
-    let startX = 0, startWidth = 0;
-
-    resizer.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      startX     = e.clientX;
-      startWidth = scenePanel.offsetWidth;
-      window.addEventListener('mousemove', onMouseMove);
-      window.addEventListener('mouseup',   onMouseUp);
-    });
-
-    function onMouseMove(e) {
-      const newWidth = startWidth - (e.clientX - startX);
-      if (newWidth >= 160 && newWidth <= 600) {
-        scenePanel.style.width = newWidth + 'px';
-        applyLayout();
-      }
-    }
-
-    function onMouseUp() {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup',   onMouseUp);
-      localStorage.setItem('scene-panel-width', scenePanel.style.width);
-    }
-
-    // 저장된 너비 복원
-    const savedWidth = localStorage.getItem('scene-panel-width');
-    if (savedWidth) scenePanel.style.width = savedWidth;
-    applyLayout();
-  </script>
 </body>
 </html>

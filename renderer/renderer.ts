@@ -19,6 +19,7 @@ import { initAssets } from './asset-manager';
 import { loadedObjectGroup } from './load-project/upload-pbde';
 import { openWithAnimation, closeWithAnimation } from './ui/ui-open-close';
 import './ui/scene-panel';
+import './ui/panel-layout';
 
 // 전역 변수로 선언
 let scene: Scene;

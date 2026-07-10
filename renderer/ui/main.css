@@ -44,22 +44,44 @@ canvas {
   display: block;
 }
 
-/* ----- Scene 패널 (우측) ----- */
-#scene-panel {
+/* ----- 도킹 패널 ----- */
+.panel-dock {
   position: absolute;
   top: 0;
-  right: 0;
   width: 240px;
   bottom: 0;
   background-color: #252528;
-  border-left: 1px solid #3a3a3e;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   z-index: 10;
 }
 
-#scene-panel-header {
+.panel-dock.dock-left {
+  left: 0;
+  border-right: 1px solid #3a3a3e;
+}
+
+.panel-dock.dock-right {
+  right: 0;
+  border-left: 1px solid #3a3a3e;
+}
+
+.panel-dock.empty {
+  display: none;
+}
+
+.panel-dock.single-panel .panel-section,
+.panel-dock.single-panel #scene-objects {
+  flex: 1 1 auto;
+}
+
+.panel-dock.single-panel .details-resizer {
+  display: none;
+}
+
+#scene-panel-header,
+#project-details-header {
   padding: 8px 12px;
   border-bottom: 1px solid #3a3a3e;
   font-size: 13px;
@@ -68,10 +90,13 @@ canvas {
   text-transform: uppercase;
   color: #888;
   flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #scene-objects {
-  flex: 3 1 0;
+  flex: 0 0 30%;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -86,17 +111,33 @@ canvas {
 }
 
 #project-details {
-  flex: 7 1 0;
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
-  border-top: 1px solid #3a3a3e;
   font-size: 12px;
 }
 
-#project-details-header {
-  padding: 8px 12px;
-  color: #888;
-  font-weight: 600;
+.details-resizer {
+  position: relative;
+  height: 12px;
+  flex: 0 0 12px;
+  cursor: ns-resize;
+  background: #202023;
+  border-block: 1px solid #3a3a3e;
+  box-sizing: border-box;
+}
+
+.details-resizer::after {
+  content: '';
+  position: absolute;
+  inset: 2px calc(50% - 18px);
+  border-radius: 2px;
+  background: #55555b;
+  transition: background 120ms ease;
+}
+
+.resizing-details {
+  cursor: ns-resize;
 }
 
 #project-details dl {
@@ -120,6 +161,7 @@ canvas {
 }
 
 #project-details input {
+  appearance: none;
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #45454a;
@@ -130,6 +172,10 @@ canvas {
   font: inherit;
   white-space: nowrap;
   user-select: text;
+}
+
+#project-details input:hover {
+  border-color: #45454a;
 }
 
 .scene-virtual-spacer {
@@ -151,15 +197,18 @@ canvas {
   box-sizing: border-box;
 }
 
-#scene-object-list::-webkit-scrollbar {
+#scene-object-list::-webkit-scrollbar,
+#project-details::-webkit-scrollbar {
   width: 6px;
 }
 
-#scene-object-list::-webkit-scrollbar-track {
+#scene-object-list::-webkit-scrollbar-track,
+#project-details::-webkit-scrollbar-track {
   background: transparent;
 }
 
-#scene-object-list::-webkit-scrollbar-thumb {
+#scene-object-list::-webkit-scrollbar-thumb,
+#project-details::-webkit-scrollbar-thumb {
   background: #444;
   border-radius: 3px;
 }
@@ -371,14 +420,23 @@ canvas {
 }
 
 /* Scene 패널 리사이저 */
-#scene-resizer {
+.scene-resizer {
   position: absolute;
-  top: 0;
-  left: -3px;
-  width: 6px;
-  bottom: 0;
+  top: calc(50% - 24px);
+  left: -7px;
+  width: 7px;
+  height: 48px;
   cursor: w-resize;
   z-index: 11;
+  background: #3a3a3e;
+  border-radius: 3px 0 0 3px;
+}
+
+.panel-dock.dock-left .scene-resizer {
+  right: -7px;
+  left: auto;
+  cursor: e-resize;
+  border-radius: 0 3px 3px 0;
 }
 
 /* ----- 로딩 오버레이 ----- */
