@@ -36,6 +36,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Produces shared geometry buffer plus metadata references, not ready-made meshes.
 - `metadata.geometries` remains for compatibility but batched output is emitted through `metadata.geometryBatches`.
 - Handles hardcoded models, display transforms, and player/item display variants while atlas packing is delegated.
+- Beds and trapped chests use hardcoded blockstates; bed geometry and split-texture compatibility remain isolated in the hardcoded assets.
 - Reuses identical block display templates and block model geometry during a parse; per-node transform/uuid metadata is still assigned separately.
 - Large scene traversal avoids cloning the full source tree, preloads repeated block/item templates once, and then walks nodes synchronously into a shared render list instead of creating per-node promises and nested arrays.
 - Pack key generation caches repeated matrix and structured JSON string keys within a parse.

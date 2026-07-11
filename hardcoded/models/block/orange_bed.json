@@ -1,6 +1,12 @@
 {
   "parent": "minecraft:block/bed",
   "textures": {
-    "0": "entity/bed/orange"
+    "head_east": "minecraft:block/orange_bed_head_east",
+    "head_up": "minecraft:block/orange_bed_head_up",
+    "head_west": "minecraft:block/orange_bed_head_west",
+    "foot_south": "minecraft:block/orange_bed_foot_south",
+    "foot_east": "minecraft:block/orange_bed_foot_east",
+    "foot_up": "minecraft:block/orange_bed_foot_up",
+    "foot_west": "minecraft:block/orange_bed_foot_west"
   }
 }
