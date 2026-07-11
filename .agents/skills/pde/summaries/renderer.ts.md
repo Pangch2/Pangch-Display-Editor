@@ -15,6 +15,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - Captures scene precompile timings split into optional per-root profile time, final full-scene compile time, and optional WebGPU queue wait.
 - Captures per-root scene precompile traces only when `localStorage.pdePrecompileProfile === '1'`, temporarily hiding loaded mesh roots one at a time and timing `renderer.compileAsync()`.
 - Tracks pending `pde:wait-render-settled` requests; per-frame render CPU timing and WebGPU queue completion waits are collected only when the request explicitly enables trace/GPU waiting.
+- Answers synchronous project camera-state events by snapshotting/restoring camera position, OrbitControls target, and zoom.
 
 ## Dependencies (imports)
 - `three/examples/jsm/controls/OrbitControls.js` -- orbit camera controls.
@@ -35,3 +36,4 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - `animate()` renders the scene continuously and updates the gizmo each frame.
 - Handles `pde:precompile-scene` by optionally profiling loaded mesh root compile costs, awaiting full `renderer.compileAsync(scene, camera)`, and optional WebGPU queue completion before resolving split timing details to `upload-pbde.ts`.
 - `pde:wait-render-settled` resolves after the requested number of rendered frames; callers can opt into per-frame trace collection and WebGPU queue waiting for diagnostics.
+- `pde:get-camera-state` and `pde:set-camera-state` keep camera ownership in this module while allowing project tabs to preserve their last view.

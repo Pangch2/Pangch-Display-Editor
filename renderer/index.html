@@ -28,7 +28,15 @@
     </section>
     <div class="details-resizer"></div>
     <section id="project-details" class="panel-section">
-      <div id="project-details-header" draggable="true">프로젝트 세부 정보</div>
+      <div id="project-details-header" draggable="true">
+        <span>프로젝트 세부 정보</span>
+        <div id="project-tabs" draggable="false">
+          <button id="previous-project" type="button" disabled aria-label="이전 프로젝트">&lt;</button>
+          <button id="project-tab" type="button">프로젝트 탭</button>
+          <button id="next-project" type="button" disabled aria-label="다음 프로젝트">&gt;</button>
+          <div id="project-tab-menu" hidden></div>
+        </div>
+      </div>
       <dl>
         <div><dt>이름</dt><dd><input id="project-name" type="text"></dd></div>
         <div><dt>프로젝트 NBT</dt><dd><input id="project-mainNBT" type="text"></dd></div>

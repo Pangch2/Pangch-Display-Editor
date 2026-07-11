@@ -48,22 +48,178 @@ type RenderSettledDetail = {
 type ScenePrecompileDetail = {
     resolve: (trace: ScenePrecompileTrace) => void;
 };
+type CameraState = {
+    position: [number, number, number];
+    target: [number, number, number];
+    zoom: number;
+};
+type ProjectState = {
+    id: string;
+    children: THREE.Object3D[];
+    data: Record<string, unknown>;
+    camera?: CameraState;
+};
+
+const projects: ProjectState[] = [];
+let activeProject = -1;
 
 export { loadedObjectGroup };
 
 function updateProjectDetails(): void {
     const details = loadedObjectGroup.userData.projectDetails as Record<string, string> | undefined;
     const panel = document.getElementById('project-details');
-    if (!details || !panel) return;
+    if (!panel) return;
 
     panel.hidden = false;
+    document.title = details?.name ? `PDE - ${details.name}` : 'PDE';
     for (const key of ['name', 'mainNBT', 'nbt']) {
         const input = document.getElementById(`project-${key}`) as HTMLInputElement | null;
         if (!input) continue;
-        input.value = details[key] || '';
-        input.oninput = () => details[key] = input.value;
+        input.value = details?.[key] || '';
+        input.oninput = () => {
+            if (!details) return;
+            details[key] = input.value;
+            if (key === 'name') {
+                document.title = input.value ? `PDE - ${input.value}` : 'PDE';
+                saveActiveProject();
+                renderProjectTabs();
+            }
+        };
     }
 }
+
+function saveActiveProject(): void {
+    if (activeProject < 0) return;
+    projects[activeProject].children = [...loadedObjectGroup.children];
+    projects[activeProject].data = Object.fromEntries(
+        Object.entries(loadedObjectGroup.userData).filter(([, value]) => typeof value !== 'function')
+    );
+    const detail: { state?: CameraState } = {};
+    window.dispatchEvent(new CustomEvent('pde:get-camera-state', { detail }));
+    projects[activeProject].camera = detail.state;
+}
+
+function switchProject(index: number): void {
+    if (index < 0 || index >= projects.length || index === activeProject) return;
+    loadedObjectGroup.userData.resetSelection?.();
+    saveActiveProject();
+    loadedObjectGroup.clear();
+    for (const [key, value] of Object.entries(loadedObjectGroup.userData)) {
+        if (typeof value !== 'function') delete loadedObjectGroup.userData[key];
+    }
+    activeProject = index;
+    Object.assign(loadedObjectGroup.userData, projects[index].data);
+    for (const child of projects[index].children) loadedObjectGroup.add(child);
+    if (projects[index].camera) {
+        window.dispatchEvent(new CustomEvent('pde:set-camera-state', { detail: projects[index].camera }));
+    }
+    updateProjectDetails();
+    renderProjectTabs();
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+}
+
+function addProject(): void {
+    saveActiveProject();
+    projects.push({ id: crypto.randomUUID(), children: [], data: {} });
+    switchProject(projects.length - 1);
+}
+
+function deleteProject(index: number): void {
+    if (index < 0 || index >= projects.length || projects.length === 1) return;
+    if (index !== activeProject) {
+        const activeId = projects[activeProject]?.id;
+        projects.splice(index, 1);
+        activeProject = projects.findIndex(project => project.id === activeId);
+        renderProjectTabs();
+        return;
+    }
+    loadedObjectGroup.userData.resetSelection?.();
+    loadedObjectGroup.clear();
+    for (const [key, value] of Object.entries(loadedObjectGroup.userData)) {
+        if (typeof value !== 'function') delete loadedObjectGroup.userData[key];
+    }
+    const nextIndex = Math.min(index, projects.length - 2);
+    projects.splice(index, 1);
+    activeProject = -1;
+    if (projects.length) switchProject(nextIndex);
+    else {
+        updateProjectDetails();
+        renderProjectTabs();
+        window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    }
+}
+
+function renderProjectTabs(): void {
+    const previous = document.getElementById('previous-project') as HTMLButtonElement | null;
+    const next = document.getElementById('next-project') as HTMLButtonElement | null;
+    const tab = document.getElementById('project-tab') as HTMLButtonElement | null;
+    const menu = document.getElementById('project-tab-menu');
+    if (!previous || !next || !tab || !menu) return;
+    const enabled = projects.length > 1;
+    previous.disabled = !enabled;
+    next.disabled = !enabled;
+    const name = (projects[activeProject]?.data.projectDetails as Record<string, string> | undefined)?.name;
+    tab.textContent = name || '프로젝트 탭';
+    menu.replaceChildren(...projects.map((project, index) => {
+        const row = document.createElement('div');
+        row.className = 'project-tab-row';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'project-tab-option';
+        button.draggable = true;
+        button.classList.toggle('active', index === activeProject);
+        button.textContent = (project.data.projectDetails as Record<string, string> | undefined)?.name || `새 프로젝트 ${index + 1}`;
+        button.onclick = () => switchProject(index);
+        button.ondragstart = event => event.dataTransfer?.setData('text/project-index', String(index));
+        button.ondragover = event => event.preventDefault();
+        button.ondrop = event => {
+            event.preventDefault();
+            const from = Number(event.dataTransfer?.getData('text/project-index'));
+            if (!Number.isInteger(from) || from === index) return;
+            saveActiveProject();
+            const activeId = projects[activeProject].id;
+            const [moved] = projects.splice(from, 1);
+            projects.splice(index, 0, moved);
+            activeProject = projects.findIndex(item => item.id === activeId);
+            renderProjectTabs();
+        };
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'delete-project';
+        remove.innerHTML = '&#xE4A9;';
+        remove.title = `${button.textContent} 삭제`;
+        remove.setAttribute('aria-label', remove.title);
+        remove.disabled = projects.length === 1;
+        remove.onclick = event => {
+            event.stopPropagation();
+            deleteProject(index);
+        };
+        row.append(button, remove);
+        return row;
+    }), (() => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = '+ 추가 프로젝트 창';
+        button.onclick = addProject;
+        return button;
+    })());
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const tabs = document.getElementById('project-tabs');
+    const menu = document.getElementById('project-tab-menu');
+    tabs?.addEventListener('dragstart', event => event.stopPropagation());
+    document.getElementById('previous-project')?.addEventListener('click', () => switchProject((activeProject - 1 + projects.length) % projects.length));
+    document.getElementById('next-project')?.addEventListener('click', () => switchProject((activeProject + 1) % projects.length));
+    document.getElementById('project-tab')?.addEventListener('click', event => {
+        event.stopPropagation();
+        if (menu) menu.hidden = !menu.hidden;
+    });
+    document.addEventListener('click', event => {
+        if (menu && !tabs?.contains(event.target as Node)) menu.hidden = true;
+    });
+    addProject();
+});
 
 function waitForScenePrecompiled(): Promise<ScenePrecompileTrace> {
     return new Promise(resolve => {
@@ -150,22 +306,18 @@ async function loadpbde(files: File | File[]): Promise<void> {
 
     const perceivedLoadStartMs = performance.now();
 
-    // Use a single generation ID for the batch operation to ensure textures/materials are valid for all files.
-    const batchGen = beginPbdeLoadGeneration();
-
     try {
-        // First file: clear scene (isMerge = false)
-        // Subsequent files: merge (isMerge = true)
-        for (let i = 0; i < fileList.length; i++) {
-            const isMerge = (i > 0); 
-            await loadAndRenderPbde(fileList[i], isMerge, batchGen);
+        for (const file of fileList) {
+            if (activeProject < 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails) addProject();
+            await loadAndRenderPbde(file, false, beginPbdeLoadGeneration());
+            updateProjectDetails();
+            saveActiveProject();
+            renderProjectTabs();
+            window.dispatchEvent(new CustomEvent('pde:scene-updated'));
         }
-        updateProjectDetails();
-        // Requirement: Do not perform multi-selection for "Open" (loadpbde) even with multiple files.
     } catch (e) {
         console.error("Error loading project files:", e);
     }
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     await precompileLoadedScene('open', fileList.length);
     await logFinalPbdeLoadTime(perceivedLoadStartMs, 'open', fileList.length);
 }

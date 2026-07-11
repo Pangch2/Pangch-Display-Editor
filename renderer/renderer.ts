@@ -79,6 +79,26 @@ type RenderSettledRequest = {
 const renderSettledRequests = new Set<RenderSettledRequest>();
 let scenePrecompileInProgress = false;
 
+window.addEventListener('pde:get-camera-state', (event: Event) => {
+    if (!camera || !controls) return;
+    const detail = (event as CustomEvent<{ state?: { position: [number, number, number]; target: [number, number, number]; zoom: number } }>).detail;
+    detail.state = {
+        position: camera.position.toArray(),
+        target: controls.target.toArray(),
+        zoom: camera.zoom
+    };
+});
+
+window.addEventListener('pde:set-camera-state', (event: Event) => {
+    if (!camera || !controls) return;
+    const state = (event as CustomEvent<{ position: [number, number, number]; target: [number, number, number]; zoom: number }>).detail;
+    camera.position.fromArray(state.position);
+    controls.target.fromArray(state.target);
+    camera.zoom = state.zoom;
+    camera.updateProjectionMatrix();
+    controls.update();
+});
+
 window.addEventListener('pde:precompile-scene', (event: Event) => {
     const detail = (event as CustomEvent<{ resolve?: (trace: ScenePrecompileTrace) => void }>).detail;
     if (!detail || typeof detail.resolve !== 'function') return;

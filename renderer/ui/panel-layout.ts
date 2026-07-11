@@ -9,6 +9,8 @@ const docks: Record<DockSide, HTMLElement> = {
     left: document.getElementById('left-panel-dock')!,
     right: document.getElementById('right-panel-dock')!
 };
+let dropPreview: HTMLElement | null = null;
+let draggedPanelId: PanelId | null = null;
 
 const oldSide: DockSide = localStorage.getItem('scene-panel-dock') === 'left' ? 'left' : 'right';
 const oldOrder: PanelId[] = localStorage.getItem('project-details-first') === 'true'
@@ -107,11 +109,37 @@ for (const side of ['left', 'right'] as DockSide[]) {
 document.querySelectorAll<HTMLElement>('#scene-panel-header, #project-details-header').forEach(header => {
     header.addEventListener('dragstart', event => {
         const panel = header.parentElement!;
+        draggedPanelId = panel.id as PanelId;
         event.dataTransfer?.setData('text/pde-panel', panel.id);
         if (event.dataTransfer) {
             const rect = panel.getBoundingClientRect();
+            const offsetX = event.clientX - rect.left;
+            const offsetY = event.clientY - rect.top;
+            const preview = panel.cloneNode(true) as HTMLElement;
+            const emptyDragImage = document.createElement('div');
+            dropPreview = document.createElement('div');
+            dropPreview.className = 'panel-drop-preview';
+            preview.className += ' panel-drag-preview';
+            preview.style.width = `${rect.width}px`;
+            preview.style.height = `${rect.height}px`;
+            document.body.append(preview, emptyDragImage, dropPreview);
             event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setDragImage(panel, event.clientX - rect.left, event.clientY - rect.top);
+            event.dataTransfer.setDragImage(emptyDragImage, 0, 0);
+
+            const movePreview = (dragEvent: DragEvent): void => {
+                if (dragEvent.clientX || dragEvent.clientY) preview.style.transform = `translate(${dragEvent.clientX - offsetX}px, ${dragEvent.clientY - offsetY}px)`;
+            };
+            const removePreview = (): void => {
+                preview.remove();
+                emptyDragImage.remove();
+                dropPreview?.remove();
+                dropPreview = null;
+                draggedPanelId = null;
+                header.removeEventListener('drag', movePreview);
+            };
+            header.addEventListener('drag', movePreview);
+            header.addEventListener('dragend', removePreview, { once: true });
+            movePreview(event);
         }
     });
 });
@@ -135,12 +163,39 @@ function getDropPlacement(x: number, y: number): { side: DockSide; index: number
 
     const target = panels[targetId];
     const targetRect = target.getBoundingClientRect();
-    const index = sidePanels.indexOf(targetId) + (y >= targetRect.top + targetRect.height / 2 ? 1 : 0);
+    const draggedIndex = draggedPanelId ? sidePanels.indexOf(draggedPanelId) : -1;
+    const targetIndex = sidePanels.indexOf(targetId);
+    if (draggedIndex >= 0 && draggedPanelId !== targetId) {
+        return { side, index: targetIndex + (draggedIndex < targetIndex ? 1 : 0) };
+    }
+    const index = targetIndex + (y >= targetRect.top + targetRect.height / 2 ? 1 : 0);
     return { side, index };
 }
 
 window.addEventListener('dragover', event => {
-    if (event.dataTransfer?.types.includes('text/pde-panel') && getDropPlacement(event.clientX, event.clientY)) event.preventDefault();
+    if (!event.dataTransfer?.types.includes('text/pde-panel')) return;
+    const placement = getDropPlacement(event.clientX, event.clientY);
+    if (!placement) {
+        if (dropPreview) dropPreview.hidden = true;
+        return;
+    }
+    event.preventDefault();
+    if (!dropPreview) return;
+
+    const dock = docks[placement.side];
+    const dockWidth = parseFloat(getComputedStyle(dock).width);
+    const oldIndex = draggedPanelId ? layout[placement.side].indexOf(draggedPanelId) : -1;
+    const previewIndex = oldIndex >= 0 && oldIndex < placement.index ? placement.index - 1 : placement.index;
+    const otherPanelCount = layout[placement.side].length - (oldIndex >= 0 ? 1 : 0);
+    const split = otherPanelCount > 0;
+    const previewHeight = split && draggedPanelId ? panels[draggedPanelId].getBoundingClientRect().height : window.innerHeight;
+    dropPreview.hidden = false;
+    dropPreview.style.left = `${placement.side === 'left' ? 0 : window.innerWidth - dockWidth}px`;
+    dropPreview.style.width = `${dockWidth}px`;
+    dropPreview.style.top = `${split && previewIndex > 0 ? dock.clientHeight - previewHeight : 0}px`;
+    dropPreview.style.height = `${previewHeight}px`;
+    dropPreview.style.borderTop = split && previewIndex > 0 ? '2px solid #70c7ff' : '';
+    dropPreview.style.borderBottom = split && previewIndex === 0 ? '2px solid #70c7ff' : '';
 });
 
 window.addEventListener('drop', event => {
