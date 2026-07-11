@@ -338,7 +338,7 @@ async function precompileLoadedScene(mode: 'open' | 'merge', fileCount: number):
     }
 }
 
-async function loadpbde(files: File | File[]): Promise<void> {
+async function loadpbde(files: File | File[], reuseCurrentProject = false): Promise<void> {
     const fileList = Array.isArray(files) ? files : [files];
     if (fileList.length === 0) return;
 
@@ -346,7 +346,7 @@ async function loadpbde(files: File | File[]): Promise<void> {
 
     try {
         for (const file of fileList) {
-            if (activeProject < 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails) addProject();
+            if (!reuseCurrentProject && (activeProject < 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails)) addProject();
             await loadAndRenderPbde(file, false, beginPbdeLoadGeneration());
             updateProjectDetails();
             saveActiveProject();
@@ -423,8 +423,12 @@ function createDropModal(files?: File[]) {
     openWithAnimation(modalContent);
 
     modalContent.innerHTML = `
-        <h3 style="margin-top: 0; color: #f0f0f0;">프로젝트 파일 감지됨</h3>
-        <p style="color: #aaa; margin-bottom: 25px;">어떻게 열건가요?</p>
+        <h3 style="margin: 0 0 4px; color: #f0f0f0;">프로젝트 파일 감지됨</h3>
+        <p style="color: #aaa; margin: 0 0 6px; font-size: 16px;">어떻게 열건가요?</p>
+        <label style="display: flex; align-items: center; justify-content: center; gap: 5px; margin-bottom: 15px; color: #ccc; cursor: pointer; font-size: 14px;">
+            <input id="reuse-current-project" type="checkbox">
+            현재 프로젝트에서 열기
+        </label>
         <div style="display: flex; gap: 15px;">
             <button id="new-project-btn" class="project-ui-button">프로젝트 열기</button>
             <button id="merge-project-btn" class="project-ui-button">프로젝트 합치기</button>
@@ -447,11 +451,19 @@ function createDropModal(files?: File[]) {
     modalOverlay.escHandler = handleEscKey;
     document.addEventListener('keydown', handleEscKey);
 
+    const reuseCurrentProject = document.getElementById('reuse-current-project') as HTMLInputElement | null;
+    if (reuseCurrentProject) {
+        reuseCurrentProject.checked = localStorage.getItem('pdeReuseCurrentProject') === '1';
+        reuseCurrentProject.addEventListener('change', () => {
+            localStorage.setItem('pdeReuseCurrentProject', reuseCurrentProject.checked ? '1' : '0');
+        });
+    }
+
     const newProjectBtn = document.getElementById('new-project-btn') as HTMLButtonElement | null;
     if (newProjectBtn) {
         newProjectBtn.addEventListener('click', () => {
             if (files && files.length > 0) {
-                loadpbde(files);
+                loadpbde(files, reuseCurrentProject?.checked);
             }
             closeDropModal();
         });

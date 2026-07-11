@@ -38,13 +38,15 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - `renderer.ts` -- imports `loadedObjectGroup`
 
 ## Notes
-- `loadpbde` opens every selected file as a separate project tab, reusing an active empty tab when available.
+- `loadpbde` opens every selected file as a separate project tab, reusing an active empty tab when available; the drop modal can instead reuse the current tab.
 - `mergepbde` appends all files, then selects all new meshes.
 - Both open and merge dispatch `pde:scene-updated` before optional scene precompile, then log perceived load time through render-settled frames and GPU queue completion when available.
 - Scene precompile is skipped by default and can be enabled with `localStorage.pdeAwaitScenePrecompile = '1'`; per-root profiling still requires `localStorage.pdePrecompileProfile = '1'`.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Final load time` defaults to enabled; optional scene precompile and render-settle diagnostics default to disabled. Final load time now always waits for GPU queue drain after the next rendered frame, while trace logs still control extra render-settle detail collection.
 - Files without `.bdengine` or `.pdengine` extension are ignored.
 - Opening creates independent project scenes and details per file; merging leaves the active project's details unchanged.
+- The drop modal centers its remembered `pdeReuseCurrentProject` checkbox directly below the open-mode prompt at a smaller font size; checking it suppresses new project-tab creation so Open replaces the current project.
+- The drop modal heading and prompt use tight inline margins so the gap between “프로젝트 파일 감지됨” and “어떻게 열건가요?” stays small.
 - A new Open operation creates a project window unless the active one is empty; switching snapshots/restores children and metadata on the existing shared root so scene, gizmo, and panel consumers keep the same group reference.
 - Switching restores saved children individually, so activating an empty project never calls Three.js `Group.add` without an object.
 - Previous/next controls activate with multiple projects. The always-enabled dropdown switches projects, creates empty project windows, and reorders entries with native drag-and-drop; pointer position selects a before/after insertion marker matching Scene object reorder feedback. Every expanded project row has a Lucide trash control that removes that project without first activating it.
