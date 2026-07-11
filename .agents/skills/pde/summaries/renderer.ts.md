@@ -26,6 +26,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - `./ui/ui-open-close` -- loading overlay open/close animations.
 - `./ui/scene-panel` -- side-effect import for scene panel UI setup.
 - `./ui/panel-layout` -- side-effect import for independent panel docking, ordering, and resizing.
+- `./ui/object-properties` -- side-effect import for the editable selected-object properties panel.
 
 ## Used By (known callers)
 - `renderer/load-project/upload-pbde.ts` -- imports `loadedObjectGroup` so loaded PBDE content can be attached before scene initialization.

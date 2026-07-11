@@ -31,4 +31,5 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `renderer/controls/vertex/vertex-*`
 
 ## Notes
+- TransformControls drag changes emit `pde:object-transform-changed`; pivot edits include the live unsaved pivot offset for the properties panel.
 This remains the highest-risk control module because it owns event wiring and mutable shared state. `initGizmo` now passes primitive keyboard state to `initHandleKey` through a local accessor-backed `HandleKeyState` object instead of individual getter/setter callbacks. It routes object selection and duplication through InstancedMesh paths and passes most overlay helpers directly. Multi-selection primary anchors use `CustomPivot.getObjectOriginWorld` so block and item display origins match single-selection behavior.

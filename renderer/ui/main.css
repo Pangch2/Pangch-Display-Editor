@@ -312,6 +312,67 @@ canvas {
   border-color: #45454a;
 }
 
+.object-property {
+  padding: 8px 12px 12px;
+  border-bottom: 1px solid #3a3a3e;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 250px;
+}
+
+.object-property h3 {
+  margin: 0 0 8px;
+  color: #ccc;
+  font-size: 12px;
+}
+
+.object-property-row {
+  display: grid;
+  grid-template-columns: 38px repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 5px;
+  align-items: center;
+}
+
+.object-property-row.matrix {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.object-property label {
+  color: #888;
+}
+
+.object-property input {
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  padding: 3px 4px;
+  background: #1e1e21;
+  color: #f0f0f0;
+  font: inherit;
+  user-select: text;
+}
+
+.object-property input[type="number"] {
+  appearance: auto;
+  color-scheme: dark;
+}
+
+.object-property input[type="number"]::-webkit-inner-spin-button {
+  opacity: 1;
+  cursor: ns-resize;
+}
+
+.object-property input:disabled {
+  background: #242427;
+  color: #666;
+  -webkit-text-fill-color: #666;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
 .scene-virtual-spacer {
   width: 1px;
   pointer-events: none;

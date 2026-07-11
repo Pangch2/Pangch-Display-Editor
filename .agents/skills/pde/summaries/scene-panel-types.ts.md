@@ -7,7 +7,7 @@ Defines the local scene-panel data model shared across the refactored scene-pane
 
 ### Types / Interfaces
 - `GroupChild` -- child entry inside a group, either nested group or object reference.
-- `GroupData` -- group metadata and child list stored in `loadedObjectGroup.userData`.
+- `GroupData` -- group transform/matrix, pivot, editable NBT metadata, and child list stored in `loadedObjectGroup.userData`.
 - `SceneOrderEntry` -- root-level ordering entry for groups and objects.
 - `SceneDragItemType` -- discriminates drag sources by `group` or `object`.
 - `SceneDropMode` -- describes the drop target relation.
@@ -23,7 +23,7 @@ Defines the local scene-panel data model shared across the refactored scene-pane
 - `ScenePanelState` -- module-level singleton state held by `scene-panel-state.ts`.
 
 ## Dependencies (imports)
-- `three/webgpu` -- shared `Object3D`, `Quaternion`, and `Vector3` types used in the model.
+- `three/webgpu` -- shared `Matrix4`, `Object3D`, `Quaternion`, and `Vector3` types used in the model.
 
 ## Notes
 - This file is type-only plumbing; it should stay free of runtime logic.

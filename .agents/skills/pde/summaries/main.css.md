@@ -1,7 +1,7 @@
 # main.css
 
 ## Purpose
-Defines renderer UI styling, including independent left/right panel docks, project tab navigation/dropdown, opaque panel drag previews, sky-blue panel drop-position previews, adjustable shared-section divider, scene tree, virtual-list rows, drag/drop visual states, loading overlay, FPS counter, and shared project buttons.
+Defines renderer UI styling, including independent left/right panel docks, project and selected-object property forms, project tab navigation/dropdown, panel drag/drop previews, adjustable divider, scene tree, loading overlay, and FPS counter.
 
 ## Internal State
 - CSS only; no runtime state.
@@ -23,5 +23,7 @@ Defines renderer UI styling, including independent left/right panel docks, proje
 - Scene Objects and Project Details use the same 6 px scrollbar styling.
 - Each dock has a visible 7 x 48 px resize handle centered completely outside its edge, keeping panel scrollbars unobstructed; a shared dock shows its 12 px section divider.
 - Project Details inputs keep their neutral border on hover, fill their column, and remain single-line.
+- Object properties use compact XYZ rows, a 4x4 matrix grid, single-line NBT inputs, and dark native number spinners; offscreen sections use CSS content visibility with an intrinsic height estimate to avoid unnecessary layout and paint work.
+- Disabled matrix inputs force muted Chromium text/background styling and a blocked cursor.
 - The Project Details header places project navigation directly after its fixed title and lets it fill the remaining panel width; long names truncate and the dropdown stays inside that area, with each project row reserving a 30 px Lucide delete button beside its tab.
 - Project tab rows draw a 2 px sky-blue line above or below the target row while reordering, matching Scene object before/after drop feedback.

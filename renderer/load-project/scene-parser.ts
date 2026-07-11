@@ -1539,7 +1539,8 @@ function cloneItemModelTemplate(template: ItemModelTemplate, node: any): RenderI
         tints: template.tints,
         models: [{ modelMatrix: template.modelMatrix, geometries: template.geometries, geometryId: template.geometryId }],
         transform: node.transform || node.transforms || null,
-        itemDisplayType: template.displayType
+        itemDisplayType: template.displayType,
+        nbt: node.nbt
     };
 }
 
@@ -1720,7 +1721,8 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             position: { x: position.x, y: position.y, z: position.z },
             quaternion: { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w },
             scale: { x: scale.x, y: scale.y, z: scale.z },
-            pivot: pivot
+            pivot: pivot,
+            nbt: typeof node.nbt === 'string' ? node.nbt : ''
         });
 
         if (parentGroupId === null && (node as any)._rootIndex !== undefined) {
@@ -1741,6 +1743,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
         if (modelData) {
             (modelData as any).transform = worldTransform; // 계산된 월드 변환 행렬을 결과에 포함한다.
             (modelData as any).name = node.name;
+            modelData.nbt = node.nbt;
             
             const uuid = generateUUID();
             (modelData as any).uuid = uuid;
@@ -2227,7 +2230,8 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     atlasUvTransforms,
                     blockProps: item.blockProps,
                     isItemDisplayModel: item.type === 'itemDisplayModel',
-                    itemDisplayType: (item as any).itemDisplayType ?? item.displayType ?? null
+                    itemDisplayType: (item as any).itemDisplayType ?? item.displayType ?? null,
+                    nbt: item.nbt ?? ''
                 }))
             });
         }

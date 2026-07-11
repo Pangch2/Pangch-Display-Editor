@@ -965,6 +965,9 @@ export function initGizmo({
                     _multiSelectionOriginAnchorValid = true;
                 }
                 previousHelperMatrix.copy(selectionHelper!.matrixWorld);
+                window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
+                    detail: { selection: currentSelection, pivot: pivotOffset.clone() }
+                }));
                 return;
             }
 
@@ -999,6 +1002,9 @@ export function initGizmo({
             previousHelperMatrix.copy(selectionHelper!.matrixWorld);
             Overlay.syncSelectionOverlay(_tmpDeltaMatrix);
             _updateMultiSelectionOverlayDuringDrag();
+            window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
+                detail: { selection: currentSelection }
+            }));
         }
     });
 

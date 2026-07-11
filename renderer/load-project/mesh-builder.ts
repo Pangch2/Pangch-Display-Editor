@@ -3,7 +3,7 @@ import { createEntityMaterial } from '../entityMaterial.js';
 import { parsePbdeProject } from './scene-parser';
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
-import type { GeometryInstanceBatch, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
+import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
 
@@ -36,6 +36,7 @@ type InstanceMeta = {
     atlasUvTransform?: [number, number, number, number],
     atlasUvTransforms?: [number, number, number, number][],
     displayType?: 'block_display' | 'item_display'
+    nbt?: string
 };
 type SignatureGroup = {
     parts: GeometryMeta[];
@@ -932,6 +933,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     (loadedObjectGroup.userData.objectDisplayTypes as Map<string, string>) ?? new Map<string, string>();
                 const objectBlockProps: Map<string, any> =
                     (loadedObjectGroup.userData.objectBlockProps as Map<string, any>) ?? new Map<string, any>();
+                const objectNbt: Map<string, string> =
+                    (loadedObjectGroup.userData.objectNbt as Map<string, string>) ?? new Map<string, string>();
 
                 if (activeGeometryBatches) {
                     for (const batch of activeGeometryBatches) {
@@ -952,6 +955,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             if (instance.uuid && firstPart && !instanceIsItemDisplay && instanceBlockProps) {
                                 objectBlockProps.set(instance.uuid, instanceBlockProps);
                             }
+                            if (instance.uuid) objectNbt.set(instance.uuid, instance.nbt ?? '');
                         }
                     }
                 } else {
@@ -968,6 +972,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         if (meta.uuid && !meta.isItemDisplayModel && (meta as any).blockProps) {
                             objectBlockProps.set(meta.uuid, (meta as any).blockProps);
                         }
+                        if (meta.uuid) objectNbt.set(meta.uuid, meta.nbt ?? '');
                     }
                 }
                 for (const item of otherItems) {
@@ -980,11 +985,13 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             objectDisplayTypes.set(item.uuid, item.displayType);
                         }
                     }
+                    if (item.uuid) objectNbt.set(item.uuid, typeof item.nbt === 'string' ? item.nbt : '');
                 }
                 loadedObjectGroup.userData.objectNames = objectNamesMap;
                 loadedObjectGroup.userData.objectIsItemDisplay = objectIsItemDisplay;
                 loadedObjectGroup.userData.objectDisplayTypes = objectDisplayTypes;
                 loadedObjectGroup.userData.objectBlockProps = objectBlockProps;
+                loadedObjectGroup.userData.objectNbt = objectNbt;
 
                 // 로드 순서 보존 (merge 시는 덧붙임)
                 const prevOrder: { type: 'group' | 'object', id: string }[] =
@@ -1064,7 +1071,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const signatureStartMs = performance.now();
                 const signatureGroups = new Map<string, SignatureGroup>();
 
-                const addSignatureGroup = (parts: GeometryMeta[], instances: Array<{ transform: Float32Array | number[]; uuid: string; groupId: string | null; atlasUvTransform?: [number, number, number, number]; atlasUvTransforms?: [number, number, number, number][]; isItemDisplayModel?: boolean }>) => {
+                const addSignatureGroup = (parts: GeometryMeta[], instances: GeometryInstanceMeta[]) => {
                     parts.sort((a, b) => {
                         const geometryCompare = a.geometryId.localeCompare(b.geometryId);
                         if (geometryCompare !== 0) return geometryCompare;
@@ -1090,7 +1097,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             groupId: instance.groupId,
                             atlasUvTransform: instance.atlasUvTransform,
                             atlasUvTransforms: instance.atlasUvTransforms,
-                            displayType: isItemDisplayModel ? 'item_display' : 'block_display'
+                            displayType: isItemDisplayModel ? 'item_display' : 'block_display',
+                            nbt: instance.nbt ?? ''
                         });
                     }
                 };

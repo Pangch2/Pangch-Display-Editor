@@ -18,7 +18,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Promise caches for JSON assets and block display templates to deduplicate concurrent scene traversal work
 - Multiple caches for model resolution, textures, block/item geometry, and worker-side state
 - Promise and resolved-template caches for block/item display templates deduplicate repeated geometry and display-matrix work before traversal.
-- Geometry pack step groups identical renderable shapes into `geometryBatches`; each batch stores shared parts once and per-instance transform/uuid/group/name data separately.
+- Geometry pack step groups identical renderable shapes into `geometryBatches`; each batch stores shared parts once and per-instance transform/uuid/group/name/NBT data separately.
 - Atlas-backed geometry can batch across different texture atlas locations, block/item display source types, and single matrix rotations by comparing normalized UV/shape keys, moving uniform local model-matrix differences into per-instance transforms, and storing per-instance `atlasUvTransform` or per-part `atlasUvTransforms`, while keeping atlas material/transparency class in the key.
 
 ## Dependencies (imports)
@@ -45,3 +45,5 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Per-instance item-display flags/types are emitted so block display and item display objects can share one mesh root without losing downstream display-type behavior.
 - Optional `Scene timings` and `Parse timings` logs are controlled through `pbde-log.ts` registry helpers and default to disabled.
 - Root `name`, `mainNBT`, and `nbt` values are normalized to strings in `metadata.projectDetails`.
+- Block and item display paths preserve node NBT in per-instance metadata.
+- Collection nodes preserve their NBT on group metadata.

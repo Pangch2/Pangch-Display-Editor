@@ -40,6 +40,7 @@ export interface GeometryMeta {
     name?: string | null;
     blockProps?: unknown;
     itemDisplayType?: string;
+    nbt?: string;
 }
 
 export interface GeometryInstanceMeta {
@@ -52,6 +53,7 @@ export interface GeometryInstanceMeta {
     blockProps?: unknown;
     isItemDisplayModel?: boolean;
     itemDisplayType?: string | null;
+    nbt?: string;
 }
 
 export interface GeometryInstanceBatch {
@@ -87,6 +89,7 @@ export interface GroupData {
     quaternion: { x: number; y: number; z: number; w: number } | THREE.Quaternion;
     scale: { x: number; y: number; z: number } | THREE.Vector3;
     pivot?: [number, number, number] | number[];
+    nbt?: string;
 }
 
 export interface ProjectDetails {

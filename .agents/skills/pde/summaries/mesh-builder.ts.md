@@ -20,7 +20,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Concurrency gate for texture decoding to avoid overload
 - Signature hash scratch buffer and per-load geometry/material update caches to reduce mesh creation allocations
 - Per-load material preload cache resolves unique signature-group materials before `InstancedMesh` creation, with placeholder material updates retained only as a fallback for failed or late material loads.
-- Per-instance atlas UV transform arrays, display-type, and block-property metadata for same-shape objects that share geometry but use different atlas locations, source display types, or rotation-only properties.
+- Per-instance atlas UV transform arrays, display-type, block-property, and NBT metadata for objects that share geometry.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
 - `INITIAL_INSTANCES_PER_INSTANCED_MESH` starts block chunks at half capacity so duplicated instances can append without resizing WebGPU buffers
@@ -50,4 +50,5 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Instanced meshes are allocated with spare capacity and then `mesh.count` is lowered to the active instance count so duplicate append can reuse existing matrix/UV buffers without rebinding texture attributes; tiny chunks still get 256 slots minimum to reduce duplicate-time chunk creation.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
 - Fresh loads store parser-provided project details on `loadedObjectGroup.userData`; merges preserve the current details.
+- `loadedObjectGroup.userData.objectNbt` maps object UUIDs to editable NBT strings for the properties panel.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items` defaults to enabled; optional `Load timings`, `Geometry stats`, `Mesh uploaded`, and `Finished processing` logs default to disabled.

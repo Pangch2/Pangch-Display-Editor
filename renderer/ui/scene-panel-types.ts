@@ -1,4 +1,4 @@
-import type { Object3D, Quaternion, Vector3 } from 'three/webgpu';
+import type { Matrix4, Object3D, Quaternion, Vector3 } from 'three/webgpu';
 
 export interface GroupChild {
     type: 'group' | 'object';
@@ -17,6 +17,8 @@ export interface GroupData {
     quaternion: Quaternion | { x: number; y: number; z: number; w: number };
     scale: Vector3 | { x: number; y: number; z: number };
     pivot?: [number, number, number];
+    nbt?: string;
+    matrix?: Matrix4;
 }
 
 export interface SceneOrderEntry {
