@@ -24,6 +24,11 @@ body {
   user-select: none;
 }
 
+:focus,
+:focus-visible {
+  outline: none;
+}
+
 canvas {
   display: block;
 }
@@ -177,6 +182,26 @@ canvas {
 
 .project-tab-row {
   display: flex;
+  position: relative;
+}
+
+.project-tab-row.project-tab-drop-before::before,
+.project-tab-row.project-tab-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #4ea6ff;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.project-tab-row.project-tab-drop-before::before {
+  top: 0;
+}
+
+.project-tab-row.project-tab-drop-after::after {
+  bottom: 0;
 }
 
 #project-tab-menu .project-tab-option {
@@ -285,10 +310,6 @@ canvas {
 
 #project-details input:hover {
   border-color: #45454a;
-}
-
-#project-details input:focus {
-  outline: none;
 }
 
 .scene-virtual-spacer {

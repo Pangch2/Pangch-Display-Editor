@@ -62,8 +62,27 @@ type ProjectState = {
 
 const projects: ProjectState[] = [];
 let activeProject = -1;
+let projectTabDropMarkerEl: HTMLElement | null = null;
+let projectTabDropMarkerClass: 'project-tab-drop-before' | 'project-tab-drop-after' | null = null;
 
 export { loadedObjectGroup };
+
+function clearProjectTabDropMarker(): void {
+    if (projectTabDropMarkerEl && projectTabDropMarkerClass) {
+        projectTabDropMarkerEl.classList.remove(projectTabDropMarkerClass);
+    }
+    projectTabDropMarkerEl = null;
+    projectTabDropMarkerClass = null;
+}
+
+function applyProjectTabDropMarker(row: HTMLElement, mode: 'before' | 'after'): void {
+    const markerClass = mode === 'before' ? 'project-tab-drop-before' : 'project-tab-drop-after';
+    if (projectTabDropMarkerEl === row && projectTabDropMarkerClass === markerClass) return;
+    clearProjectTabDropMarker();
+    row.classList.add(markerClass);
+    projectTabDropMarkerEl = row;
+    projectTabDropMarkerClass = markerClass;
+}
 
 function updateProjectDetails(): void {
     const details = loadedObjectGroup.userData.projectDetails as Record<string, string> | undefined;
@@ -150,6 +169,7 @@ function deleteProject(index: number): void {
 }
 
 function renderProjectTabs(): void {
+    clearProjectTabDropMarker();
     const previous = document.getElementById('previous-project') as HTMLButtonElement | null;
     const next = document.getElementById('next-project') as HTMLButtonElement | null;
     const tab = document.getElementById('project-tab') as HTMLButtonElement | null;
@@ -170,23 +190,38 @@ function renderProjectTabs(): void {
         button.classList.toggle('active', index === activeProject);
         button.textContent = (project.data.projectDetails as Record<string, string> | undefined)?.name || `새 프로젝트 ${index + 1}`;
         button.onclick = () => switchProject(index);
-        button.ondragstart = event => event.dataTransfer?.setData('text/project-index', String(index));
-        button.ondragover = event => event.preventDefault();
-        button.ondrop = event => {
+        button.ondragstart = event => {
+            event.dataTransfer?.setData('text/project-index', String(index));
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+        };
+        button.ondragend = clearProjectTabDropMarker;
+        row.ondragover = event => {
+            const from = Number(event.dataTransfer?.getData('text/project-index'));
+            if (!Number.isInteger(from)) return;
+            event.preventDefault();
+            const rect = row.getBoundingClientRect();
+            applyProjectTabDropMarker(row, event.clientY < rect.top + rect.height / 2 ? 'before' : 'after');
+        };
+        row.ondrop = event => {
             event.preventDefault();
             const from = Number(event.dataTransfer?.getData('text/project-index'));
-            if (!Number.isInteger(from) || from === index) return;
+            if (!Number.isInteger(from)) return;
+            const rect = row.getBoundingClientRect();
+            const mode = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+            clearProjectTabDropMarker();
             saveActiveProject();
             const activeId = projects[activeProject].id;
             const [moved] = projects.splice(from, 1);
-            projects.splice(index, 0, moved);
+            let insertAt = index + (mode === 'after' ? 1 : 0);
+            if (from < insertAt) insertAt--;
+            projects.splice(insertAt, 0, moved);
             activeProject = projects.findIndex(item => item.id === activeId);
             renderProjectTabs();
         };
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'delete-project';
-        remove.innerHTML = '&#xE4A9;';
+        remove.innerHTML = '&#xE18E;';
         remove.title = `${button.textContent} 삭제`;
         remove.setAttribute('aria-label', remove.title);
         remove.disabled = projects.length === 1;
@@ -216,8 +251,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (menu) menu.hidden = !menu.hidden;
     });
     document.addEventListener('click', event => {
-        if (menu && !tabs?.contains(event.target as Node)) menu.hidden = true;
+        if (!menu || !tabs) return;
+        if (event.composedPath().includes(tabs)) return;
+        menu.hidden = true;
     });
+    menu?.addEventListener('dragend', clearProjectTabDropMarker);
     addProject();
 });
 

@@ -26,6 +26,7 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - `ModalOverlayElement` -- local `HTMLDivElement` extension with optional ESC handler
 - Drop modal is single-instance via `drop-modal-overlay`
 - `projects` stores project windows, scene metadata, and last camera state in display order; startup creates one empty project and `activeProject` indexes the state currently mounted in the shared scene root.
+- `projectTabDropMarkerEl` and `projectTabDropMarkerClass` track the project row currently showing a before/after reorder marker.
 
 ## Dependencies (imports)
 - `../ui/ui-open-close.js` -- modal open/close animation helpers
@@ -46,6 +47,7 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - Opening creates independent project scenes and details per file; merging leaves the active project's details unchanged.
 - A new Open operation creates a project window unless the active one is empty; switching snapshots/restores children and metadata on the existing shared root so scene, gizmo, and panel consumers keep the same group reference.
 - Switching restores saved children individually, so activating an empty project never calls Three.js `Group.add` without an object.
-- Previous/next controls activate with multiple projects. The always-enabled dropdown switches projects, creates empty project windows, and reorders entries with native drag-and-drop; every expanded project row has a Lucide trash control that removes that project without first activating it.
+- Previous/next controls activate with multiple projects. The always-enabled dropdown switches projects, creates empty project windows, and reorders entries with native drag-and-drop; pointer position selects a before/after insertion marker matching Scene object reorder feedback. Every expanded project row has a Lucide trash control that removes that project without first activating it.
+- The project-tab dropdown stays open for clicks inside the tab/menu subtree by checking `event.composedPath()` before hiding it, which avoids false closes when the menu re-renders during actions like adding a project.
 - One project window always exists: an empty window is created on startup, and the sole remaining project's trash control and deletion path are disabled.
 - Switching synchronously snapshots/restores camera position, OrbitControls target, and zoom through renderer-owned `pde:get-camera-state` / `pde:set-camera-state` events.
