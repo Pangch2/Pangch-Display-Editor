@@ -2,6 +2,7 @@ import {
     Mesh,
     InstancedMesh,
     Group,
+    Box3,
     Vector3,
     Matrix4,
     Raycaster
@@ -152,7 +153,30 @@ export function pickInstanceByOverlayBox(
     const hit = raycaster.intersectObject(rootGroup, true).find(({ object, instanceId }) =>
         object instanceof InstancedMesh && instanceId !== undefined && Overlay.isInstanceValid(object, instanceId)
     );
-    return hit ? { mesh: hit.object as InstancedMesh, instanceId: hit.instanceId! } : null;
+    let closest = hit ? { mesh: hit.object as InstancedMesh, instanceId: hit.instanceId!, distance: hit.distance } : null;
+    const worldMatrix = new Matrix4();
+    const worldBox = new Box3();
+    const intersection = new Vector3();
+
+    rootGroup.traverse((object) => {
+        if (!(object instanceof InstancedMesh)) return;
+
+        for (let instanceId = 0; instanceId < Overlay.getInstanceCount(object); instanceId++) {
+            if (!Overlay.isInstanceValid(object, instanceId)) continue;
+            Overlay.getInstanceWorldMatrix(object, instanceId, worldMatrix);
+            if (worldMatrix.determinant() !== 0) continue;
+
+            const localBox = Overlay.getInstanceLocalBox(object, instanceId);
+            if (!localBox) continue;
+            worldBox.copy(localBox).applyMatrix4(worldMatrix);
+            if (!raycaster.ray.intersectBox(worldBox, intersection)) continue;
+
+            const distance = raycaster.ray.origin.distanceTo(intersection);
+            if (!closest || distance < closest.distance) closest = { mesh: object, instanceId, distance };
+        }
+    });
+
+    return closest ? { mesh: closest.mesh, instanceId: closest.instanceId } : null;
 }
 
 export function getSingleSelectedGroupId(): string | null {

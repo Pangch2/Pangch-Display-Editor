@@ -16,7 +16,7 @@ Implements the selection state machine: caches selected items, resolves click hi
 
 ### Functions / Methods
 - `getSelectedItems(): SelectedItem[]` -- expands selected groups into concrete object-instance items.
-- `pickInstanceByOverlayBox(raycaster, rootGroup)` -- raycasts rendered instanced geometry and returns the closest valid instance hit.
+- `pickInstanceByOverlayBox(raycaster, rootGroup)` -- raycasts rendered instanced geometry, with a world-box fallback for zero-scale instances, and returns the closest valid hit.
 - `replaceSelectionWithObjectsMap(...)` -- replaces selection with object instances only.
 - `replaceSelectionWithGroupsAndObjects(...)` -- replaces selection with groups and objects.
 - `selectAllObjectsVisibleInScene(loadedObjectGroup)` -- collects all visible instanced object ids by mesh.
