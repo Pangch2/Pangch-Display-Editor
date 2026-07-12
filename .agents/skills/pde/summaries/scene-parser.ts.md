@@ -11,6 +11,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 
 ### Functions / Methods
 - `getPlayerHeadDisplayMatrix(displayType)` -- returns the shared player-head display transform matrix used by parsing and targeted object replacement.
+- `getItemDisplayModelMatrix(rawName)` -- returns a retained local model/display matrix for in-place display edits without requiring the cleared asset provider.
 - `parsePbdeProject(fileContent, provider)` -- main parser entry; returns packed geometry and metadata
 
 ## Internal State
@@ -19,6 +20,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Promise caches for JSON assets and block display templates to deduplicate concurrent scene traversal work
 - Multiple caches for model resolution, textures, block/item geometry, and worker-side state
 - Promise and resolved-template caches for block/item display templates deduplicate repeated geometry and display-matrix work before traversal.
+- Retained item display matrices store every editor-supported display variant per loaded item name after temporary parser caches are cleared.
 - Geometry pack step groups identical renderable shapes into `geometryBatches`; each batch stores shared parts once and per-instance transform/uuid/group/name/NBT data separately.
 - Atlas-backed geometry can batch across different texture atlas locations, block/item display source types, and single matrix rotations by comparing normalized UV/shape keys, moving uniform local model-matrix differences into per-instance transforms, and storing per-instance `atlasUvTransform` or per-part `atlasUvTransforms`, while keeping atlas material/transparency class in the key.
 
@@ -37,6 +39,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Produces shared geometry buffer plus metadata references, not ready-made meshes.
 - `metadata.geometries` remains for compatibility but batched output is emitted through `metadata.geometryBatches`.
 - Handles hardcoded models, display transforms, and player/item display variants while atlas packing is delegated.
+- Player-head items retain their editable world transform; their display/render scale matrix is applied symmetrically by `mesh-builder.ts`.
 - Beds and trapped chests use hardcoded blockstates; bed geometry and split-texture compatibility remain isolated in the hardcoded assets.
 - Reuses identical block display templates and block model geometry during a parse; per-node transform/uuid metadata is still assigned separately.
 - Large scene traversal avoids cloning the full source tree, preloads repeated block/item templates once, and then walks nodes synchronously into a shared render list instead of creating per-node promises and nested arrays.

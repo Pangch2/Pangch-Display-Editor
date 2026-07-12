@@ -949,6 +949,8 @@ const itemModelTemplatePromiseCache = new Map<string, Promise<ItemModelTemplate 
 const itemModelTemplateCache = new Map<string, ItemModelTemplate | null>();
 const itemModelTemplateKeyByName = new Map<string, string | null>();
 const itemNameParseCache = new Map<string, { baseName: string; displayType: string | null }>();
+const itemDisplayModelMatrices = new Map<string, THREE.Matrix4>();
+const itemDisplayTypes = ['', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
 
 // 🚀 최적화 3: 블록 모델 지오메트리 캐싱 (같은 블록 타입은 재사용)
 const blockModelGeometryCache = new Map(); // 모델 ID별 지오메트리 캐시
@@ -1504,25 +1506,18 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
         modelMatrix.premultiply(new THREE.Matrix4().makeScale(-1, 1, 1));
     }
 
-    if (displayType) {
-        if (baseName === 'player_head') {
-            const override = PLAYER_HEAD_DISPLAY_TRANSFORMS[displayType];
-            const overrideMatrix = buildDisplayTransformMatrix(override);
-            if (overrideMatrix) {
-                modelMatrix.premultiply(overrideMatrix);
-            }
-        } else {
+    await Promise.all(itemDisplayTypes.map(async type => {
+        const displayModelMatrix = modelMatrix.clone();
+        if (type) {
             try {
-                const displayTransform = await getDisplayTransformForItem(resolved, displayType, modelTreeCache);
+                const displayTransform = await getDisplayTransformForItem(resolved, type, modelTreeCache);
                 const displayMatrix = buildDisplayTransformMatrix(displayTransform);
-                if (displayMatrix) {
-                    modelMatrix.premultiply(displayMatrix);
-                }
-            } catch {
-                // Display transform lookup failures fall back to the base model matrix.
-            }
+                if (displayMatrix) displayModelMatrix.premultiply(displayMatrix);
+            } catch { /* Display lookup failures keep the base model matrix. */ }
         }
-    }
+        itemDisplayModelMatrices.set(`${baseName}|${type}`, displayModelMatrix);
+    }));
+    modelMatrix.copy(itemDisplayModelMatrices.get(`${baseName}|${displayType ?? ''}`)!);
 
     return {
         name: baseName,
@@ -1598,6 +1593,11 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
         itemModelTemplateKeyByName.set(rawName, null);
         return null;
     }
+}
+
+export async function getItemDisplayModelMatrix(rawName: string): Promise<THREE.Matrix4 | null> {
+    const { baseName, displayType } = parseItemNameCached(rawName);
+    return itemDisplayModelMatrices.get(`${baseName}|${displayType ?? ''}`)?.clone() ?? null;
 }
 
 // item_display 노드를 분석해 모델 지오메트리와 display 변환을 계산한다.
@@ -1766,7 +1766,6 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
     } else if (node.isItemDisplay) {
         // 플레이어 머리 아이템은 별도의 처리 경로를 따른다.
         if (node.name.startsWith('player_head')) {
-            let adjustedTransform = worldTransform;
             let displayType = null;
             try {
                 const parsed = parseItemName(node.name);
@@ -1775,21 +1774,10 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
                 }
             } catch {/* ignore parse errors */}
 
-            if (displayType) {
-                const override = PLAYER_HEAD_DISPLAY_TRANSFORMS[displayType];
-                const overrideMatrix = buildDisplayTransformMatrix(override);
-                if (overrideMatrix && worldTransform) {
-                    const worldMatrix = new THREE.Matrix4().fromArray(worldTransform).transpose();
-                    worldMatrix.multiply(overrideMatrix);
-                    const rowMajor = worldMatrix.clone().transpose().elements;
-                    adjustedTransform = new Float32Array(rowMajor);
-                }
-            }
-
             const itemData: RenderItem = {
                 type: 'itemDisplay',
                 name: node.name,
-                transform: adjustedTransform,
+                transform: worldTransform,
                 nbt: node.nbt,
                 options: node.options,
                 brightness: node.brightness

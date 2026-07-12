@@ -13,7 +13,8 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `performSelection(newlyAddedSelectableMeshes)` -- updates active selection after load/merge
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
 - `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
-- `replaceDisplayObject(objectUuid, name): Promise<void>` -- rebuilds one display object through the PBDE pipeline, removes an existing player-head display transform before rebuilding, retains hierarchy position and the custom pivot's world position, and requests normal gizmo selection replacement.
+- `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
+- `replaceDisplayObject(objectUuid, name): Promise<void>` -- rebuilds one display object through the PBDE pipeline, removes existing player-head render scale/display transforms before rebuilding, keeps the effective pivot fixed in world space, and requests normal gizmo selection replacement.
 
 ## Internal State
 - Texture/material caches for block and atlas assets
@@ -34,6 +35,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `fflate` -- creates the minimal compressed PBDE payload used for single-object replacement
 - `../entityMaterial.js` -- entity/player-head material creation
 - `../controls/grouping/delete` -- removes the superseded instance after its replacement is ready
+- `../controls/selection/overlay` -- resolves display-specific default pivots and local bounds during object replacement
 - `./scene-parser` -- parses PBDE archive into metadata
 - `./pbde-assets` -- IPC asset decoding helpers and provider
 - `./pbde-log` -- central PBDE log registry plus localStorage flag helpers for load/stat timing logs
@@ -41,7 +43,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 
 ## Used By (known callers)
 - `upload-pbde.ts` -- drives load and merge flow
-- `ui/object-properties.ts` -- updates player-head atlas textures in place and rebuilds objects for other property/display changes
+- `ui/object-properties.ts` -- updates player-head textures and display matrices in place, rebuilding only geometry-changing properties
 
 ## Notes
 - Uses WebGPU-only Three.js path; no WebGL fallback.
@@ -58,7 +60,9 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Fresh loads store parser-provided project details on `loadedObjectGroup.userData`; merges preserve the current details.
 - `loadedObjectGroup.userData.objectNbt` maps object UUIDs to editable NBT strings for the properties panel.
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
+- Property-panel model changes keep default pivots fixed by translating replacement instance matrices; custom pivots retain their world position without changing the object transform.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
-- Player-head replacement reverses the current display matrix before parsing the replacement, preventing repeated texture/property edits from accumulating scale or translation.
+- Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
+- Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.
 - Player-head texture edits redraw the existing atlas slot when exclusive; shared slots receive a new slot so other instances keep their skin. The instance matrix and UUID remain unchanged.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items` defaults to enabled; optional `Load timings`, `Geometry stats`, `Mesh uploaded`, and `Finished processing` logs default to disabled.

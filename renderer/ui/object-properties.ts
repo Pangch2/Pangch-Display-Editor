@@ -1,7 +1,7 @@
 import { Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { replaceDisplayObject, updatePlayerHeadTexture } from '../load-project/mesh-builder';
+import { replaceDisplayObject, updateDisplayObjectMatrix, updatePlayerHeadTexture } from '../load-project/mesh-builder';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel-types';
 import * as GroupUtils from '../controls/grouping/group';
@@ -356,46 +356,30 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         section.append(brightnessProperty(brightness, updateBrightness));
         const displayType = (loadedObjectGroup.userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid) ?? 'none';
         section.append(metadataProperty('display', '디스플레이', propertySelect(displayType, itemDisplayValues, async value => {
-            await replaceDisplayObject(uuid, replaceNameDisplay(name, value));
+            await updateDisplayObjectMatrix(uuid, replaceNameDisplay(name, value));
         })));
         sortMetadataRows(section);
     } else {
         const objectBlockProps = loadedObjectGroup.userData.objectBlockProps as Map<string, Record<string, string>> | undefined;
-        const props = objectBlockProps?.get(uuid);
+        const props = objectBlockProps?.get(uuid) ?? {};
         const metadataLabel = document.createElement('h3');
         metadataLabel.className = 'object-metadata-title';
         metadataLabel.textContent = '개체 속성';
         section.append(metadataLabel);
         section.append(brightnessProperty(brightness, updateBrightness));
-        const rows = new Map<string, { row: HTMLDivElement; select: HTMLSelectElement }>();
-        Object.entries(props ?? {})
-            .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-            .forEach(([key, value]) => {
-            const select = propertySelect(String(value), [], async next => {
-                await replaceDisplayObject(uuid, replaceNameProperties(name, { ...props, [key]: next }));
-            });
-            select.disabled = true;
-            const row = metadataProperty(key, key, select);
-            rows.set(key, { row, select });
-            section.append(row);
-        });
         sortMetadataRows(section);
-        if (props) void getBlockPropertyOptions(name, props).then(options => {
-            let visibleCount = 0;
-            for (const [key, { row, select }] of rows) {
-                const values = options[key] ?? [];
-                if (values.length < 2) {
-                    row.remove();
-                    continue;
-                }
-                select.replaceChildren(...values.map(value => new Option(value, value)));
-                select.value = props[key];
-                select.disabled = false;
-                visibleCount++;
-            }
+        void getBlockPropertyOptions(name, props).then(options => {
+            Object.entries(options)
+                .filter(([, values]) => values.length > 1)
+                .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+                .forEach(([key, values]) => {
+                    const value = props[key] ?? (values.includes('false') ? 'false' : values[0]);
+                    section.append(metadataProperty(key, key, propertySelect(value, values, async next => {
+                        await replaceDisplayObject(uuid, replaceNameProperties(name, { ...props, [key]: next }));
+                    })));
+                });
             sortMetadataRows(section);
         }).catch(error => {
-            rows.forEach(({ row }) => row.remove());
             console.error('블록 속성 후보를 불러오지 못했습니다.', error);
         });
     }
