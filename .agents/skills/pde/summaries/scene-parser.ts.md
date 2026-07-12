@@ -10,6 +10,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - `ParsedPbdeProject` -- parser result with `metadata`, optional `geometryBatches`, and raw `geometryBuffer`
 
 ### Functions / Methods
+- `getPlayerHeadDisplayMatrix(displayType)` -- returns the shared player-head display transform matrix used by parsing and targeted object replacement.
 - `parsePbdeProject(fileContent, provider)` -- main parser entry; returns packed geometry and metadata
 
 ## Internal State
@@ -40,10 +41,12 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Reuses identical block display templates and block model geometry during a parse; per-node transform/uuid metadata is still assigned separately.
 - Large scene traversal avoids cloning the full source tree, preloads repeated block/item templates once, and then walks nodes synchronously into a shared render list instead of creating per-node promises and nested arrays.
 - Pack key generation caches repeated matrix and structured JSON string keys within a parse.
-- Same-shape atlas geometry ignores texture location, source type, item display type, and block props when every part has an atlas UV transform, the part model matrix is uniform, and the part count stays within the supported per-part UV transform limit; legacy batches also ignore source type, display type, and block props, but still split by geometry identity, part index, local matrix, texture, and tint.
+- Same-shape atlas geometry ignores texture location, source type, item display type, and block props when every part has an atlas UV transform, the part model matrix is uniform, and the part count stays within the supported per-part UV transform limit; it still splits batches by local model matrix so blockstate rotation is not folded into the instance transform and cannot shift the object origin. Legacy batches also split by geometry identity, part index, local matrix, texture, and tint.
 - Per-instance `blockProps` are emitted for batched geometry so scene-panel metadata remains correct when different properties share one mesh root.
 - Per-instance item-display flags/types are emitted so block display and item display objects can share one mesh root without losing downstream display-type behavior.
 - Optional `Scene timings` and `Parse timings` logs are controlled through `pbde-log.ts` registry helpers and default to disabled.
 - Root `name`, `mainNBT`, and `nbt` values are normalized to strings in `metadata.projectDetails`.
-- Block and item display paths preserve node NBT in per-instance metadata.
+- Block and item display paths, including targeted item-model replacements, preserve node NBT in per-instance metadata.
+- Block and item display paths preserve optional `{ sky, block }` brightness metadata for the properties panel.
+- Display nodes may provide a UUID for targeted in-editor model replacement; normal project nodes still receive generated UUIDs.
 - Collection nodes preserve their NBT on group metadata.

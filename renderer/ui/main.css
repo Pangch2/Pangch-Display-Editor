@@ -325,6 +325,10 @@ canvas {
   font-size: 12px;
 }
 
+.object-property h3.object-metadata-title {
+  margin: 10px 0 0;
+}
+
 .object-property-row {
   display: grid;
   grid-template-columns: 38px repeat(3, minmax(0, 1fr));
@@ -337,11 +341,40 @@ canvas {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.object-metadata-row {
+  display: grid;
+  grid-template-columns: minmax(80px, auto) minmax(0, 1fr);
+  gap: 6px;
+  margin-bottom: 5px;
+  align-items: center;
+}
+
+.object-scale-input {
+  display: flex;
+  min-width: 0;
+}
+
+.object-scale-direction {
+  flex: 0 0 14px;
+  padding: 0;
+  border: 1px solid #45454a;
+  border-left: 0;
+  border-radius: 0 3px 3px 0;
+  background: #29292d;
+  color: #ccc;
+  cursor: pointer;
+}
+
+.object-scale-input input:has(+ .object-scale-direction:not([hidden])) {
+  border-radius: 3px 0 0 3px;
+}
+
 .object-property label {
   color: #888;
 }
 
-.object-property input {
+.object-property input,
+.object-property select {
   appearance: none;
   width: 100%;
   min-width: 0;
@@ -353,6 +386,11 @@ canvas {
   color: #f0f0f0;
   font: inherit;
   user-select: text;
+}
+
+.object-property select {
+  color-scheme: dark;
+  cursor: pointer;
 }
 
 .object-property input[type="number"] {

@@ -71,7 +71,47 @@ const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPaylo
     }
 };
 
+async function getBlockPropertyOptions(name: string, current: Record<string, string>): Promise<Record<string, string[]>> {
+    const baseName = name.replace(/\[[^\]]*\]$/, '');
+    const [namespace, ...pathParts] = baseName.includes(':') ? baseName.split(':') : ['minecraft', baseName];
+    const path = pathParts.join(':');
+    let blockstate: any;
+    try {
+        blockstate = JSON.parse(String(await mainThreadAssetProvider.getAsset(`assets/${namespace}/blockstates/${path}.json`)));
+    } catch {
+        blockstate = JSON.parse(String(await mainThreadAssetProvider.getAsset(`hardcoded/blockstates/${path}.json`)));
+    }
+
+    const options = Object.fromEntries(Object.entries(current).map(([key, value]) => [
+        key,
+        new Set(value === 'true' || value === 'false' ? ['true', 'false'] : [String(value)])
+    ])) as Record<string, Set<string>>;
+    if (blockstate.variants) {
+        for (const variantKey of Object.keys(blockstate.variants)) {
+            const variant = Object.fromEntries(variantKey.split(',').filter(Boolean).map((part: string) => part.split('=', 2)));
+            for (const key of Object.keys(current)) {
+                if (!(key in variant)) continue;
+                const matchesOtherProperties = Object.entries(variant).every(([otherKey, value]) => otherKey === key || current[otherKey] === value);
+                if (matchesOtherProperties) options[key].add(String(variant[key]));
+            }
+        }
+    } else if (blockstate.multipart) {
+        const collect = (condition: unknown): void => {
+            if (!condition || typeof condition !== 'object') return;
+            for (const [key, value] of Object.entries(condition)) {
+                if (key === 'OR' || key === 'AND') {
+                    (Array.isArray(value) ? value : [value]).forEach(collect);
+                } else if (options[key]) {
+                    String(value).split('|').forEach(candidate => options[key].add(candidate));
+                }
+            }
+        };
+        blockstate.multipart.forEach((part: any) => collect(part?.when));
+    }
+    return Object.fromEntries(Object.entries(options).map(([key, values]) => [key, [...values]]));
+}
 
 
 
-export { mainThreadAssetProvider, isNodeBufferLike, toUint8Array };
+
+export { getBlockPropertyOptions, mainThreadAssetProvider, isNodeBufferLike, toUint8Array };

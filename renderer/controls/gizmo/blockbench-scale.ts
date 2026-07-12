@@ -18,6 +18,7 @@ export const _BB_PIVOT_FRAME_MAT3 = new Matrix3();
 export function toggleBlockbenchScaleMode(): boolean {
     blockbenchScaleMode = !blockbenchScaleMode;
     console.log(`blockbench scale모드 ${blockbenchScaleMode ? '켜짐' : '꺼짐'}`);
+    window.dispatchEvent(new CustomEvent('pde:blockbench-scale-mode-changed', { detail: blockbenchScaleMode }));
     return blockbenchScaleMode;
 }
 

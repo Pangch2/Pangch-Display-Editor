@@ -23,7 +23,8 @@ Defines renderer UI styling, including independent left/right panel docks, proje
 - Scene Objects and Project Details use the same 6 px scrollbar styling.
 - Each dock has a visible 7 x 48 px resize handle centered completely outside its edge, keeping panel scrollbars unobstructed; a shared dock shows its 12 px section divider.
 - Project Details inputs keep their neutral border on hover, fill their column, and remain single-line.
-- Object properties use compact XYZ rows, a 4x4 matrix grid, single-line NBT inputs, and dark native number spinners; offscreen sections use CSS content visibility with an intrinsic height estimate to avoid unnecessary layout and paint work.
+- Object properties use compact XYZ rows, 18 px Blockbench scale direction arrows attached to scale inputs, a 4x4 matrix grid, single-line NBT inputs, dark native number spinners, and full-width native metadata selects below NBT; offscreen sections use CSS content visibility with an intrinsic height estimate to avoid unnecessary layout and paint work.
+- The "개체 속성" metadata heading uses the same h3 styling except for a 10 px top margin, which separates it from the preceding NBT input.
 - Disabled matrix inputs force muted Chromium text/background styling and a blocked cursor.
 - The Project Details header places project navigation directly after its fixed title and lets it fill the remaining panel width; long names truncate and the dropdown stays inside that area, with each project row reserving a 30 px Lucide delete button beside its tab.
 - Project tab rows draw a 2 px sky-blue line above or below the target row while reordering, matching Scene object before/after drop feedback.

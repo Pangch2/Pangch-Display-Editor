@@ -1,6 +1,8 @@
 import * as THREE from 'three/webgpu';
+import { compressSync, strToU8 } from 'fflate';
 import { createEntityMaterial } from '../entityMaterial.js';
-import { parsePbdeProject } from './scene-parser';
+import { deleteSelectedItems } from '../controls/grouping/delete';
+import { getPlayerHeadDisplayMatrix, parsePbdeProject } from './scene-parser';
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
@@ -917,6 +919,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     loadedObjectGroup.userData.objectIsItemDisplay = new Set<string>();
                     loadedObjectGroup.userData.objectDisplayTypes = new Map<string, string>();
                     loadedObjectGroup.userData.objectBlockProps = new Map<string, any>();
+                    loadedObjectGroup.userData.objectBrightness = new Map<string, unknown>();
+                    loadedObjectGroup.userData.objectTextures = new Map<string, string>();
                     loadedObjectGroup.userData.instanceKeyToObjectUuid = new Map<string, string>();
                     loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: THREE.Object3D; instanceId: number }>();
                 } else {
@@ -935,6 +939,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     (loadedObjectGroup.userData.objectBlockProps as Map<string, any>) ?? new Map<string, any>();
                 const objectNbt: Map<string, string> =
                     (loadedObjectGroup.userData.objectNbt as Map<string, string>) ?? new Map<string, string>();
+                const objectBrightness: Map<string, unknown> =
+                    (loadedObjectGroup.userData.objectBrightness as Map<string, unknown>) ?? new Map<string, unknown>();
+                const objectTextures: Map<string, string> =
+                    (loadedObjectGroup.userData.objectTextures as Map<string, string>) ?? new Map<string, string>();
 
                 if (activeGeometryBatches) {
                     for (const batch of activeGeometryBatches) {
@@ -956,6 +964,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 objectBlockProps.set(instance.uuid, instanceBlockProps);
                             }
                             if (instance.uuid) objectNbt.set(instance.uuid, instance.nbt ?? '');
+                            if (instance.uuid && instance.brightness) objectBrightness.set(instance.uuid, instance.brightness);
                         }
                     }
                 } else {
@@ -973,6 +982,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             objectBlockProps.set(meta.uuid, (meta as any).blockProps);
                         }
                         if (meta.uuid) objectNbt.set(meta.uuid, meta.nbt ?? '');
+                        if (meta.uuid && (meta as any).brightness) objectBrightness.set(meta.uuid, (meta as any).brightness);
                     }
                 }
                 for (const item of otherItems) {
@@ -986,12 +996,16 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         }
                     }
                     if (item.uuid) objectNbt.set(item.uuid, typeof item.nbt === 'string' ? item.nbt : '');
+                    if (item.uuid && item.brightness) objectBrightness.set(item.uuid, item.brightness);
+                    if (item.uuid && item.textureUrl) objectTextures.set(item.uuid, item.textureUrl);
                 }
                 loadedObjectGroup.userData.objectNames = objectNamesMap;
                 loadedObjectGroup.userData.objectIsItemDisplay = objectIsItemDisplay;
                 loadedObjectGroup.userData.objectDisplayTypes = objectDisplayTypes;
                 loadedObjectGroup.userData.objectBlockProps = objectBlockProps;
                 loadedObjectGroup.userData.objectNbt = objectNbt;
+                loadedObjectGroup.userData.objectBrightness = objectBrightness;
+                loadedObjectGroup.userData.objectTextures = objectTextures;
 
                 // 로드 순서 보존 (merge 시는 덧붙임)
                 const prevOrder: { type: 'group' | 'object', id: string }[] =
@@ -1479,4 +1493,83 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 }
                 return newlyAddedSelectableMeshes;
 
+}
+
+export async function replaceDisplayObject(objectUuid: string, name: string): Promise<void> {
+    const ud = loadedObjectGroup.userData;
+    const oldRef = (ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    if (!oldRef?.mesh?.isInstancedMesh) throw new Error('교체할 오브젝트를 찾을 수 없습니다.');
+
+    const oldKey = `${oldRef.mesh.uuid}_${oldRef.instanceId}`;
+    const oldMatrix = new THREE.Matrix4();
+    oldRef.mesh.getMatrixAt(oldRef.instanceId, oldMatrix);
+    const displayedMatrix = oldMatrix.clone();
+    const oldDisplayType = (ud.objectDisplayTypes as Map<string, string> | undefined)?.get(objectUuid);
+    if (name.startsWith('player_head')) {
+        const oldDisplayMatrix = getPlayerHeadDisplayMatrix(oldDisplayType);
+        if (oldDisplayMatrix) oldMatrix.multiply(oldDisplayMatrix.invert());
+    }
+    const groupId = (ud.objectToGroup as Map<string, string> | undefined)?.get(oldKey);
+    const group = groupId ? (ud.groups as Map<string, GroupData> | undefined)?.get(groupId) : undefined;
+    const groupIndex = group?.children.findIndex(child => child.type === 'object' && child.id === objectUuid) ?? -1;
+    const sceneIndex = (ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined)
+        ?.findIndex(entry => entry.type === 'object' && entry.id === objectUuid) ?? -1;
+    const pivot = (oldRef.mesh.userData.customPivots as Map<number, THREE.Vector3> | undefined)?.get(oldRef.instanceId)?.clone();
+    const pivotWorld = pivot?.applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
+    const replacementUuid = THREE.MathUtils.generateUUID();
+    const isItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
+    const texture = (ud.objectTextures as Map<string, string> | undefined)?.get(objectUuid);
+    const node = {
+        uuid: replacementUuid,
+        name,
+        nbt: (ud.objectNbt as Map<string, string> | undefined)?.get(objectUuid) ?? '',
+        transforms: oldMatrix.clone().transpose().toArray(),
+        brightness: (ud.objectBrightness as Map<string, unknown> | undefined)?.get(objectUuid),
+        tagHead: texture ? { Value: btoa(JSON.stringify({ textures: { SKIN: { url: texture } } })) } : undefined,
+        isBlockDisplay: !isItemDisplay,
+        isItemDisplay
+    };
+    const json = strToU8(JSON.stringify([{ children: [node] }]));
+    const raw = new Uint8Array(18 + json.length);
+    raw.set([80, 82, 74, 50], 0);
+    raw.set(strToU8('scene.json'), 4);
+    new DataView(raw.buffer).setUint32(14, json.length, true);
+    raw.set(json, 18);
+
+    await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
+    const replacement = (ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }>).get(replacementUuid);
+    if (!replacement) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
+
+    deleteSelectedItems(loadedObjectGroup, {
+        groups: new Set(),
+        objects: new Map([[oldRef.mesh, new Set([oldRef.instanceId])]])
+    }, { resetSelectionAndDeselect: () => {} });
+
+    const replacementKey = `${replacement.mesh.uuid}_${replacement.instanceId}`;
+    if (groupId && group) {
+        (ud.objectToGroup as Map<string, string>).set(replacementKey, groupId);
+        const child = { type: 'object' as const, id: replacementUuid, mesh: replacement.mesh, instanceId: replacement.instanceId };
+        if (groupIndex >= 0) group.children.splice(groupIndex, 0, child);
+        else group.children.push(child);
+    }
+    const nextSceneOrder = ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined;
+    if (nextSceneOrder) {
+        const replacementIndex = nextSceneOrder.findIndex(entry => entry.type === 'object' && entry.id === replacementUuid);
+        if (replacementIndex >= 0) nextSceneOrder.splice(replacementIndex, 1);
+        nextSceneOrder.splice(sceneIndex >= 0 ? sceneIndex : nextSceneOrder.length, 0, { type: 'object', id: replacementUuid });
+    }
+    if (pivotWorld) {
+        if (!replacement.mesh.userData.customPivots) replacement.mesh.userData.customPivots = new Map<number, THREE.Vector3>();
+        const replacementMatrix = new THREE.Matrix4();
+        replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
+        replacement.mesh.userData.customPivots.set(
+            replacement.instanceId,
+            pivotWorld.applyMatrix4(replacement.mesh.matrixWorld.clone().multiply(replacementMatrix).invert())
+        );
+    }
+
+    window.dispatchEvent(new CustomEvent('pde:replace-object-selection', {
+        detail: { mesh: replacement.mesh, instanceId: replacement.instanceId }
+    }));
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }

@@ -54,6 +54,7 @@ export interface GeometryInstanceMeta {
     isItemDisplayModel?: boolean;
     itemDisplayType?: string | null;
     nbt?: string;
+    brightness?: { sky?: number; block?: number };
 }
 
 export interface GeometryInstanceBatch {

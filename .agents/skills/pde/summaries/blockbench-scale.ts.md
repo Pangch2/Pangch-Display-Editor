@@ -10,7 +10,7 @@ Implements Blockbench-style scale behavior: toggles the mode, computes the pivot
 - `_BB_PIVOT_FRAME_MAT3: Matrix3` -- cached pivot-frame normal matrix for local-space transforms.
 
 ### Functions / Methods
-- `toggleBlockbenchScaleMode(): boolean` -- flips the mode and logs the new state.
+- `toggleBlockbenchScaleMode(): boolean` -- flips the mode, logs it, and emits `pde:blockbench-scale-mode-changed` for dependent UI.
 - `computeBlockbenchPivotFrame(selectionHelper, currentSpace)` -- caches world/pivot matrices for the current drag frame.
 - `getBlockbenchPivotFrameMatrices()` -- returns the cached frame matrices.
 - `transformBoxToPivotFrame(worldMatrix, tempMat4?)` -- converts a world matrix into pivot-frame space.
@@ -26,6 +26,7 @@ Cached `Matrix4`/`Matrix3` instances are reused to avoid allocations during drag
 ## Used By (known callers)
 - `renderer/controls/gizmo/gizmo.ts` -- uses the mode and pivot-frame helpers during transform handling.
 - `renderer/controls/input/handle-key.ts` -- toggles the mode from keyboard input.
+- `renderer/ui/object-properties.ts` -- reads the mode and refreshes numeric scale direction controls.
 
 ## Notes
 World-space and local-space are handled differently when resolving the pivot frame. The module is stateful and intentionally reuses mutable cached matrices.

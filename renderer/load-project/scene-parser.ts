@@ -1194,6 +1194,10 @@ function buildDisplayTransformMatrix(transform) {
     return matrix;
 }
 
+export function getPlayerHeadDisplayMatrix(displayType?: string): THREE.Matrix4 | null {
+    return buildDisplayTransformMatrix(displayType ? PLAYER_HEAD_DISPLAY_TRANSFORMS[displayType] : null);
+}
+
 // 아이템 문자열에서 기본 이름과 display 타입을 추출한다.
 function parseItemName(raw) {
     if (!raw) return { baseName: '', displayType: null };
@@ -1744,8 +1748,9 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             (modelData as any).transform = worldTransform; // 계산된 월드 변환 행렬을 결과에 포함한다.
             (modelData as any).name = node.name;
             modelData.nbt = node.nbt;
+            modelData.brightness = node.brightness;
             
-            const uuid = generateUUID();
+            const uuid = typeof node.uuid === 'string' ? node.uuid : generateUUID();
             (modelData as any).uuid = uuid;
             (modelData as any).groupId = currentGroupId;
             
@@ -1819,7 +1824,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             }
             itemData.textureUrl = textureUrl || defaultTextureValue;
 
-            const uuid = generateUUID();
+            const uuid = typeof node.uuid === 'string' ? node.uuid : generateUUID();
             itemData.uuid = uuid;
             itemData.groupId = currentGroupId;
             if (currentGroupId) {
@@ -1838,8 +1843,10 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             if (modelDisplay) {
                 (modelDisplay as any).transform = worldTransform;
                 (modelDisplay as any).name = node.name;
+                modelDisplay.nbt = node.nbt;
+                modelDisplay.brightness = node.brightness;
 
-                const uuid = generateUUID();
+                const uuid = typeof node.uuid === 'string' ? node.uuid : generateUUID();
                 (modelDisplay as any).uuid = uuid;
                 (modelDisplay as any).groupId = currentGroupId;
                 if (currentGroupId) {
@@ -1860,7 +1867,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
                     brightness: node.brightness
                 };
 
-                const uuid = generateUUID();
+                const uuid = typeof node.uuid === 'string' ? node.uuid : generateUUID();
                 itemData.uuid = uuid;
                 itemData.groupId = currentGroupId;
                 if (currentGroupId) {
@@ -2102,6 +2109,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                 if (useInstancedAtlasUv && uniformModelMatrix) {
                     keyParts.push(
                         cachedGeometryShapeKey(geomData),
+                        matrixKey(modelMatrix),
                         geomData.texPath,
                         String((geomData.tintHex ?? 0xffffff) >>> 0)
                     );
@@ -2231,7 +2239,8 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     blockProps: item.blockProps,
                     isItemDisplayModel: item.type === 'itemDisplayModel',
                     itemDisplayType: (item as any).itemDisplayType ?? item.displayType ?? null,
-                    nbt: item.nbt ?? ''
+                    nbt: item.nbt ?? '',
+                    brightness: item.brightness
                 }))
             });
         }

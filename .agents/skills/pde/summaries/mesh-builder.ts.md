@@ -12,6 +12,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `beginPbdeLoadGeneration()` -- bumps generation token so stale async work can be ignored
 - `performSelection(newlyAddedSelectableMeshes)` -- updates active selection after load/merge
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
+- `replaceDisplayObject(objectUuid, name): Promise<void>` -- rebuilds one display object through the PBDE pipeline, removes an existing player-head display transform before rebuilding, retains hierarchy position and the custom pivot's world position, and requests normal gizmo selection replacement.
 
 ## Internal State
 - Texture/material caches for block and atlas assets
@@ -28,7 +29,9 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 
 ## Dependencies (imports)
 - `three/webgpu` -- scene graph, geometry, material, and texture classes
+- `fflate` -- creates the minimal compressed PBDE payload used for single-object replacement
 - `../entityMaterial.js` -- entity/player-head material creation
+- `../controls/grouping/delete` -- removes the superseded instance after its replacement is ready
 - `./scene-parser` -- parses PBDE archive into metadata
 - `./pbde-assets` -- IPC asset decoding helpers and provider
 - `./pbde-log` -- central PBDE log registry plus localStorage flag helpers for load/stat timing logs
@@ -36,6 +39,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 
 ## Used By (known callers)
 - `upload-pbde.ts` -- drives load and merge flow
+- `ui/object-properties.ts` -- rebuilds an object after a properties/display dropdown change
 
 ## Notes
 - Uses WebGPU-only Three.js path; no WebGL fallback.
@@ -51,4 +55,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
 - Fresh loads store parser-provided project details on `loadedObjectGroup.userData`; merges preserve the current details.
 - `loadedObjectGroup.userData.objectNbt` maps object UUIDs to editable NBT strings for the properties panel.
+- Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
+- UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
+- Player-head replacement reverses the current display matrix before parsing the replacement, preventing repeated texture/property edits from accumulating scale or translation.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items` defaults to enabled; optional `Load timings`, `Geometry stats`, `Mesh uploaded`, and `Finished processing` logs default to disabled.

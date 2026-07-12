@@ -283,6 +283,17 @@ function _getPrimaryWorldMatrix(out = new Matrix4()): Matrix4 | null {
     return null;
 }
 
+function _getMultiSelectionPivotLocal(): Vector3 | undefined {
+    if (!_isMultiSelection()) return undefined;
+    const primaryWorld = _getPrimaryWorldMatrix(_TMP_MAT4_B);
+    if (primaryWorld && selectionHelper) {
+        return selectionHelper.position.clone().applyMatrix4(primaryWorld.invert());
+    }
+    return _multiSelectionOriginAnchorInitialLocalValid
+        ? _multiSelectionOriginAnchorInitialLocal.clone()
+        : new Vector3();
+}
+
 function _setMultiAnchorInitial(worldPos: Vector3): void {
     _multiSelectionOriginAnchorInitialPosition.copy(worldPos);
     _multiSelectionOriginAnchorInitialValid = true;
@@ -422,6 +433,13 @@ function SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset:
 function updateSelectionOverlay(): void {
     Overlay.updateSelectionOverlay(scene, renderer, camera, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys);
     window.dispatchEvent(new CustomEvent('pde:selection-changed', { detail: currentSelection }));
+    window.dispatchEvent(new CustomEvent('pde:selection-transform-context', {
+        detail: {
+            selection: currentSelection,
+            pivotWorld: selectionHelper?.position.clone(),
+            multiCustomPivotLocal: _getMultiSelectionPivotLocal()
+        }
+    }));
 }
 
 function _updateMultiSelectionOverlayDuringDrag(): void {
@@ -908,7 +926,7 @@ export function initGizmo({
                 if (commitResult.setMultiExplicitPivot) _multiSelectionExplicitPivot = true;
 
                 if (_pivotEditPreviousPivotMode) {
-                    pivotMode = _pivotEditPreviousPivotMode;
+                    pivotMode = _pivotEditPreviousPivotMode === 'center' ? 'origin' : _pivotEditPreviousPivotMode;
                 }
 
                 _gizmoAnchorPosition.copy(selectionHelper!.position);
@@ -966,7 +984,12 @@ export function initGizmo({
                 }
                 previousHelperMatrix.copy(selectionHelper!.matrixWorld);
                 window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
-                    detail: { selection: currentSelection, pivot: pivotOffset.clone() }
+                    detail: {
+                        selection: currentSelection,
+                        pivot: pivotOffset.clone(),
+                        pivotWorld: selectionHelper!.position.clone(),
+                        multiCustomPivotLocal: _getMultiSelectionPivotLocal()
+                    }
                 }));
                 return;
             }
@@ -1003,7 +1026,11 @@ export function initGizmo({
             Overlay.syncSelectionOverlay(_tmpDeltaMatrix);
             _updateMultiSelectionOverlayDuringDrag();
             window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
-                detail: { selection: currentSelection }
+                detail: {
+                    selection: currentSelection,
+                    pivotWorld: selectionHelper!.position.clone(),
+                    multiCustomPivotLocal: _getMultiSelectionPivotLocal()
+                }
             }));
         }
     });
@@ -1350,6 +1377,10 @@ export function initGizmo({
     });
 
     window.addEventListener('pde:scene-updated', _handleSceneUpdated);
+    window.addEventListener('pde:replace-object-selection', event => {
+        const { mesh, instanceId } = (event as CustomEvent<{ mesh: PdeMesh; instanceId: number }>).detail;
+        _replaceSelectionWithObjectsMap(new Map([[mesh, new Set([instanceId])]]));
+    });
 
     return {
         getTransformControls: () => transformControls!,
