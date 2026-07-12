@@ -1,7 +1,7 @@
 import { Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { replaceDisplayObject } from '../load-project/mesh-builder';
+import { replaceDisplayObject, updatePlayerHeadTexture } from '../load-project/mesh-builder';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel-types';
 import * as GroupUtils from '../controls/grouping/group';
@@ -249,6 +249,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const pivotBase = new Vector3();
     const displayType = Overlay.getDisplayType(mesh, instanceId);
     if (displayType === 'block_display') Overlay.getInstanceLocalBoxMin(mesh, instanceId, pivotBase);
+    else if (displayType === 'item_display' && mesh.userData.hasHat) pivotBase.y = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
     else if (displayType === 'item_display') Overlay.getInstanceLocalBox(mesh, instanceId)?.getCenter(pivotBase);
     const storedPivot = (mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(instanceId);
     const localPivot = storedPivot?.clone() ?? pivotBase.clone();
@@ -348,8 +349,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             input.value = texture ?? '';
             input.onchange = async () => {
                 input.value = textureUrl(input.value.trim());
-                textures?.set(uuid, input.value);
-                await replaceDisplayObject(uuid, name);
+                await updatePlayerHeadTexture(uuid, input.value);
             };
             section.append(metadataProperty('texture', '텍스쳐', input));
         }
@@ -508,6 +508,7 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
         const pivotBase = new Vector3();
         const displayType = Overlay.getDisplayType(item.mesh, item.instanceId);
         if (displayType === 'block_display') Overlay.getInstanceLocalBoxMin(item.mesh, item.instanceId, pivotBase);
+        else if (displayType === 'item_display' && item.mesh.userData.hasHat) pivotBase.y = Overlay.isItemDisplayHatEnabled(item.mesh, item.instanceId) ? 0.03125 : 0;
         else if (displayType === 'item_display') Overlay.getInstanceLocalBox(item.mesh, item.instanceId)?.getCenter(pivotBase);
         const storedPivot = (item.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(item.instanceId);
         pivot = pivotWorld

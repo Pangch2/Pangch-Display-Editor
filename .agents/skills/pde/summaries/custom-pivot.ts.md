@@ -13,7 +13,7 @@ Owns custom-pivot state for selections. It captures undo for pivot edits, recomp
 - `CommitPivotEditResult` -- resulting pivot state after a commit.
 
 ### Functions / Methods
-- `getObjectOriginWorld(mesh, instanceId, out?): Vector3` -- returns the type-specific object origin: block bounds minimum, item bounds center, or matrix origin fallback.
+- `getObjectOriginWorld(mesh, instanceId, out?): Vector3` -- returns the type-specific object origin: block bounds minimum, player-head origin, item bounds center, or matrix origin fallback.
 - `clearEphemeralPivotUndo(): void` -- clears captured undo hooks.
 - `revertEphemeralPivotUndoIfAny(): void` -- replays and clears any pending pivot undo.
 - `capturePivotUndoForCurrentSelection(currentSelection): (() => void) | null` -- snapshots per-object custom pivot writes.
@@ -25,7 +25,7 @@ Owns custom-pivot state for selections. It captures undo for pivot edits, recomp
 - `commitPivotEditFromDragEnd(params): CommitPivotEditResult` -- applies a dragged pivot into group/object metadata.
 
 ## Internal State
-Tracks two module-level undo hooks for transient pivot edits. Uses one internal object-origin helper so block_display origin stays at local box min while item_display origin stays at overlay box center.
+Tracks two module-level undo hooks for transient pivot edits. Uses one internal object-origin helper so block displays use local box min, player heads use their head origin, and other item displays use overlay box center.
 
 ## Dependencies (imports)
 - `three/webgpu` -- vector, matrix, mesh, and group types.

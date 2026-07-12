@@ -12,12 +12,14 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `beginPbdeLoadGeneration()` -- bumps generation token so stale async work can be ignored
 - `performSelection(newlyAddedSelectableMeshes)` -- updates active selection after load/merge
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
+- `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
 - `replaceDisplayObject(objectUuid, name): Promise<void>` -- rebuilds one display object through the PBDE pipeline, removes an existing player-head display transform before rebuilding, retains hierarchy position and the custom pivot's world position, and requests normal gizmo selection replacement.
 
 ## Internal State
 - Texture/material caches for block and atlas assets
 - `currentLoadGen` token to invalidate stale async results
 - Shared placeholder material and cached head geometries
+- Weakly keyed player-head atlas canvas state used for in-place skin edits and new-slot allocation
 - Concurrency gate for texture decoding to avoid overload
 - Signature hash scratch buffer and per-load geometry/material update caches to reduce mesh creation allocations
 - Per-load material preload cache resolves unique signature-group materials before `InstancedMesh` creation, with placeholder material updates retained only as a fallback for failed or late material loads.
@@ -39,7 +41,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 
 ## Used By (known callers)
 - `upload-pbde.ts` -- drives load and merge flow
-- `ui/object-properties.ts` -- rebuilds an object after a properties/display dropdown change
+- `ui/object-properties.ts` -- updates player-head atlas textures in place and rebuilds objects for other property/display changes
 
 ## Notes
 - Uses WebGPU-only Three.js path; no WebGL fallback.
@@ -58,4 +60,5 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
 - Player-head replacement reverses the current display matrix before parsing the replacement, preventing repeated texture/property edits from accumulating scale or translation.
+- Player-head texture edits redraw the existing atlas slot when exclusive; shared slots receive a new slot so other instances keep their skin. The instance matrix and UUID remain unchanged.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items` defaults to enabled; optional `Load timings`, `Geometry stats`, `Mesh uploaded`, and `Finished processing` logs default to disabled.

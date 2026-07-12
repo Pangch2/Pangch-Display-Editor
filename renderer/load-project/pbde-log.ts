@@ -40,7 +40,7 @@ const pbdeLogDefinitions: Record<PbdeLogName, PbdeLogDefinition> = {
     [pbdeLogNames.finishedProcessing]: { defaultEnabled: false },
     [pbdeLogNames.sceneTimings]: { defaultEnabled: false },
     [pbdeLogNames.parseTimings]: { defaultEnabled: false },
-    [pbdeLogNames.duplicateTimings]: { defaultEnabled: true }
+    [pbdeLogNames.duplicateTimings]: { defaultEnabled: false }
 };
 
 function normalizeLogName(name: string): string {

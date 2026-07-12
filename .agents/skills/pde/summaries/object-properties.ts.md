@@ -12,7 +12,8 @@ Renders and updates the project details / object properties side panel for the s
 ## Notes
 - Object metadata for block properties is loaded asynchronously and the section is lazily hydrated via `IntersectionObserver`.
 - Metadata rows are draggable; their saved order applies to every object section.
-- Player-head texture always renders as an editable input; edits accept a URL or Base64 texture JSON and rebuild the display object with the extracted skin URL.
+- Player-head texture always renders as an editable input; edits accept a URL or Base64 texture JSON and update the instance's atlas slot without rebuilding the display object.
+- Player-head pivot fields use the head origin (including the hat offset) instead of the generic item-display bounds center.
 - Brightness always renders sky and block `0`-`15` selects together in one row and rebuilds the display object after changes.
 - `propertySelect()` keeps provided option order when the current value is already in that list, so item-display options stay fixed.
 - `renderSelection()` is the main entrypoint driven by selection-related window events.

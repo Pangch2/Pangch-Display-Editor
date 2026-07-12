@@ -64,6 +64,10 @@ export function getObjectOriginWorld(mesh: Mesh | InstancedMesh, instanceId: num
             return localPivot.applyMatrix4(getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A));
         }
     }
+    if (displayType === 'item_display' && mesh.userData.hasHat) {
+        getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
+        return out.set(0, isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0, 0).applyMatrix4(_TMP_MAT4_A);
+    }
     if (displayType === 'item_display') {
         const box = Overlay.getInstanceLocalBox(mesh, instanceId);
         if (box) {
@@ -73,8 +77,7 @@ export function getObjectOriginWorld(mesh: Mesh | InstancedMesh, instanceId: num
     }
 
     getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
-    const localY = isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
-    return out.set(0, localY, 0).applyMatrix4(_TMP_MAT4_A);
+    return out.set(0, 0, 0).applyMatrix4(_TMP_MAT4_A);
 }
 
 

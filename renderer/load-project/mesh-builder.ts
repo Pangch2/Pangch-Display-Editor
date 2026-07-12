@@ -19,6 +19,19 @@ const blockMaterialCache = new Map<string, THREE.Material>(); // `${texPath}|${t
 const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); // 동일 키에 대한 생성 프라미스 캐시
 let currentAtlasTexture: THREE.Texture | null = null;
 
+const PLAYER_HEAD_ATLAS_SIZE = 2048;
+const PLAYER_HEAD_PART_SIZE = 8;
+const PLAYER_HEAD_BLOCK_WIDTH = PLAYER_HEAD_PART_SIZE * 3;
+const PLAYER_HEAD_BLOCK_HEIGHT = PLAYER_HEAD_PART_SIZE * 4;
+const PLAYER_HEAD_BLOCKS_PER_ROW = Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH);
+const playerHeadFaceParts = {
+    right: [16, 8], left: [0, 8], top: [8, 0], bottom: [16, 0], front: [24, 8], back: [8, 8],
+    layer_right: [48, 8], layer_left: [32, 8], layer_top: [40, 0], layer_bottom: [48, 0], layer_front: [56, 8], layer_back: [40, 8]
+} as const;
+const playerHeadPartOrder = Object.keys(playerHeadFaceParts) as Array<keyof typeof playerHeadFaceParts>;
+const playerHeadLayerRegions = [[48, 8, 8, 8], [32, 8, 8, 8], [40, 0, 8, 8], [48, 0, 8, 8], [56, 8, 8, 8], [40, 8, 8, 8]];
+const playerHeadAtlases = new WeakMap<THREE.Material, { context: CanvasRenderingContext2D; texture: THREE.Texture; nextSlot: number }>();
+
 // 공유 플레이스홀더 자원
 let sharedPlaceholderMaterial: THREE.Material | null = null;
 
@@ -610,6 +623,32 @@ function isLayerTransparent(img: HTMLImageElement, uvRegions: number[][]): boole
         console.warn('Layer transparency check failed:', err);
         return false; // 오류 발생 시 투명하지 않다고 가정
     }
+}
+
+function loadPlayerHeadImage(url: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.crossOrigin = 'anonymous';
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error(`Failed to load image: ${url}`));
+        image.src = url.replace('http://', 'https://');
+    });
+}
+
+function drawPlayerHeadSlot(context: CanvasRenderingContext2D, image: HTMLImageElement, slot: number): boolean {
+    const blockX = (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
+    const blockY = Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
+    context.clearRect(blockX, blockY, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT);
+    playerHeadPartOrder.forEach((key, index) => {
+        const [sx, sy] = playerHeadFaceParts[key];
+        context.drawImage(
+            image, sx, sy, 8, 8,
+            blockX + (index % 3) * PLAYER_HEAD_PART_SIZE,
+            blockY + Math.floor(index / 3) * PLAYER_HEAD_PART_SIZE,
+            8, 8
+        );
+    });
+    return !isLayerTransparent(image, playerHeadLayerRegions);
 }
 
 /**
@@ -1301,15 +1340,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                             const uniqueUrls = [...new Set(playerHeadItems.map(item => item.textureUrl))];
                             
-                            const ATLAS_SIZE = 2048;
-                            const PART_SIZE = 8;
-                            const PART_BLOCK_WIDTH = PART_SIZE * 3;
-                            const PART_BLOCK_HEIGHT = PART_SIZE * 4;
-                            const BLOCKS_PER_ROW = Math.floor(ATLAS_SIZE / PART_BLOCK_WIDTH);
-
                             const atlasCanvas = document.createElement('canvas');
-                            atlasCanvas.width = ATLAS_SIZE;
-                            atlasCanvas.height = ATLAS_SIZE;
+                            atlasCanvas.width = PLAYER_HEAD_ATLAS_SIZE;
+                            atlasCanvas.height = PLAYER_HEAD_ATLAS_SIZE;
                             const atlasCtx = atlasCanvas.getContext('2d');
                             if (!atlasCtx) return;
                             atlasCtx.imageSmoothingEnabled = false;
@@ -1317,45 +1350,12 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             const skinLayouts = new Map<string, { x: number, y: number }>();
                             const skinTransparency = new Map<string, boolean>(); // URL -> isLayerTransparent
                             
-                            const faceParts = {
-                                right:  { s: [16, 8] }, left:   { s: [0, 8] },
-                                top:    { s: [8, 0] },  bottom: { s: [16, 0] },
-                                front:  { s: [24, 8] }, back:   { s: [8, 8] },
-                                layer_right:  { s: [48, 8] }, layer_left:   { s: [32, 8] },
-                                layer_top:    { s: [40, 0] }, layer_bottom: { s: [48, 0] },
-                                layer_front:  { s: [56, 8] }, layer_back:   { s: [40, 8] }
-                            };
-                            const partOrder = Object.keys(faceParts);
-
-                            const layerRegions = [
-                                [48, 8, 8, 8], [32, 8, 8, 8],
-                                [40, 0, 8, 8], [48, 0, 8, 8],
-                                [56, 8, 8, 8], [40, 8, 8, 8]
-                            ];
-
                             const imagePromises = uniqueUrls.map((url, index) => {
-                                return new Promise<void>((resolve, reject) => {
-                                    const img = new Image();
-                                    img.crossOrigin = 'anonymous';
-                                    img.onload = () => {
-                                        const blockX = (index % BLOCKS_PER_ROW) * PART_BLOCK_WIDTH;
-                                        const blockY = Math.floor(index / BLOCKS_PER_ROW) * PART_BLOCK_HEIGHT;
-                                        skinLayouts.set(url, { x: blockX, y: blockY });
-                                        
-                                        // Check transparency
-                                        const isTransparent = isLayerTransparent(img, layerRegions);
-                                        skinTransparency.set(url, isTransparent);
-
-                                        partOrder.forEach((key, i) => {
-                                            const part = faceParts[key as keyof typeof faceParts];
-                                            const dx = (i % 3) * PART_SIZE;
-                                            const dy = Math.floor(i / 3) * PART_SIZE;
-                                            atlasCtx.drawImage(img, part.s[0], part.s[1], 8, 8, blockX + dx, blockY + dy, 8, 8);
-                                        });
-                                        resolve();
-                                    };
-                                    img.onerror = (e) => reject(new Error(`Failed to load image: ${url}, error: ${e}`));
-                                    img.src = url.replace('http://', 'https://');
+                                return loadPlayerHeadImage(url).then(image => {
+                                    const blockX = (index % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
+                                    const blockY = Math.floor(index / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
+                                    skinLayouts.set(url, { x: blockX, y: blockY });
+                                    skinTransparency.set(url, !drawPlayerHeadSlot(atlasCtx, image, index));
                                 });
                             });
 
@@ -1372,6 +1372,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             atlasMaterial.fog = false;
                             atlasMaterial.flatShading = true;
                             atlasMaterial.side = THREE.DoubleSide;
+                            playerHeadAtlases.set(atlasMaterial, { context: atlasCtx, texture: atlasTexture, nextSlot: uniqueUrls.length });
                             
                             const sharedGeometry = (headGeometries.merged as THREE.BufferGeometry).clone();
                             const newUvAttr = sharedGeometry.getAttribute('uv') as THREE.BufferAttribute;
@@ -1381,19 +1382,19 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                             for (let faceIdx = 0; faceIdx < 12; faceIdx++) {
                                 const partKey = allFaceKeys[faceIdx];
-                                const partIndex = partOrder.indexOf(partKey);
+                                const partIndex = playerHeadPartOrder.indexOf(partKey as keyof typeof playerHeadFaceParts);
 
                                 if (partIndex === -1) continue;
 
-                                const dx = (partIndex % 3) * PART_SIZE;
-                                const dy = Math.floor(partIndex / 3) * PART_SIZE;
+                                const dx = (partIndex % 3) * PLAYER_HEAD_PART_SIZE;
+                                const dy = Math.floor(partIndex / 3) * PLAYER_HEAD_PART_SIZE;
                                 
                                 const inset = 0;
-                                const u0 = (dx + inset) / ATLAS_SIZE;
-                                const u1 = (dx + PART_SIZE - inset) / ATLAS_SIZE;
+                                const u0 = (dx + inset) / PLAYER_HEAD_ATLAS_SIZE;
+                                const u1 = (dx + PLAYER_HEAD_PART_SIZE - inset) / PLAYER_HEAD_ATLAS_SIZE;
 
-                                const v1 = (PART_BLOCK_HEIGHT - dy - inset) / ATLAS_SIZE;
-                                const v0 = (PART_BLOCK_HEIGHT - (dy + PART_SIZE) - inset) / ATLAS_SIZE;
+                                const v1 = (PLAYER_HEAD_BLOCK_HEIGHT - dy - inset) / PLAYER_HEAD_ATLAS_SIZE;
+                                const v0 = (PLAYER_HEAD_BLOCK_HEIGHT - (dy + PLAYER_HEAD_PART_SIZE) - inset) / PLAYER_HEAD_ATLAS_SIZE;
                                 
                                 const baseFaceName = baseFaceOrder[faceIdx % 6];
                                 const uvWriteIndex = faceIdx * 4;
@@ -1432,8 +1433,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                                 const skinBlockPos = skinLayouts.get(item.textureUrl);
                                 if (skinBlockPos) {
-                                    const uOffset = skinBlockPos.x / ATLAS_SIZE;
-                                    const vOffset = 1.0 - (skinBlockPos.y + PART_BLOCK_HEIGHT) / ATLAS_SIZE;
+                                    const uOffset = skinBlockPos.x / PLAYER_HEAD_ATLAS_SIZE;
+                                    const vOffset = 1.0 - (skinBlockPos.y + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE;
                                     
                                     uvOffsets[i * 2 + 0] = uOffset;
                                     uvOffsets[i * 2 + 1] = vOffset;
@@ -1493,6 +1494,50 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 }
                 return newlyAddedSelectableMeshes;
 
+}
+
+export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
+    const userData = loadedObjectGroup.userData;
+    const ref = (userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    if (!ref) throw new Error('텍스처를 변경할 플레이어 헤드를 찾을 수 없습니다.');
+
+    const material = (Array.isArray(ref.mesh.material) ? ref.mesh.material[0] : ref.mesh.material) as THREE.Material;
+    const atlas = playerHeadAtlases.get(material);
+    const uvOffsets = ref.mesh.geometry.getAttribute('instancedUvOffset') as THREE.InstancedBufferAttribute | undefined;
+    if (!atlas || !uvOffsets) throw new Error('플레이어 헤드 아틀라스를 찾을 수 없습니다.');
+
+    const oldU = uvOffsets.getX(ref.instanceId);
+    const oldV = uvOffsets.getY(ref.instanceId);
+    let usageCount = 0;
+    loadedObjectGroup.traverse(object => {
+        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
+        const mesh = object as THREE.InstancedMesh;
+        const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+        if (meshMaterial !== material) return;
+        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.InstancedBufferAttribute | undefined;
+        if (!offsets) return;
+        for (let index = 0; index < mesh.count; index++) {
+            if (offsets.getX(index) === oldU && offsets.getY(index) === oldV) usageCount++;
+        }
+    });
+
+    let slot = Math.round(oldU * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH)
+        + Math.round((1 - oldV) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT - 1) * PLAYER_HEAD_BLOCKS_PER_ROW;
+    if (usageCount > 1) slot = atlas.nextSlot++;
+    const maxSlots = PLAYER_HEAD_BLOCKS_PER_ROW * Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT);
+    if (slot >= maxSlots) throw new Error('플레이어 헤드 아틀라스 슬롯이 부족합니다.');
+
+    const image = await loadPlayerHeadImage(textureUrl);
+    ref.mesh.userData.hasHat[ref.instanceId] = drawPlayerHeadSlot(atlas.context, image, slot);
+    uvOffsets.setXY(
+        ref.instanceId,
+        (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH / PLAYER_HEAD_ATLAS_SIZE,
+        1 - (Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) + 1) * PLAYER_HEAD_BLOCK_HEIGHT / PLAYER_HEAD_ATLAS_SIZE
+    );
+    uvOffsets.needsUpdate = true;
+    atlas.texture.needsUpdate = true;
+    (userData.objectTextures as Map<string, string> | undefined)?.set(objectUuid, textureUrl);
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
 export async function replaceDisplayObject(objectUuid: string, name: string): Promise<void> {

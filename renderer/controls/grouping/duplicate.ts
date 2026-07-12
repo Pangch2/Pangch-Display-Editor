@@ -28,6 +28,9 @@ interface DuplicateUserData {
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, unknown>;
+    objectNbt?: Map<string, string>;
+    objectBrightness?: Map<string, unknown>;
+    objectTextures?: Map<string, string>;
     sceneOrder?: SceneOrderEntry[];
 }
 
@@ -120,6 +123,11 @@ function registerClone(
     if (stores.objectBlockProps!.has(sourceUuid)) {
         stores.objectBlockProps!.set(targetUuid, cloneData(stores.objectBlockProps!.get(sourceUuid)));
     }
+    if (stores.objectNbt?.has(sourceUuid)) stores.objectNbt.set(targetUuid, stores.objectNbt.get(sourceUuid)!);
+    if (stores.objectBrightness?.has(sourceUuid)) {
+        stores.objectBrightness.set(targetUuid, cloneData(stores.objectBrightness.get(sourceUuid)));
+    }
+    if (stores.objectTextures?.has(sourceUuid)) stores.objectTextures.set(targetUuid, stores.objectTextures.get(sourceUuid)!);
 
     return targetUuid;
 }

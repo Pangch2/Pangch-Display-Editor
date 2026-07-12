@@ -1,7 +1,7 @@
 # duplicate.ts
 
 ## Purpose
-Duplicates selected groups and objects in the editor scene while preserving group membership, scene order, returned selection, object UUID metadata, display metadata, block properties, custom pivots, colors, and per-instance attributes. Instanced objects append into their current InstancedMesh until capacity is full, then continue in a spare or newly-created chunk mesh with cloned geometry/materials.
+Duplicates selected groups and objects in the editor scene while preserving group membership, scene order, returned selection, UUID-indexed object metadata, custom pivots, colors, and per-instance attributes. Instanced objects append into their current InstancedMesh until capacity is full, then continue in a spare or newly-created chunk mesh with cloned geometry/materials.
 
 ## Exports
 
@@ -32,6 +32,7 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 - Plain Mesh objects use `clone()`, then restore editor `userData` with `cloneData` so repeated duplication keeps metadata.
 - InstancedMesh objects copy matrix/color/instanced attribute rows into available slots and increase `mesh.count`; when capacity is full, duplication first consumes a prewarmed spare chunk, otherwise creates another InstancedMesh chunk instead of resizing existing WebGPU buffers.
 - Per-instance geometry attributes such as atlas UV offsets/transforms are copied with typed-array slices from source instance to appended instance so texture mapping is preserved.
+- UUID-indexed NBT, brightness, and texture values are copied to the clone so its properties panel and later edits retain the source values.
 - New chunks clone the source geometry/materials and reset per-instance `userData` maps so copied copies remain selectable and duplicable; idle prewarm skips stale source meshes removed by project reloads.
 - Normal append path expects meshes created by `mesh-builder.ts` to have spare capacity; chunk spillover handles unlimited repeated duplication without rebinding existing buffers.
 - Group clone jobs rely on `group.ts` for structure cloning and object traversal.
