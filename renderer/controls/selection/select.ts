@@ -149,49 +149,10 @@ export function pickInstanceByOverlayBox(
     raycaster: Raycaster, 
     rootGroup: Group
 ): { mesh: Mesh | InstancedMesh; instanceId: number } | null {
-    const rayWorld = raycaster.ray.clone();
-    const best: { mesh: Mesh | InstancedMesh | null; instanceId: number | undefined; distance: number } = { 
-        mesh: null, 
-        instanceId: undefined, 
-        distance: Infinity 
-    };
-
-    rootGroup.traverse((obj) => {
-        if (!obj || !('isInstancedMesh' in obj)) return;
-        if (obj.visible === false) return;
-        if (!raycaster.layers.test(obj.layers)) return;
-
-        const mesh = obj as InstancedMesh;
-        const instanceCount = Overlay.getInstanceCount(mesh);
-
-        if (instanceCount <= 0) return;
-
-        for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-            if (!Overlay.isInstanceValid(mesh, instanceId)) continue;
-
-            const box = Overlay.getInstanceLocalBox(mesh, instanceId);
-            if (!box) continue;
-
-            const matrixWorld = Overlay.getInstanceWorldMatrix(mesh, instanceId, new Matrix4());
-            const invMatrix = matrixWorld.clone().invert();
-            const localRay = rayWorld.clone().applyMatrix4(invMatrix);
-            
-            const intersect = localRay.intersectBox(box, new Vector3());
-            if (intersect) {
-                const hitPointWorld = intersect.clone().applyMatrix4(matrixWorld);
-                const dist = rayWorld.origin.distanceTo(hitPointWorld);
-                
-                if (dist < best.distance) {
-                    best.distance = dist;
-                    best.mesh = mesh;
-                    best.instanceId = instanceId;
-                }
-            }
-        }
-    });
-
-    if (!best.mesh || best.instanceId === undefined) return null;
-    return { mesh: best.mesh, instanceId: best.instanceId };
+    const hit = raycaster.intersectObject(rootGroup, true).find(({ object, instanceId }) =>
+        object instanceof InstancedMesh && instanceId !== undefined && Overlay.isInstanceValid(object, instanceId)
+    );
+    return hit ? { mesh: hit.object as InstancedMesh, instanceId: hit.instanceId! } : null;
 }
 
 export function getSingleSelectedGroupId(): string | null {
