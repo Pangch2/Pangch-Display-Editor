@@ -71,6 +71,23 @@ type MaterialUpdate = {
     pendingMaterialSlots: Array<{ index: number; promise: Promise<THREE.Material> }>;
     signature: string;
 };
+export type LoadedSelection = Map<THREE.Object3D, Set<number>>;
+
+function addLoadedInstance(selection: LoadedSelection, mesh: THREE.Object3D, instanceId: number): void {
+    let ids = selection.get(mesh);
+    if (!ids) selection.set(mesh, ids = new Set<number>());
+    ids.add(instanceId);
+}
+
+function getInstancedCapacity(mesh: THREE.InstancedMesh): number {
+    let capacity = mesh.instanceMatrix.count;
+    if (mesh.instanceColor) capacity = Math.min(capacity, mesh.instanceColor.count);
+    for (const attribute of Object.values(mesh.geometry.attributes)) {
+        const instancedAttribute = attribute as THREE.InstancedBufferAttribute;
+        if (instancedAttribute.isInstancedBufferAttribute) capacity = Math.min(capacity, instancedAttribute.count);
+    }
+    return capacity;
+}
 
 function acquireTextureSlot() {
     if (currentTextureSlots < MAX_TEXTURE_DECODE_CONCURRENCY) {
@@ -712,7 +729,7 @@ function _clearSceneAndCaches(): void {
  * Newly added helper to perform selection on a set of meshes.
  * Extracted from _loadAndRenderPbde to allow batch selection control.
  */
-export function performSelection(newlyAddedSelectableMeshes: Set<THREE.Object3D>) {
+export function performSelection(newlyAddedSelectableMeshes: LoadedSelection) {
     const selectGroupsObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithGroupsAndObjects as
         | undefined
         | ((groupIds: Set<string>, meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
@@ -740,18 +757,16 @@ export function performSelection(newlyAddedSelectableMeshes: Set<THREE.Object3D>
         const groupIds = new Set<string>();
         const meshToIds = new Map<any, Set<number>>();
 
-        for (const mesh of newlyAddedSelectableMeshes) {
+        for (const [mesh, instanceIds] of newlyAddedSelectableMeshes) {
             if (!mesh) continue;
             const instancedMesh = mesh as THREE.InstancedMesh;
 
             if (!instancedMesh.isInstancedMesh) continue;
 
-            const instanceCount = instancedMesh.count ?? 0;
-
-            if (instanceCount <= 0) continue;
+            if (instanceIds.size === 0) continue;
 
             let ids: Set<number> | null = null;
-            for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
+            for (const instanceId of instanceIds) {
                 const key = `${mesh.uuid}_${instanceId}`;
                 const immediateGroupId = objectToGroupMap.get(key);
                 if (immediateGroupId) {
@@ -779,7 +794,7 @@ export function performSelection(newlyAddedSelectableMeshes: Set<THREE.Object3D>
     }
 }
 
-export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number): Promise<Set<THREE.Object3D>> {
+export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGen?: number): Promise<LoadedSelection> {
         const meshUploadStartMs = performance.now();
         const setupStartMs = meshUploadStartMs;
 
@@ -810,35 +825,35 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
         const fileBuffer = await file.arrayBuffer();
         const fileReadElapsedMs = performance.now() - fileReadStartMs;
         if (myGen !== currentLoadGen) {
-            return new Set<THREE.Object3D>();
+            return new Map<THREE.Object3D, Set<number>>();
         }
 
         const parseStartMs = performance.now();
         const { metadata, geometryBuffer } = await parsePbdeProject(fileBuffer, mainThreadAssetProvider);
         const parseElapsedMs = performance.now() - parseStartMs;
         if (myGen !== currentLoadGen) {
-            return new Set<THREE.Object3D>();
+            return new Map<THREE.Object3D, Set<number>>();
         }
 
                 if (!(geometryBuffer instanceof ArrayBuffer)) {
                     console.error('[Debug] geometryBuffer is not an ArrayBuffer. Aborting render pipeline.');
-                    return new Set<THREE.Object3D>();
+                    return new Map<THREE.Object3D, Set<number>>();
                 }
                 const sharedBuffer = geometryBuffer as ArrayBuffer;
                 if (!metadata || typeof metadata !== 'object') {
                     console.error('[Debug] Invalid metadata payload from parser.');
-                    return new Set<THREE.Object3D>();
+                    return new Map<THREE.Object3D, Set<number>>();
                 }
                 const metadataPayload = metadata as WorkerMetadata;
                 if (!Array.isArray(metadataPayload.geometries) || !Array.isArray(metadataPayload.otherItems)) {
                     console.error('[Debug] Invalid metadata payload from parser.');
-                    return new Set<THREE.Object3D>();
+                    return new Map<THREE.Object3D, Set<number>>();
                 }
                 const { geometries: geometryMetas, geometryBatches, otherItems, useUint32Indices, atlas, groups, sceneOrder, projectDetails } = metadataPayload;
                 if (!isMerge) loadedObjectGroup.userData.projectDetails = projectDetails;
                 const activeGeometryBatches = Array.isArray(geometryBatches) && geometryBatches.length > 0 ? geometryBatches : null;
 
-                const newlyAddedSelectableMeshes = new Set<THREE.Object3D>();
+                const newlyAddedSelectableMeshes: LoadedSelection = new Map();
 
                 // Grouping Setup
                 const incomingGroups = groups;
@@ -1174,10 +1189,28 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 }
                 const signatureElapsedMs = performance.now() - signatureStartMs;
 
+                const reusableMeshes = new Map<string, THREE.InstancedMesh[]>();
+                if (isMerge) {
+                    for (const child of loadedObjectGroup.children) {
+                        const mesh = child as THREE.InstancedMesh;
+                        const signature = mesh.isInstancedMesh ? mesh.userData.pbdeSignature as string | undefined : undefined;
+                        if (!signature) continue;
+                        const meshes = reusableMeshes.get(signature) ?? [];
+                        meshes.push(mesh);
+                        reusableMeshes.set(signature, meshes);
+                    }
+                }
+
                 const materialAwaitStartMs = performance.now();
                 const materialPreloadPromises: Promise<THREE.Material>[] = [];
-                for (const group of signatureGroups.values()) {
+                for (const [signature, group] of signatureGroups) {
                     const instancedUvTransformCount = getInstancedUvTransformCount(group.parts, group.instanceMetas);
+                    const reusableCapacity = reusableMeshes.get(signature)?.reduce(
+                        (sum, mesh) => sum + Math.max(0, getInstancedCapacity(mesh) - mesh.count), 0
+                    ) ?? 0;
+                    if (instancedUvTransformCount === 0
+                        && group.parts.every(part => !part.texPath.includes('__ATLAS__'))
+                        && reusableCapacity >= group.transforms.length) continue;
                     for (const part of group.parts) {
                         materialPreloadPromises.push(ensureInstancedMaterialPromise(part, instancedUvTransformCount));
                     }
@@ -1197,6 +1230,35 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         const instanceMetas = group.instanceMetas;
                         const instancedUvTransformCount = getInstancedUvTransformCount(representativeParts, instanceMetas);
                         const usesAtlasUvTransform = instancedUvTransformCount > 0;
+                        const hasReusableSignature = !usesAtlasUvTransform
+                            && representativeParts.every(part => !part.texPath.includes('__ATLAS__'));
+                        const canReuseExisting = isMerge && hasReusableSignature;
+                        const instanceMatrix = new THREE.Matrix4();
+                        let transformStart = 0;
+
+                        if (canReuseExisting) {
+                            for (const instancedMesh of reusableMeshes.get(signature) ?? []) {
+                                const appendCount = Math.min(getInstancedCapacity(instancedMesh) - instancedMesh.count, transforms.length - transformStart);
+                                if (appendCount <= 0) continue;
+                                for (let i = 0; i < appendCount; i++) {
+                                    const sourceIndex = transformStart + i;
+                                    const instanceId = instancedMesh.count + i;
+                                    const meta = instanceMetas[sourceIndex];
+                                    instanceMatrix.fromArray(transforms[sourceIndex]).transpose();
+                                    instancedMesh.setMatrixAt(instanceId, instanceMatrix);
+                                    registerObject(instancedMesh, instanceId, meta.uuid, meta.groupId);
+                                    instancedMesh.userData.displayTypes.set(instanceId, meta.displayType ?? 'block_display');
+                                    addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, instanceId);
+                                }
+                                instancedMesh.count += appendCount;
+                                instancedMesh.instanceMatrix.needsUpdate = true;
+                                instancedMesh.computeBoundingSphere();
+                                transformStart += appendCount;
+                                if (transformStart === transforms.length) break;
+                            }
+                        }
+
+                        if (transformStart === transforms.length) continue;
 
                         // Merge Geometries
                         const materials: THREE.Material[] = [];
@@ -1253,8 +1315,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         }
 
                         if (mergedGeo) {
-                            const instanceMatrix = new THREE.Matrix4();
-                            for (let chunkStart = 0; chunkStart < transforms.length; chunkStart += INITIAL_INSTANCES_PER_INSTANCED_MESH) {
+                            for (let chunkStart = transformStart; chunkStart < transforms.length; chunkStart += INITIAL_INSTANCES_PER_INSTANCED_MESH) {
                                 const chunkCount = Math.min(INITIAL_INSTANCES_PER_INSTANCED_MESH, transforms.length - chunkStart);
                                 const chunkCapacity = getAppendableInstanceCapacity(chunkCount);
                                 const meshGeometry = usesAtlasUvTransform ? mergedGeo.clone() : mergedGeo;
@@ -1279,6 +1340,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 
                                 instancedMesh.userData.displayType = instanceMetas[chunkStart]?.displayType ?? 'block_display';
                                 instancedMesh.userData.displayTypes = new Map<number, 'block_display' | 'item_display'>();
+                                if (hasReusableSignature) instancedMesh.userData.pbdeSignature = signature;
                                 
                                 instancedMesh.frustumCulled = false;
 
@@ -1289,11 +1351,11 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     const meta = instanceMetas[sourceIndex];
                                     registerObject(instancedMesh, i, meta.uuid, meta.groupId);
                                     instancedMesh.userData.displayTypes.set(i, meta.displayType ?? 'block_display');
+                                    addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, i);
                                 }
                                 instancedMesh.instanceMatrix.needsUpdate = true;
                                 instancedMesh.computeBoundingSphere();
                                 loadedObjectGroup.add(instancedMesh);
-                                newlyAddedSelectableMeshes.add(instancedMesh);
                                 createdInstancedMeshCount++;
 
                                 // Handle async material loading
@@ -1467,10 +1529,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                             playerHeadItems.forEach((item, idx) => {
                                 registerObject(instancedMesh, idx, item.uuid, item.groupId);
+                                addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, idx);
                             });
 
                             loadedObjectGroup.add(instancedMesh);
-                            newlyAddedSelectableMeshes.add(instancedMesh);
 
                         } catch (err) {
                             console.error('Player head instancing failed:', err);

@@ -39,7 +39,7 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 
 ## Notes
 - `loadpbde` opens every selected file as a separate project tab, reusing an active empty tab when available; the drop modal can instead reuse the current tab.
-- `mergepbde` appends all files, then selects all new meshes.
+- `mergepbde` appends all files, merges their mesh-to-instance selection maps, then selects only the newly added instances.
 - Both open and merge dispatch `pde:scene-updated` before optional scene precompile, then log perceived load time through render-settled frames and GPU queue completion when available.
 - Scene precompile is skipped by default and can be enabled with `localStorage.pdeAwaitScenePrecompile = '1'`; per-root profiling still requires `localStorage.pdePrecompileProfile = '1'`.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Final load time` defaults to enabled; optional scene precompile and render-settle diagnostics default to disabled. Final load time now always waits for GPU queue drain after the next rendered frame, while trace logs still control extra render-settle detail collection.

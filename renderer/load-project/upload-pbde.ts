@@ -1,6 +1,7 @@
 import { openWithAnimation, closeWithAnimation } from '../ui/ui-open-close.js';
 import * as THREE from 'three/webgpu';
 import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, performSelection } from './mesh-builder';
+import type { LoadedSelection } from './mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
@@ -367,13 +368,17 @@ async function mergepbde(files: File | File[]): Promise<void> {
     const perceivedLoadStartMs = performance.now();
 
     const batchGen = beginPbdeLoadGeneration();
-    const allNewMeshes = new Set<THREE.Object3D>();
+    const allNewMeshes: LoadedSelection = new Map();
 
     try {
         for (const file of fileList) {
             // Merge always appends (isMerge = true)
             const newMeshes = await loadAndRenderPbde(file, true, batchGen);
-            newMeshes.forEach(m => allNewMeshes.add(m));
+            for (const [mesh, instanceIds] of newMeshes) {
+                let ids = allNewMeshes.get(mesh);
+                if (!ids) allNewMeshes.set(mesh, ids = new Set<number>());
+                instanceIds.forEach(id => ids!.add(id));
+            }
         }
 
         // Requirement: Select all newly added objects after all files are loaded.

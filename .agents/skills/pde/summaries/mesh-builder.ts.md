@@ -5,12 +5,15 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 
 ## Exports
 
+### Types / Interfaces
+- `LoadedSelection` -- maps each loaded mesh root to only the instance IDs created or appended by the current load.
+
 ### Variables / Constants
 - `loadedObjectGroup` -- shared `THREE.Group` that holds all rendered project objects
 
 ### Functions / Methods
 - `beginPbdeLoadGeneration()` -- bumps generation token so stale async work can be ignored
-- `performSelection(newlyAddedSelectableMeshes)` -- updates active selection after load/merge
+- `performSelection(newlyAddedSelectableMeshes)` -- selects only the newly loaded instance IDs after load/merge, preserving group-priority selection.
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
 - `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
 - `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
@@ -29,6 +32,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
 - `INITIAL_INSTANCES_PER_INSTANCED_MESH` starts block chunks at half capacity so duplicated instances can append without resizing WebGPU buffers
 - Small instanced chunks allocate at least 256 capacity so repeated duplication avoids WebGPU buffer resizing for matrix/UV attributes.
+- Merge builds a per-call lookup of existing non-atlas meshes by stable PBDE signature and appends compatible instances into spare capacity before creating another mesh chunk.
 
 ## Dependencies (imports)
 - `three/webgpu` -- scene graph, geometry, material, and texture classes
@@ -56,6 +60,8 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `GeometryMeta.geometryBufferKey` is used when present so same model id/index values from different packed batches do not collide.
 - Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
 - Instanced meshes are allocated with spare capacity and then `mesh.count` is lowered to the active instance count so duplicate append can reuse existing matrix/UV buffers without rebinding texture attributes; tiny chunks still get 256 slots minimum to reduce duplicate-time chunk creation.
+- Non-atlas meshes retain their PBDE signature in `userData`; merge reuses only an exact signature match and falls back to normal mesh creation for atlas content or exhausted capacity. Fully reused groups skip unused material preloading.
+- Load results track new instance IDs per mesh so appending to an existing mesh does not cause its older instances to be selected.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
 - Fresh loads store parser-provided project details on `loadedObjectGroup.userData`; merges preserve the current details.
 - `loadedObjectGroup.userData.objectNbt` maps object UUIDs to editable NBT strings for the properties panel.
