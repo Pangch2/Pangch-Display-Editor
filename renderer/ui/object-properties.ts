@@ -22,6 +22,7 @@ const scale = new Vector3();
 const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
 const metadataOrderKey = 'pde-object-metadata-order';
 let metadataOrder: string[] = JSON.parse(localStorage.getItem(metadataOrderKey) ?? '["texture","brightness","display"]');
+let draggedMetadataKey: string | null = null;
 type PropertySelection = { key: string; groupId: string; group: GroupData } | { key: string; mesh: InstancedMesh; instanceId: number };
 let selectionOrder: PropertySelection[] = [];
 const visibleSections = new WeakSet<Element>();
@@ -91,22 +92,28 @@ function metadataProperty(key: string, labelText: string, control: HTMLElement):
     const row = document.createElement('div');
     row.className = 'object-metadata-row';
     row.dataset.metadataKey = key;
-    row.draggable = true;
     const label = document.createElement('label');
     label.textContent = labelText;
+    label.draggable = true;
     row.append(label, control);
-    row.ondragstart = event => event.dataTransfer?.setData('text/plain', key);
-    row.ondragover = event => event.preventDefault();
-    row.ondrop = event => {
+    label.ondragstart = event => {
+        draggedMetadataKey = key;
+        event.dataTransfer?.setData('text/plain', key);
+    };
+    label.ondragend = () => { draggedMetadataKey = null; };
+    row.addEventListener('dragover', event => event.preventDefault(), true);
+    row.addEventListener('drop', event => {
         event.preventDefault();
-        const source = event.dataTransfer?.getData('text/plain');
+        const source = draggedMetadataKey ?? event.dataTransfer?.getData('text/plain');
         if (!source || source === key) return;
-        const keys = [...new Set([...metadataOrder, source, key])];
-        [keys[keys.indexOf(source)], keys[keys.indexOf(key)]] = [key, source];
+        const visibleKeys = [...row.parentElement!.querySelectorAll<HTMLElement>(':scope > .object-metadata-row')]
+            .map(item => item.dataset.metadataKey!);
+        const keys = [...new Set([...metadataOrder, ...visibleKeys])];
+        keys.splice(keys.indexOf(key), 0, keys.splice(keys.indexOf(source), 1)[0]);
         metadataOrder = keys;
         localStorage.setItem(metadataOrderKey, JSON.stringify(keys));
         document.querySelectorAll<HTMLElement>('.object-property').forEach(sortMetadataRows);
-    };
+    }, true);
     return row;
 }
 

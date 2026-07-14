@@ -648,12 +648,20 @@ function isLayerTransparent(img: HTMLImageElement, uvRegions: number[][]): boole
     }
 }
 
+const DEFAULT_PLAYER_HEAD_TEXTURE = 'https://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
+
 function loadPlayerHeadImage(url: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
         const image = new Image();
         image.crossOrigin = 'anonymous';
         image.onload = () => resolve(image);
-        image.onerror = () => reject(new Error(`Failed to load image: ${url}`));
+        image.onerror = () => {
+            if (image.src !== DEFAULT_PLAYER_HEAD_TEXTURE) {
+                image.src = DEFAULT_PLAYER_HEAD_TEXTURE;
+                return;
+            }
+            reject(new Error(`Failed to load image: ${url}`));
+        };
         image.src = url.replace('http://', 'https://');
     });
 }
@@ -1604,7 +1612,10 @@ export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: st
     );
     uvOffsets.needsUpdate = true;
     atlas.texture.needsUpdate = true;
-    (userData.objectTextures as Map<string, string> | undefined)?.set(objectUuid, textureUrl);
+    (userData.objectTextures as Map<string, string> | undefined)?.set(
+        objectUuid,
+        image.src === DEFAULT_PLAYER_HEAD_TEXTURE ? DEFAULT_PLAYER_HEAD_TEXTURE : textureUrl
+    );
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
