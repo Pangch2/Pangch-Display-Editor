@@ -78,7 +78,7 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTM
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'object-matrix-toggle';
-    toggle.textContent = compactMatrixInput ? '◀' : '▶';
+    toggle.textContent = compactMatrixInput ? '▶' : '▼';
     toggle.title = compactMatrixInput ? '4×4 입력으로 전환' : '한 줄 입력으로 전환';
     toggle.setAttribute('aria-label', toggle.title);
     heading.append(toggle);
@@ -111,7 +111,8 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTM
     const text = document.createElement('input');
     text.setAttribute('aria-label', '행렬 한 줄 입력');
     const fixedText = document.createElement('span');
-    fixedText.textContent = ', 0, 0, 0, 1';
+    fixedText.style.whiteSpace = 'pre';
+    fixedText.textContent = ' 0, 0, 0, 1';
     textRow.append(text, fixedText);
     const syncText = () => {
         text.value = Array.from({ length: 12 }, (_, index) =>
@@ -147,7 +148,7 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTM
         grid.hidden = !grid.hidden;
         compactMatrixInput = !textRow.hidden;
         localStorage.setItem(matrixInputModeKey, compactMatrixInput ? 'text' : 'grid');
-        toggle.textContent = textRow.hidden ? '▶' : '◀';
+        toggle.textContent = textRow.hidden ? '▶' : '▼';
         toggle.title = textRow.hidden ? '한 줄 입력으로 전환' : '4×4 입력으로 전환';
         toggle.setAttribute('aria-label', toggle.title);
         if (!textRow.hidden) {

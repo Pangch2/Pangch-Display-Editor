@@ -336,11 +336,19 @@ canvas {
 }
 
 .object-matrix-toggle {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   padding: 0;
   border: 0;
   background: none;
   color: #aaa;
+  font-family: "Segoe UI Symbol", sans-serif;
   font-size: 9px;
+  text-align: center;
   cursor: pointer;
 }
 
@@ -348,8 +356,9 @@ canvas {
   display: flex;
   align-items: center;
   margin-bottom: 5px;
-  padding: 0 3px;
+  padding: 0;
   border: 1px solid #555;
+  border-radius: 3px;
   background: #222;
   white-space: nowrap;
   overflow: hidden;
