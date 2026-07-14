@@ -185,14 +185,6 @@ function renderMultiSelectionPivot(pivotLocal?: Vector3): void {
     multiSelectionPivot.replaceChildren(heading, row);
 }
 
-function setInstanceMatrix(mesh: InstancedMesh, instanceId: number, next: Matrix4): void {
-    mesh.setMatrixAt(instanceId, next);
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingBox();
-    mesh.computeBoundingSphere();
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-}
-
 function keepPivotFixed(current: Matrix4, next: Matrix4, localPivot: Vector3): Matrix4 {
     const offset = localPivot.clone().applyMatrix4(current).sub(localPivot.clone().applyMatrix4(next));
     next.elements[12] += offset.x;
@@ -315,8 +307,15 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             const elementIndex = column * 4 + rowIndex;
             const input = numberInput(matrix.elements[elementIndex], next => {
                 mesh.getMatrixAt(instanceId, matrix);
+                const currentMatrix = matrix.clone();
                 matrix.elements[elementIndex] = next;
-                setInstanceMatrix(mesh, instanceId, matrix);
+                const transformPivot = currentPivotWorld
+                    ?.clone().applyMatrix4(mesh.matrixWorld.clone().invert()).applyMatrix4(currentMatrix.clone().invert())
+                    ?? localPivot;
+                const nextMatrix = keepPivotFixed(currentMatrix, matrix, transformPivot);
+                const currentWorld = currentMatrix.clone().premultiply(mesh.matrixWorld);
+                const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
+                applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
             });
             input.disabled = rowIndex === 3;
             row.append(input);
