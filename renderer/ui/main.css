@@ -394,11 +394,65 @@ canvas {
 }
 
 .object-metadata-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(80px, auto) minmax(0, 1fr);
   gap: 6px;
   margin-bottom: 5px;
   align-items: center;
+}
+
+.object-property-section {
+  position: relative;
+}
+
+.object-property-section + .object-property-section {
+  margin-top: 10px;
+}
+
+.object-property-section > h3.object-metadata-title {
+  margin-top: 0;
+}
+
+.object-property-section > h3 {
+  cursor: grab;
+}
+
+.object-property-section.object-property-section-drop-before::before,
+.object-property-section.object-property-section-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #4ea6ff;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.object-property-section.object-property-section-drop-before::before {
+  top: -2px;
+}
+
+.object-property-section.object-property-section-drop-after::after {
+  bottom: -2px;
+}
+
+.object-metadata-row.object-metadata-drop-before::before,
+.object-metadata-row.object-metadata-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #4ea6ff;
+  pointer-events: none;
+}
+
+.object-metadata-row.object-metadata-drop-before::before {
+  top: -2px;
+}
+
+.object-metadata-row.object-metadata-drop-after::after {
+  bottom: -2px;
 }
 
 .object-scale-input {

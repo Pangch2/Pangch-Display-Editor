@@ -22,9 +22,14 @@ const scale = new Vector3();
 const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
 const metadataOrderKey = 'pde-object-metadata-order';
 const matrixInputModeKey = 'pde-matrix-input-mode';
+const propertySectionOrderKey = 'pde-object-property-section-order';
 let metadataOrder: string[] = JSON.parse(localStorage.getItem(metadataOrderKey) ?? '["texture","brightness","display"]');
 let compactMatrixInput = localStorage.getItem(matrixInputModeKey) === 'text';
+let propertySectionOrder: string[] = JSON.parse(localStorage.getItem(propertySectionOrderKey) ?? '["transform","matrix","nbt","metadata"]');
 let draggedMetadataKey: string | null = null;
+let metadataDropRow: HTMLElement | null = null;
+let draggedPropertySection: HTMLElement | null = null;
+let propertySectionDropTarget: HTMLElement | null = null;
 type PropertySelection = { key: string; groupId: string; group: GroupData } | { key: string; mesh: InstancedMesh; instanceId: number };
 let selectionOrder: PropertySelection[] = [];
 const visibleSections = new WeakSet<Element>();
@@ -148,7 +153,7 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTM
         grid.hidden = !grid.hidden;
         compactMatrixInput = !textRow.hidden;
         localStorage.setItem(matrixInputModeKey, compactMatrixInput ? 'text' : 'grid');
-        toggle.textContent = textRow.hidden ? '▶' : '▼';
+        toggle.textContent = textRow.hidden ? '▼' : '▶';
         toggle.title = textRow.hidden ? '한 줄 입력으로 전환' : '4×4 입력으로 전환';
         toggle.setAttribute('aria-label', toggle.title);
         if (!textRow.hidden) {
@@ -195,8 +200,26 @@ function metadataProperty(key: string, labelText: string, control: HTMLElement):
         draggedMetadataKey = key;
         event.dataTransfer?.setData('text/plain', key);
     };
-    label.ondragend = () => { draggedMetadataKey = null; };
-    row.addEventListener('dragover', event => event.preventDefault(), true);
+    const clearDropPreview = () => {
+        metadataDropRow?.classList.remove('object-metadata-drop-before', 'object-metadata-drop-after');
+        metadataDropRow = null;
+    };
+    label.ondragend = () => {
+        draggedMetadataKey = null;
+        clearDropPreview();
+    };
+    row.addEventListener('dragover', event => {
+        if (!draggedMetadataKey || draggedMetadataKey === key) return;
+        event.preventDefault();
+        clearDropPreview();
+        metadataDropRow = row;
+        row.classList.add(event.clientY < row.getBoundingClientRect().top + row.offsetHeight / 2
+            ? 'object-metadata-drop-before'
+            : 'object-metadata-drop-after');
+    }, true);
+    row.addEventListener('dragleave', event => {
+        if (!row.contains(event.relatedTarget as Node | null)) clearDropPreview();
+    });
     row.addEventListener('drop', event => {
         event.preventDefault();
         const source = draggedMetadataKey ?? event.dataTransfer?.getData('text/plain');
@@ -204,10 +227,13 @@ function metadataProperty(key: string, labelText: string, control: HTMLElement):
         const visibleKeys = [...row.parentElement!.querySelectorAll<HTMLElement>(':scope > .object-metadata-row')]
             .map(item => item.dataset.metadataKey!);
         const keys = [...new Set([...metadataOrder, ...visibleKeys])];
-        keys.splice(keys.indexOf(key), 0, keys.splice(keys.indexOf(source), 1)[0]);
+        const after = row.classList.contains('object-metadata-drop-after');
+        clearDropPreview();
+        const [moved] = keys.splice(keys.indexOf(source), 1);
+        keys.splice(keys.indexOf(key) + (after ? 1 : 0), 0, moved);
         metadataOrder = keys;
         localStorage.setItem(metadataOrderKey, JSON.stringify(keys));
-        document.querySelectorAll<HTMLElement>('.object-property').forEach(sortMetadataRows);
+        document.querySelectorAll<HTMLElement>('[data-property-section="metadata"]').forEach(sortMetadataRows);
     }, true);
     return row;
 }
@@ -220,6 +246,59 @@ function sortMetadataRows(section: HTMLElement): void {
             return (aIndex < 0 ? Infinity : aIndex) - (bIndex < 0 ? Infinity : bIndex);
         })
         .forEach(row => section.append(row));
+}
+
+function propertySection(key: string, label: string | HTMLElement, ...children: (Node | string)[]): HTMLDivElement {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'object-property-section';
+    wrapper.dataset.propertySection = key;
+    const heading = typeof label === 'string' ? document.createElement('h3') : label;
+    if (typeof label === 'string') heading.textContent = label;
+    heading.draggable = true;
+    wrapper.append(heading, ...children);
+    const clearDropPreview = () => {
+        propertySectionDropTarget?.classList.remove('object-property-section-drop-before', 'object-property-section-drop-after');
+        propertySectionDropTarget = null;
+    };
+    heading.ondragstart = event => {
+        draggedPropertySection = wrapper;
+        event.dataTransfer?.setData('text/plain', key);
+    };
+    heading.ondragend = () => {
+        draggedPropertySection = null;
+        clearDropPreview();
+    };
+    wrapper.ondragover = event => {
+        if (!draggedPropertySection || draggedPropertySection === wrapper) return;
+        event.preventDefault();
+        clearDropPreview();
+        propertySectionDropTarget = wrapper;
+        wrapper.classList.add(event.clientY < wrapper.getBoundingClientRect().top + wrapper.offsetHeight / 2
+            ? 'object-property-section-drop-before'
+            : 'object-property-section-drop-after');
+    };
+    wrapper.ondragleave = event => {
+        if (!wrapper.contains(event.relatedTarget as Node | null)) clearDropPreview();
+    };
+    wrapper.ondrop = event => {
+        event.preventDefault();
+        if (!draggedPropertySection || draggedPropertySection === wrapper) return;
+        const source = draggedPropertySection.dataset.propertySection!;
+        const after = wrapper.classList.contains('object-property-section-drop-after');
+        clearDropPreview();
+        const keys = propertySectionOrder.filter(item => item !== source);
+        keys.splice(keys.indexOf(key) + (after ? 1 : 0), 0, source);
+        propertySectionOrder = keys;
+        localStorage.setItem(propertySectionOrderKey, JSON.stringify(keys));
+        document.querySelectorAll<HTMLElement>('.object-property').forEach(sortPropertySections);
+    };
+    return wrapper;
+}
+
+function sortPropertySections(section: HTMLElement): void {
+    [...section.querySelectorAll<HTMLElement>(':scope > .object-property-section')]
+        .sort((a, b) => propertySectionOrder.indexOf(a.dataset.propertySection!) - propertySectionOrder.indexOf(b.dataset.propertySection!))
+        .forEach(item => section.append(item));
 }
 
 function brightnessProperty(brightness: { sky?: number; block?: number }, onChange: (brightness: { sky: number; block: number }) => Promise<void>): HTMLDivElement {
@@ -352,6 +431,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         localPivot.copy(pivotWorld).applyMatrix4(mesh.matrixWorld.clone().invert()).applyMatrix4(matrix.clone().invert());
     }
 
+    const transformSection = propertySection('transform', '변환');
     const values = [position.clone(), rotation.clone(), scale.clone()];
     ['위치', '회전', '크기'].forEach((label, rowIndex) => {
         const row = document.createElement('div');
@@ -381,7 +461,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             };
             row.append(rowIndex === 2 ? scaleInput(value, change) : numberInput(value, change));
         });
-        section.append(row);
+        transformSection.append(row);
     });
 
     const pivot = localPivot.clone();
@@ -397,24 +477,24 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         (mesh.userData.customPivots as Map<number, Vector3>).set(instanceId, localPivot.clone());
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     })));
-    section.append(pivotRow);
+    transformSection.append(pivotRow);
+    section.append(transformSection);
 
-    section.append(...matrixInput(matrix, nextMatrix => {
+    const matrixParts = matrixInput(matrix, nextMatrix => {
         mesh.getMatrixAt(instanceId, matrix);
         const currentMatrix = matrix.clone();
         const currentWorld = currentMatrix.clone().premultiply(mesh.matrixWorld);
         const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
         applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
         return nextMatrix;
-    }));
+    });
+    section.append(propertySection('matrix', matrixParts[0] as HTMLElement, ...matrixParts.slice(1)));
 
-    const nbtLabel = document.createElement('h3');
-    nbtLabel.textContent = 'NBT';
     const nbt = document.createElement('input');
     const objectNbt = loadedObjectGroup.userData.objectNbt as Map<string, string> | undefined;
     nbt.value = objectNbt?.get(uuid) ?? '';
     nbt.oninput = () => objectNbt?.set(uuid, nbt.value);
-    section.append(nbtLabel, nbt);
+    section.append(propertySection('nbt', 'NBT', nbt));
     const isItemDisplay = (loadedObjectGroup.userData.objectIsItemDisplay as Set<string> | undefined)?.has(uuid) ?? false;
     const brightnessMap = loadedObjectGroup.userData.objectBrightness as Map<string, { sky?: number; block?: number }>;
     const brightness = brightnessMap.get(uuid) ?? {};
@@ -423,10 +503,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         await replaceDisplayObject(uuid, name, { pivotMode: currentPivotMode, pivotWorld: currentPivotWorld });
     };
     if (isItemDisplay) {
-        const metadataLabel = document.createElement('h3');
-        metadataLabel.className = 'object-metadata-title';
-        metadataLabel.textContent = '개체 속성';
-        section.append(metadataLabel);
+        const metadataSection = propertySection('metadata', '개체 속성');
+        metadataSection.firstElementChild!.className = 'object-metadata-title';
+        section.append(metadataSection);
         const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
         const texture = textures?.get(uuid);
         if (name.startsWith('player_head')) {
@@ -436,41 +515,41 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 input.value = textureUrl(input.value.trim());
                 await updatePlayerHeadTexture(uuid, input.value);
             };
-            section.append(metadataProperty('texture', '텍스쳐', input));
+            metadataSection.append(metadataProperty('texture', '텍스쳐', input));
         }
-        section.append(brightnessProperty(brightness, updateBrightness));
+        metadataSection.append(brightnessProperty(brightness, updateBrightness));
         const displayType = (loadedObjectGroup.userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid) ?? 'none';
-        section.append(metadataProperty('display', '디스플레이', propertySelect(displayType, itemDisplayValues, async value => {
+        metadataSection.append(metadataProperty('display', '디스플레이', propertySelect(displayType, itemDisplayValues, async value => {
             await updateDisplayObjectMatrix(uuid, replaceNameDisplay(name, value));
         })));
-        sortMetadataRows(section);
+        sortMetadataRows(metadataSection);
     } else {
         const objectBlockProps = loadedObjectGroup.userData.objectBlockProps as Map<string, Record<string, string>> | undefined;
         const props = objectBlockProps?.get(uuid) ?? {};
-        const metadataLabel = document.createElement('h3');
-        metadataLabel.className = 'object-metadata-title';
-        metadataLabel.textContent = '개체 속성';
-        section.append(metadataLabel);
-        section.append(brightnessProperty(brightness, updateBrightness));
-        sortMetadataRows(section);
+        const metadataSection = propertySection('metadata', '개체 속성');
+        metadataSection.firstElementChild!.className = 'object-metadata-title';
+        section.append(metadataSection);
+        metadataSection.append(brightnessProperty(brightness, updateBrightness));
+        sortMetadataRows(metadataSection);
         void getBlockPropertyOptions(name, props).then(options => {
             Object.entries(options)
                 .filter(([, values]) => values.length > 1)
                 .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
                 .forEach(([key, values]) => {
                     const value = props[key] ?? (values.includes('false') ? 'false' : values[0]);
-                    section.append(metadataProperty(key, key, propertySelect(value, values, async next => {
+                    metadataSection.append(metadataProperty(key, key, propertySelect(value, values, async next => {
                         await replaceDisplayObject(uuid, replaceNameProperties(name, { ...props, [key]: next }), {
                             pivotMode: currentPivotMode,
                             pivotWorld: currentPivotWorld
                         });
                     })));
                 });
-            sortMetadataRows(section);
+            sortMetadataRows(metadataSection);
         }).catch(error => {
             console.error('블록 속성 후보를 불러오지 못했습니다.', error);
         });
     }
+    sortPropertySections(section);
     return section;
 }
 
@@ -493,6 +572,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     const heading = document.createElement('h3');
     heading.textContent = `${index + 1}. ${group.name}`;
     section.append(heading);
+    const transformSection = propertySection('transform', '변환');
     const values = [groupPosition.clone(), groupRotation.clone(), groupScale.clone()];
     ['위치', '회전', '크기'].forEach((label, rowIndex) => {
         const row = document.createElement('div');
@@ -515,7 +595,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
             };
             row.append(rowIndex === 2 ? scaleInput(value, change) : numberInput(value, change));
         });
-        section.append(row);
+        transformSection.append(row);
     });
 
     const pivot = localPivot.clone();
@@ -529,19 +609,20 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
         group.pivot = [pivot.x, pivot.y, pivot.z];
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     })));
-    section.append(pivotRow);
+    transformSection.append(pivotRow);
+    section.append(transformSection);
 
-    section.append(...matrixInput(groupMatrix, nextMatrix => {
+    const matrixParts = matrixInput(groupMatrix, nextMatrix => {
         commitMatrix(nextMatrix);
         return groupMatrix.clone();
-    }));
+    });
+    section.append(propertySection('matrix', matrixParts[0] as HTMLElement, ...matrixParts.slice(1)));
 
-    const nbtLabel = document.createElement('h3');
-    nbtLabel.textContent = 'NBT';
     const nbt = document.createElement('input');
     nbt.value = group.nbt ?? '';
     nbt.oninput = () => { group.nbt = nbt.value; };
-    section.append(nbtLabel, nbt);
+    section.append(propertySection('nbt', 'NBT', nbt));
+    sortPropertySections(section);
     return section;
 }
 
@@ -583,8 +664,11 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
         pivot.x, pivot.y, pivot.z,
         ...Array.from({ length: 16 }, (_, index) => nextMatrix.elements[(index % 4) * 4 + Math.floor(index / 4)])
     ];
-    section.querySelectorAll<HTMLInputElement>('input[type="number"]').forEach((input, index) => {
+    section.querySelectorAll<HTMLInputElement>('[data-property-section="transform"] input[type="number"]').forEach((input, index) => {
         if (input !== document.activeElement) input.value = format(values[index]);
+    });
+    section.querySelectorAll<HTMLInputElement>('[data-property-section="matrix"] input[type="number"]').forEach((input, index) => {
+        if (input !== document.activeElement) input.value = format(values[index + 12]);
     });
     const matrixText = section.querySelector<HTMLInputElement>('.object-matrix-text input');
     if (matrixText && matrixText !== document.activeElement) matrixText.value = values.slice(12, 24).map(format).join(', ');
