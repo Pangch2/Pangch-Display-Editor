@@ -437,6 +437,7 @@ function updateSelectionOverlay(): void {
         detail: {
             selection: currentSelection,
             pivotWorld: selectionHelper?.position.clone(),
+            pivotMode,
             multiCustomPivotLocal: _getMultiSelectionPivotLocal()
         }
     }));
@@ -988,6 +989,7 @@ export function initGizmo({
                         selection: currentSelection,
                         pivot: pivotOffset.clone(),
                         pivotWorld: selectionHelper!.position.clone(),
+                        pivotMode,
                         multiCustomPivotLocal: _getMultiSelectionPivotLocal()
                     }
                 }));
@@ -1029,6 +1031,7 @@ export function initGizmo({
                 detail: {
                     selection: currentSelection,
                     pivotWorld: selectionHelper!.position.clone(),
+                    pivotMode,
                     multiCustomPivotLocal: _getMultiSelectionPivotLocal()
                 }
             }));

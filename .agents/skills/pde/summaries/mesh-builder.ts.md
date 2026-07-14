@@ -14,7 +14,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
 - `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
 - `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
-- `replaceDisplayObject(objectUuid, name): Promise<void>` -- rebuilds one display object through the PBDE pipeline, removes existing player-head render scale/display transforms before rebuilding, keeps the effective pivot fixed in world space, and requests normal gizmo selection replacement.
+- `replaceDisplayObject(objectUuid, name, transformContext?): Promise<void>` -- rebuilds one display object through the PBDE pipeline, removes existing player-head render transforms, preserves the active center/origin pivot and any stored custom pivot in world space, and requests normal gizmo selection replacement.
 
 ## Internal State
 - Texture/material caches for block and atlas assets
@@ -52,7 +52,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - During InstancedMesh creation, hashed part signatures avoid long model-matrix string joins, merged geometry is cached by geometry layout, and materials are normally preloaded before meshes enter the scene to avoid placeholder-to-real material swaps.
 - When `atlasUvTransform` or `atlasUvTransforms` metadata is present, mesh chunks clone the merged geometry and attach one or more instanced UV transform attributes; merged geometry includes `geometryPartIndex` so TSL materials can select the correct per-part atlas transform.
 - Batched object metadata prefers `GeometryInstanceMeta.blockProps` over representative part props so variants grouped into one mesh still display their own properties.
-- Loaded instanced meshes populate `userData.displayTypes` per instance so mixed block/item-display batches still work with `Overlay.getDisplayType`.
+- Block and item display signature groups remain separate; loaded instanced meshes set their root `userData.displayType` from the first chunk instance and also populate `userData.displayTypes` per instance.
 - `GeometryMeta.geometryBufferKey` is used when present so same model id/index values from different packed batches do not collide.
 - Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
 - Instanced meshes are allocated with spare capacity and then `mesh.count` is lowered to the active instance count so duplicate append can reuse existing matrix/UV buffers without rebinding texture attributes; tiny chunks still get 256 slots minimum to reduce duplicate-time chunk creation.
@@ -60,7 +60,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Fresh loads store parser-provided project details on `loadedObjectGroup.userData`; merges preserve the current details.
 - `loadedObjectGroup.userData.objectNbt` maps object UUIDs to editable NBT strings for the properties panel.
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
-- Property-panel model changes keep default pivots fixed by translating replacement instance matrices; custom pivots retain their world position without changing the object transform.
+- Property-panel model changes keep the active Pivot Mode reference fixed: center uses bounds center, block origin uses local bounds minimum, and custom pivots retain their world position without changing the object transform.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
 - Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
 - Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.

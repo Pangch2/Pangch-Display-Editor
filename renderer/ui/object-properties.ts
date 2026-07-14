@@ -26,6 +26,7 @@ type PropertySelection = { key: string; groupId: string; group: GroupData } | { 
 let selectionOrder: PropertySelection[] = [];
 const visibleSections = new WeakSet<Element>();
 let currentPivotWorld: Vector3 | undefined;
+let currentPivotMode = 'origin';
 const sectionObserver = new IntersectionObserver(entries => {
     for (const entry of entries) {
         if (!entry.isIntersecting) continue;
@@ -335,7 +336,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const brightness = brightnessMap.get(uuid) ?? {};
     const updateBrightness = async (value: { sky: number; block: number }) => {
         brightnessMap.set(uuid, value);
-        await replaceDisplayObject(uuid, name);
+        await replaceDisplayObject(uuid, name, { pivotMode: currentPivotMode, pivotWorld: currentPivotWorld });
     };
     if (isItemDisplay) {
         const metadataLabel = document.createElement('h3');
@@ -375,7 +376,10 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 .forEach(([key, values]) => {
                     const value = props[key] ?? (values.includes('false') ? 'false' : values[0]);
                     section.append(metadataProperty(key, key, propertySelect(value, values, async next => {
-                        await replaceDisplayObject(uuid, replaceNameProperties(name, { ...props, [key]: next }));
+                        await replaceDisplayObject(uuid, replaceNameProperties(name, { ...props, [key]: next }), {
+                            pivotMode: currentPivotMode,
+                            pivotWorld: currentPivotWorld
+                        });
                     })));
                 });
             sortMetadataRows(section);
@@ -583,11 +587,13 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
 
 window.addEventListener('pde:selection-changed', event => renderSelection((event as CustomEvent<SelectionState>).detail));
 window.addEventListener('pde:selection-transform-context', event => {
-    const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; multiCustomPivotLocal?: Vector3 }>).detail;
+    const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; pivotMode: string; multiCustomPivotLocal?: Vector3 }>).detail;
+    currentPivotMode = detail.pivotMode;
     renderSelection(detail.selection, detail.pivotWorld, detail.multiCustomPivotLocal);
 });
 window.addEventListener('pde:object-transform-changed', event => {
-    const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; multiCustomPivotLocal?: Vector3 }>).detail;
+    const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; pivotMode: string; multiCustomPivotLocal?: Vector3 }>).detail;
+    currentPivotMode = detail.pivotMode;
     renderSelection(detail.selection, detail.pivotWorld, detail.multiCustomPivotLocal);
 });
 window.addEventListener('pde:blockbench-scale-mode-changed', event => {

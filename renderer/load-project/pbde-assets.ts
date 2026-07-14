@@ -86,13 +86,21 @@ async function getBlockPropertyOptions(name: string, current: Record<string, str
         key,
         new Set(value === 'true' || value === 'false' ? ['true', 'false'] : [String(value)])
     ])) as Record<string, Set<string>>;
+    const addOption = (key: string, value: unknown): void => {
+        const values = options[key] ??= new Set<string>();
+        String(value).split('|').forEach(candidate => {
+            values.add(candidate);
+            if (candidate === 'true') values.add('false');
+            else if (candidate === 'false') values.add('true');
+        });
+    };
     if (blockstate.variants) {
         for (const variantKey of Object.keys(blockstate.variants)) {
             const variant = Object.fromEntries(variantKey.split(',').filter(Boolean).map((part: string) => part.split('=', 2)));
             for (const key of Object.keys(current)) {
                 if (!(key in variant)) continue;
                 const matchesOtherProperties = Object.entries(variant).every(([otherKey, value]) => otherKey === key || current[otherKey] === value);
-                if (matchesOtherProperties) options[key].add(String(variant[key]));
+                if (matchesOtherProperties) addOption(key, variant[key]);
             }
         }
     } else if (blockstate.multipart) {
@@ -101,9 +109,7 @@ async function getBlockPropertyOptions(name: string, current: Record<string, str
             for (const [key, value] of Object.entries(condition)) {
                 if (key === 'OR' || key === 'AND') {
                     (Array.isArray(value) ? value : [value]).forEach(collect);
-                } else if (options[key]) {
-                    String(value).split('|').forEach(candidate => options[key].add(candidate));
-                }
+                } else addOption(key, value);
             }
         };
         blockstate.multipart.forEach((part: any) => collect(part?.when));

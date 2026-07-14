@@ -22,7 +22,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Promise and resolved-template caches for block/item display templates deduplicate repeated geometry and display-matrix work before traversal.
 - Retained item display matrices store every editor-supported display variant per loaded item name after temporary parser caches are cleared.
 - Geometry pack step groups identical renderable shapes into `geometryBatches`; each batch stores shared parts once and per-instance transform/uuid/group/name/NBT data separately.
-- Atlas-backed geometry can batch across different texture atlas locations, block/item display source types, and single matrix rotations by comparing normalized UV/shape keys, moving uniform local model-matrix differences into per-instance transforms, and storing per-instance `atlasUvTransform` or per-part `atlasUvTransforms`, while keeping atlas material/transparency class in the key.
+- Atlas-backed geometry can batch across different texture atlas locations and single matrix rotations by comparing normalized UV/shape keys, moving uniform local model-matrix differences into per-instance transforms, and storing per-instance `atlasUvTransform` or per-part `atlasUvTransforms`; block and item display sources remain separate.
 
 ## Dependencies (imports)
 - `fflate` -- `decompressSync`, `strFromU8` for PRJ2 archive unpacking
@@ -44,7 +44,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Reuses identical block display templates and block model geometry during a parse; per-node transform/uuid metadata is still assigned separately.
 - Large scene traversal avoids cloning the full source tree, preloads repeated block/item templates once, and then walks nodes synchronously into a shared render list instead of creating per-node promises and nested arrays.
 - Pack key generation caches repeated matrix and structured JSON string keys within a parse.
-- Same-shape atlas geometry ignores texture location, source type, item display type, and block props when every part has an atlas UV transform, the part model matrix is uniform, and the part count stays within the supported per-part UV transform limit; it still splits batches by local model matrix so blockstate rotation is not folded into the instance transform and cannot shift the object origin. Legacy batches also split by geometry identity, part index, local matrix, texture, and tint.
+- Same-shape atlas geometry ignores texture location, item display type, and block props when every part has an atlas UV transform, the part model matrix is uniform, and the part count stays within the supported per-part UV transform limit; it splits batches by block/item source type and local model matrix so display classification and object origins remain correct. Legacy batches also split by geometry identity, part index, local matrix, texture, and tint.
 - Per-instance `blockProps` are emitted for batched geometry so scene-panel metadata remains correct when different properties share one mesh root.
 - Per-instance item-display flags/types are emitted so block display and item display objects can share one mesh root without losing downstream display-type behavior.
 - Optional `Scene timings` and `Parse timings` logs are controlled through `pbde-log.ts` registry helpers and default to disabled.
@@ -52,4 +52,5 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Block and item display paths, including targeted item-model replacements, preserve node NBT in per-instance metadata.
 - Block and item display paths preserve optional `{ sky, block }` brightness metadata for the properties panel.
 - Display nodes may provide a UUID for targeted in-editor model replacement; normal project nodes still receive generated UUIDs.
+- Item names using `display=none` are normalized to the base item transform instead of being treated as an unsupported display transform.
 - Collection nodes preserve their NBT on group metadata.

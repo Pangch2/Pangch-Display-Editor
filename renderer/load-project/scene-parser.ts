@@ -1222,7 +1222,7 @@ function parseItemName(raw) {
         }
     }
 
-    return { baseName, displayType };
+    return { baseName, displayType: displayType === 'none' ? null : displayType };
 }
 
 function parseItemNameCached(raw: string): { baseName: string; displayType: string | null } {
@@ -2113,7 +2113,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                 }
             }
 
-            const batchKey = keyParts.join('|');
+            const batchKey = `${item.type}|${keyParts.join('|')}`;
             let batch = geometryBatches.get(batchKey);
             if (!batch) {
                 batch = { parts, instances: [] };

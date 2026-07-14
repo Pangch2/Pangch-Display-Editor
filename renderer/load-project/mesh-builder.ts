@@ -1141,7 +1141,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         ensureBufferGeometry(part);
                     }
 
-                    const { signature, geometryKey } = buildPartHashKeys(parts);
+                    const { signature: partSignature, geometryKey } = buildPartHashKeys(parts);
+                    const signature = `${instances[0]?.isItemDisplayModel ? 'item' : 'block'}|${partSignature}`;
                     let group = signatureGroups.get(signature);
                     if (!group) {
                         group = { parts: parts, transforms: [], instanceMetas: [], geometryKey };
@@ -1276,7 +1277,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCapacity);
                                 instancedMesh.count = chunkCount;
                                 
-                                instancedMesh.userData.displayType = 'block_display';
+                                instancedMesh.userData.displayType = instanceMetas[chunkStart]?.displayType ?? 'block_display';
                                 instancedMesh.userData.displayTypes = new Map<number, 'block_display' | 'item_display'>();
                                 
                                 instancedMesh.frustumCulled = false;
@@ -1592,7 +1593,11 @@ export async function updateDisplayObjectMatrix(objectUuid: string, name: string
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
-export async function replaceDisplayObject(objectUuid: string, name: string): Promise<void> {
+export async function replaceDisplayObject(
+    objectUuid: string,
+    name: string,
+    transformContext?: { pivotMode: string; pivotWorld?: THREE.Vector3 }
+): Promise<void> {
     const ud = loadedObjectGroup.userData;
     const oldRef = (ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!oldRef?.mesh?.isInstancedMesh) throw new Error('교체할 오브젝트를 찾을 수 없습니다.');
@@ -1612,11 +1617,14 @@ export async function replaceDisplayObject(objectUuid: string, name: string): Pr
     const sceneIndex = (ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined)
         ?.findIndex(entry => entry.type === 'object' && entry.id === objectUuid) ?? -1;
     const customPivot = (oldRef.mesh.userData.customPivots as Map<number, THREE.Vector3> | undefined)?.get(oldRef.instanceId)?.clone();
-    const pivot = customPivot ?? (oldGeometryDisplayType === 'block_display'
-        ? Overlay.getInstanceLocalBoxMin(oldRef.mesh, oldRef.instanceId)
-        : Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3()));
+    const pivot = transformContext?.pivotMode === 'center'
+        ? Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3())
+        : customPivot ?? (oldGeometryDisplayType === 'block_display'
+            ? Overlay.getInstanceLocalBoxMin(oldRef.mesh, oldRef.instanceId)
+            : Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3()));
     if (oldGeometryDisplayType === 'item_display' && oldRef.mesh.userData.hasHat) pivot?.setY(Overlay.isItemDisplayHatEnabled(oldRef.mesh, oldRef.instanceId) ? 0.03125 : 0);
-    const pivotWorld = pivot?.applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
+    const pivotWorld = transformContext?.pivotWorld?.clone()
+        ?? pivot?.applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
     const replacementUuid = THREE.MathUtils.generateUUID();
     const isItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
     const texture = (ud.objectTextures as Map<string, string> | undefined)?.get(objectUuid);
@@ -1659,19 +1667,13 @@ export async function replaceDisplayObject(objectUuid: string, name: string): Pr
         if (replacementIndex >= 0) nextSceneOrder.splice(replacementIndex, 1);
         nextSceneOrder.splice(sceneIndex >= 0 ? sceneIndex : nextSceneOrder.length, 0, { type: 'object', id: replacementUuid });
     }
-    if (pivotWorld && customPivot) {
-        if (!replacement.mesh.userData.customPivots) replacement.mesh.userData.customPivots = new Map<number, THREE.Vector3>();
-        const replacementMatrix = new THREE.Matrix4();
-        replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
-        replacement.mesh.userData.customPivots.set(
-            replacement.instanceId,
-            pivotWorld.applyMatrix4(replacement.mesh.matrixWorld.clone().multiply(replacementMatrix).invert())
-        );
-    } else if (pivotWorld) {
+    if (pivotWorld && (!customPivot || transformContext?.pivotMode === 'center')) {
         const replacementMatrix = new THREE.Matrix4();
         replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
         const replacementDisplayType = Overlay.getDisplayType(replacement.mesh, replacement.instanceId);
-        const replacementPivot = replacementDisplayType === 'block_display'
+        const replacementPivot = transformContext?.pivotMode === 'center'
+            ? Overlay.getInstanceLocalBox(replacement.mesh, replacement.instanceId)?.getCenter(new THREE.Vector3())
+            : replacementDisplayType === 'block_display'
             ? Overlay.getInstanceLocalBoxMin(replacement.mesh, replacement.instanceId)
             : Overlay.getInstanceLocalBox(replacement.mesh, replacement.instanceId)?.getCenter(new THREE.Vector3());
         if (replacementDisplayType === 'item_display' && replacement.mesh.userData.hasHat) replacementPivot?.setY(Overlay.isItemDisplayHatEnabled(replacement.mesh, replacement.instanceId) ? 0.03125 : 0);
@@ -1684,6 +1686,16 @@ export async function replaceDisplayObject(objectUuid: string, name: string): Pr
             replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
             replacement.mesh.instanceMatrix.needsUpdate = true;
         }
+    }
+    if (customPivot) {
+        if (!replacement.mesh.userData.customPivots) replacement.mesh.userData.customPivots = new Map<number, THREE.Vector3>();
+        const replacementMatrix = new THREE.Matrix4();
+        replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
+        const customPivotWorld = customPivot.applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
+        replacement.mesh.userData.customPivots.set(
+            replacement.instanceId,
+            customPivotWorld.applyMatrix4(replacement.mesh.matrixWorld.clone().multiply(replacementMatrix).invert())
+        );
     }
 
     window.dispatchEvent(new CustomEvent('pde:replace-object-selection', {
