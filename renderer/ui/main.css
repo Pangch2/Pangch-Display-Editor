@@ -329,6 +329,49 @@ canvas {
   margin: 10px 0 0;
 }
 
+.object-property h3.object-matrix-heading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.object-matrix-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #aaa;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.object-matrix-text {
+  display: flex;
+  align-items: center;
+  margin-bottom: 5px;
+  padding: 0 3px;
+  border: 1px solid #555;
+  background: #222;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.object-matrix-text[hidden] {
+  display: none;
+}
+
+.object-property .object-matrix-text input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.object-matrix-text span {
+  flex: none;
+  color: #777;
+}
+
 .object-property-row {
   display: grid;
   grid-template-columns: 38px repeat(3, minmax(0, 1fr));

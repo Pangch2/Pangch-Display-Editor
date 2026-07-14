@@ -21,7 +21,9 @@ const quaternion = new Quaternion();
 const scale = new Vector3();
 const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
 const metadataOrderKey = 'pde-object-metadata-order';
+const matrixInputModeKey = 'pde-matrix-input-mode';
 let metadataOrder: string[] = JSON.parse(localStorage.getItem(metadataOrderKey) ?? '["texture","brightness","display"]');
+let compactMatrixInput = localStorage.getItem(matrixInputModeKey) === 'text';
 let draggedMetadataKey: string | null = null;
 type PropertySelection = { key: string; groupId: string; group: GroupData } | { key: string; mesh: InstancedMesh; instanceId: number };
 let selectionOrder: PropertySelection[] = [];
@@ -66,6 +68,98 @@ function numberInput(value: number, onChange: (value: number) => void): HTMLInpu
         if (Number.isFinite(next)) onChange(next);
     };
     return input;
+}
+
+function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTMLElement[] {
+    let current = value.clone();
+    const heading = document.createElement('h3');
+    heading.className = 'object-matrix-heading';
+    heading.append('행렬');
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'object-matrix-toggle';
+    toggle.textContent = compactMatrixInput ? '◀' : '▶';
+    toggle.title = compactMatrixInput ? '4×4 입력으로 전환' : '한 줄 입력으로 전환';
+    toggle.setAttribute('aria-label', toggle.title);
+    heading.append(toggle);
+
+    const grid = document.createElement('div');
+    const gridInputs: HTMLInputElement[] = [];
+    for (let rowIndex = 0; rowIndex < 4; rowIndex++) {
+        const row = document.createElement('div');
+        row.className = 'object-property-row matrix';
+        for (let column = 0; column < 4; column++) {
+            const elementIndex = column * 4 + rowIndex;
+            const input = numberInput(current.elements[elementIndex], () => {
+                const nextMatrix = new Matrix4();
+                gridInputs.forEach((gridInput, index) => {
+                    nextMatrix.elements[(index % 4) * 4 + Math.floor(index / 4)] = gridInput.valueAsNumber;
+                });
+                current = onChange(nextMatrix);
+            });
+            input.disabled = rowIndex === 3;
+            gridInputs.push(input);
+            row.append(input);
+        }
+        grid.append(row);
+    }
+    grid.hidden = compactMatrixInput;
+
+    const textRow = document.createElement('div');
+    textRow.className = 'object-matrix-text';
+    textRow.hidden = !compactMatrixInput;
+    const text = document.createElement('input');
+    text.setAttribute('aria-label', '행렬 한 줄 입력');
+    const fixedText = document.createElement('span');
+    fixedText.textContent = ', 0, 0, 0, 1';
+    textRow.append(text, fixedText);
+    const syncText = () => {
+        text.value = Array.from({ length: 12 }, (_, index) =>
+            format(current.elements[(index % 4) * 4 + Math.floor(index / 4)]))
+            .join(', ');
+    };
+    const syncGrid = () => gridInputs.forEach((input, index) => {
+        input.value = format(current.elements[(index % 4) * 4 + Math.floor(index / 4)]);
+    });
+    const parseText = (): number[] | null => {
+        const values = text.value.trim().split(/[,\s]+/).map(entry => Number(entry.replace(/f$/i, '')));
+        const validLength = values.length === 12 || values.length === 16;
+        return validLength
+            && values.every(Number.isFinite)
+            ? [...values.slice(0, 12), 0, 0, 0, 1]
+            : null;
+    };
+    text.onchange = () => {
+        const values = parseText();
+        if (!values) {
+            syncText();
+            return;
+        }
+        const next = new Matrix4();
+        values.forEach((entry, index) => { next.elements[(index % 4) * 4 + Math.floor(index / 4)] = entry; });
+        current = onChange(next);
+        syncGrid();
+        syncText();
+    };
+    text.onkeydown = event => { if (event.key === 'Enter') text.blur(); };
+    toggle.onclick = () => {
+        textRow.hidden = !textRow.hidden;
+        grid.hidden = !grid.hidden;
+        compactMatrixInput = !textRow.hidden;
+        localStorage.setItem(matrixInputModeKey, compactMatrixInput ? 'text' : 'grid');
+        toggle.textContent = textRow.hidden ? '▶' : '◀';
+        toggle.title = textRow.hidden ? '한 줄 입력으로 전환' : '4×4 입력으로 전환';
+        toggle.setAttribute('aria-label', toggle.title);
+        if (!textRow.hidden) {
+            current = new Matrix4();
+            gridInputs.forEach((input, index) => {
+                current.elements[(index % 4) * 4 + Math.floor(index / 4)] = input.valueAsNumber;
+            });
+            syncText();
+        }
+    };
+    if (!textRow.hidden) syncText();
+    return [heading, grid, textRow];
 }
 
 function propertySelect(value: string, values: string[], onChange: (value: string) => void | Promise<void>): HTMLSelectElement {
@@ -304,31 +398,14 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     })));
     section.append(pivotRow);
 
-    const matrixLabel = document.createElement('h3');
-    matrixLabel.textContent = '행렬';
-    section.append(matrixLabel);
-    for (let rowIndex = 0; rowIndex < 4; rowIndex++) {
-        const row = document.createElement('div');
-        row.className = 'object-property-row matrix';
-        for (let column = 0; column < 4; column++) {
-            const elementIndex = column * 4 + rowIndex;
-            const input = numberInput(matrix.elements[elementIndex], next => {
-                mesh.getMatrixAt(instanceId, matrix);
-                const currentMatrix = matrix.clone();
-                matrix.elements[elementIndex] = next;
-                const transformPivot = currentPivotWorld
-                    ?.clone().applyMatrix4(mesh.matrixWorld.clone().invert()).applyMatrix4(currentMatrix.clone().invert())
-                    ?? localPivot;
-                const nextMatrix = keepPivotFixed(currentMatrix, matrix, transformPivot);
-                const currentWorld = currentMatrix.clone().premultiply(mesh.matrixWorld);
-                const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
-                applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
-            });
-            input.disabled = rowIndex === 3;
-            row.append(input);
-        }
-        section.append(row);
-    }
+    section.append(...matrixInput(matrix, nextMatrix => {
+        mesh.getMatrixAt(instanceId, matrix);
+        const currentMatrix = matrix.clone();
+        const currentWorld = currentMatrix.clone().premultiply(mesh.matrixWorld);
+        const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
+        applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
+        return nextMatrix;
+    }));
 
     const nbtLabel = document.createElement('h3');
     nbtLabel.textContent = 'NBT';
@@ -453,24 +530,10 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     })));
     section.append(pivotRow);
 
-    const matrixLabel = document.createElement('h3');
-    matrixLabel.textContent = '행렬';
-    section.append(matrixLabel);
-    for (let rowIndex = 0; rowIndex < 4; rowIndex++) {
-        const row = document.createElement('div');
-        row.className = 'object-property-row matrix';
-        for (let column = 0; column < 4; column++) {
-            const elementIndex = column * 4 + rowIndex;
-            const input = numberInput(groupMatrix.elements[elementIndex], next => {
-                const nextMatrix = groupMatrix.clone();
-                nextMatrix.elements[elementIndex] = next;
-                commitMatrix(nextMatrix);
-            });
-            input.disabled = rowIndex === 3;
-            row.append(input);
-        }
-        section.append(row);
-    }
+    section.append(...matrixInput(groupMatrix, nextMatrix => {
+        commitMatrix(nextMatrix);
+        return groupMatrix.clone();
+    }));
 
     const nbtLabel = document.createElement('h3');
     nbtLabel.textContent = 'NBT';
@@ -522,6 +585,8 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
     section.querySelectorAll<HTMLInputElement>('input[type="number"]').forEach((input, index) => {
         if (input !== document.activeElement) input.value = format(values[index]);
     });
+    const matrixText = section.querySelector<HTMLInputElement>('.object-matrix-text input');
+    if (matrixText && matrixText !== document.activeElement) matrixText.value = values.slice(12, 24).map(format).join(', ');
 }
 
 function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multiCustomPivotLocal?: Vector3): void {

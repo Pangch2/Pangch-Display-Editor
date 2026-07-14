@@ -8,6 +8,7 @@ Defines renderer UI styling, including independent left/right panel docks, proje
 
 ## Used By (known callers)
 - `index.html` -- loads the stylesheet for the renderer UI.
+- `object-properties.ts` -- emits selected-object property, matrix editor, metadata, and scale-control classes.
 - `scene-panel-render.ts` -- emits virtual row DOM classes styled here for scene rows, groups, extra labels, selection, and drag/drop markers.
 
 ## Notes
@@ -23,7 +24,7 @@ Defines renderer UI styling, including independent left/right panel docks, proje
 - Scene Objects and Project Details use the same 6 px scrollbar styling.
 - Each dock has a visible 7 x 48 px resize handle centered completely outside its edge, keeping panel scrollbars unobstructed; a shared dock shows its 12 px section divider.
 - Project Details inputs keep their neutral border on hover, fill their column, and remain single-line.
-- Object properties use compact XYZ rows, 18 px Blockbench scale direction arrows attached to scale inputs, a 4x4 matrix grid, single-line NBT inputs, dark native number spinners, and full-width native metadata selects below NBT; offscreen sections use CSS content visibility with an intrinsic height estimate to avoid unnecessary layout and paint work.
+- Object properties use compact XYZ rows, Blockbench scale direction arrows, a 4x4/comma-separated one-line matrix toggle with a muted non-editable final row, single-line NBT inputs, dark native number spinners, and full-width native metadata selects; offscreen sections use CSS content visibility with an intrinsic height estimate.
 - The "개체 속성" metadata heading uses the same h3 styling except for a 10 px top margin, which separates it from the preceding NBT input.
 - Disabled matrix inputs force muted Chromium text/background styling and a blocked cursor.
 - The Project Details header places project navigation directly after its fixed title and lets it fill the remaining panel width; long names truncate and the dropdown stays inside that area, with each project row reserving a 30 px Lucide delete button beside its tab.
