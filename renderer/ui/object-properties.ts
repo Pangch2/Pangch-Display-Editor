@@ -366,8 +366,11 @@ function renderMultiSelectionPivot(pivotLocal?: Vector3): void {
     multiSelectionPivot.replaceChildren(heading, row);
 }
 
-function keepPivotFixed(current: Matrix4, next: Matrix4, localPivot: Vector3): Matrix4 {
+function keepPivotFixed(current: Matrix4, next: Matrix4, localPivot: Vector3, preserveTranslation = false): Matrix4 {
     const offset = localPivot.clone().applyMatrix4(current).sub(localPivot.clone().applyMatrix4(next));
+    if (preserveTranslation) {
+        offset.add(new Vector3().setFromMatrixPosition(next).sub(new Vector3().setFromMatrixPosition(current)));
+    }
     next.elements[12] += offset.x;
     next.elements[13] += offset.y;
     next.elements[14] += offset.z;
@@ -483,6 +486,10 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const matrixParts = matrixInput(matrix, nextMatrix => {
         mesh.getMatrixAt(instanceId, matrix);
         const currentMatrix = matrix.clone();
+        const transformPivot = currentPivotWorld
+            ?.clone().applyMatrix4(mesh.matrixWorld.clone().invert()).applyMatrix4(currentMatrix.clone().invert())
+            ?? localPivot;
+        keepPivotFixed(currentMatrix, nextMatrix, transformPivot, true);
         const currentWorld = currentMatrix.clone().premultiply(mesh.matrixWorld);
         const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
         applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
@@ -613,7 +620,8 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     section.append(transformSection);
 
     const matrixParts = matrixInput(groupMatrix, nextMatrix => {
-        commitMatrix(nextMatrix);
+        const transformPivot = currentPivotWorld?.clone().applyMatrix4(groupMatrix.clone().invert()) ?? localPivot;
+        commitMatrix(keepPivotFixed(groupMatrix, nextMatrix, transformPivot, true));
         return groupMatrix.clone();
     });
     section.append(propertySection('matrix', matrixParts[0] as HTMLElement, ...matrixParts.slice(1)));
