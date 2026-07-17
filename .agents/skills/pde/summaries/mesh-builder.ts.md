@@ -27,6 +27,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Concurrency gate for texture decoding to avoid overload
 - Signature hash scratch buffer and per-load geometry/material update caches to reduce mesh creation allocations
 - Per-load material preload cache resolves unique signature-group materials before `InstancedMesh` creation, with placeholder material updates retained only as a fallback for failed or late material loads.
+- Signature groups retain parser-provided instance metadata by reference, cache their UV-transform count once, and deduplicate material preload promises to avoid per-instance metadata copies and repeated waits during mesh creation.
 - Per-instance atlas UV transform arrays, display-type, block-property, and NBT metadata for objects that share geometry.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
@@ -54,6 +55,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Clears caches and scene state on non-merge load, then builds block and item display objects as InstancedMesh roots.
 - Mesh building prefers `WorkerMetadata.geometryBatches`; if absent, it groups legacy geometry metadata by `itemId` before signature matching so all parts of one scene object merge into the same InstancedMesh geometry.
 - During InstancedMesh creation, hashed part signatures avoid long model-matrix string joins, merged geometry is cached by geometry layout, and materials are normally preloaded before meshes enter the scene to avoid placeholder-to-real material swaps.
+- Batched instance metadata is reused directly instead of being normalized into duplicate transform/meta arrays; display type is derived when registering each instance.
 - When `atlasUvTransform` or `atlasUvTransforms` metadata is present, mesh chunks clone the merged geometry and attach one or more instanced UV transform attributes; merged geometry includes `geometryPartIndex` so TSL materials can select the correct per-part atlas transform.
 - Batched object metadata prefers `GeometryInstanceMeta.blockProps` over representative part props so variants grouped into one mesh still display their own properties.
 - Block and item display signature groups remain separate; loaded instanced meshes set their root `userData.displayType` from the first chunk instance and also populate `userData.displayTypes` per instance.

@@ -51,19 +51,11 @@ const textureSlotQueue: Array<(value?: void) => void> = [];
 const signatureHashScratch = new ArrayBuffer(8);
 const signatureHashView = new DataView(signatureHashScratch);
 
-type InstanceMeta = {
-    uuid: string,
-    groupId: string | null,
-    atlasUvTransform?: [number, number, number, number],
-    atlasUvTransforms?: [number, number, number, number][],
-    displayType?: 'block_display' | 'item_display'
-    nbt?: string
-};
 type SignatureGroup = {
     parts: GeometryMeta[];
-    transforms: Array<Float32Array | number[]>;
-    instanceMetas: InstanceMeta[];
+    instances: GeometryInstanceMeta[];
     geometryKey: string;
+    instancedUvTransformCount: number;
 };
 type MaterialUpdate = {
     instancedMesh: THREE.InstancedMesh;
@@ -189,21 +181,29 @@ function getRelativeUvTransform(
 }
 
 function getInstancePartUvTransform(
-    meta: InstanceMeta,
+    meta: GeometryInstanceMeta,
     partIndex: number
 ): [number, number, number, number] | undefined {
     return meta.atlasUvTransforms?.[partIndex] ?? meta.atlasUvTransform;
 }
 
-function getInstancedUvTransformCount(parts: GeometryMeta[], instanceMetas: InstanceMeta[]): number {
-    const usesAtlasUvTransform = !!parts[0]?.uvTransform
-        && instanceMetas.some(meta => !!meta.atlasUvTransform || !!meta.atlasUvTransforms?.length);
-    if (!usesAtlasUvTransform) return 0;
+function getInstancedUvTransformCount(parts: GeometryMeta[], instances: GeometryInstanceMeta[]): number {
+    if (!parts[0]?.uvTransform) return 0;
 
-    return Math.min(
-        MAX_PART_UV_TRANSFORMS,
-        Math.max(1, parts.length, ...instanceMetas.map(meta => meta.atlasUvTransforms?.length ?? 0))
-    );
+    let transformCount = 0;
+    for (const instance of instances) {
+        transformCount = Math.max(
+            transformCount,
+            instance.atlasUvTransforms?.length ?? (instance.atlasUvTransform ? 1 : 0)
+        );
+    }
+    return transformCount === 0
+        ? 0
+        : Math.min(MAX_PART_UV_TRANSFORMS, Math.max(parts.length, transformCount));
+}
+
+function getInstanceDisplayType(instance: GeometryInstanceMeta, part?: GeometryMeta): 'item_display' | 'block_display' {
+    return (instance.isItemDisplayModel ?? part?.isItemDisplayModel) ? 'item_display' : 'block_display';
 }
 
 function getAppendableInstanceCapacity(count: number): number {
@@ -1168,21 +1168,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     const signature = `${instances[0]?.isItemDisplayModel ? 'item' : 'block'}|${partSignature}`;
                     let group = signatureGroups.get(signature);
                     if (!group) {
-                        group = { parts: parts, transforms: [], instanceMetas: [], geometryKey };
+                        group = { parts, instances: instances.slice(), geometryKey, instancedUvTransformCount: 0 };
                         signatureGroups.set(signature, group);
-                    }
-
-                    for (const instance of instances) {
-                        group.transforms.push(instance.transform);
-                        const isItemDisplayModel = instance.isItemDisplayModel ?? parts[0]?.isItemDisplayModel ?? false;
-                        group.instanceMetas.push({
-                            uuid: instance.uuid,
-                            groupId: instance.groupId,
-                            atlasUvTransform: instance.atlasUvTransform,
-                            atlasUvTransforms: instance.atlasUvTransforms,
-                            displayType: isItemDisplayModel ? 'item_display' : 'block_display',
-                            nbt: instance.nbt ?? ''
-                        });
+                    } else {
+                        for (const instance of instances) group.instances.push(instance);
                     }
                 };
 
@@ -1210,17 +1199,18 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 }
 
                 const materialAwaitStartMs = performance.now();
-                const materialPreloadPromises: Promise<THREE.Material>[] = [];
+                const materialPreloadPromises = new Set<Promise<THREE.Material>>();
                 for (const [signature, group] of signatureGroups) {
-                    const instancedUvTransformCount = getInstancedUvTransformCount(group.parts, group.instanceMetas);
+                    const instancedUvTransformCount = getInstancedUvTransformCount(group.parts, group.instances);
+                    group.instancedUvTransformCount = instancedUvTransformCount;
                     const reusableCapacity = reusableMeshes.get(signature)?.reduce(
                         (sum, mesh) => sum + Math.max(0, getInstancedCapacity(mesh) - mesh.count), 0
                     ) ?? 0;
                     if (instancedUvTransformCount === 0
                         && group.parts.every(part => !part.texPath.includes('__ATLAS__'))
-                        && reusableCapacity >= group.transforms.length) continue;
+                        && reusableCapacity >= group.instances.length) continue;
                     for (const part of group.parts) {
-                        materialPreloadPromises.push(ensureInstancedMaterialPromise(part, instancedUvTransformCount));
+                        materialPreloadPromises.add(ensureInstancedMaterialPromise(part, instancedUvTransformCount));
                     }
                 }
                 const materialPreloadResults = await Promise.allSettled(materialPreloadPromises);
@@ -1234,9 +1224,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const meshBuildStartMs = performance.now();
                 for (const [signature, group] of signatureGroups) {
                         const representativeParts = group.parts;
-                        const transforms = group.transforms;
-                        const instanceMetas = group.instanceMetas;
-                        const instancedUvTransformCount = getInstancedUvTransformCount(representativeParts, instanceMetas);
+                        const instances = group.instances;
+                        const instancedUvTransformCount = group.instancedUvTransformCount;
                         const usesAtlasUvTransform = instancedUvTransformCount > 0;
                         const hasReusableSignature = !usesAtlasUvTransform
                             && representativeParts.every(part => !part.texPath.includes('__ATLAS__'));
@@ -1246,27 +1235,27 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                         if (canReuseExisting) {
                             for (const instancedMesh of reusableMeshes.get(signature) ?? []) {
-                                const appendCount = Math.min(getInstancedCapacity(instancedMesh) - instancedMesh.count, transforms.length - transformStart);
+                                const appendCount = Math.min(getInstancedCapacity(instancedMesh) - instancedMesh.count, instances.length - transformStart);
                                 if (appendCount <= 0) continue;
                                 for (let i = 0; i < appendCount; i++) {
                                     const sourceIndex = transformStart + i;
                                     const instanceId = instancedMesh.count + i;
-                                    const meta = instanceMetas[sourceIndex];
-                                    instanceMatrix.fromArray(transforms[sourceIndex]).transpose();
+                                    const meta = instances[sourceIndex];
+                                    instanceMatrix.fromArray(meta.transform).transpose();
                                     instancedMesh.setMatrixAt(instanceId, instanceMatrix);
                                     registerObject(instancedMesh, instanceId, meta.uuid, meta.groupId);
-                                    instancedMesh.userData.displayTypes.set(instanceId, meta.displayType ?? 'block_display');
+                                    instancedMesh.userData.displayTypes.set(instanceId, getInstanceDisplayType(meta, representativeParts[0]));
                                     addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, instanceId);
                                 }
                                 instancedMesh.count += appendCount;
                                 instancedMesh.instanceMatrix.needsUpdate = true;
                                 instancedMesh.computeBoundingSphere();
                                 transformStart += appendCount;
-                                if (transformStart === transforms.length) break;
+                                if (transformStart === instances.length) break;
                             }
                         }
 
-                        if (transformStart === transforms.length) continue;
+                        if (transformStart === instances.length) continue;
 
                         // Merge Geometries
                         const materials: THREE.Material[] = [];
@@ -1323,8 +1312,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         }
 
                         if (mergedGeo) {
-                            for (let chunkStart = transformStart; chunkStart < transforms.length; chunkStart += INITIAL_INSTANCES_PER_INSTANCED_MESH) {
-                                const chunkCount = Math.min(INITIAL_INSTANCES_PER_INSTANCED_MESH, transforms.length - chunkStart);
+                            for (let chunkStart = transformStart; chunkStart < instances.length; chunkStart += INITIAL_INSTANCES_PER_INSTANCED_MESH) {
+                                const chunkCount = Math.min(INITIAL_INSTANCES_PER_INSTANCED_MESH, instances.length - chunkStart);
                                 const chunkCapacity = getAppendableInstanceCapacity(chunkCount);
                                 const meshGeometry = usesAtlasUvTransform ? mergedGeo.clone() : mergedGeo;
                                 if (usesAtlasUvTransform) {
@@ -1333,7 +1322,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                         const uvTransforms = new Float32Array(chunkCapacity * 4);
                                         for (let i = 0; i < chunkCount; i++) {
                                             const sourceIndex = chunkStart + i;
-                                            const currentUvTransform = getInstancePartUvTransform(instanceMetas[sourceIndex], partIndex);
+                                            const currentUvTransform = getInstancePartUvTransform(instances[sourceIndex], partIndex);
                                             const relativeUvTransform = getRelativeUvTransform(baseUvTransform, currentUvTransform);
                                             uvTransforms.set(relativeUvTransform, i * 4);
                                         }
@@ -1346,7 +1335,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCapacity);
                                 instancedMesh.count = chunkCount;
                                 
-                                instancedMesh.userData.displayType = instanceMetas[chunkStart]?.displayType ?? 'block_display';
+                                instancedMesh.userData.displayType = getInstanceDisplayType(instances[chunkStart], representativeParts[0]);
                                 instancedMesh.userData.displayTypes = new Map<number, 'block_display' | 'item_display'>();
                                 if (hasReusableSignature) instancedMesh.userData.pbdeSignature = signature;
                                 
@@ -1354,11 +1343,11 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                                 for (let i = 0; i < chunkCount; i++) {
                                     const sourceIndex = chunkStart + i;
-                                    instanceMatrix.fromArray(transforms[sourceIndex]).transpose();
+                                    const meta = instances[sourceIndex];
+                                    instanceMatrix.fromArray(meta.transform).transpose();
                                     instancedMesh.setMatrixAt(i, instanceMatrix);
-                                    const meta = instanceMetas[sourceIndex];
                                     registerObject(instancedMesh, i, meta.uuid, meta.groupId);
-                                    instancedMesh.userData.displayTypes.set(i, meta.displayType ?? 'block_display');
+                                    instancedMesh.userData.displayTypes.set(i, getInstanceDisplayType(meta, representativeParts[0]));
                                     addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, i);
                                 }
                                 instancedMesh.instanceMatrix.needsUpdate = true;
