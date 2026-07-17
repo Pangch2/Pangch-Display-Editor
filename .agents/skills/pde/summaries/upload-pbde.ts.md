@@ -9,10 +9,10 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - `loadedObjectGroup` -- re-export from `mesh-builder`
 
 ### Types / Interfaces
-- `ScenePrecompileTrace` -- renderer precompile timing payload with availability, profile-enabled flag, total/profile/full-scene compile time, GPU queue wait time, and per-root object traces
+- `ScenePrecompileTrace` -- renderer precompile timing payload with availability, profile-enabled flag, total/profile/full-scene compile time, GPU queue wait time, pipeline-cache size before/after, and per-root object traces
 - `ScenePrecompileObjectTrace` -- per-root precompile timing payload with compile time, instance count, material count, attribute key, and vertex count
 - `RenderSettledFrameTrace` -- per-frame render-settle timing payload with frame interval, render CPU time, GPU queue wait, and queue availability
-- `RenderSettledTrace` -- timing payload returned from the renderer with requested/rendered frames, aggregate frame wait/GPU wait/total wait, frame intervals, per-frame traces, and queue availability
+- `RenderSettledTrace` -- timing payload returned from the renderer with requested/rendered frames, aggregate frame wait/GPU wait/total wait, frame intervals, per-frame traces, queue availability, and pipeline-cache size before/after
 - `ProjectState` -- stable id plus saved scene children, non-function `loadedObjectGroup.userData`, and optional camera position/target/zoom for one project window
 
 ### Functions / Methods
@@ -42,7 +42,7 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - `mergepbde` appends all files, merges their mesh-to-instance selection maps, then selects only the newly added instances.
 - Both open and merge dispatch `pde:scene-updated` before optional scene precompile, then log perceived load time through render-settled frames and GPU queue completion when available.
 - Scene precompile is skipped by default and can be enabled with `localStorage.pdeAwaitScenePrecompile = '1'`; per-root profiling still requires `localStorage.pdePrecompileProfile = '1'`.
-- Logs are controlled through `pbde-log.ts` registry helpers. `Final load time` defaults to enabled; optional scene precompile and render-settle diagnostics default to disabled. Final load time now always waits for GPU queue drain after the next rendered frame, while trace logs still control extra render-settle detail collection.
+- Logs are controlled through `pbde-log.ts` registry helpers. Final load timing waits for GPU queue drain after the next rendered frame; scene-precompile and render-settle trace lines also report the renderer pipeline-cache change when its private cache is available.
 - Files without `.bdengine` or `.pdengine` extension are ignored.
 - Opening creates independent project scenes and details per file; merging leaves the active project's details unchanged.
 - The drop modal centers its remembered `pdeReuseCurrentProject` checkbox directly below the open-mode prompt at a smaller font size; checking it suppresses new project-tab creation so Open replaces the current project.

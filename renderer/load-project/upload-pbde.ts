@@ -12,6 +12,8 @@ type ScenePrecompileTrace = {
     profileMs: number;
     fullCompileMs: number;
     gpuQueueWaitMs: number;
+    pipelineCacheBefore: number;
+    pipelineCacheAfter: number;
     objectTraces: ScenePrecompileObjectTrace[];
 };
 type ScenePrecompileObjectTrace = {
@@ -39,6 +41,8 @@ type RenderSettledTrace = {
     frameIntervalsMs: number[];
     frameTraces: RenderSettledFrameTrace[];
     gpuQueueAvailable: boolean;
+    pipelineCacheBefore: number;
+    pipelineCacheAfter: number;
 };
 type RenderSettledDetail = {
     frames: number;
@@ -297,8 +301,11 @@ async function logFinalPbdeLoadTime(startMs: number, mode: 'open' | 'merge', fil
         console.log(`[PBDE] Render settle wait: ${renderSettleElapsedMs.toFixed(2)}ms (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}).`);
     }
     if (logRenderSettleTrace) {
+        const pipelineDelta = settleTrace.pipelineCacheBefore >= 0 && settleTrace.pipelineCacheAfter >= 0
+            ? `${settleTrace.pipelineCacheBefore}->${settleTrace.pipelineCacheAfter} (${settleTrace.pipelineCacheAfter - settleTrace.pipelineCacheBefore >= 0 ? '+' : ''}${settleTrace.pipelineCacheAfter - settleTrace.pipelineCacheBefore})`
+            : 'unavailable';
         console.log(
-            `[PBDE][RenderSettleTrace] requestedFrames=${settleTrace.requestedFrames}, renderedFrames=${settleTrace.renderedFrames}, frameWait=${settleTrace.frameWaitMs.toFixed(2)}ms, postLastFrameGpuWait=${settleTrace.gpuWaitMs.toFixed(2)}ms, firstRenderCpu=${(firstRenderTrace?.renderCpuMs ?? 0).toFixed(2)}ms, maxRenderCpu=${maxRenderCpuMs.toFixed(2)}ms, maxQueueObserved=${settleTrace.gpuQueueAvailable ? `${maxQueueObservedMs.toFixed(2)}ms` : 'missing'}, queue=${settleTrace.gpuQueueAvailable ? 'available' : 'missing'}, frameIntervals=${settleTrace.frameIntervalsMs.map(ms => ms.toFixed(2)).join('/') || '-'}.`
+            `[PBDE][RenderSettleTrace] requestedFrames=${settleTrace.requestedFrames}, renderedFrames=${settleTrace.renderedFrames}, frameWait=${settleTrace.frameWaitMs.toFixed(2)}ms, postLastFrameGpuWait=${settleTrace.gpuWaitMs.toFixed(2)}ms, firstRenderCpu=${(firstRenderTrace?.renderCpuMs ?? 0).toFixed(2)}ms, maxRenderCpu=${maxRenderCpuMs.toFixed(2)}ms, maxQueueObserved=${settleTrace.gpuQueueAvailable ? `${maxQueueObservedMs.toFixed(2)}ms` : 'missing'}, pipelines=${pipelineDelta}, queue=${settleTrace.gpuQueueAvailable ? 'available' : 'missing'}, frameIntervals=${settleTrace.frameIntervalsMs.map(ms => ms.toFixed(2)).join('/') || '-'}.`
         );
     }
     if (logRenderSettleFrameTrace) {
@@ -328,8 +335,11 @@ async function precompileLoadedScene(mode: 'open' | 'merge', fileCount: number):
     const objectCompileSumMs = trace.objectTraces.reduce((sum, item) => sum + item.compileMs, 0);
     const topObjectCompileSumMs = topObjectTraces.reduce((sum, item) => sum + item.compileMs, 0);
     if (isPbdeLogEnabled(pbdeLogNames.scenePrecompile)) {
+        const pipelineDelta = trace.pipelineCacheBefore >= 0 && trace.pipelineCacheAfter >= 0
+            ? `${trace.pipelineCacheBefore}->${trace.pipelineCacheAfter} (${trace.pipelineCacheAfter - trace.pipelineCacheBefore >= 0 ? '+' : ''}${trace.pipelineCacheAfter - trace.pipelineCacheBefore})`
+            : 'unavailable';
         console.log(
-            `[PBDE] Scene precompile: total=${elapsedMs.toFixed(2)}ms, compile=${trace.compileMs.toFixed(2)}ms, profile=${trace.profileMs.toFixed(2)}ms, fullCompile=${trace.fullCompileMs.toFixed(2)}ms, gpuWait=${trace.gpuQueueWaitMs.toFixed(2)}ms, profiled=${trace.profileEnabled ? 'yes' : 'no'}, objectProfiles=${trace.objectTraces.length}, objectSum=${objectCompileSumMs.toFixed(2)}ms, top10Sum=${topObjectCompileSumMs.toFixed(2)}ms, available=${trace.available ? 'yes' : 'no'} (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}).`
+            `[PBDE] Scene precompile: total=${elapsedMs.toFixed(2)}ms, compile=${trace.compileMs.toFixed(2)}ms, profile=${trace.profileMs.toFixed(2)}ms, fullCompile=${trace.fullCompileMs.toFixed(2)}ms, gpuWait=${trace.gpuQueueWaitMs.toFixed(2)}ms, pipelines=${pipelineDelta}, profiled=${trace.profileEnabled ? 'yes' : 'no'}, objectProfiles=${trace.objectTraces.length}, objectSum=${objectCompileSumMs.toFixed(2)}ms, top10Sum=${topObjectCompileSumMs.toFixed(2)}ms, available=${trace.available ? 'yes' : 'no'} (${mode}, ${fileCount} file${fileCount === 1 ? '' : 's'}).`
         );
     }
     if (trace.profileEnabled && isPbdeLogEnabled(pbdeLogNames.precompileTrace)) {

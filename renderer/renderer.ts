@@ -30,6 +30,14 @@ let controls: OrbitControls;
 let gizmoModule: InitGizmoResult | null = null;
 type GpuQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike } } };
+type WebGpuRendererWithPipelines = { _pipelines?: { caches?: { size?: number } } };
+type NodeBuilderLike = {
+    object?: { instanceMatrix?: { array?: unknown } };
+    getUniformFromNode: (node: { value?: unknown }, type: string, shaderStage: string, name?: string | null) => unknown;
+};
+type WebGpuBackendWithNodeBuilder = {
+    createNodeBuilder?: (object: Object3D, renderer: Renderer) => NodeBuilderLike;
+};
 type ScenePrecompileTrace = {
     available: boolean;
     profileEnabled: boolean;
@@ -37,6 +45,8 @@ type ScenePrecompileTrace = {
     profileMs: number;
     fullCompileMs: number;
     gpuQueueWaitMs: number;
+    pipelineCacheBefore: number;
+    pipelineCacheAfter: number;
     objectTraces: ScenePrecompileObjectTrace[];
 };
 type ScenePrecompileObjectTrace = {
@@ -64,6 +74,8 @@ type RenderSettledTrace = {
     frameIntervalsMs: number[];
     frameTraces: RenderSettledFrameTrace[];
     gpuQueueAvailable: boolean;
+    pipelineCacheBefore: number;
+    pipelineCacheAfter: number;
 };
 type RenderSettledRequest = {
     requestedFrames: number;
@@ -75,6 +87,7 @@ type RenderSettledRequest = {
     waitForGpu: boolean;
     frameTraces: RenderSettledFrameTrace[];
     queueWaitPromises: Promise<void>[];
+    pipelineCacheBefore: number;
     resolve: (trace: RenderSettledTrace) => void;
 };
 const renderSettledRequests = new Set<RenderSettledRequest>();
@@ -104,7 +117,7 @@ window.addEventListener('pde:precompile-scene', (event: Event) => {
     const detail = (event as CustomEvent<{ resolve?: (trace: ScenePrecompileTrace) => void }>).detail;
     if (!detail || typeof detail.resolve !== 'function') return;
     precompileScene().then(detail.resolve, () => {
-        detail.resolve({ available: false, profileEnabled: false, compileMs: 0, profileMs: 0, fullCompileMs: 0, gpuQueueWaitMs: 0, objectTraces: [] });
+        detail.resolve({ available: false, profileEnabled: false, compileMs: 0, profileMs: 0, fullCompileMs: 0, gpuQueueWaitMs: 0, pipelineCacheBefore: -1, pipelineCacheAfter: -1, objectTraces: [] });
     });
 });
 
@@ -123,16 +136,43 @@ window.addEventListener('pde:wait-render-settled', (event: Event) => {
         waitForGpu: detail.waitForGpu === true,
         frameTraces: [],
         queueWaitPromises: [],
+        pipelineCacheBefore: getPipelineCacheSize(),
         resolve: detail.resolve
     });
 });
 
+function getPipelineCacheSize(): number {
+    const size = (renderer as unknown as WebGpuRendererWithPipelines)?._pipelines?.caches?.size;
+    return typeof size === 'number' ? size : -1;
+}
+
+function stabilizeInstancedMatrixBindingNames(): void {
+    const backend = (renderer as unknown as { backend?: WebGpuBackendWithNodeBuilder }).backend;
+    const createNodeBuilder = backend?.createNodeBuilder;
+    if (!backend || !createNodeBuilder) return;
+
+    backend.createNodeBuilder = function (object, currentRenderer) {
+        const builder = createNodeBuilder.call(this, object, currentRenderer);
+        const prototype = Object.getPrototypeOf(builder) as NodeBuilderLike;
+        const getUniformFromNode = prototype.getUniformFromNode;
+        prototype.getUniformFromNode = function (node, type, shaderStage, name = null) {
+            const stableName = type === 'buffer' && node.value === this.object?.instanceMatrix?.array
+                ? 'pdeInstanceMatrix'
+                : name;
+            return getUniformFromNode.call(this, node, type, shaderStage, stableName);
+        };
+        backend.createNodeBuilder = createNodeBuilder;
+        return builder;
+    };
+}
+
 async function precompileScene(): Promise<ScenePrecompileTrace> {
     if (!renderer || !scene || !camera || typeof renderer.compileAsync !== 'function') {
-        return { available: false, profileEnabled: false, compileMs: 0, profileMs: 0, fullCompileMs: 0, gpuQueueWaitMs: 0, objectTraces: [] };
+        return { available: false, profileEnabled: false, compileMs: 0, profileMs: 0, fullCompileMs: 0, gpuQueueWaitMs: 0, pipelineCacheBefore: -1, pipelineCacheAfter: -1, objectTraces: [] };
     }
 
     const profileEnabled = localStorage.getItem('pdePrecompileProfile') === '1';
+    const pipelineCacheBefore = getPipelineCacheSize();
     const compileStartMs = performance.now();
     scenePrecompileInProgress = true;
     const objectTraces: ScenePrecompileObjectTrace[] = [];
@@ -152,11 +192,12 @@ async function precompileScene(): Promise<ScenePrecompileTrace> {
         scenePrecompileInProgress = false;
     }
     const compileMs = performance.now() - compileStartMs;
+    const pipelineCacheAfter = getPipelineCacheSize();
 
     const queue = (renderer as unknown as WebGpuRendererWithBackend).backend?.device?.queue;
     const queueDone = queue?.onSubmittedWorkDone;
     if (typeof queueDone !== 'function') {
-        return { available: true, profileEnabled, compileMs, profileMs, fullCompileMs, gpuQueueWaitMs: 0, objectTraces };
+        return { available: true, profileEnabled, compileMs, profileMs, fullCompileMs, gpuQueueWaitMs: 0, pipelineCacheBefore, pipelineCacheAfter, objectTraces };
     }
 
     const queueStartMs = performance.now();
@@ -173,6 +214,8 @@ async function precompileScene(): Promise<ScenePrecompileTrace> {
         profileMs,
         fullCompileMs,
         gpuQueueWaitMs: performance.now() - queueStartMs,
+        pipelineCacheBefore,
+        pipelineCacheAfter,
         objectTraces
     };
 }
@@ -284,7 +327,9 @@ function resolveRenderSettledRequests(renderStartMs: number, renderEndMs: number
                 totalMs,
                 frameIntervalsMs: request.frameTraces.map(trace => trace.frameIntervalMs),
                 frameTraces: request.frameTraces,
-                gpuQueueAvailable: request.waitForGpu && hasQueue
+                gpuQueueAvailable: request.waitForGpu && hasQueue,
+                pipelineCacheBefore: request.pipelineCacheBefore,
+                pipelineCacheAfter: getPipelineCacheSize()
             });
         };
 
@@ -434,6 +479,7 @@ async function initScene(): Promise<void> {
     });
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
     await renderer.init();
+    stabilizeInstancedMatrixBindingNames();
 
     // 4. 컨트롤(Controls)
     controls = new OrbitControls(camera, renderer.domElement);
