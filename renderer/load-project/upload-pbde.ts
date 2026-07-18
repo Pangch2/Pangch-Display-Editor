@@ -1,7 +1,7 @@
 import { openWithAnimation, closeWithAnimation } from '../ui/ui-open-close.js';
 import * as THREE from 'three/webgpu';
-import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, performSelection } from './mesh-builder';
-import type { LoadedSelection } from './mesh-builder';
+import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, performSelection, updateGlobalBrightness } from './mesh-builder';
+import type { GlobalBrightness, LoadedSelection } from './mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
@@ -110,6 +110,21 @@ function updateProjectDetails(): void {
             }
         };
     }
+
+    const enabled = document.getElementById('global-brightness-enabled') as HTMLInputElement;
+    const sky = document.getElementById('global-brightness-sky') as HTMLSelectElement;
+    const block = document.getElementById('global-brightness-block') as HTMLSelectElement;
+    const values = Array.from({ length: 16 }, (_, value) => new Option(String(value)));
+    if (!sky.length) sky.append(...values.map(option => option.cloneNode(true) as HTMLOptionElement));
+    if (!block.length) block.append(...values);
+    const brightness = (loadedObjectGroup.userData.globalBrightness as GlobalBrightness | undefined) ?? { enabled: false, sky: 15, block: 0 };
+    enabled.checked = brightness.enabled;
+    sky.value = String(brightness.sky);
+    block.value = String(brightness.block);
+    const applyBrightness = () => {
+        updateGlobalBrightness({ enabled: enabled.checked, sky: Number(sky.value), block: Number(block.value) });
+    };
+    enabled.onchange = sky.onchange = block.onchange = applyBrightness;
 }
 
 function saveActiveProject(): void {

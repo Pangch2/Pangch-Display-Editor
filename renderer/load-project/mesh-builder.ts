@@ -51,6 +51,8 @@ const textureSlotQueue: Array<(value?: void) => void> = [];
 const signatureHashScratch = new ArrayBuffer(8);
 const signatureHashView = new DataView(signatureHashScratch);
 const instanceBrightnessColor = new THREE.Color();
+type Brightness = { sky?: number; block?: number };
+export type GlobalBrightness = { enabled: boolean; sky: number; block: number };
 
 type SignatureGroup = {
     parts: GeometryMeta[];
@@ -73,8 +75,13 @@ const skyLightColors = [
     0x9c9691, 0xb6b0ac, 0xdad4cf, 0xfcfcfc
 ];
 
-function setInstanceSkyBrightness(mesh: THREE.InstancedMesh, instanceId: number, sky?: number): void {
-    const level = Math.round(THREE.MathUtils.clamp(sky ?? 15, 0, 15));
+function effectiveBrightness(brightness?: Brightness): Brightness {
+    const global = loadedObjectGroup.userData.globalBrightness as GlobalBrightness | undefined;
+    return global?.enabled && (brightness?.sky ?? 15) === 15 && (brightness?.block ?? 0) === 0 ? global : brightness ?? {};
+}
+
+function setInstanceSkyBrightness(mesh: THREE.InstancedMesh, instanceId: number, brightness?: Brightness): void {
+    const level = Math.round(THREE.MathUtils.clamp(effectiveBrightness(brightness).sky ?? 15, 0, 15));
     mesh.setColorAt(instanceId, instanceBrightnessColor.setHex(skyLightColors[level]));
     mesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
 }
@@ -1258,7 +1265,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     const meta = instances[sourceIndex];
                                     instanceMatrix.fromArray(meta.transform).transpose();
                                     instancedMesh.setMatrixAt(instanceId, instanceMatrix);
-                                    setInstanceSkyBrightness(instancedMesh, instanceId, meta.brightness?.sky);
+                                    setInstanceSkyBrightness(instancedMesh, instanceId, meta.brightness);
                                     registerObject(instancedMesh, instanceId, meta.uuid, meta.groupId);
                                     instancedMesh.userData.displayTypes.set(instanceId, getInstanceDisplayType(meta, representativeParts[0]));
                                     addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, instanceId);
@@ -1361,7 +1368,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     const meta = instances[sourceIndex];
                                     instanceMatrix.fromArray(meta.transform).transpose();
                                     instancedMesh.setMatrixAt(i, instanceMatrix);
-                                    setInstanceSkyBrightness(instancedMesh, i, meta.brightness?.sky);
+                                    setInstanceSkyBrightness(instancedMesh, i, meta.brightness);
                                     registerObject(instancedMesh, i, meta.uuid, meta.groupId);
                                     instancedMesh.userData.displayTypes.set(i, getInstanceDisplayType(meta, representativeParts[0]));
                                     addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, i);
@@ -1543,7 +1550,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             instancedMesh.computeBoundingSphere();
 
                             playerHeadItems.forEach((item, idx) => {
-                                setInstanceSkyBrightness(instancedMesh, idx, (item.brightness as { sky?: number } | undefined)?.sky);
+                                setInstanceSkyBrightness(instancedMesh, idx, item.brightness as Brightness | undefined);
                                 registerObject(instancedMesh, idx, item.uuid, item.groupId);
                                 addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, idx);
                             });
@@ -1791,7 +1798,19 @@ export function updateObjectBrightness(objectUuid: string, brightness: { sky: nu
     const ref = (ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref?.mesh?.isInstancedMesh) return;
     (ud.objectBrightness as Map<string, { sky: number; block: number }>).set(objectUuid, brightness);
-    setInstanceSkyBrightness(ref.mesh, ref.instanceId, brightness.sky);
+    setInstanceSkyBrightness(ref.mesh, ref.instanceId, brightness);
     if (ref.mesh.instanceColor) ref.mesh.instanceColor.needsUpdate = true;
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+}
+
+export function updateGlobalBrightness(brightness: GlobalBrightness): void {
+    const ud = loadedObjectGroup.userData;
+    ud.globalBrightness = brightness;
+    const objectBrightness = ud.objectBrightness as Map<string, Brightness> | undefined;
+    for (const [uuid, ref] of (ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined) ?? []) {
+        if (!ref.mesh.isInstancedMesh) continue;
+        setInstanceSkyBrightness(ref.mesh, ref.instanceId, objectBrightness?.get(uuid));
+        if (ref.mesh.instanceColor) ref.mesh.instanceColor.needsUpdate = true;
+    }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }

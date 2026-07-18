@@ -7,6 +7,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 
 ### Types / Interfaces
 - `LoadedSelection` -- maps each loaded mesh root to only the instance IDs created or appended by the current load.
+- `GlobalBrightness` -- project-level enabled state and sky/block light values.
 
 ### Variables / Constants
 - `loadedObjectGroup` -- shared `THREE.Group` that holds all rendered project objects
@@ -18,6 +19,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
 - `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
 - `updateObjectBrightness(objectUuid, brightness): void` -- updates one object's stored brightness and per-instance sky-light color without rebuilding its mesh.
+- `updateGlobalBrightness(brightness): void` -- stores project-level brightness and refreshes every rendered instance in place.
 - `replaceDisplayObject(objectUuid, name, transformContext?): Promise<void>` -- rebuilds one display object through the PBDE pipeline, removes existing player-head render transforms, preserves the active center/origin pivot and any stored custom pivot in world space, and requests normal gizmo selection replacement.
 
 ## Internal State
@@ -32,7 +34,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Per-instance atlas UV transform arrays, display-type, block-property, and NBT metadata for objects that share geometry.
 - Per-mesh `dragSelected` float attributes provide persistent selection masks for GPU-only gizmo previews.
 - Loaded block, item-display, and player-head meshes use WebGPU storage instance-matrix attributes so CPU transform commits avoid Three.js's 1,024-matrix uniform/interleaved split.
-- Dynamic-draw per-instance colors encode the fixed warm RGB palette for sky-light levels `0..15`, defaulting to sky `15` when metadata is absent and supporting immediate runtime brightness updates and duplication.
+- Dynamic-draw per-instance colors encode the fixed warm RGB palette for sky-light levels `0..15`, defaulting to sky `15` when metadata is absent and supporting immediate object/global brightness updates and duplication.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
 - `INITIAL_INSTANCES_PER_INSTANCED_MESH` starts block chunks at half capacity so duplicated instances can append without resizing WebGPU buffers
@@ -75,7 +77,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
 - Property-panel model changes keep the active Pivot Mode reference fixed: center uses bounds center, block origin uses local bounds minimum, and custom pivots retain their world position without changing the object transform.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
-- Brightness panel edits update the selected instance color in place from the sky-light palette; block brightness remains stored but does not affect rendering yet.
+- Brightness panel edits update the selected instance color in place from the sky-light palette; enabled global brightness applies only to objects whose own brightness is the default sky `15` / block `0`, while custom values remain unchanged. Block brightness remains stored but does not affect rendering yet.
 - Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
 - Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.
 - Player-head texture edits redraw the existing atlas slot when exclusive; shared slots receive a new slot so other instances keep their skin. The instance matrix and UUID remain unchanged.

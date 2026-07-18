@@ -312,6 +312,28 @@ canvas {
   border-color: #45454a;
 }
 
+#project-details .global-brightness {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+}
+
+#project-details .global-brightness input[type="checkbox"] {
+  appearance: auto;
+  width: auto;
+  margin: 0 4px 0 0;
+}
+
+#project-details .global-brightness select {
+  min-width: 0;
+  background: #1e1e21;
+  color: #f0f0f0;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  font: inherit;
+}
+
 .object-property {
   padding: 8px 12px 12px;
   border-bottom: 1px solid #3a3a3e;

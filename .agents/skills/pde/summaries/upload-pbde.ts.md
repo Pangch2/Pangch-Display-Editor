@@ -20,7 +20,7 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - `waitForRenderSettled(frames, traceFrames, waitForGpu): Promise<RenderSettledTrace>` -- dispatches a render-settled request; frame tracing and GPU queue waiting are opt-in
 - `logFinalPbdeLoadTime(startMs, mode, fileCount): Promise<void>` -- logs render-settle wait time and open/merge perceived load duration after the GPU queue has drained
 - `precompileLoadedScene(mode, fileCount): Promise<void>` -- optionally waits for `renderer.compileAsync(scene, camera)` when `localStorage.pdeAwaitScenePrecompile === '1'`
-- `updateProjectDetails(): void` -- fills the Scene panel project name/NBT inputs, sets the window title to `PDE - {name}` (or `PDE` when empty), and keeps both project data and the title synchronized with edits.
+- `updateProjectDetails(): void` -- fills the project name/NBT and project-level global-brightness controls, sets the window title to `PDE - {name}` (or `PDE` when empty), and synchronizes edits.
 
 ## Internal State
 - `ModalOverlayElement` -- local `HTMLDivElement` extension with optional ESC handler
@@ -45,6 +45,7 @@ Window drag-and-drop entrypoint for PBDE files. Opens an "Open" vs "Merge" modal
 - Logs are controlled through `pbde-log.ts` registry helpers. Final load timing waits for GPU queue drain after the next rendered frame; scene-precompile and render-settle trace lines also report the renderer pipeline-cache change when its private cache is available.
 - Files without `.bdengine` or `.pdengine` extension are ignored.
 - Opening creates independent project scenes and details per file; merging leaves the active project's details unchanged.
+- Global brightness is stored per in-memory project; its sky/block values remain editable while the checkbox controls whether they affect default-brightness objects.
 - The drop modal centers its remembered `pdeReuseCurrentProject` checkbox directly below the open-mode prompt at a smaller font size; checking it suppresses new project-tab creation so Open replaces the current project.
 - The drop modal heading and prompt use tight inline margins so the gap between “프로젝트 파일 감지됨” and “어떻게 열건가요?” stays small.
 - A new Open operation creates a project window unless the active one is empty; switching snapshots/restores children and metadata on the existing shared root so scene, gizmo, and panel consumers keep the same group reference.

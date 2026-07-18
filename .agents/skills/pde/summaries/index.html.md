@@ -11,6 +11,6 @@ Defines the renderer shell: loading overlay, canvas, independent left/right pane
 - Contains separate left and right dock shells, each with its own outer width resizer and shared inner divider slot.
 - Scene Objects and Project Details can occupy the same dock or separate docks; behavior is implemented in `ui/panel-layout.ts`.
 - Contains no inline JavaScript.
-- Project name, project NBT, and full NBT use single-line text inputs.
+- Project name, project NBT, and full NBT use single-line text inputs; project details also expose a global-brightness checkbox with sky/block selects.
 - The details section includes separate project, multi-selection pivot, and selected-object content roots; `object-properties.ts` switches them.
 - Project Details header contains previous/tab/next controls and the project dropdown container managed by `upload-pbde.ts`; the tab remains enabled with no loaded projects.
