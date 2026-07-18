@@ -156,7 +156,9 @@ function stabilizeInstancedMatrixBindingNames(): void {
         const prototype = Object.getPrototypeOf(builder) as NodeBuilderLike;
         const getUniformFromNode = prototype.getUniformFromNode;
         prototype.getUniformFromNode = function (node, type, shaderStage, name = null) {
-            const stableName = type === 'buffer' && node.value === this.object?.instanceMatrix?.array
+            const instanceMatrix = this.object?.instanceMatrix;
+            const stableName = (type === 'buffer' && node.value === instanceMatrix?.array)
+                || (type === 'storageBuffer' && node.value === instanceMatrix)
                 ? 'pdeInstanceMatrix'
                 : name;
             return getUniformFromNode.call(this, node, type, shaderStage, stableName);

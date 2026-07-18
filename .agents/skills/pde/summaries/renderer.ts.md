@@ -15,7 +15,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - Captures scene precompile timings split into optional per-root profile time, final full-scene compile time, optional WebGPU queue wait, and renderer pipeline-cache size before/after compilation.
 - Captures per-root scene precompile traces only when `localStorage.pdePrecompileProfile === '1'`, temporarily hiding loaded mesh roots one at a time and timing `renderer.compileAsync()`.
 - Tracks pending `pde:wait-render-settled` requests; per-frame render CPU timing and WebGPU queue completion waits are collected only when requested, while renderer pipeline-cache size is sampled before/after the settled render.
-- Stabilizes the generated WGSL binding name for each `InstancedMesh.instanceMatrix` buffer so structurally identical instanced shaders can share WebGPU pipelines while retaining separate per-object bindings.
+- Stabilizes the generated WGSL binding name for both uniform-buffer and storage-buffer `InstancedMesh.instanceMatrix` nodes so structurally identical instanced shaders can share WebGPU pipelines while retaining separate per-object bindings.
 - Answers synchronous project camera-state events by snapshotting/restoring camera position, OrbitControls target, and zoom.
 
 ## Dependencies (imports)
@@ -34,7 +34,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 
 ## Notes
 - Uses `WebGPURenderer`; WebGL is not used.
-- Instanced-matrix binding-name stabilization is installed after renderer initialization by wrapping the first backend node-builder creation, patching its shared builder prototype, and restoring the backend factory immediately.
+- Instanced-matrix binding-name stabilization is installed after renderer initialization by wrapping the first backend node-builder creation, patching its shared builder prototype for both Three.js instance-matrix paths, and restoring the backend factory immediately.
 - `initScene()` is only called after assets finish initializing.
 - `animate()` renders the scene continuously and updates the gizmo each frame.
 - Handles `pde:precompile-scene` by optionally profiling loaded mesh root compile costs, awaiting full `renderer.compileAsync(scene, camera)`, sampling the private pipeline-cache size, and optionally waiting for WebGPU queue completion before resolving split timing details to `upload-pbde.ts`.
