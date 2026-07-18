@@ -13,7 +13,6 @@ import {
     LineBasicMaterial,
     EdgesGeometry,
     BoxGeometry,
-    Object3D,
     Material,
     LineSegments,
     MeshBasicMaterial,
@@ -146,6 +145,40 @@ const _axisMat = new LineBasicMaterial({
     transparent: true
 });
 
+const _selectionOverlayMat = new MeshBasicMaterial({
+    color: 0xffffff,
+    depthTest: true,
+    depthWrite: false,
+    transparent: true,
+    opacity: 0.9,
+    wireframe: true
+});
+
+const _vertexSpriteMat = new SpriteMaterial({
+    color: 0x30333D,
+    sizeAttenuation: false,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true
+});
+const _selectedVertexSpriteMat = _vertexSpriteMat.clone();
+_selectedVertexSpriteMat.color.setHex(0x437FD0);
+
+const _boxEdgesGeo = (() => {
+    const boxGeo = new BoxGeometry(1, 1, 1);
+    const edgesGeo = new EdgesGeometry(boxGeo);
+    boxGeo.dispose();
+    return edgesGeo;
+})();
+
+const _multiSelectionMat = new LineBasicMaterial({
+    color: 0xFFFFFF,
+    depthTest: true,
+    depthWrite: false,
+    transparent: true,
+    opacity: 0.9
+});
+
 const _unitCubeCorners = [
     new Vector3(-0.5, -0.5, -0.5),
     new Vector3( 0.5, -0.5, -0.5),
@@ -156,29 +189,6 @@ const _unitCubeCorners = [
     new Vector3( 0.5,  0.5,  0.5),
     new Vector3(-0.5,  0.5,  0.5)
 ];
-
-export function createOverlayLineMaterial(color: number): LineBasicMaterial {
-    return new LineBasicMaterial({
-        color,
-        depthTest: true,
-        depthWrite: false,
-        transparent: true,
-        opacity: 0.9
-    });
-}
-
-export function createEdgesGeometryFromBox3(box: Box3): EdgesGeometry | null {
-    if (!box || box.isEmpty()) return null;
-    const size = new Vector3();
-    const center = new Vector3();
-    box.getSize(size);
-    box.getCenter(center);
-    const boxGeo = new BoxGeometry(size.x, size.y, size.z);
-    boxGeo.translate(center.x, center.y, center.z);
-    const edges = new EdgesGeometry(boxGeo);
-    boxGeo.dispose();
-    return edges;
-}
 
 // --- Helper Functions ---
 
@@ -194,21 +204,6 @@ export function isInstanceValid(mesh: Mesh | InstancedMesh, instanceId: number):
         return instanceId < ((mesh as InstancedMesh).count ?? 0);
     }
     return false;
-}
-
-export function disposeThreeObjectTree(root: Object3D): void {
-    if (!root) return;
-    root.traverse((child: Object3D) => {
-        const mesh = child as Mesh;
-        if (mesh.geometry) mesh.geometry.dispose();
-        if (mesh.material) {
-            if (Array.isArray(mesh.material)) {
-                (mesh.material as Material[]).forEach((m: Material) => m.dispose());
-            } else {
-                (mesh.material as Material).dispose();
-            }
-        }
-    });
 }
 
 export function getDisplayType(mesh: PdeMesh, instanceId: number): string | undefined {
@@ -511,9 +506,16 @@ export function prepareMultiSelectionDrag(currentSelection: SelectionState): voi
 
 // --- Overlay State ---
 
-let selectionOverlay: Object3D | null = null;
+let selectionOverlay: InstancedMesh | null = null;
 let selectionPointsOverlay: Group | null = null;
 let multiSelectionOverlay: Group | null = null;
+let hoveredVertex: Sprite | null = null;
+
+function setBoxLineTransform(line: LineSegments, box: Box3): void {
+    box.getCenter(line.position);
+    box.getSize(line.scale);
+    line.updateMatrix();
+}
 
 export function getSelectionPointsOverlay(): Group | null {
     return selectionPointsOverlay;
@@ -531,26 +533,20 @@ export function updateSelectionOverlay(
 ): void {
     if (selectionOverlay) {
         scene.remove(selectionOverlay);
-        if (selectionOverlay instanceof Group) {
-            disposeThreeObjectTree(selectionOverlay);
-        } else if (selectionOverlay instanceof InstancedMesh) {
-            if (selectionOverlay.material instanceof Material) selectionOverlay.material.dispose();
-        }
         selectionOverlay = null;
     }
 
     if (selectionPointsOverlay) {
         scene.remove(selectionPointsOverlay);
-        selectionPointsOverlay.traverse((child: Object3D) => {
-            const s = child as Sprite;
-            if (s.material) s.material.dispose();
-        });
+        const hoverLine = selectionPointsOverlay.getObjectByName('VertexHoverLine') as Line | undefined;
+        hoverLine?.geometry.dispose();
+        (hoverLine?.material as Material | undefined)?.dispose();
         selectionPointsOverlay = null;
+        hoveredVertex = null;
     }
 
     if (multiSelectionOverlay) {
         scene.remove(multiSelectionOverlay);
-        disposeThreeObjectTree(multiSelectionOverlay);
         multiSelectionOverlay = null;
     }
 
@@ -637,33 +633,18 @@ export function updateSelectionOverlay(
     const allOverlayItems = [...itemsToRender, ...queueItemsToRender];
 
     if (allOverlayItems.length > 0) {
-        const createMesh = (items: OverlayItem[]) => {
-            const material = new MeshBasicMaterial({ color: 0xffffff, depthTest: true, depthWrite: false, transparent: true, opacity: 0.9, wireframe: true });
-            const mesh = new InstancedMesh(_overlayUnitGeo, material, items.length);
-            mesh.instanceMatrix.setUsage(DynamicDrawUsage);
-            mesh.renderOrder = 1;
-            mesh.matrixAutoUpdate = false;
-            mesh.frustumCulled = false;
-            mesh.userData['items'] = items;
-            const colorObj = new Color();
-            items.forEach((item, index) => {
-                mesh.setMatrixAt(index, item.matrix);
-                colorObj.setHex(item.color);
-                mesh.setColorAt(index, colorObj);
-            });
-            return mesh;
-        };
-
-        const CHUNK_SIZE = 1000;
-        if (allOverlayItems.length > CHUNK_SIZE) {
-            selectionOverlay = new Group();
-            selectionOverlay.matrixAutoUpdate = false;
-            for (let i = 0; i < allOverlayItems.length; i += CHUNK_SIZE) {
-                selectionOverlay.add(createMesh(allOverlayItems.slice(i, i + CHUNK_SIZE)));
-            }
-        } else {
-            selectionOverlay = createMesh(allOverlayItems);
-        }
+        selectionOverlay = new InstancedMesh(_overlayUnitGeo, _selectionOverlayMat, allOverlayItems.length);
+        selectionOverlay.instanceMatrix.setUsage(DynamicDrawUsage);
+        selectionOverlay.renderOrder = 1;
+        selectionOverlay.matrixAutoUpdate = false;
+        selectionOverlay.frustumCulled = false;
+        selectionOverlay.userData['items'] = allOverlayItems;
+        const colorObj = new Color();
+        allOverlayItems.forEach((item, index) => {
+            selectionOverlay!.setMatrixAt(index, item.matrix);
+            colorObj.setHex(item.color);
+            selectionOverlay!.setColorAt(index, colorObj);
+        });
         scene.add(selectionOverlay);
     }
 
@@ -672,7 +653,6 @@ export function updateSelectionOverlay(
         selectionPointsOverlay.renderOrder = 999;
         selectionPointsOverlay.matrixAutoUpdate = false;
         
-        const baseSpriteMat = new SpriteMaterial({ color: 0x30333D, sizeAttenuation: false, depthTest: false, depthWrite: false, transparent: true });
         const canvas = renderer.domElement;
         const width = canvas.clientWidth, height = canvas.clientHeight;
         const scaleX = 10 / width, scaleY = 10 / height;
@@ -685,10 +665,9 @@ export function updateSelectionOverlay(
                 const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
                 if (existingPoints.has(key)) continue;
                 existingPoints.add(key);
-                const sprite = new Sprite(baseSpriteMat.clone());
+                const sprite = new Sprite(selectedVertexKeys.has(key) ? _selectedVertexSpriteMat : _vertexSpriteMat);
                 sprite.position.copy(v);
                 sprite.userData = { key, source: item.source };
-                if (selectedVertexKeys.has(key)) sprite.material.color.setHex(0x437FD0);
                 sprite.scale.set(scaleX, scaleY, 1);
                 selectionPointsOverlay.add(sprite);
             }
@@ -696,11 +675,10 @@ export function updateSelectionOverlay(
 
         if (selectionHelper) {
             const gizmoPos = selectionHelper.position;
-            const centerSprite = new Sprite(baseSpriteMat.clone());
-            centerSprite.position.copy(gizmoPos);
             const centerKey = `CENTER_${gizmoPos.x.toFixed(4)}_${gizmoPos.y.toFixed(4)}_${gizmoPos.z.toFixed(4)}`;
+            const centerSprite = new Sprite(selectedVertexKeys.has(centerKey) ? _selectedVertexSpriteMat : _vertexSpriteMat);
+            centerSprite.position.copy(gizmoPos);
             centerSprite.userData = { isCenter: true, key: centerKey };
-            if (selectedVertexKeys.has(centerKey)) centerSprite.material.color.setHex(0x437FD0);
             centerSprite.scale.set(scaleX, scaleY, 1);
             centerSprite.renderOrder = 110;
             selectionPointsOverlay.add(centerSprite);
@@ -733,13 +711,13 @@ export function updateSelectionOverlay(
                     if (existingPoints.has(centerPosKey)) return;
                     existingPoints.add(centerPosKey);
 
-                    const queueSprite = new Sprite(baseSpriteMat.clone());
+                    const queueSprite = new Sprite(_vertexSpriteMat);
                     queueSprite.position.copy(item.gizmoPosition);
                     const src = item.source;
                     const idStr = src.type === 'group' ? `G_${src.id}` : `O_${src.mesh!.uuid}_${src.instanceId}`;
                     const qKey = `QUEUE_${idStr}_${posForKey.x.toFixed(4)}_${posForKey.y.toFixed(4)}_${posForKey.z.toFixed(4)}`;
                     queueSprite.userData = { isCenter: true, key: qKey, source: src };
-                    if (selectedVertexKeys.has(qKey)) queueSprite.material.color.setHex(0x437FD0);
+                    if (selectedVertexKeys.has(qKey)) queueSprite.material = _selectedVertexSpriteMat;
                     queueSprite.scale.set(scaleX, scaleY, 1);
                     queueSprite.renderOrder = 110;
                     selectionPointsOverlay!.add(queueSprite);
@@ -748,7 +726,6 @@ export function updateSelectionOverlay(
             });
             selectionPointsOverlay.add(createAxisHelper(gizmoPos, selectionHelper.quaternion));
         }
-        baseSpriteMat.dispose();
         scene.add(selectionPointsOverlay);
     }
 
@@ -772,10 +749,11 @@ export function updateSelectionOverlay(
     if (boxesToDraw.length > 0) {
         multiSelectionOverlay = new Group();
         multiSelectionOverlay.matrixAutoUpdate = false;
-        const mat = createOverlayLineMaterial(0xFFFFFF);
         boxesToDraw.forEach(box => {
-            const geo = createEdgesGeometryFromBox3(box);
-            if (geo) multiSelectionOverlay!.add(new LineSegments(geo, mat));
+            const line = new LineSegments(_boxEdgesGeo, _multiSelectionMat);
+            line.matrixAutoUpdate = false;
+            setBoxLineTransform(line, box);
+            multiSelectionOverlay!.add(line);
         });
         scene.add(multiSelectionOverlay);
     }
@@ -810,8 +788,7 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection: Selectio
         worldBox.copy(getSelectionBoundingBox(currentSelection));
     }
     if (worldBox.isEmpty()) return;
-    const geo = createEdgesGeometryFromBox3(worldBox);
-    if (geo) { if (activeBoxLine.geometry) activeBoxLine.geometry.dispose(); activeBoxLine.geometry = geo; }
+    setBoxLineTransform(activeBoxLine, worldBox);
 }
 
 export function syncSelectionPointsOverlay(delta: Vector3): void {
@@ -840,8 +817,7 @@ export function syncSelectionOverlay(deltaMatrix: Matrix4): void {
             }
             mesh.instanceMatrix.needsUpdate = true;
         };
-        if (selectionOverlay instanceof Group) selectionOverlay.children.forEach(c => updateMesh(c as InstancedMesh));
-        else updateMesh(selectionOverlay as InstancedMesh);
+        updateMesh(selectionOverlay);
     }
     if (selectionPointsOverlay) { selectionPointsOverlay.applyMatrix4(deltaMatrix); selectionPointsOverlay.updateMatrixWorld(true); }
 }
@@ -879,7 +855,8 @@ export function getHoveredVertex(mouseNDC: Vector2, camera: Camera, renderer: Re
 }
 
 export function updateVertexHoverHighlight(hoveredSprite: Sprite | null, selectedVertexKeys: Set<string>): void {
-    if (!selectionPointsOverlay) return;
+    if (!selectionPointsOverlay || hoveredSprite === hoveredVertex) return;
+    hoveredVertex = hoveredSprite;
     let selected: Sprite | null = null, existingLine: Line | null = null;
     selectionPointsOverlay.children.forEach(c => {
         if (c.name === 'VertexHoverLine') { existingLine = c as Line; return; }
@@ -887,7 +864,7 @@ export function updateVertexHoverHighlight(hoveredSprite: Sprite | null, selecte
         const s = c as Sprite, key = s.userData['key'] as string | undefined;
         const isSel = key && selectedVertexKeys.has(key);
         if (isSel) selected = s;
-        s.material.color.setHex((s === hoveredSprite || isSel) ? 0x437FD0 : 0x30333D);
+        s.material = s === hoveredSprite || isSel ? _selectedVertexSpriteMat : _vertexSpriteMat;
     });
     if (selectedVertexKeys.size === 1 && hoveredSprite && selected && hoveredSprite !== selected) {
         if (!existingLine) {
@@ -904,5 +881,12 @@ export function findSpritesByKeys(keys: string[]): Record<string, Sprite> {
 }
 
 export function refreshSelectionPointColors(selectedVertexKeys: Set<string>): void {
-    selectionPointsOverlay?.children.forEach(s => { if ((s as Sprite).isSprite && s.userData['key']) (s as Sprite).material.color.setHex(selectedVertexKeys.has(s.userData['key'] as string) ? 0x437FD0 : 0x30333D); });
+    hoveredVertex = null;
+    const hoverLine = selectionPointsOverlay?.getObjectByName('VertexHoverLine') as Line | undefined;
+    if (hoverLine) {
+        selectionPointsOverlay!.remove(hoverLine);
+        hoverLine.geometry.dispose();
+        (hoverLine.material as Material).dispose();
+    }
+    selectionPointsOverlay?.children.forEach(s => { if ((s as Sprite).isSprite && s.userData['key']) (s as Sprite).material = selectedVertexKeys.has(s.userData['key'] as string) ? _selectedVertexSpriteMat : _vertexSpriteMat; });
 }

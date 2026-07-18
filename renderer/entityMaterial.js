@@ -47,7 +47,7 @@ const scaledLight = mul(lightSum, float(0.6));
 const biasedLight = add(scaledLight, float(0.4));
 const directionalLight = pow(min(float(1.0), biasedLight), 2.2);
 
-export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1) {
+export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
 
@@ -57,16 +57,8 @@ export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstance
   const uvTransformCount = Math.max(1, instancedUvTransformCount | 0);
   let uvTransformNode = null;
   if (useInstancedUvTransform) {
-    if (uvTransformCount === 1) {
-      uvTransformNode = attribute('instancedUvTransform', 'vec4');
-    } else {
-      const geometryPartIndex = attribute('geometryPartIndex', 'float');
-      uvTransformNode = attribute('instancedUvTransform0', 'vec4');
-      for (let i = 1; i < uvTransformCount; i++) {
-        const candidate = attribute(`instancedUvTransform${i}`, 'vec4');
-        uvTransformNode = geometryPartIndex.greaterThan(float(i - 0.5)).select(candidate, uvTransformNode);
-      }
-    }
+    const attributeName = uvTransformCount === 1 ? 'instancedUvTransform' : `instancedUvTransform${instancedUvTransformIndex}`;
+    uvTransformNode = attribute(attributeName, 'vec4');
   }
   const finalUv = useInstancedUvTransform
     ? uvNode.mul(uvTransformNode.xy).add(uvTransformNode.zw)

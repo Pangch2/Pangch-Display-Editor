@@ -224,8 +224,8 @@ function getAppendableInstanceCapacity(count: number): number {
     return Math.max(count, Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, Math.max(256, count * 2)));
 }
 
-function getMaterialKey(part: GeometryMeta, instancedUvTransformCount: number): string {
-    return `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}` : 'base'}`;
+function getMaterialKey(part: GeometryMeta, instancedUvTransformCount: number, instancedUvTransformIndex = 0): string {
+    return `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}:${instancedUvTransformIndex}` : 'base'}`;
 }
 
 
@@ -388,10 +388,10 @@ function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
     }
 }
 
-async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, instancedUvTransformCount = 0): Promise<THREE.Material> {
+async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, instancedUvTransformCount = 0, instancedUvTransformIndex = 0): Promise<THREE.Material> {
     // undefined는 흰색(0xffffff)으로 정규화하여 캐시 키 불일치를 방지한다.
     const effectiveTint = (tintHex ?? 0xffffff) >>> 0;
-    const key = `${texPath}|${effectiveTint}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}` : 'base'}`;
+    const key = `${texPath}|${effectiveTint}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}:${instancedUvTransformIndex}` : 'base'}`;
     if (blockMaterialCache.has(key) && gen === currentLoadGen) {
         const mat = blockMaterialCache.get(key)!;
         // 아틀라스 텍스처가 변경되었으면 stale 항목을 캐시에서 제거하고 재생성한다.
@@ -406,7 +406,7 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
 
     const p = (async () => {
         const tex = await loadBlockTexture(texPath, gen);
-        const { material } = createEntityMaterial(tex, effectiveTint, false, instancedUvTransformCount > 0, instancedUvTransformCount);
+        const { material } = createEntityMaterial(tex, effectiveTint, false, instancedUvTransformCount > 0, instancedUvTransformCount, instancedUvTransformIndex);
         material.toneMapped = false;
         material.fog = false;
         material.flatShading = true;
@@ -1109,15 +1109,16 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                 const ensureInstancedMaterialPromise = (
                     part: GeometryMeta,
-                    instancedUvTransformCount: number
+                    instancedUvTransformCount: number,
+                    instancedUvTransformIndex: number
                 ): Promise<THREE.Material> => {
-                    const matKey = getMaterialKey(part, instancedUvTransformCount);
+                    const matKey = getMaterialKey(part, instancedUvTransformCount, instancedUvTransformIndex);
                     const cachedMaterial = instancedMaterials.get(matKey);
                     if (cachedMaterial) return Promise.resolve(cachedMaterial);
 
                     let promise = materialPromises.get(matKey);
                     if (!promise) {
-                        promise = getBlockMaterial(part.texPath, part.tintHex, myGen, instancedUvTransformCount).then(material => {
+                        promise = getBlockMaterial(part.texPath, part.tintHex, myGen, instancedUvTransformCount, instancedUvTransformIndex).then(material => {
                             if (myGen === currentLoadGen) {
                                 instancedMaterials.set(matKey, material);
                             }
@@ -1223,8 +1224,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     if (instancedUvTransformCount === 0
                         && group.parts.every(part => !part.texPath.includes('__ATLAS__'))
                         && reusableCapacity >= group.instances.length) continue;
-                    for (const part of group.parts) {
-                        materialPreloadPromises.add(ensureInstancedMaterialPromise(part, instancedUvTransformCount));
+                    for (const [partIndex, part] of group.parts.entries()) {
+                        materialPreloadPromises.add(ensureInstancedMaterialPromise(part, instancedUvTransformCount, partIndex));
                     }
                 }
                 const materialPreloadResults = await Promise.allSettled(materialPreloadPromises);
@@ -1288,10 +1289,6 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 
                                 // Clone and apply local transform (modelMatrix)
                                 const clonedGeo = baseGeo.clone();
-                                const position = clonedGeo.getAttribute('position') as THREE.BufferAttribute;
-                                const partIndices = new Float32Array(position.count);
-                                partIndices.fill(geometriesToMerge.length);
-                                clonedGeo.setAttribute('geometryPartIndex', new THREE.BufferAttribute(partIndices, 1));
                                 localMatrix.fromArray(part.modelMatrix);
                                 clonedGeo.applyMatrix4(localMatrix);
                                 geometriesToMerge.push(clonedGeo);
@@ -1314,14 +1311,14 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             }
                         }
 
-                        for (const part of representativeParts) {
+                        for (const [partIndex, part] of representativeParts.entries()) {
                             // Prepare Material
-                            const matKey = getMaterialKey(part, instancedUvTransformCount);
+                            const matKey = getMaterialKey(part, instancedUvTransformCount, partIndex);
                             let material = instancedMaterials.get(matKey);
                             
                             if (!material) {
                                 material = placeholderMaterial;
-                                ensureInstancedMaterialPromise(part, instancedUvTransformCount);
+                                ensureInstancedMaterialPromise(part, instancedUvTransformCount, partIndex);
                                 pendingMaterialSlots.push({ index: materials.length, promise: materialPromises.get(matKey)! });
                             }
                             materials.push(material);
