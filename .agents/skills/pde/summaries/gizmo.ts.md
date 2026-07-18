@@ -31,7 +31,8 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `renderer/controls/vertex/vertex-*`
 
 ## Notes
-- TransformControls drag changes emit `pde:object-transform-changed` with the live gizmo world pivot and incremental world delta matrix so the properties panel can track multi-selection rotation and scale; pivot edits also include the unsaved pivot offset.
+- TransformControls caches selected instance IDs once at drag start; change events only mark the latest helper matrix dirty, and `updateGizmo()` applies one incremental delta per frame after skipping unchanged matrices.
+- Drag end flushes the final pending delta before pivot/bounds cleanup, then emits one final `pde:object-transform-changed`; frame events carry `dragging: true` for lightweight properties-panel updates.
 - Selection overlay refreshes emit `pde:selection-transform-context` with the current gizmo world pivot so property edits honor origin, center, and custom pivot modes.
 - Single-object model replacement events run through the normal selection replacement path, resetting stale pivot state before recomputing the new model's origin and overlay.
 - Selection transform events expose the active `pivotMode` and `multiCustomPivotLocal`; the latter converts the current helper pivot through the primary group/object inverse world matrix, with the captured local anchor only as a fallback.

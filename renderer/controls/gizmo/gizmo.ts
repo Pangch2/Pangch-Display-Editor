@@ -402,7 +402,9 @@ let pivotOffset = new Vector3(0, 0, 0);
 
 const _tmpPrevInvMatrix = new Matrix4();
 const _tmpDeltaMatrix = new Matrix4();
+const _pendingHelperMatrix = new Matrix4();
 const _meshToInstanceIds = new Map<Object3D, number[]>();
+let selectionTransformDirty = false;
 
 //  Selection helpers 
 
@@ -445,6 +447,35 @@ function updateSelectionOverlay(): void {
 
 function _updateMultiSelectionOverlayDuringDrag(): void {
     Overlay.updateMultiSelectionOverlayDuringDrag(currentSelection, selectionHelper!.matrixWorld, dragInitialMatrix);
+}
+
+function flushSelectionTransform(): void {
+    if (!selectionTransformDirty) return;
+    selectionTransformDirty = false;
+    if (_pendingHelperMatrix.equals(previousHelperMatrix)) return;
+
+    _tmpPrevInvMatrix.copy(previousHelperMatrix).invert();
+    _tmpDeltaMatrix.multiplyMatrices(_pendingHelperMatrix, _tmpPrevInvMatrix);
+    applyDeltaToSelection({
+        deltaMatrix: _tmpDeltaMatrix,
+        meshToInstanceIds: _meshToInstanceIds,
+        selectedGroupIds: currentSelection.groups,
+        loadedObjectGroup
+    });
+
+    previousHelperMatrix.copy(_pendingHelperMatrix);
+    Overlay.syncSelectionOverlay(_tmpDeltaMatrix);
+    _updateMultiSelectionOverlayDuringDrag();
+    window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
+        detail: {
+            selection: currentSelection,
+            pivotWorld: selectionHelper!.position.clone(),
+            pivotMode,
+            multiCustomPivotLocal: _getMultiSelectionPivotLocal(),
+            deltaMatrix: _tmpDeltaMatrix.clone(),
+            dragging: true
+        }
+    }));
 }
 
 function resetSelectionAndDeselect(): void {
@@ -843,6 +874,7 @@ export function initGizmo({
         if (event.value) {
             Overlay.prepareMultiSelectionDrag(currentSelection);
             draggingMode = transformControls!.mode;
+            selectionTransformDirty = false;
 
             const items = getSelectedItems();
             _meshToInstanceIds.clear();
@@ -883,7 +915,6 @@ export function initGizmo({
                         Overlay.unionTransformedBox3(dragInitialBoundingBox, groupLocalBox, combinedMat);
                     }
                 } else {
-                    const items = getSelectedItems();
                     if (items.length > 0) {
                         const tempMat = new Matrix4();
                         items.forEach(({ mesh, instanceId }) => {
@@ -900,6 +931,8 @@ export function initGizmo({
             }
 
         } else {
+            flushSelectionTransform();
+
             if (draggingMode === 'rotate' && _isMultiSelection() && !currentSelection.primary) {
                 _multiSelectionAccumulatedRotation.copy(selectionHelper!.quaternion);
             }
@@ -963,6 +996,14 @@ export function initGizmo({
                 selectionHelper.scale.set(1, 1, 1);
                 selectionHelper.updateMatrixWorld();
                 previousHelperMatrix.copy(selectionHelper.matrixWorld);
+                window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
+                    detail: {
+                        selection: currentSelection,
+                        pivotWorld: selectionHelper.position.clone(),
+                        pivotMode,
+                        multiCustomPivotLocal: _getMultiSelectionPivotLocal()
+                    }
+                }));
             }
         }
     });
@@ -990,7 +1031,8 @@ export function initGizmo({
                         pivot: pivotOffset.clone(),
                         pivotWorld: selectionHelper!.position.clone(),
                         pivotMode,
-                        multiCustomPivotLocal: _getMultiSelectionPivotLocal()
+                        multiCustomPivotLocal: _getMultiSelectionPivotLocal(),
+                        dragging: true
                     }
                 }));
                 return;
@@ -1005,37 +1047,8 @@ export function initGizmo({
             }
 
             selectionHelper!.updateMatrixWorld();
-            _tmpPrevInvMatrix.copy(previousHelperMatrix).invert();
-            _tmpDeltaMatrix.multiplyMatrices(selectionHelper!.matrixWorld, _tmpPrevInvMatrix);
-
-            const items = getSelectedItems();
-            _meshToInstanceIds.clear();
-            for (const { mesh, instanceId } of items) {
-                if (!mesh) continue;
-                let list = _meshToInstanceIds.get(mesh);
-                if (!list) { list = []; _meshToInstanceIds.set(mesh, list); }
-                list.push(instanceId);
-            }
-
-            applyDeltaToSelection({
-                deltaMatrix: _tmpDeltaMatrix,
-                meshToInstanceIds: _meshToInstanceIds,
-                selectedGroupIds: currentSelection.groups,
-                loadedObjectGroup
-            });
-
-            previousHelperMatrix.copy(selectionHelper!.matrixWorld);
-            Overlay.syncSelectionOverlay(_tmpDeltaMatrix);
-            _updateMultiSelectionOverlayDuringDrag();
-            window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
-                detail: {
-                    selection: currentSelection,
-                    pivotWorld: selectionHelper!.position.clone(),
-                    pivotMode,
-                    multiCustomPivotLocal: _getMultiSelectionPivotLocal(),
-                    deltaMatrix: _tmpDeltaMatrix.clone()
-                }
-            }));
+            _pendingHelperMatrix.copy(selectionHelper!.matrixWorld);
+            selectionTransformDirty = true;
         }
     });
 
@@ -1412,6 +1425,8 @@ export function initGizmo({
     return {
         getTransformControls: () => transformControls!,
         updateGizmo: () => {
+            flushSelectionTransform();
+
             if (_hasAnySelection() && transformControls!.object &&
                 (transformControls!.mode === 'translate' || transformControls!.mode === 'scale')) {
 

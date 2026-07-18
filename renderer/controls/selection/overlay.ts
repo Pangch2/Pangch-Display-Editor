@@ -16,7 +16,6 @@ import {
     Material,
     LineSegments,
     MeshBasicMaterial,
-    DynamicDrawUsage,
     SpriteMaterial,
     Sprite,
     Line,
@@ -635,7 +634,6 @@ export function updateSelectionOverlay(
 
     if (allOverlayItems.length > 0) {
         selectionOverlay = new InstancedMesh(_overlayUnitGeo, _selectionOverlayMat, allOverlayItems.length);
-        selectionOverlay.instanceMatrix.setUsage(DynamicDrawUsage);
         selectionOverlay.renderOrder = 1;
         selectionOverlay.matrixAutoUpdate = false;
         selectionOverlay.frustumCulled = false;

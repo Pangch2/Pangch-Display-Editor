@@ -453,7 +453,7 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
     sortPropertySections(multiSelectionPivot);
 }
 
-function updateMultiSelectionValues(pivotWorld?: Vector3): void {
+function updateMultiSelectionTransformValues(pivotWorld?: Vector3): void {
     if (pivotWorld) multiSelectionMatrix.setPosition(pivotWorld);
     multiSelectionMatrix.decompose(position, quaternion, scale);
     rotation.setFromQuaternion(quaternion);
@@ -465,12 +465,6 @@ function updateMultiSelectionValues(pivotWorld?: Vector3): void {
     multiSelectionPivot.querySelectorAll<HTMLInputElement>('[data-property-section="transform"] input[type="number"]').forEach((input, index) => {
         if (input !== document.activeElement) input.value = format(transformValues[index]);
     });
-    const matrixValues = Array.from({ length: 16 }, (_, index) => multiSelectionMatrix.elements[(index % 4) * 4 + Math.floor(index / 4)]);
-    multiSelectionPivot.querySelectorAll<HTMLInputElement>('[data-property-section="matrix"] input[type="number"]').forEach((input, index) => {
-        if (input !== document.activeElement) input.value = format(matrixValues[index]);
-    });
-    const matrixText = multiSelectionPivot.querySelector<HTMLInputElement>('.object-matrix-text input');
-    if (matrixText && matrixText !== document.activeElement) matrixText.value = matrixValues.slice(0, 12).map(format).join(', ');
 }
 
 function keepPivotFixed(current: Matrix4, next: Matrix4, localPivot: Vector3, preserveTranslation = false): Matrix4 {
@@ -862,14 +856,16 @@ window.addEventListener('pde:selection-transform-context', event => {
     renderSelection(detail.selection, detail.pivotWorld, detail.multiCustomPivotLocal);
 });
 window.addEventListener('pde:object-transform-changed', event => {
-    const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; pivotMode: string; multiCustomPivotLocal?: Vector3; deltaMatrix?: Matrix4 }>).detail;
-    const updateMulti = detail.deltaMatrix && detail.multiCustomPivotLocal;
-    if (updateMulti) {
-        multiSelectionMatrix.premultiply(detail.deltaMatrix!);
-        updateMultiSelectionValues(detail.pivotWorld);
-    }
+    const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; pivotMode: string; multiCustomPivotLocal?: Vector3; deltaMatrix?: Matrix4; dragging?: boolean }>).detail;
     currentPivotMode = detail.pivotMode;
-    renderSelection(detail.selection, detail.pivotWorld, detail.multiCustomPivotLocal, !updateMulti);
+    if (detail.dragging) {
+        if (detail.deltaMatrix && detail.multiCustomPivotLocal) {
+            multiSelectionMatrix.premultiply(detail.deltaMatrix);
+            updateMultiSelectionTransformValues(detail.pivotWorld);
+        }
+        return;
+    }
+    renderSelection(detail.selection, detail.pivotWorld, detail.multiCustomPivotLocal);
 });
 window.addEventListener('pde:blockbench-scale-mode-changed', event => {
     const enabled = (event as CustomEvent<boolean>).detail;

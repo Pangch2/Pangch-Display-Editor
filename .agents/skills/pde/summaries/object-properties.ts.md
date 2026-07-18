@@ -18,4 +18,5 @@ Renders and updates the project details / object properties side panel for the s
 - The matrix editor toggle swaps between 4×4 grid and one-line input, persists the choice in `localStorage`, and uses `▶`/`▲` glyphs for the expand/collapse button.
 - `propertySelect()` keeps provided option order when the current value is already in that list, so item-display options stay fixed.
 - `renderSelection()` is the main entrypoint driven by selection-related window events.
+- During gizmo drags, only the multi-selection position/rotation/scale inputs update from frame deltas; individual sections and matrix fields refresh once on drag end.
 - The module mutates loaded object userData/maps in place when properties change.
