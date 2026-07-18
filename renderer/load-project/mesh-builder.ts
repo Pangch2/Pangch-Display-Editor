@@ -1352,6 +1352,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 instancedMesh.userData.displayTypes = new Map<number, 'block_display' | 'item_display'>();
                                 if (hasReusableSignature) instancedMesh.userData.pbdeSignature = signature;
                                 
+                                instancedMesh.frustumCulled = false;
+
                                 for (let i = 0; i < chunkCount; i++) {
                                     const sourceIndex = chunkStart + i;
                                     const meta = instances[sourceIndex];
@@ -1532,6 +1534,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             instancedMesh.userData.displayType = 'item_display';
                             instancedMesh.userData.hasHat = hasHatArray; // Store hat info for gizmo
                             instancedMesh.instanceMatrix.needsUpdate = true;
+                            instancedMesh.frustumCulled = false;
                             instancedMesh.instanceMatrix.array = matrices;
                             instancedMesh.layers.enable(2);
                             instancedMesh.computeBoundingSphere();
