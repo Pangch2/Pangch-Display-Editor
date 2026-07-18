@@ -293,6 +293,7 @@ function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMes
     const chunk = new InstancedMesh(sourceMesh.geometry.clone(), material, capacity);
     if (sourceMesh.instanceColor) chunk.instanceColor = sourceMesh.instanceColor.clone();
     chunk.count = 0;
+    chunk.userData.pdeDuplicateChunk = true;
     chunk.userData.displayType = sourceMesh.userData?.displayType;
     chunk.userData.displayTypes = new Map<number, string>();
     if (sourceMesh.userData?.hasHat) chunk.userData.hasHat = [];

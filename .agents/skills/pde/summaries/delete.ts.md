@@ -23,4 +23,4 @@ Uses a shared temporary matrix for swap-pop instance handling.
 - `renderer/controls/input/handle-key.ts`
 
 ## Notes
-Deletion now assumes InstancedMesh object instances only. Swap-pop still updates group references after compaction.
+Deletion assumes InstancedMesh object instances only. Swap-pop updates group references after compaction; emptied duplication-only chunks are detached and their instance/geometry GPU resources are disposed.

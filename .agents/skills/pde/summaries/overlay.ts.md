@@ -54,4 +54,5 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 ## Notes
 - Selectable object instances use InstancedMesh paths.
 - Selection boxes use one InstancedMesh; vertex sprites and drag boxes reuse shared GPU resources instead of recreating materials or geometry.
+- Replaced selection InstancedMeshes are disposed so large instance buffers do not remain allocated after deselection or deletion.
 - Repeated hover events for the same sprite are ignored; selection refreshes clear the transient hover guide.

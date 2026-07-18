@@ -98,6 +98,11 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
 
     mesh.instanceMatrix.needsUpdate = true;
     if (uvAttr) uvAttr.needsUpdate = true;
+    if (mesh.count === 0 && mesh.userData.pdeDuplicateChunk) {
+        mesh.removeFromParent();
+        mesh.dispose();
+        mesh.geometry.dispose();
+    }
 }
 
 export interface DeleteSelectionCallbacks {

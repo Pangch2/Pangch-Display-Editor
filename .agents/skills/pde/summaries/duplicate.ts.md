@@ -33,7 +33,7 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 - InstancedMesh objects copy matrix/color/instanced attribute rows into available slots and increase `mesh.count`; when capacity is full, duplication first consumes a prewarmed spare chunk, otherwise creates another InstancedMesh chunk instead of resizing existing WebGPU buffers.
 - Per-instance geometry attributes such as atlas UV offsets/transforms are copied with typed-array slices from source instance to appended instance so texture mapping is preserved.
 - UUID-indexed NBT, brightness, and texture values are copied to the clone so its properties panel and later edits retain the source values.
-- New chunks clone the source geometry/materials and instance-color buffer, remain hidden while empty or being populated, and become visible only after all copied GPU attributes are marked for upload; idle prewarm skips stale source meshes removed by project reloads.
+- New chunks clone the source geometry/materials and instance-color buffer, carry a `pdeDuplicateChunk` marker for deletion cleanup, remain hidden while empty or being populated, and become visible only after all copied GPU attributes are marked for upload; idle prewarm skips stale source meshes removed by project reloads.
 - Normal append path expects meshes created by `mesh-builder.ts` to have spare capacity; chunk spillover handles unlimited repeated duplication without rebinding existing buffers.
 - Group clone jobs rely on `group.ts` for structure cloning and object traversal.
 - `Duplicate timings` pbde log emits one summary line with job counts and timing buckets when enabled.

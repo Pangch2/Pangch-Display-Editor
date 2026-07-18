@@ -533,6 +533,7 @@ export function updateSelectionOverlay(
 ): void {
     if (selectionOverlay) {
         scene.remove(selectionOverlay);
+        selectionOverlay.dispose();
         selectionOverlay = null;
     }
 
