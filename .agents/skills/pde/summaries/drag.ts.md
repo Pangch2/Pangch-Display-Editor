@@ -19,7 +19,6 @@ Handles marquee selection and drag initiation, and applies transform deltas back
 ## Used By (known callers)
 - `renderer/controls/gizmo/gizmo.ts`
 - `renderer/ui/object-properties.ts` -- applies property-edit deltas through `applyDeltaToSelection`.
-- `renderer/controls/selection/drag.test.ts` -- checks sheared projected-box marquee intersection.
 
 ## Notes
 Marquee selection traverses InstancedMesh objects only and intersects the marquee with each projected box's convex hull, avoiding screen-AABB false positives for rotated or sheared instances. Shift/Ctrl behavior and drag-time selection replacement are unchanged.
