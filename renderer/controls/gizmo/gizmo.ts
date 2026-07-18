@@ -1475,8 +1475,35 @@ export function initGizmo({
         updateSelectionOverlay();
     });
     window.addEventListener('pde:replace-object-selection', event => {
-        const { mesh, instanceId } = (event as CustomEvent<{ mesh: PdeMesh; instanceId: number }>).detail;
-        _replaceSelectionWithObjectsMap(new Map([[mesh, new Set([instanceId])]]));
+        const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } = (event as CustomEvent<{
+            oldMesh: PdeMesh;
+            oldInstanceId: number;
+            oldLastInstanceId: number;
+            mesh: PdeMesh;
+            instanceId: number;
+        }>).detail;
+        const objects = new Map(Array.from(currentSelection.objects, ([selectedMesh, ids]) => [selectedMesh, new Set(ids)]));
+        const oldIds = objects.get(oldMesh);
+        const replaced = oldIds?.delete(oldInstanceId) ?? false;
+        const moved = oldInstanceId < oldLastInstanceId && (oldIds?.delete(oldLastInstanceId) ?? false);
+        if (moved) oldIds!.add(oldInstanceId);
+        if (oldIds?.size === 0) objects.delete(oldMesh);
+        if (replaced) {
+            const replacementIds = objects.get(mesh) ?? new Set<number>();
+            replacementIds.add(instanceId);
+            objects.set(mesh, replacementIds);
+        }
+        if (!replaced && !moved) return;
+
+        let primary = currentSelection.primary;
+        if (primary?.type === 'object' && primary.mesh === oldMesh) {
+            if (primary.instanceId === oldInstanceId) primary = { type: 'object', mesh, instanceId };
+            else if (moved && primary.instanceId === oldLastInstanceId) primary = { type: 'object', mesh: oldMesh, instanceId: oldInstanceId };
+        }
+        _replaceSelectionWithGroupsAndObjects(new Set(currentSelection.groups), objects, {
+            preserveAnchors: true,
+            explicitPrimary: primary
+        });
     });
 
     return {

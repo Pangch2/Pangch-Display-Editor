@@ -37,7 +37,7 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - TransformControls caches merged selected ranges at drag start; `updateGizmo()` changes one shared cumulative drag uniform per frame while applying incremental deltas only to vertex overlays and drag-time UI events.
 - Drag end commits CPU and outline matrices without an extra render, then immediately resets the GPU preview; loaded and overlay instance matrices use WebGPU storage buffers that upload the committed matrices in the next render without the large interleaved-buffer delay.
 - Selection overlay refreshes emit `pde:selection-transform-context` with the current gizmo world pivot so property edits honor origin, center, and custom pivot modes.
-- Single-object model replacement events run through the normal selection replacement path, resetting stale pivot state before recomputing the new model's origin and overlay.
+- Model replacement events preserve the current group/object multi-selection, replace only the rebuilt object, remap a selected swap-pop source instance, and retain the primary selection where possible.
 - Selection transform events expose the active `pivotMode` and `multiCustomPivotLocal`; the latter converts the current helper pivot through the primary group/object inverse world matrix, with the captured local anchor only as a fallback.
 - `pde:multi-selection-pivot-change` commits property-panel pivot edits through the normal custom-pivot path, updates all multi-selection anchors, and refreshes the overlay.
 - Committing a custom pivot entered from center mode switches the active pivot mode to origin instead of restoring center.

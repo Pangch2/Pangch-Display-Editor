@@ -21,7 +21,7 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - `calculateAvgOriginForChildren(children, out)` -- averages group-child origins in world space.
 - `getGroupWorldMatrixWithFallback(groupId, out)` -- gets stored group transform or composes its fallback.
 - `unionTransformedBox3(targetBox, localBox, matrix, tempBox)` -- unions transformed local bounds.
-- `getInstanceLocalBox(mesh, instanceId)` -- returns instance-local bounds.
+- `getInstanceLocalBox(mesh, instanceId, out?)` -- returns instance-local bounds, optionally reusing an output box.
 - `getInstanceWorldMatrix(mesh, instanceId, outMatrix)` -- returns the instance world matrix.
 - `getGroupLocalBoundingBox(groupId)` -- calculates group bounds in group-local space.
 - `getGroupOriginWorld(groupId, out)` -- resolves a group's world origin.
@@ -41,7 +41,7 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - `refreshSelectionPointColors(selectedVertexKeys)` -- reapplies selected vertex materials.
 
 ## Internal State
-- Active overlay objects, loaded group root, drag-bound typed arrays, and the last hovered sprite are module state.
+- Active overlay objects, retained selection-overlay capacity, loaded group root, drag-bound typed arrays, and the last hovered sprite are module state.
 - Unit geometries and selection, vertex, axis, and multi-selection materials are shared for the module lifetime.
 
 ## Dependencies (imports)
@@ -56,7 +56,8 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 ## Notes
 - Selectable object instances use InstancedMesh paths.
 - Selected outlines use the same shared TSL drag matrix as entity geometry, while queued overlay boxes are masked out.
-- Selection overlay instance matrices use WebGPU storage attributes and are uploaded once at drag end instead of on every preview frame.
+- Selection overlay instance matrices use WebGPU storage attributes and are uploaded on selection changes or once at drag end instead of on every preview frame.
 - Selection boxes use one InstancedMesh; vertex sprites and drag boxes reuse shared GPU resources instead of recreating materials or geometry.
-- Replaced selection InstancedMeshes are disposed so large instance buffers do not remain allocated after deselection or deletion.
+- The selection InstancedMesh and power-of-two-capacity buffers persist across deselection and only reallocate when the required capacity grows; replaced buffers are disposed.
+- Normal selection mode writes matrices, colors, and drag flags directly into retained buffers with shared temporaries; vertex metadata is allocated only in vertex mode.
 - Repeated hover events for the same sprite are ignored; selection refreshes clear the transient hover guide.

@@ -58,13 +58,10 @@ interface OverlayItemSource {
     id?: string;
     mesh?: Mesh | InstancedMesh;
     instanceId?: number;
-    cachedLocalCenter?: Vector3;
-    cachedLocalSize?: Vector3;
 }
 
 interface OverlayItem {
     matrix: Matrix4;
-    color: number;
     source: OverlayItemSource;
     gizmoPosition?: Vector3;
     gizmoQuaternion?: Quaternion;
@@ -76,8 +73,12 @@ interface OverlayItem {
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();
 const _TMP_BOX3_A = new Box3();
+const _TMP_BOX3_B = new Box3();
 const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
+const _TMP_VEC3_C = new Vector3();
+const _UNIT_SIZE = new Vector3(1, 1, 1);
+const _TMP_COLOR = new Color();
 
 let loadedObjectGroup: Group | null = null;
 let _dragCachePos = new Float32Array(0);
@@ -285,22 +286,21 @@ export function unionTransformedBox3(targetBox: Box3, localBox: Box3, matrix: Ma
     targetBox.union(tempBox);
 }
 
-export function getInstanceLocalBox(mesh: PdeMesh, instanceId: number): Box3 | null {
+export function getInstanceLocalBox(mesh: PdeMesh, instanceId: number, out = new Box3()): Box3 | null {
     if (!mesh) return null;
 
     if (!mesh.geometry) return null;
     if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
     if (!mesh.geometry.boundingBox) return null;
 
-    let box = mesh.geometry.boundingBox.clone();
+    out.copy(mesh.geometry.boundingBox);
 
     if (getDisplayType(mesh, instanceId) === 'item_display' && mesh.userData?.hasHat && !mesh.userData.hasHat[instanceId]) {
-        const center = new Vector3();
-        box.getCenter(center);
-        box = new Box3().setFromCenterAndSize(center, new Vector3(1, 1, 1));
+        out.getCenter(_TMP_VEC3_C);
+        out.setFromCenterAndSize(_TMP_VEC3_C, _UNIT_SIZE);
     }
 
-    return box;
+    return out;
 }
 
 export function getInstanceWorldMatrix(mesh: PdeMesh, instanceId: number, outMatrix: Matrix4): Matrix4 {
@@ -510,9 +510,44 @@ export function prepareMultiSelectionDrag(currentSelection: SelectionState): voi
 // --- Overlay State ---
 
 let selectionOverlay: InstancedMesh | null = null;
+// ponytail: retain peak capacity; add explicit shrinking only if million-instance selections make memory measurable.
+let selectionOverlayCapacity = 0;
 let selectionPointsOverlay: Group | null = null;
 let multiSelectionOverlay: Group | null = null;
 let hoveredVertex: Sprite | null = null;
+
+function countQueueItems(items: QueueItem[]): number {
+    let count = 0;
+    for (const item of items) count += item.type === 'bundle' && item.items ? countQueueItems(item.items) : 1;
+    return count;
+}
+
+function ensureSelectionOverlay(scene: Scene, requiredCount: number): InstancedMesh {
+    if (!selectionOverlay || requiredCount > selectionOverlayCapacity) {
+        selectionOverlay?.removeFromParent();
+        selectionOverlay?.dispose();
+        (_overlayUnitGeo.getAttribute(dragSelectedAttributeName) as InstancedBufferAttribute | undefined)?.dispose();
+
+        selectionOverlayCapacity = 2 ** Math.ceil(Math.log2(Math.max(1, requiredCount)));
+        _overlayUnitGeo.setAttribute(dragSelectedAttributeName, new InstancedBufferAttribute(new Float32Array(selectionOverlayCapacity), 1));
+
+        selectionOverlay = new InstancedMesh(_overlayUnitGeo, _selectionOverlayMat, 0);
+        selectionOverlay.instanceMatrix = new StorageInstancedBufferAttribute(selectionOverlayCapacity, 16);
+        selectionOverlay.renderOrder = 1;
+        selectionOverlay.matrixAutoUpdate = false;
+        selectionOverlay.frustumCulled = false;
+    }
+
+    if (selectionOverlay.parent !== scene) scene.add(selectionOverlay);
+    return selectionOverlay;
+}
+
+function hideSelectionOverlay(): void {
+    if (!selectionOverlay) return;
+    selectionOverlay.count = 0;
+    selectionOverlay.visible = false;
+    selectionOverlay.userData['selectedCount'] = 0;
+}
 
 function setBoxLineTransform(line: LineSegments, box: Box3): void {
     box.getCenter(line.position);
@@ -534,12 +569,6 @@ export function updateSelectionOverlay(
     selectionHelper: Mesh,
     selectedVertexKeys: Set<string>
 ): void {
-    if (selectionOverlay) {
-        scene.remove(selectionOverlay);
-        selectionOverlay.dispose();
-        selectionOverlay = null;
-    }
-
     if (selectionPointsOverlay) {
         scene.remove(selectionPointsOverlay);
         const hoverLine = selectionPointsOverlay.getObjectByName('VertexHoverLine') as Line | undefined;
@@ -555,11 +584,47 @@ export function updateSelectionOverlay(
     }
 
     const hasAnySelection = (currentSelection.groups && currentSelection.groups.size > 0) || (currentSelection.objects && currentSelection.objects.size > 0);
-    if (!hasAnySelection && vertexQueue.length === 0) return;
+    if (!hasAnySelection && vertexQueue.length === 0) {
+        hideSelectionOverlay();
+        return;
+    }
 
     const itemsToRender: OverlayItem[] = [];
+    const queueItemsToRender: OverlayItem[] = [];
     const tempCenter = _TMP_VEC3_A;
     const tempSize = _TMP_VEC3_B;
+    const overlay = ensureSelectionOverlay(
+        scene,
+        (currentSelection.groups?.size || 0) + _getSelectedObjectCount(currentSelection) + countQueueItems(vertexQueue)
+    );
+    const dragSelected = _overlayUnitGeo.getAttribute(dragSelectedAttributeName) as InstancedBufferAttribute;
+    let overlayCount = 0;
+    let selectedCount = 0;
+
+    const addOverlayItem = (
+        matrix: Matrix4,
+        color: number,
+        selected: boolean,
+        source?: OverlayItemSource,
+        gizmoPosition?: Vector3,
+        gizmoQuaternion?: Quaternion,
+        gizmoLocalPosition?: Vector3
+    ): void => {
+        overlay.setMatrixAt(overlayCount, matrix);
+        overlay.setColorAt(overlayCount, _TMP_COLOR.setHex(color));
+        dragSelected.setX(overlayCount, selected ? 1 : 0);
+        if (selected) selectedCount++;
+        if (isVertexMode && source) {
+            (selected ? itemsToRender : queueItemsToRender).push({
+                matrix: matrix.clone(),
+                source,
+                gizmoPosition,
+                gizmoQuaternion,
+                gizmoLocalPosition
+            });
+        }
+        overlayCount++;
+    };
     
     if (currentSelection.groups) {
         for (const groupId of currentSelection.groups) {
@@ -567,30 +632,28 @@ export function updateSelectionOverlay(
             if (!localBox || localBox.isEmpty()) continue;
             localBox.getSize(tempSize);
             localBox.getCenter(tempCenter);
-            const groupWorld = getGroupWorldMatrixWithFallback(groupId, new Matrix4());
-            const instanceMat = new Matrix4().makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(groupWorld);
-            itemsToRender.push({ matrix: instanceMat, color: 0x6FA21C, source: { type: 'group', id: groupId, cachedLocalCenter: tempCenter.clone(), cachedLocalSize: tempSize.clone() } });
+            const groupWorld = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
+            const instanceMat = _TMP_MAT4_B.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(groupWorld);
+            addOverlayItem(instanceMat, 0x6FA21C, true, isVertexMode ? { type: 'group', id: groupId } : undefined);
         }
     }
 
     if (currentSelection.objects) {
         for (const [mesh, ids] of currentSelection.objects) {
             for (const id of ids) {
-                const localBox = getInstanceLocalBox(mesh, id);
+                const localBox = getInstanceLocalBox(mesh, id, _TMP_BOX3_B);
                 if (!localBox) continue;
                 localBox.getSize(tempSize);
                 localBox.getCenter(tempCenter);
-                const objTempMat = new Matrix4();
-                getInstanceWorldMatrix(mesh, id, objTempMat);
-                const instanceMat = new Matrix4().makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(objTempMat);
+                const objWorld = getInstanceWorldMatrix(mesh, id, _TMP_MAT4_A);
+                const instanceMat = _TMP_MAT4_B.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(objWorld);
                 const displayType = getDisplayType(mesh, id);
                 const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
-                itemsToRender.push({ matrix: instanceMat, color: color, source: { type: 'object', mesh, instanceId: id, cachedLocalCenter: tempCenter.clone(), cachedLocalSize: tempSize.clone() } });
+                addOverlayItem(instanceMat, color, true, isVertexMode ? { type: 'object', mesh, instanceId: id } : undefined);
             }
         }
     }
 
-    const queueItemsToRender: OverlayItem[] = [];
     const groups = getGroups();
     const processQueueItem = (item: QueueItem) => {
         if (item.type === 'bundle' && item.items) {
@@ -611,50 +674,39 @@ export function updateSelectionOverlay(
             if (!localBox.isEmpty()) {
                 localBox.getSize(tempSize);
                 localBox.getCenter(tempCenter);
-                const groupWorld = getGroupWorldMatrixWithFallback(item.id, new Matrix4());
-                const instanceMat = new Matrix4().makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(groupWorld);
-                let gPos = item.gizmoLocalPosition ? item.gizmoLocalPosition.clone().applyMatrix4(groupWorld) : undefined;
-                let gQuat = item.gizmoLocalQuaternion && gPos ? getRotationFromMatrix(groupWorld).multiply(item.gizmoLocalQuaternion) : undefined;
-                queueItemsToRender.push({ matrix: instanceMat, color: 0x6FA21C, source: { type: 'group', id: item.id }, gizmoPosition: gPos, gizmoQuaternion: gQuat, gizmoLocalPosition: item.gizmoLocalPosition });
+                const groupWorld = getGroupWorldMatrixWithFallback(item.id, _TMP_MAT4_A);
+                const instanceMat = _TMP_MAT4_B.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(groupWorld);
+                const gPos = isVertexMode && item.gizmoLocalPosition ? item.gizmoLocalPosition.clone().applyMatrix4(groupWorld) : undefined;
+                const gQuat = isVertexMode && item.gizmoLocalQuaternion && gPos ? getRotationFromMatrix(groupWorld).multiply(item.gizmoLocalQuaternion) : undefined;
+                addOverlayItem(instanceMat, 0x6FA21C, false, isVertexMode ? { type: 'group', id: item.id } : undefined, gPos, gQuat, item.gizmoLocalPosition);
             }
         } else if (item.type === 'object' && item.mesh && item.instanceId !== undefined) {
-            const localBox = getInstanceLocalBox(item.mesh, item.instanceId);
+            const localBox = getInstanceLocalBox(item.mesh, item.instanceId, _TMP_BOX3_B);
             if (localBox) {
                 localBox.getSize(tempSize);
                 localBox.getCenter(tempCenter);
-                const worldMat = getInstanceWorldMatrix(item.mesh, item.instanceId, new Matrix4());
-                const instanceMat = new Matrix4().makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(worldMat);
-                let gPos = item.gizmoLocalPosition ? item.gizmoLocalPosition.clone().applyMatrix4(worldMat) : undefined;
-                let gQuat = item.gizmoLocalQuaternion && gPos ? getRotationFromMatrix(worldMat).multiply(item.gizmoLocalQuaternion) : undefined;
+                const worldMat = getInstanceWorldMatrix(item.mesh, item.instanceId, _TMP_MAT4_A);
+                const instanceMat = _TMP_MAT4_B.makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(worldMat);
+                const gPos = isVertexMode && item.gizmoLocalPosition ? item.gizmoLocalPosition.clone().applyMatrix4(worldMat) : undefined;
+                const gQuat = isVertexMode && item.gizmoLocalQuaternion && gPos ? getRotationFromMatrix(worldMat).multiply(item.gizmoLocalQuaternion) : undefined;
                 const displayType = getDisplayType(item.mesh, item.instanceId);
                 const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
-                queueItemsToRender.push({ matrix: instanceMat, color, source: { type: 'object', mesh: item.mesh, instanceId: item.instanceId }, gizmoPosition: gPos, gizmoQuaternion: gQuat, gizmoLocalPosition: item.gizmoLocalPosition });
+                addOverlayItem(instanceMat, color, false, isVertexMode ? { type: 'object', mesh: item.mesh, instanceId: item.instanceId } : undefined, gPos, gQuat, item.gizmoLocalPosition);
             }
         }
     };
     vertexQueue.forEach(processQueueItem);
 
-    const allOverlayItems = [...itemsToRender, ...queueItemsToRender];
-
-    if (allOverlayItems.length > 0) {
-        const dragSelected = new InstancedBufferAttribute(new Float32Array(allOverlayItems.length), 1);
-        dragSelected.array.fill(1, 0, itemsToRender.length);
-        _overlayUnitGeo.setAttribute(dragSelectedAttributeName, dragSelected);
-        selectionOverlay = new InstancedMesh(_overlayUnitGeo, _selectionOverlayMat, allOverlayItems.length);
-        selectionOverlay.instanceMatrix = new StorageInstancedBufferAttribute(allOverlayItems.length, 16);
-        selectionOverlay.renderOrder = 1;
-        selectionOverlay.matrixAutoUpdate = false;
-        selectionOverlay.frustumCulled = false;
-        selectionOverlay.userData['items'] = allOverlayItems;
-        selectionOverlay.userData['selectedCount'] = itemsToRender.length;
-        const colorObj = new Color();
-        allOverlayItems.forEach((item, index) => {
-            selectionOverlay!.setMatrixAt(index, item.matrix);
-            colorObj.setHex(item.color);
-            selectionOverlay!.setColorAt(index, colorObj);
-        });
-        scene.add(selectionOverlay);
+    overlay.count = overlayCount;
+    overlay.visible = overlayCount > 0;
+    overlay.userData['selectedCount'] = selectedCount;
+    if (overlayCount > 0) {
+        overlay.instanceMatrix.needsUpdate = true;
+        if (overlay.instanceColor) overlay.instanceColor.needsUpdate = true;
+        dragSelected.needsUpdate = true;
     }
+
+    const allOverlayItems = isVertexMode ? [...itemsToRender, ...queueItemsToRender] : [];
 
     if (allOverlayItems.length > 0 && isVertexMode) {
         selectionPointsOverlay = new Group();

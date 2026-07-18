@@ -863,10 +863,41 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
             ? Array.from(ids, instanceId => ({ key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId }))
             : [])
     ];
+    if (!selection?.primary && current.length > 1) {
+        const sceneOrder = new Map<string, number>();
+        const addObject = (uuid: string): void => {
+            const key = `object:${uuid}`;
+            if (!sceneOrder.has(key)) sceneOrder.set(key, sceneOrder.size);
+        };
+        const addGroup = (groupId: string): void => {
+            const key = `group:${groupId}`;
+            if (sceneOrder.has(key)) return;
+            sceneOrder.set(key, sceneOrder.size);
+            for (const child of groups?.get(groupId)?.children ?? []) {
+                if (child.type === 'group') addGroup(child.id);
+                else addObject(child.id);
+            }
+        };
+        for (const entry of (loadedObjectGroup.userData.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined) ?? []) {
+            if (entry.type === 'group') addGroup(entry.id);
+            else addObject(entry.id);
+        }
+        groups?.forEach(group => { if (group.parent === null) addGroup(group.id); });
+        (loadedObjectGroup.userData.objectNames as Map<string, string> | undefined)?.forEach((_, uuid) => addObject(uuid));
+        const keyToUuid = loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
+        const rank = (item: PropertySelection): number => {
+            if ('group' in item) return sceneOrder.get(`group:${item.groupId}`) ?? Number.MAX_SAFE_INTEGER;
+            const uuid = keyToUuid?.get(GroupUtils.getGroupKey(item.mesh, item.instanceId));
+            return uuid ? sceneOrder.get(`object:${uuid}`) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+        };
+        current.sort((a, b) => rank(a) - rank(b));
+    }
     if (renderMulti) renderMultiSelectionProperties(selection, pivotWorld, current.length > 1 ? multiCustomPivotLocal ?? new Vector3() : undefined);
     const propertyPivotWorld = current.length === 1 ? pivotWorld : undefined;
     const currentByKey = new Map(current.map(item => [item.key, item]));
-    selectionOrder = selectionOrder.filter(item => currentByKey.has(item.key)).map(item => currentByKey.get(item.key)!);
+    selectionOrder = selection?.primary
+        ? selectionOrder.filter(item => currentByKey.has(item.key)).map(item => currentByKey.get(item.key)!)
+        : [];
     const known = new Set(selectionOrder.map(item => item.key));
     const primaryKey = selection?.primary?.type === 'group'
         ? `group:${selection.primary.id}`
@@ -910,6 +941,36 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
     nextSections.forEach(section => sectionObserver.observe(section));
 }
 
+window.addEventListener('pde:replace-object-selection', event => {
+    const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } = (event as CustomEvent<{
+        oldMesh: InstancedMesh;
+        oldInstanceId: number;
+        oldLastInstanceId: number;
+        mesh: InstancedMesh;
+        instanceId: number;
+    }>).detail;
+    selectionOrder = selectionOrder.map((item, index) => {
+        let next = item;
+        if ('mesh' in item && item.mesh === oldMesh && item.instanceId === oldInstanceId) {
+            next = { key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId };
+        } else if ('mesh' in item && item.mesh === oldMesh && item.instanceId === oldLastInstanceId) {
+            next = { key: `object:${oldMesh.uuid}:${oldInstanceId}`, mesh: oldMesh, instanceId: oldInstanceId };
+        }
+        if (next === item || !('mesh' in next)) return next;
+
+        const section = objectProperties.children[index] as HTMLElement | undefined;
+        if (!section?.hasAttribute('data-hydrated')) {
+            if (section) section.dataset.key = next.key;
+            return next;
+        }
+        section.style.minHeight = `${section.offsetHeight}px`;
+        const replacement = renderObject(next.mesh, next.instanceId, index, index === 0 ? currentPivotWorld : undefined);
+        section.replaceChildren(...replacement.childNodes);
+        section.dataset.key = next.key;
+        sectionInputs.delete(section);
+        return next;
+    });
+});
 window.addEventListener('pde:selection-changed', event => renderSelection((event as CustomEvent<SelectionState>).detail));
 window.addEventListener('pde:selection-transform-context', event => {
     const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; pivotMode: string; multiCustomPivotLocal?: Vector3 }>).detail;

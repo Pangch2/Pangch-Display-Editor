@@ -335,6 +335,7 @@ canvas {
 }
 
 .object-property {
+  box-sizing: border-box;
   padding: 8px 12px 12px;
   border-bottom: 1px solid #3a3a3e;
   content-visibility: auto;

@@ -1737,6 +1737,7 @@ export async function replaceDisplayObject(
     await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
     const replacement = (ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }>).get(replacementUuid);
     if (!replacement) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
+    const oldLastInstanceId = oldRef.mesh.count - 1;
 
     deleteSelectedItems(loadedObjectGroup, {
         groups: new Set(),
@@ -1788,7 +1789,13 @@ export async function replaceDisplayObject(
     }
 
     window.dispatchEvent(new CustomEvent('pde:replace-object-selection', {
-        detail: { mesh: replacement.mesh, instanceId: replacement.instanceId }
+        detail: {
+            oldMesh: oldRef.mesh,
+            oldInstanceId: oldRef.instanceId,
+            oldLastInstanceId,
+            mesh: replacement.mesh,
+            instanceId: replacement.instanceId
+        }
     }));
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }

@@ -114,7 +114,10 @@ async function getBlockPropertyOptions(name: string, current: Record<string, str
         };
         blockstate.multipart.forEach((part: any) => collect(part?.when));
     }
-    return Object.fromEntries(Object.entries(options).map(([key, values]) => [key, [...values]]));
+    return Object.fromEntries(Object.entries(options).map(([key, values]) => [
+        key,
+        [...values].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    ]));
 }
 
 
