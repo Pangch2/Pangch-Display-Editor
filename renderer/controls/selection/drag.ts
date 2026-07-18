@@ -28,6 +28,65 @@ interface OrbitControlsLike {
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_CORNERS = new Array(8).fill(0).map(() => new Vector3());
 
+export function projectedBoxIntersectsMarquee(
+    corners: Vector3[],
+    cornerCount: number,
+    minX: number,
+    maxX: number,
+    minY: number,
+    maxY: number
+): boolean {
+    const points = corners.slice(0, cornerCount).sort((a, b) => a.x - b.x || a.y - b.y);
+    if (points.length === 0) return false;
+
+    const hull: Vector3[] = [];
+    const appendPoint = (point: Vector3) => {
+        while (hull.length >= 2) {
+            const a = hull[hull.length - 2];
+            const b = hull[hull.length - 1];
+            if ((b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x) > 0) break;
+            hull.pop();
+        }
+        hull.push(point);
+    };
+
+    for (const point of points) appendPoint(point);
+    const lowerLength = hull.length;
+    for (let i = points.length - 2; i >= 0; i--) {
+        while (hull.length > lowerLength) {
+            const a = hull[hull.length - 2];
+            const b = hull[hull.length - 1];
+            const point = points[i];
+            if ((b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x) > 0) break;
+            hull.pop();
+        }
+        hull.push(points[i]);
+    }
+    hull.pop();
+
+    for (let i = 0; i < hull.length; i++) {
+        const a = hull[i];
+        const b = hull[(i + 1) % hull.length];
+        const axisX = a.y - b.y;
+        const axisY = b.x - a.x;
+        if (axisX === 0 && axisY === 0) continue;
+
+        let hullMin = Infinity;
+        let hullMax = -Infinity;
+        for (const point of hull) {
+            const projection = point.x * axisX + point.y * axisY;
+            hullMin = Math.min(hullMin, projection);
+            hullMax = Math.max(hullMax, projection);
+        }
+
+        const rectMin = Math.min(minX * axisX, maxX * axisX) + Math.min(minY * axisY, maxY * axisY);
+        const rectMax = Math.max(minX * axisX, maxX * axisX) + Math.max(minY * axisY, maxY * axisY);
+        if (hullMax < rectMin || hullMin > rectMax) return false;
+    }
+
+    return true;
+}
+
 export interface DragInitOptions {
     renderer: Renderer;
     camera: Camera;
@@ -302,9 +361,10 @@ export function initDrag({
 
                             if (v.z < -1 || v.z > 1) continue;
 
-                            validCornerCount++;
                             const sx = (v.x * 0.5 + 0.5) * canvasRect.width;
                             const sy = (-v.y * 0.5 + 0.5) * canvasRect.height;
+
+                            _TMP_CORNERS[validCornerCount++].set(sx, sy, v.z);
 
                             if (sx < minSx) minSx = sx;
                             if (sx > maxSx) maxSx = sx;
@@ -314,6 +374,7 @@ export function initDrag({
 
                         if (validCornerCount === 0) continue;
                         if (minSx > maxX || maxSx < minX || minSy > maxY || maxSy < minY) continue;
+                        if (!projectedBoxIntersectsMarquee(_TMP_CORNERS, validCornerCount, minX, maxX, minY, maxY)) continue;
 
                         if (!ignoreGroups && objectToGroup) {
                             const key = getGroupKey(obj as InstancedMesh, instanceId);

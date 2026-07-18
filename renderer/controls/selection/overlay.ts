@@ -638,7 +638,6 @@ export function updateSelectionOverlay(
         selectionOverlay.instanceMatrix.setUsage(DynamicDrawUsage);
         selectionOverlay.renderOrder = 1;
         selectionOverlay.matrixAutoUpdate = false;
-        selectionOverlay.frustumCulled = false;
         selectionOverlay.userData['items'] = allOverlayItems;
         const colorObj = new Color();
         allOverlayItems.forEach((item, index) => {
