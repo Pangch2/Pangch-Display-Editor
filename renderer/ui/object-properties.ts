@@ -1,7 +1,7 @@
 import { Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { replaceDisplayObject, updateDisplayObjectMatrix, updatePlayerHeadTexture } from '../load-project/mesh-builder';
+import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture } from '../load-project/mesh-builder';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel-types';
 import * as GroupUtils from '../controls/grouping/group';
@@ -305,8 +305,8 @@ function brightnessProperty(brightness: { sky?: number; block?: number }, onChan
     const valuesList = Array.from({ length: 16 }, (_, value) => String(value));
     const values = document.createElement('span');
     values.style.cssText = 'display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr);gap:4px;align-items:center';
-    const sky = propertySelect(String(brightness.sky ?? 0), valuesList, value => onChange({ sky: Number(value), block: brightness.block ?? 0 }));
-    const block = propertySelect(String(brightness.block ?? 0), valuesList, value => onChange({ sky: brightness.sky ?? 0, block: Number(value) }));
+    const sky = propertySelect(String(brightness.sky ?? 15), valuesList, value => onChange({ sky: Number(value), block: brightness.block ?? 0 }));
+    const block = propertySelect(String(brightness.block ?? 0), valuesList, value => onChange({ sky: brightness.sky ?? 15, block: Number(value) }));
     values.append('하늘', sky, '블럭', block);
     return metadataProperty('brightness', '밝기', values);
 }
@@ -506,8 +506,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const brightnessMap = loadedObjectGroup.userData.objectBrightness as Map<string, { sky?: number; block?: number }>;
     const brightness = brightnessMap.get(uuid) ?? {};
     const updateBrightness = async (value: { sky: number; block: number }) => {
-        brightnessMap.set(uuid, value);
-        await replaceDisplayObject(uuid, name, { pivotMode: currentPivotMode, pivotWorld: currentPivotWorld });
+        updateObjectBrightness(uuid, value);
     };
     if (isItemDisplay) {
         const metadataSection = propertySection('metadata', '개체 속성');

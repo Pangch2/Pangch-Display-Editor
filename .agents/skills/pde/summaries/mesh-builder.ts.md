@@ -17,6 +17,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
 - `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
 - `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
+- `updateObjectBrightness(objectUuid, brightness): void` -- updates one object's stored brightness and per-instance sky-light color without rebuilding its mesh.
 - `replaceDisplayObject(objectUuid, name, transformContext?): Promise<void>` -- rebuilds one display object through the PBDE pipeline, removes existing player-head render transforms, preserves the active center/origin pivot and any stored custom pivot in world space, and requests normal gizmo selection replacement.
 
 ## Internal State
@@ -29,6 +30,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Per-load material preload cache resolves unique signature-group materials before `InstancedMesh` creation, with placeholder material updates retained only as a fallback for failed or late material loads.
 - Signature groups retain parser-provided instance metadata by reference, cache their UV-transform count once, and deduplicate material preload promises to avoid per-instance metadata copies and repeated waits during mesh creation.
 - Per-instance atlas UV transform arrays, display-type, block-property, and NBT metadata for objects that share geometry.
+- Dynamic-draw per-instance colors encode the `0..15` sky-light brightness curve, defaulting to sky `15` when metadata is absent and supporting immediate runtime brightness updates and duplication.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
 - `INITIAL_INSTANCES_PER_INSTANCED_MESH` starts block chunks at half capacity so duplicated instances can append without resizing WebGPU buffers
@@ -70,6 +72,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
 - Property-panel model changes keep the active Pivot Mode reference fixed: center uses bounds center, block origin uses local bounds minimum, and custom pivots retain their world position without changing the object transform.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
+- Brightness panel edits update the selected instance color in place; block brightness remains stored but does not affect rendering yet.
 - Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
 - Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.
 - Player-head texture edits redraw the existing atlas slot when exclusive; shared slots receive a new slot so other instances keep their skin. The instance matrix and UUID remain unchanged.

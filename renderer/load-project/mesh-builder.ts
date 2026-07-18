@@ -50,6 +50,7 @@ let currentTextureSlots = 0;
 const textureSlotQueue: Array<(value?: void) => void> = [];
 const signatureHashScratch = new ArrayBuffer(8);
 const signatureHashView = new DataView(signatureHashScratch);
+const instanceBrightnessColor = new THREE.Color();
 
 type SignatureGroup = {
     parts: GeometryMeta[];
@@ -64,6 +65,16 @@ type MaterialUpdate = {
     signature: string;
 };
 export type LoadedSelection = Map<THREE.Object3D, Set<number>>;
+
+function getSkyBrightness(sky = 15): number {
+    const level = THREE.MathUtils.clamp(sky, 0, 15) / 15;
+    return level / (4 - 3 * level);
+}
+
+function setInstanceSkyBrightness(mesh: THREE.InstancedMesh, instanceId: number, sky?: number): void {
+    mesh.setColorAt(instanceId, instanceBrightnessColor.setScalar(getSkyBrightness(sky)));
+    mesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
+}
 
 function addLoadedInstance(selection: LoadedSelection, mesh: THREE.Object3D, instanceId: number): void {
     let ids = selection.get(mesh);
@@ -1243,12 +1254,14 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     const meta = instances[sourceIndex];
                                     instanceMatrix.fromArray(meta.transform).transpose();
                                     instancedMesh.setMatrixAt(instanceId, instanceMatrix);
+                                    setInstanceSkyBrightness(instancedMesh, instanceId, meta.brightness?.sky);
                                     registerObject(instancedMesh, instanceId, meta.uuid, meta.groupId);
                                     instancedMesh.userData.displayTypes.set(instanceId, getInstanceDisplayType(meta, representativeParts[0]));
                                     addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, instanceId);
                                 }
                                 instancedMesh.count += appendCount;
                                 instancedMesh.instanceMatrix.needsUpdate = true;
+                                if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
                                 instancedMesh.computeBoundingSphere();
                                 transformStart += appendCount;
                                 if (transformStart === instances.length) break;
@@ -1346,11 +1359,13 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     const meta = instances[sourceIndex];
                                     instanceMatrix.fromArray(meta.transform).transpose();
                                     instancedMesh.setMatrixAt(i, instanceMatrix);
+                                    setInstanceSkyBrightness(instancedMesh, i, meta.brightness?.sky);
                                     registerObject(instancedMesh, i, meta.uuid, meta.groupId);
                                     instancedMesh.userData.displayTypes.set(i, getInstanceDisplayType(meta, representativeParts[0]));
                                     addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, i);
                                 }
                                 instancedMesh.instanceMatrix.needsUpdate = true;
+                                if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
                                 instancedMesh.computeBoundingSphere();
                                 loadedObjectGroup.add(instancedMesh);
                                 createdInstancedMeshCount++;
@@ -1525,9 +1540,11 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             instancedMesh.computeBoundingSphere();
 
                             playerHeadItems.forEach((item, idx) => {
+                                setInstanceSkyBrightness(instancedMesh, idx, (item.brightness as { sky?: number } | undefined)?.sky);
                                 registerObject(instancedMesh, idx, item.uuid, item.groupId);
                                 addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, idx);
                             });
+                            if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
 
                             loadedObjectGroup.add(instancedMesh);
 
@@ -1763,5 +1780,15 @@ export async function replaceDisplayObject(
     window.dispatchEvent(new CustomEvent('pde:replace-object-selection', {
         detail: { mesh: replacement.mesh, instanceId: replacement.instanceId }
     }));
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+}
+
+export function updateObjectBrightness(objectUuid: string, brightness: { sky: number; block: number }): void {
+    const ud = loadedObjectGroup.userData;
+    const ref = (ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    if (!ref?.mesh?.isInstancedMesh) return;
+    (ud.objectBrightness as Map<string, { sky: number; block: number }>).set(objectUuid, brightness);
+    setInstanceSkyBrightness(ref.mesh, ref.instanceId, brightness.sky);
+    if (ref.mesh.instanceColor) ref.mesh.instanceColor.needsUpdate = true;
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }

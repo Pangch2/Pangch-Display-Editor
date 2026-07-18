@@ -20,7 +20,7 @@ import {
 } from './scene-panel-model';
 
 function getRowKey(row: ScenePanelRow): string {
-    return `${row.type}:${row.id}`;
+    return `${row.type}:${row.id}:${row.type === 'group' && scenePanelState.expandedGroupIds.has(row.id)}`;
 }
 
 function setRowPosition(el: HTMLElement, row: ScenePanelRow): void {
@@ -106,7 +106,7 @@ function makeGroupRow(row: ScenePanelRow): HTMLElement {
     const isExpanded = scenePanelState.expandedGroupIds.has(row.id);
 
     const header = document.createElement('div');
-    header.className = 'scene-tree-group scene-virtual-row';
+    header.className = `scene-tree-group scene-virtual-row${isExpanded ? ' expanded' : ''}`;
     header.dataset.groupId = row.id;
     header.dataset.displayType = 'group';
     header.draggable = true;

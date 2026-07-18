@@ -48,8 +48,8 @@ const biasedLight = add(scaledLight, float(0.4));
 const directionalLight = pow(min(float(1.0), biasedLight), 2.2);
 
 export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1) {
-  const blockLightLevel = uniform(1.0);
-  const skyLightLevel = uniform(1.0);
+  const blockLightLevel = uniform(0.0);
+  const skyLightLevel = uniform(15.0);
 
   // Instanced UV 지원
   // useInstancedUvTransform은 atlas 내 texture scale/offset까지 instance별로 적용한다.
@@ -77,10 +77,8 @@ export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstance
 
   const tintVec = getTintNode(tintHex);
 
-  const lightMapColor = add(
-    mul(max(blockLightLevel, skyLightLevel), float(0.75)),
-    float(0.25)
-  );
+  const normalizedSkyLight = skyLightLevel.div(15.0);
+  const lightMapColor = normalizedSkyLight.div(float(4.0).sub(normalizedSkyLight.mul(3.0)));
 
   const litColor = vec4(
     mul(mul(mul(diffuseNode.xyz, tintVec), directionalLight), lightMapColor),

@@ -13,7 +13,7 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 
 ## Internal State
 - Uses `scenePanelState.visibleRows` as the canonical rendered tree order.
-- Uses `scenePanelState.renderedRowEls` to track mounted virtual rows by visible index.
+- Uses `scenePanelState.renderedRowEls` to track mounted virtual rows by visible index; group row keys include expansion state so toggles and styling are recreated when it changes.
 - Uses `scenePanelState.scenePanelSpacerEl` and `scenePanelContentEl` to maintain scroll height while rendering only visible rows.
 - `scenePanelState.sceneExtraFitRaf` and `scenePanelRenderRaf` gate deferred work.
 
@@ -34,4 +34,5 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 ## Notes
 - Root rendering respects `sceneOrder` first, then falls back to groups and object names.
 - Group expand/collapse rebuilds the flat row list and spacer height, not the full scene DOM.
+- Expanded group rows receive the `expanded` class for their visual state.
 - Optional `Scene panel timings` and slow `Scene panel viewport render` logs are disabled by default and can be enabled through `localStorage` using the human-readable log name.

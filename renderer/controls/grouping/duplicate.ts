@@ -291,13 +291,14 @@ function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMes
     const capacity = Math.max(1, getInstancedCapacity(sourceMesh));
     const material = Array.isArray(sourceMesh.material) ? [...sourceMesh.material] : sourceMesh.material;
     const chunk = new InstancedMesh(sourceMesh.geometry.clone(), material, capacity);
+    if (sourceMesh.instanceColor) chunk.instanceColor = sourceMesh.instanceColor.clone();
     chunk.count = 0;
     chunk.userData.displayType = sourceMesh.userData?.displayType;
     chunk.userData.displayTypes = new Map<number, string>();
     if (sourceMesh.userData?.hasHat) chunk.userData.hasHat = [];
     chunk.frustumCulled = sourceMesh.frustumCulled;
     chunk.renderOrder = sourceMesh.renderOrder;
-    chunk.visible = sourceMesh.visible;
+    chunk.visible = false;
     chunk.layers.mask = sourceMesh.layers.mask;
     loadedObjectGroup.add(chunk);
     return chunk;
@@ -402,6 +403,7 @@ function cloneInstancedBatch(
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     }
     for (const attribute of updatedAttributes) attribute.needsUpdate = true;
+    for (const mesh of updatedMeshes) mesh.visible = sourceMesh.visible;
 
     return results;
 }
