@@ -30,6 +30,8 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Per-load material preload cache resolves unique signature-group materials before `InstancedMesh` creation, with placeholder material updates retained only as a fallback for failed or late material loads.
 - Signature groups retain parser-provided instance metadata by reference, cache their UV-transform count once, and deduplicate material preload promises to avoid per-instance metadata copies and repeated waits during mesh creation.
 - Per-instance atlas UV transform arrays, display-type, block-property, and NBT metadata for objects that share geometry.
+- Per-mesh `dragSelected` float attributes provide persistent selection masks for GPU-only gizmo previews.
+- Loaded block, item-display, and player-head meshes use WebGPU storage instance-matrix attributes so CPU transform commits avoid Three.js's 1,024-matrix uniform/interleaved split.
 - Dynamic-draw per-instance colors encode the fixed warm RGB palette for sky-light levels `0..15`, defaulting to sky `15` when metadata is absent and supporting immediate runtime brightness updates and duplication.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
@@ -57,13 +59,14 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Clears caches and scene state on non-merge load, then builds block and item display objects as InstancedMesh roots.
 - Mesh building prefers `WorkerMetadata.geometryBatches`; if absent, it groups legacy geometry metadata by `itemId` before signature matching so all parts of one scene object merge into the same InstancedMesh geometry.
 - During InstancedMesh creation, hashed part signatures avoid long model-matrix string joins, merged geometry is cached by geometry layout, and materials are normally preloaded before meshes enter the scene to avoid placeholder-to-real material swaps.
+- Rendered mesh chunks clone cached merged geometry so each chunk owns an independent `dragSelected` attribute; player-head chunks receive the same mask attribute alongside their UV offsets.
 - Batched instance metadata is reused directly instead of being normalized into duplicate transform/meta arrays; display type is derived when registering each instance.
 - When `atlasUvTransform` or `atlasUvTransforms` metadata is present, mesh chunks clone the merged geometry and attach one or more instanced UV transform attributes; each geometry group uses a material bound only to its matching transform attribute so WebGPU pipelines stay within the vertex-buffer limit.
 - Batched object metadata prefers `GeometryInstanceMeta.blockProps` over representative part props so variants grouped into one mesh still display their own properties.
 - Block and item display signature groups remain separate; loaded instanced meshes set their root `userData.displayType` from the first chunk instance and also populate `userData.displayTypes` per instance.
 - `GeometryMeta.geometryBufferKey` is used when present so same model id/index values from different packed batches do not collide.
 - Signature groups are split into 32,768-instance chunks to avoid partial rendering/dropout from oversized instanced draws.
-- Instanced meshes are allocated with spare capacity and then `mesh.count` is lowered to the active instance count so duplicate append can reuse existing matrix/UV buffers without rebinding texture attributes; tiny chunks still get 256 slots minimum to reduce duplicate-time chunk creation.
+- Instanced meshes are allocated with spare-capacity storage matrix attributes and then `mesh.count` is lowered to the active instance count so duplicate append can reuse existing matrix/UV buffers without rebinding texture attributes; tiny chunks still get 256 slots minimum to reduce duplicate-time chunk creation.
 - Non-atlas meshes retain their PBDE signature in `userData`; merge reuses only an exact signature match and falls back to normal mesh creation for atlas content or exhausted capacity. Fully reused groups skip unused material preloading.
 - Load results track new instance IDs per mesh so appending to an existing mesh does not cause its older instances to be selected.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.

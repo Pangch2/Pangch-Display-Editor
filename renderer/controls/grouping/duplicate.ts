@@ -6,7 +6,8 @@ import {
     MathUtils,
     Matrix4,
     Mesh,
-    Object3D
+    Object3D,
+    StorageInstancedBufferAttribute
 } from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
@@ -291,6 +292,7 @@ function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMes
     const capacity = Math.max(1, getInstancedCapacity(sourceMesh));
     const material = Array.isArray(sourceMesh.material) ? [...sourceMesh.material] : sourceMesh.material;
     const chunk = new InstancedMesh(sourceMesh.geometry.clone(), material, capacity);
+    chunk.instanceMatrix = new StorageInstancedBufferAttribute(capacity, 16);
     if (sourceMesh.instanceColor) chunk.instanceColor = sourceMesh.instanceColor.clone();
     chunk.count = 0;
     chunk.userData.pdeDuplicateChunk = true;

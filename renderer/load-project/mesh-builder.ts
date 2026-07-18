@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { compressSync, strToU8 } from 'fflate';
-import { createEntityMaterial } from '../entityMaterial.js';
+import { createEntityMaterial, dragSelectedAttributeName } from '../entityMaterial.js';
 import { deleteSelectedItems } from '../controls/grouping/delete';
 import * as Overlay from '../controls/selection/overlay';
 import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject } from './scene-parser';
@@ -1328,7 +1328,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             for (let chunkStart = transformStart; chunkStart < instances.length; chunkStart += INITIAL_INSTANCES_PER_INSTANCED_MESH) {
                                 const chunkCount = Math.min(INITIAL_INSTANCES_PER_INSTANCED_MESH, instances.length - chunkStart);
                                 const chunkCapacity = getAppendableInstanceCapacity(chunkCount);
-                                const meshGeometry = usesAtlasUvTransform ? mergedGeo.clone() : mergedGeo;
+                                const meshGeometry = mergedGeo.clone();
                                 if (usesAtlasUvTransform) {
                                     for (let partIndex = 0; partIndex < instancedUvTransformCount; partIndex++) {
                                         const baseUvTransform = representativeParts[partIndex]?.uvTransform ?? representativeParts[0]?.uvTransform;
@@ -1345,7 +1345,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                         meshGeometry.setAttribute(attributeName, new THREE.InstancedBufferAttribute(uvTransforms, 4));
                                     }
                                 }
+                                meshGeometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(chunkCapacity), 1));
                                 const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCapacity);
+                                instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(chunkCapacity, 16);
                                 instancedMesh.count = chunkCount;
                                 
                                 instancedMesh.userData.displayType = getInstanceDisplayType(instances[chunkStart], representativeParts[0]);
@@ -1528,14 +1530,15 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             }
                             
                             sharedGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
+                            sharedGeometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(headCapacity), 1));
 
                             const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, headCapacity);
+                            instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
                             instancedMesh.count = totalInstances;
                             instancedMesh.userData.displayType = 'item_display';
                             instancedMesh.userData.hasHat = hasHatArray; // Store hat info for gizmo
                             instancedMesh.instanceMatrix.needsUpdate = true;
                             instancedMesh.frustumCulled = false;
-                            instancedMesh.instanceMatrix.array = matrices;
                             instancedMesh.layers.enable(2);
                             instancedMesh.computeBoundingSphere();
 

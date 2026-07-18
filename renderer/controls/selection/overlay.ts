@@ -10,12 +10,14 @@ import {
     BufferAttribute,
     Color,
     Float32BufferAttribute,
+    InstancedBufferAttribute,
+    StorageInstancedBufferAttribute,
     LineBasicMaterial,
     EdgesGeometry,
     BoxGeometry,
     Material,
     LineSegments,
-    MeshBasicMaterial,
+    MeshBasicNodeMaterial,
     SpriteMaterial,
     Sprite,
     Line,
@@ -26,6 +28,7 @@ import {
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import type { GroupChildObject } from '../grouping/group';
+import { dragPreviewPositionNode, dragSelectedAttributeName } from '../../entityMaterial.js';
 
 // --- Types & Interfaces ---
 
@@ -144,7 +147,7 @@ const _axisMat = new LineBasicMaterial({
     transparent: true
 });
 
-const _selectionOverlayMat = new MeshBasicMaterial({
+const _selectionOverlayMat = new MeshBasicNodeMaterial({
     color: 0xffffff,
     depthTest: true,
     depthWrite: false,
@@ -152,6 +155,7 @@ const _selectionOverlayMat = new MeshBasicMaterial({
     opacity: 0.9,
     wireframe: true
 });
+_selectionOverlayMat.positionNode = dragPreviewPositionNode;
 
 const _vertexSpriteMat = new SpriteMaterial({
     color: 0x30333D,
@@ -633,11 +637,16 @@ export function updateSelectionOverlay(
     const allOverlayItems = [...itemsToRender, ...queueItemsToRender];
 
     if (allOverlayItems.length > 0) {
+        const dragSelected = new InstancedBufferAttribute(new Float32Array(allOverlayItems.length), 1);
+        dragSelected.array.fill(1, 0, itemsToRender.length);
+        _overlayUnitGeo.setAttribute(dragSelectedAttributeName, dragSelected);
         selectionOverlay = new InstancedMesh(_overlayUnitGeo, _selectionOverlayMat, allOverlayItems.length);
+        selectionOverlay.instanceMatrix = new StorageInstancedBufferAttribute(allOverlayItems.length, 16);
         selectionOverlay.renderOrder = 1;
         selectionOverlay.matrixAutoUpdate = false;
         selectionOverlay.frustumCulled = false;
         selectionOverlay.userData['items'] = allOverlayItems;
+        selectionOverlay.userData['selectedCount'] = itemsToRender.length;
         const colorObj = new Color();
         allOverlayItems.forEach((item, index) => {
             selectionOverlay!.setMatrixAt(index, item.matrix);
@@ -795,30 +804,17 @@ export function syncSelectionPointsOverlay(delta: Vector3): void {
 }
 
 export function syncSelectionOverlay(deltaMatrix: Matrix4): void {
-    if (!selectionOverlay && !selectionPointsOverlay) return;
-    if (selectionOverlay) {
-        const updateMesh = (mesh: InstancedMesh) => {
-            const items = mesh.userData['items'] as OverlayItem[];
-            for (let i = 0; i < mesh.count; i++) {
-                const src = items[i]?.source;
-                if (!src) continue;
-                const tempMat = new Matrix4();
-                if (src.type === 'group' && src.id) {
-                    const groupWorld = getGroupWorldMatrixWithFallback(src.id, new Matrix4());
-                    if (src.cachedLocalCenter && src.cachedLocalSize) tempMat.makeTranslation(src.cachedLocalCenter.x, src.cachedLocalCenter.y, src.cachedLocalCenter.z).scale(src.cachedLocalSize).premultiply(groupWorld);
-                    else { const lb = getGroupLocalBoundingBox(src.id); if (!lb.isEmpty()) { lb.getCenter(_TMP_VEC3_A); lb.getSize(_TMP_VEC3_B); tempMat.makeTranslation(_TMP_VEC3_A.x, _TMP_VEC3_A.y, _TMP_VEC3_A.z).scale(_TMP_VEC3_B).premultiply(groupWorld); } }
-                } else if (src.type === 'object' && src.mesh && src.instanceId !== undefined) {
-                    const worldMat = getInstanceWorldMatrix(src.mesh, src.instanceId, new Matrix4());
-                    if (src.cachedLocalCenter && src.cachedLocalSize) tempMat.makeTranslation(src.cachedLocalCenter.x, src.cachedLocalCenter.y, src.cachedLocalCenter.z).scale(src.cachedLocalSize).premultiply(worldMat);
-                    else { const lb = getInstanceLocalBox(src.mesh, src.instanceId); if (lb) { lb.getCenter(_TMP_VEC3_A); lb.getSize(_TMP_VEC3_B); tempMat.makeTranslation(_TMP_VEC3_A.x, _TMP_VEC3_A.y, _TMP_VEC3_A.z).scale(_TMP_VEC3_B).premultiply(worldMat); } }
-                }
-                mesh.setMatrixAt(i, tempMat);
-            }
-            mesh.instanceMatrix.needsUpdate = true;
-        };
-        updateMesh(selectionOverlay);
-    }
     if (selectionPointsOverlay) { selectionPointsOverlay.applyMatrix4(deltaMatrix); selectionPointsOverlay.updateMatrixWorld(true); }
+}
+
+export function commitSelectionOverlay(deltaMatrix: Matrix4): void {
+    if (!selectionOverlay) return;
+    const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
+    for (let i = 0; i < selectedCount; i++) {
+        selectionOverlay.getMatrixAt(i, _TMP_MAT4_A);
+        selectionOverlay.setMatrixAt(i, _TMP_MAT4_A.premultiply(deltaMatrix));
+    }
+    selectionOverlay.instanceMatrix.needsUpdate = true;
 }
 
 export function findClosestVertexForSnapping(gizmoWorldPos: Vector3, camera: Camera, renderer: Renderer, snapThreshold = 15): Vector3 | null {

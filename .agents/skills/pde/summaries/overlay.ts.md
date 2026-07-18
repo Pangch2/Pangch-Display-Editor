@@ -32,7 +32,8 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - `updateSelectionOverlay(...)` -- rebuilds selection instances, vertex sprites, and overlay boxes.
 - `updateMultiSelectionOverlayDuringDrag(...)` -- updates the cached multi-selection box transform during drag.
 - `syncSelectionPointsOverlay(delta)` -- translates vertex markers with a selection.
-- `syncSelectionOverlay(deltaMatrix)` -- refreshes selected instance matrices and vertex-marker transforms.
+- `syncSelectionOverlay(deltaMatrix)` -- updates vertex-marker transforms during a drag; selected outlines follow the shared GPU preview matrix.
+- `commitSelectionOverlay(deltaMatrix)` -- commits the cumulative drag delta to selected outline instance matrices once at drag end.
 - `findClosestVertexForSnapping(...)` -- finds the closest projected vertex within a pixel threshold.
 - `getHoveredVertex(...)` -- hit-tests projected vertex sprites.
 - `updateVertexHoverHighlight(...)` -- updates hover colors and the selected-to-hovered guide line.
@@ -46,6 +47,7 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 ## Dependencies (imports)
 - `three/webgpu` -- geometry, material, math, and scene types.
 - `../grouping/group` -- group hierarchy and bounds helpers.
+- `../../entityMaterial.js` -- shared drag mask name and TSL preview position graph.
 
 ## Used By (known callers)
 - `renderer/controls/gizmo/gizmo.ts` -- owns overlay refresh and drag synchronization.
@@ -53,7 +55,8 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 
 ## Notes
 - Selectable object instances use InstancedMesh paths.
-- Selection overlay instance matrices keep Three.js's default buffer usage; drag synchronization marks the buffer dirty without forcing `DynamicDrawUsage`.
+- Selected outlines use the same shared TSL drag matrix as entity geometry, while queued overlay boxes are masked out.
+- Selection overlay instance matrices use WebGPU storage attributes and are uploaded once at drag end instead of on every preview frame.
 - Selection boxes use one InstancedMesh; vertex sprites and drag boxes reuse shared GPU resources instead of recreating materials or geometry.
 - Replaced selection InstancedMeshes are disposed so large instance buffers do not remain allocated after deselection or deletion.
 - Repeated hover events for the same sprite are ignored; selection refreshes clear the transient hover guide.

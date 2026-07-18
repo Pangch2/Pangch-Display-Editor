@@ -16,8 +16,10 @@ import {
     Vector2,
     Raycaster,
     BoxGeometry,
-    MeshBasicMaterial
+    MeshBasicMaterial,
+    InstancedBufferAttribute
 } from 'three/webgpu';
+import { dragDeltaMatrix, dragSelectedAttributeName } from '../../entityMaterial.js';
 import {
     blockbenchScaleMode,
     computeBlockbenchPivotFrame,
@@ -276,13 +278,12 @@ function _getPrimaryWorldMatrix(out = new Matrix4()): Matrix4 | null {
         const group = groups.get(prim.id);
         if (!group) return null;
         getGroupWorldMatrix(group, out);
-        return out;
     } else if (prim.type === 'object' && prim.mesh) {
         (prim.mesh as InstancedMesh).getMatrixAt(prim.instanceId, out);
         out.premultiply(prim.mesh.matrixWorld);
-        return out;
-    }
-    return null;
+    } else return null;
+    if (_dragPreviewActive) out.premultiply(dragDeltaMatrix);
+    return out;
 }
 
 function _getMultiSelectionPivotLocal(): Vector3 | undefined {
@@ -404,9 +405,13 @@ let pivotOffset = new Vector3(0, 0, 0);
 
 const _tmpPrevInvMatrix = new Matrix4();
 const _tmpDeltaMatrix = new Matrix4();
+const _dragTotalDeltaMatrix = new Matrix4();
+const _identityMatrix = new Matrix4();
 const _pendingHelperMatrix = new Matrix4();
 const _meshToInstanceRanges = new Map<Object3D, InstanceIdRange[]>();
 let selectionTransformDirty = false;
+let _dragPreviewActive = false;
+let _dragSelectedIdsByMesh = new Map<InstancedMesh, Set<number>>();
 
 //  Selection helpers 
 
@@ -434,7 +439,33 @@ function SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset:
     );
 }
 
+function syncDragSelectionMask(): void {
+    const nextIdsByMesh = new Map<InstancedMesh, Set<number>>();
+    for (const { mesh, instanceId } of getSelectedItems()) {
+        if (!(mesh as InstancedMesh)?.isInstancedMesh) continue;
+        const instancedMesh = mesh as InstancedMesh;
+        let ids = nextIdsByMesh.get(instancedMesh);
+        if (!ids) nextIdsByMesh.set(instancedMesh, ids = new Set<number>());
+        ids.add(instanceId);
+    }
+
+    const meshes = new Set([..._dragSelectedIdsByMesh.keys(), ...nextIdsByMesh.keys()]);
+    for (const mesh of meshes) {
+        const previousIds = _dragSelectedIdsByMesh.get(mesh) ?? new Set<number>();
+        const nextIds = nextIdsByMesh.get(mesh) ?? new Set<number>();
+        if (previousIds.size === nextIds.size && [...previousIds].every(id => nextIds.has(id))) continue;
+
+        const attribute = mesh.geometry.getAttribute(dragSelectedAttributeName) as InstancedBufferAttribute | undefined;
+        if (!attribute) continue;
+        for (const id of previousIds) if (!nextIds.has(id)) attribute.setX(id, 0);
+        for (const id of nextIds) if (!previousIds.has(id)) attribute.setX(id, 1);
+        attribute.needsUpdate = true;
+    }
+    _dragSelectedIdsByMesh = nextIdsByMesh;
+}
+
 function updateSelectionOverlay(): void {
+    syncDragSelectionMask();
     Overlay.updateSelectionOverlay(scene, renderer, camera, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys);
     window.dispatchEvent(new CustomEvent('pde:selection-changed', { detail: currentSelection }));
     window.dispatchEvent(new CustomEvent('pde:selection-transform-context', {
@@ -458,14 +489,11 @@ function flushSelectionTransform(): void {
 
     _tmpPrevInvMatrix.copy(previousHelperMatrix).invert();
     _tmpDeltaMatrix.multiplyMatrices(_pendingHelperMatrix, _tmpPrevInvMatrix);
-    applyDeltaToSelection({
-        deltaMatrix: _tmpDeltaMatrix,
-        meshToInstanceRanges: _meshToInstanceRanges,
-        selectedGroupIds: currentSelection.groups,
-        loadedObjectGroup
-    });
-
     previousHelperMatrix.copy(_pendingHelperMatrix);
+    _tmpPrevInvMatrix.copy(dragInitialMatrix).invert();
+    _dragTotalDeltaMatrix.multiplyMatrices(_pendingHelperMatrix, _tmpPrevInvMatrix);
+    dragDeltaMatrix.copy(_dragTotalDeltaMatrix);
+    _dragPreviewActive = true;
     Overlay.syncSelectionOverlay(_tmpDeltaMatrix);
     _updateMultiSelectionOverlayDuringDrag();
     window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
@@ -478,6 +506,23 @@ function flushSelectionTransform(): void {
             dragging: true
         }
     }));
+}
+
+function commitSelectionTransform(): void {
+    flushSelectionTransform();
+    if (!_dragPreviewActive) return;
+
+    if (!_dragTotalDeltaMatrix.equals(_identityMatrix)) {
+        applyDeltaToSelection({
+            deltaMatrix: _dragTotalDeltaMatrix,
+            meshToInstanceRanges: _meshToInstanceRanges,
+            selectedGroupIds: currentSelection.groups,
+            loadedObjectGroup
+        });
+        Overlay.commitSelectionOverlay(_dragTotalDeltaMatrix);
+    }
+    _dragPreviewActive = false;
+    dragDeltaMatrix.identity();
 }
 
 function resetSelectionAndDeselect(): void {
@@ -877,6 +922,9 @@ export function initGizmo({
             Overlay.prepareMultiSelectionDrag(currentSelection);
             draggingMode = transformControls!.mode;
             selectionTransformDirty = false;
+            _dragPreviewActive = false;
+            _dragTotalDeltaMatrix.identity();
+            dragDeltaMatrix.identity();
 
             const items = getSelectedItems();
             const meshToInstanceIds = new Map<Object3D, number[]>();
@@ -896,7 +944,10 @@ export function initGizmo({
 
             if (transformControls!.axis === 'XYZ') isUniformScale = true;
 
-            dragInitialMatrix.copy(selectionHelper!.matrix);
+            selectionHelper!.updateMatrixWorld();
+            dragInitialMatrix.copy(selectionHelper!.matrixWorld);
+            previousHelperMatrix.copy(dragInitialMatrix);
+            _pendingHelperMatrix.copy(dragInitialMatrix);
             dragInitialQuaternion.copy(selectionHelper!.quaternion);
             dragInitialScale.copy(selectionHelper!.scale);
             dragInitialPosition.copy(selectionHelper!.position);
@@ -937,7 +988,7 @@ export function initGizmo({
             }
 
         } else {
-            flushSelectionTransform();
+            commitSelectionTransform();
 
             if (draggingMode === 'rotate' && _isMultiSelection() && !currentSelection.primary) {
                 _multiSelectionAccumulatedRotation.copy(selectionHelper!.quaternion);

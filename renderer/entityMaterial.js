@@ -1,6 +1,7 @@
-import { MeshBasicNodeMaterial } from 'three/webgpu';
+import { Matrix4, MeshBasicNodeMaterial } from 'three/webgpu';
 import {
   uniform,
+  renderGroup,
   uv,
   attribute,
   texture,
@@ -14,10 +15,23 @@ import {
   mul,
   pow,
   min,
-  vec4
+  vec4,
+  mix,
+  positionLocal,
+  modelWorldMatrix,
+  modelWorldMatrixInverse
 } from 'three/tsl';
 
+export const dragSelectedAttributeName = 'dragSelected';
+export const dragDeltaMatrix = new Matrix4();
+
 const tintNodeCache = new Map();
+const dragDeltaMatrixNode = uniform(dragDeltaMatrix).setGroup(renderGroup);
+const draggedPosition = modelWorldMatrixInverse
+  .mul(dragDeltaMatrixNode)
+  .mul(modelWorldMatrix)
+  .mul(vec4(positionLocal, 1.0)).xyz;
+export const dragPreviewPositionNode = mix(positionLocal, draggedPosition, attribute(dragSelectedAttributeName, 'float'));
 
 const srgbToLinear = (c) => {
   const x = Math.min(1, Math.max(0, c));
@@ -78,6 +92,7 @@ export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstance
   );
 
   const material = new MeshBasicNodeMaterial();
+  material.positionNode = dragPreviewPositionNode;
   material.colorNode = litColor;
   material.map = diffuseTex;
   material.transparent = true;
