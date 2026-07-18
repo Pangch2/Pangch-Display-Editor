@@ -66,13 +66,16 @@ type MaterialUpdate = {
 };
 export type LoadedSelection = Map<THREE.Object3D, Set<number>>;
 
-function getSkyBrightness(sky = 15): number {
-    const level = THREE.MathUtils.clamp(sky, 0, 15) / 15;
-    return level / (4 - 3 * level);
-}
+const skyLightColors = [
+    0x2c2621, 0x302a25, 0x342e2a, 0x39332f,
+    0x3f3934, 0x453f3a, 0x4c4641, 0x544e49,
+    0x5e5853, 0x69635e, 0x77716d, 0x87817c,
+    0x9c9691, 0xb6b0ac, 0xdad4cf, 0xfcfcfc
+];
 
 function setInstanceSkyBrightness(mesh: THREE.InstancedMesh, instanceId: number, sky?: number): void {
-    mesh.setColorAt(instanceId, instanceBrightnessColor.setScalar(getSkyBrightness(sky)));
+    const level = Math.round(THREE.MathUtils.clamp(sky ?? 15, 0, 15));
+    mesh.setColorAt(instanceId, instanceBrightnessColor.setHex(skyLightColors[level]));
     mesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
 }
 

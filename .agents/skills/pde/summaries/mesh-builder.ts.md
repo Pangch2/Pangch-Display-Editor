@@ -30,7 +30,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Per-load material preload cache resolves unique signature-group materials before `InstancedMesh` creation, with placeholder material updates retained only as a fallback for failed or late material loads.
 - Signature groups retain parser-provided instance metadata by reference, cache their UV-transform count once, and deduplicate material preload promises to avoid per-instance metadata copies and repeated waits during mesh creation.
 - Per-instance atlas UV transform arrays, display-type, block-property, and NBT metadata for objects that share geometry.
-- Dynamic-draw per-instance colors encode the `0..15` sky-light brightness curve, defaulting to sky `15` when metadata is absent and supporting immediate runtime brightness updates and duplication.
+- Dynamic-draw per-instance colors encode the fixed warm RGB palette for sky-light levels `0..15`, defaulting to sky `15` when metadata is absent and supporting immediate runtime brightness updates and duplication.
 - Optional `geometryBatches` metadata path skips per-item regrouping by consuming parser-provided shared parts plus instance arrays.
 - `MAX_INSTANCES_PER_INSTANCED_MESH` chunk limit prevents oversized signature groups from becoming one huge `InstancedMesh`
 - `INITIAL_INSTANCES_PER_INSTANCED_MESH` starts block chunks at half capacity so duplicated instances can append without resizing WebGPU buffers
@@ -72,7 +72,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
 - Property-panel model changes keep the active Pivot Mode reference fixed: center uses bounds center, block origin uses local bounds minimum, and custom pivots retain their world position without changing the object transform.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
-- Brightness panel edits update the selected instance color in place; block brightness remains stored but does not affect rendering yet.
+- Brightness panel edits update the selected instance color in place from the sky-light palette; block brightness remains stored but does not affect rendering yet.
 - Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
 - Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.
 - Player-head texture edits redraw the existing atlas slot when exclusive; shared slots receive a new slot so other instances keep their skin. The instance matrix and UUID remain unchanged.
