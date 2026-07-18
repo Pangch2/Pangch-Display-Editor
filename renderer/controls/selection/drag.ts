@@ -14,6 +14,7 @@ import type { SelectionCallbacks } from './select';
 import * as Overlay from './overlay';
 import * as GroupUtils from '../grouping/group';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import type { InstanceIdRange } from './instance-ranges';
 
 // Helper aliases
 const { getInstanceCount, isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled, getInstanceLocalBox } = Overlay;
@@ -106,32 +107,46 @@ export interface DragInterface {
 
 export interface ApplyDeltaParams {
     deltaMatrix: Matrix4;
-    meshToInstanceIds: Map<Object3D, number[]>;
-    selectedGroupIds: Set<string>;
+    meshToInstanceIds?: Map<Object3D, number[]>;
+    meshToInstanceRanges?: Map<Object3D, InstanceIdRange[]>;
+    selectedGroupIds?: Set<string>;
     loadedObjectGroup: Group;
 }
 
 export function applyDeltaToSelection(params: ApplyDeltaParams): void {
-    const { deltaMatrix, meshToInstanceIds, selectedGroupIds, loadedObjectGroup } = params;
+    const { deltaMatrix, meshToInstanceIds, meshToInstanceRanges, selectedGroupIds, loadedObjectGroup } = params;
 
     const tmpMeshWorldInverse = new Matrix4();
     const tmpLocalDelta = new Matrix4();
     const tmpInstanceMatrix = new Matrix4();
+    const meshToRanges = meshToInstanceRanges ?? new Map(
+        Array.from(meshToInstanceIds ?? [], ([mesh, instanceIds]) => [
+            mesh,
+            instanceIds.map(start => ({ start, count: 1 }))
+        ])
+    );
 
-    for (const [mesh, instanceIds] of meshToInstanceIds) {
+    for (const [mesh, ranges] of meshToRanges) {
         tmpMeshWorldInverse.copy((mesh as Object3D).matrixWorld).invert();
         tmpLocalDelta.multiplyMatrices(tmpMeshWorldInverse, deltaMatrix);
         tmpLocalDelta.multiply((mesh as Object3D).matrixWorld);
 
-        for (let i = 0; i < instanceIds.length; i++) {
-            const instanceId = instanceIds[i];
-            (mesh as InstancedMesh).getMatrixAt(instanceId, tmpInstanceMatrix);
-            tmpInstanceMatrix.premultiply(tmpLocalDelta);
-            (mesh as InstancedMesh).setMatrixAt(instanceId, tmpInstanceMatrix);
+        for (const { start, count } of ranges) {
+            for (let instanceId = start; instanceId < start + count; instanceId++) {
+                (mesh as InstancedMesh).getMatrixAt(instanceId, tmpInstanceMatrix);
+                tmpInstanceMatrix.premultiply(tmpLocalDelta);
+                (mesh as InstancedMesh).setMatrixAt(instanceId, tmpInstanceMatrix);
+            }
         }
 
         if ((mesh as InstancedMesh).isInstancedMesh) {
-            (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
+            const instanceMatrix = (mesh as InstancedMesh).instanceMatrix;
+            if (meshToInstanceRanges) {
+                for (const { start, count } of ranges) {
+                    instanceMatrix.addUpdateRange(start * instanceMatrix.itemSize, count * instanceMatrix.itemSize);
+                }
+            }
+            instanceMatrix.needsUpdate = true;
         }
     }
 

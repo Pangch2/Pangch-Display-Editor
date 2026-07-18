@@ -22,6 +22,7 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `../selection/overlay` -- selection overlays, box math, and vertex helpers.
 - `../selection/select` -- selection state machine.
 - `../selection/drag` -- marquee selection and delta application.
+- `../selection/instance-ranges` -- selected instance ID sorting and contiguous-range merging.
 - `../pivot/custom-pivot` -- pivot recomputation and undo handling.
 - `../input/handle-key` -- keyboard bindings and `HandleKeyState` adapter type.
 - `../vertex/vertex-translate`, `../vertex/vertex-rotate`, `../vertex/vertex-scale`, `../vertex/vertex-queue` -- vertex snap and queue behavior.
@@ -31,7 +32,7 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `renderer/controls/vertex/vertex-*`
 
 ## Notes
-- TransformControls caches selected instance IDs once at drag start; change events only mark the latest helper matrix dirty, and `updateGizmo()` applies one incremental delta per frame after skipping unchanged matrices.
+- TransformControls sorts selected instance IDs per mesh and caches merged contiguous ranges once at drag start; change events only mark the latest helper matrix dirty, and `updateGizmo()` applies one incremental delta per frame after skipping unchanged matrices.
 - Drag end flushes the final pending delta before pivot/bounds cleanup, then emits one final `pde:object-transform-changed`; frame events carry `dragging: true` for lightweight properties-panel updates.
 - Selection overlay refreshes emit `pde:selection-transform-context` with the current gizmo world pivot so property edits honor origin, center, and custom pivot modes.
 - Single-object model replacement events run through the normal selection replacement path, resetting stale pivot state before recomputing the new model's origin and overlay.

@@ -29,8 +29,10 @@ import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
 import * as CustomPivot from '../pivot/custom-pivot';
 import { initDrag, applyDeltaToSelection } from '../selection/drag';
+import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState } from '../input/handle-key';
 import type { DragInterface } from '../selection/drag';
+import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
 import { processVertexRotate } from '../vertex/vertex-rotate';
 import { processVertexScale } from '../vertex/vertex-scale';
@@ -403,7 +405,7 @@ let pivotOffset = new Vector3(0, 0, 0);
 const _tmpPrevInvMatrix = new Matrix4();
 const _tmpDeltaMatrix = new Matrix4();
 const _pendingHelperMatrix = new Matrix4();
-const _meshToInstanceIds = new Map<Object3D, number[]>();
+const _meshToInstanceRanges = new Map<Object3D, InstanceIdRange[]>();
 let selectionTransformDirty = false;
 
 //  Selection helpers 
@@ -458,7 +460,7 @@ function flushSelectionTransform(): void {
     _tmpDeltaMatrix.multiplyMatrices(_pendingHelperMatrix, _tmpPrevInvMatrix);
     applyDeltaToSelection({
         deltaMatrix: _tmpDeltaMatrix,
-        meshToInstanceIds: _meshToInstanceIds,
+        meshToInstanceRanges: _meshToInstanceRanges,
         selectedGroupIds: currentSelection.groups,
         loadedObjectGroup
     });
@@ -877,15 +879,19 @@ export function initGizmo({
             selectionTransformDirty = false;
 
             const items = getSelectedItems();
-            _meshToInstanceIds.clear();
+            const meshToInstanceIds = new Map<Object3D, number[]>();
             for (const { mesh, instanceId } of items) {
                 if (!mesh) continue;
-                let list = _meshToInstanceIds.get(mesh);
+                let list = meshToInstanceIds.get(mesh);
                 if (!list) {
                     list = [];
-                    _meshToInstanceIds.set(mesh, list);
+                    meshToInstanceIds.set(mesh, list);
                 }
                 list.push(instanceId);
+            }
+            _meshToInstanceRanges.clear();
+            for (const [mesh, instanceIds] of meshToInstanceIds) {
+                _meshToInstanceRanges.set(mesh, mergeInstanceIds(instanceIds));
             }
 
             if (transformControls!.axis === 'XYZ') isUniformScale = true;
