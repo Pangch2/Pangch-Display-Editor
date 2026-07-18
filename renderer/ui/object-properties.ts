@@ -32,6 +32,8 @@ let draggedPropertySection: HTMLElement | null = null;
 let propertySectionDropTarget: HTMLElement | null = null;
 type PropertySelection = { key: string; groupId: string; group: GroupData } | { key: string; mesh: InstancedMesh; instanceId: number };
 let selectionOrder: PropertySelection[] = [];
+let multiSelectionKey = '';
+const multiSelectionMatrix = new Matrix4();
 const visibleSections = new WeakSet<Element>();
 let currentPivotWorld: Vector3 | undefined;
 let currentPivotMode = 'origin';
@@ -348,22 +350,127 @@ function scaleInput(value: number, onChange: (value: number, direction: '+' | '-
     return wrapper;
 }
 
-function renderMultiSelectionPivot(pivotLocal?: Vector3): void {
+function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?: Vector3, pivotLocal?: Vector3): void {
     multiSelectionPivot.hidden = !pivotLocal;
-    if (!pivotLocal) return;
-    const heading = document.createElement('h3');
-    heading.textContent = '다중 선택 커스텀 피벗';
+    if (!selection || !pivotLocal) {
+        multiSelectionKey = '';
+        return;
+    }
+    const applyDelta = (deltaMatrix: Matrix4): void => {
+        const meshToInstanceIds = new Map<InstancedMesh, number[]>();
+        const add = (mesh: InstancedMesh, instanceId: number): void => {
+            const ids = meshToInstanceIds.get(mesh) ?? [];
+            if (!ids.includes(instanceId)) ids.push(instanceId);
+            meshToInstanceIds.set(mesh, ids);
+        };
+        selection.objects.forEach((ids, mesh) => {
+            if (mesh instanceof InstancedMesh) ids.forEach(instanceId => add(mesh, instanceId));
+        });
+        selection.groups.forEach(groupId => GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId)
+            .forEach(child => child.mesh instanceof InstancedMesh && add(child.mesh, child.instanceId)));
+        applyDeltaToSelection({ deltaMatrix, meshToInstanceIds, selectedGroupIds: selection.groups, loadedObjectGroup });
+        meshToInstanceIds.forEach((_ids, mesh) => {
+            mesh.computeBoundingBox();
+            mesh.computeBoundingSphere();
+        });
+        window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    };
+
+    const key = [
+        ...selection.groups,
+        ...Array.from(selection.objects, ([mesh, ids]) => `${mesh.uuid}:${[...ids].sort((a, b) => a - b).join(',')}`)
+    ].sort().join('|');
+    const pivot = pivotWorld?.clone() ?? pivotLocal.clone();
+    if (multiSelectionKey === key && multiSelectionPivot.contains(document.activeElement)) return;
+    if (multiSelectionKey !== key) {
+        multiSelectionKey = key;
+        multiSelectionMatrix.identity().setPosition(pivot);
+    } else {
+        multiSelectionMatrix.setPosition(pivot);
+    }
+    const selectionMatrix = multiSelectionMatrix;
+    const applyMatrix = (next: Matrix4): Matrix4 => {
+        const delta = next.clone().multiply(selectionMatrix.clone().invert());
+        selectionMatrix.copy(next);
+        applyDelta(delta);
+        return selectionMatrix.clone();
+    };
+    const transformSection = propertySection('transform', '변환');
+    selectionMatrix.decompose(position, quaternion, scale);
+    const values = [position.clone(), new Euler().setFromQuaternion(quaternion), scale.clone()];
+    ['위치', '회전', '크기'].forEach((label, rowIndex) => {
+        const row = document.createElement('div');
+        row.className = 'object-property-row';
+        const rowLabel = document.createElement('label');
+        rowLabel.textContent = label;
+        row.append(rowLabel);
+        (['x', 'y', 'z'] as const).forEach(axis => {
+            const value = rowIndex === 1 ? values[rowIndex][axis] * 180 / Math.PI : values[rowIndex][axis];
+            row.append(numberInput(value, next => {
+                selectionMatrix.decompose(position, quaternion, scale);
+                rotation.setFromQuaternion(quaternion);
+                if (rowIndex === 0) position[axis] = next;
+                else if (rowIndex === 1) rotation[axis] = next * Math.PI / 180;
+                else scale[axis] = next;
+                applyMatrix(new Matrix4().compose(position, quaternion.setFromEuler(rotation), scale));
+            }));
+        });
+        transformSection.append(row);
+    });
+
     const row = document.createElement('div');
     row.className = 'object-property-row';
     const label = document.createElement('label');
-    label.textContent = 'Local';
+    label.textContent = '피벗';
     row.append(label);
     (['x', 'y', 'z'] as const).forEach(axis => {
-        const input = numberInput(pivotLocal[axis], () => {});
-        input.readOnly = true;
+        const input = numberInput(pivotLocal[axis], next => {
+            pivotLocal[axis] = next;
+            const primaryMatrix = new Matrix4();
+            if (selection.primary?.type === 'group') {
+                const group = (loadedObjectGroup.userData.groups as Map<string, GroupData> | undefined)?.get(selection.primary.id);
+                if (!group) return;
+                primaryMatrix.copy(group.matrix ?? new Matrix4().compose(
+                    new Vector3(group.position.x, group.position.y, group.position.z),
+                    new Quaternion(group.quaternion.x, group.quaternion.y, group.quaternion.z, group.quaternion.w),
+                    new Vector3(group.scale.x, group.scale.y, group.scale.z)
+                ));
+            } else if (selection.primary?.type === 'object' && selection.primary.mesh instanceof InstancedMesh) {
+                selection.primary.mesh.getMatrixAt(selection.primary.instanceId, primaryMatrix);
+                primaryMatrix.premultiply(selection.primary.mesh.matrixWorld);
+            } else {
+                return;
+            }
+            window.dispatchEvent(new CustomEvent('pde:multi-selection-pivot-change', {
+                detail: pivotLocal.clone().applyMatrix4(primaryMatrix)
+            }));
+        });
         row.append(input);
     });
-    multiSelectionPivot.replaceChildren(heading, row);
+    const pivotSection = propertySection('pivot', '다중 선택 커스텀 피벗', row);
+    const matrixParts = matrixInput(selectionMatrix, applyMatrix);
+    multiSelectionPivot.replaceChildren(pivotSection, transformSection, propertySection('matrix', matrixParts[0], ...matrixParts.slice(1)));
+    sortPropertySections(multiSelectionPivot);
+}
+
+function updateMultiSelectionValues(pivotWorld?: Vector3): void {
+    if (pivotWorld) multiSelectionMatrix.setPosition(pivotWorld);
+    multiSelectionMatrix.decompose(position, quaternion, scale);
+    rotation.setFromQuaternion(quaternion);
+    const transformValues = [
+        position.x, position.y, position.z,
+        rotation.x * 180 / Math.PI, rotation.y * 180 / Math.PI, rotation.z * 180 / Math.PI,
+        scale.x, scale.y, scale.z
+    ];
+    multiSelectionPivot.querySelectorAll<HTMLInputElement>('[data-property-section="transform"] input[type="number"]').forEach((input, index) => {
+        if (input !== document.activeElement) input.value = format(transformValues[index]);
+    });
+    const matrixValues = Array.from({ length: 16 }, (_, index) => multiSelectionMatrix.elements[(index % 4) * 4 + Math.floor(index / 4)]);
+    multiSelectionPivot.querySelectorAll<HTMLInputElement>('[data-property-section="matrix"] input[type="number"]').forEach((input, index) => {
+        if (input !== document.activeElement) input.value = format(matrixValues[index]);
+    });
+    const matrixText = multiSelectionPivot.querySelector<HTMLInputElement>('.object-matrix-text input');
+    if (matrixText && matrixText !== document.activeElement) matrixText.value = matrixValues.slice(0, 12).map(format).join(', ');
 }
 
 function keepPivotFixed(current: Matrix4, next: Matrix4, localPivot: Vector3, preserveTranslation = false): Matrix4 {
@@ -681,7 +788,7 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
     if (matrixText && matrixText !== document.activeElement) matrixText.value = values.slice(12, 24).map(format).join(', ');
 }
 
-function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multiCustomPivotLocal?: Vector3): void {
+function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multiCustomPivotLocal?: Vector3, renderMulti = true): void {
     const groups = loadedObjectGroup.userData.groups as Map<string, GroupData> | undefined;
     const current: PropertySelection[] = [
         ...Array.from(selection?.groups ?? []).flatMap(id => {
@@ -692,7 +799,7 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
             ? Array.from(ids, instanceId => ({ key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId }))
             : [])
     ];
-    renderMultiSelectionPivot(current.length > 1 ? multiCustomPivotLocal ?? new Vector3() : undefined);
+    if (renderMulti) renderMultiSelectionProperties(selection, pivotWorld, current.length > 1 ? multiCustomPivotLocal ?? new Vector3() : undefined);
     const propertyPivotWorld = current.length === 1 ? pivotWorld : undefined;
     const currentByKey = new Map(current.map(item => [item.key, item]));
     selectionOrder = selectionOrder.filter(item => currentByKey.has(item.key)).map(item => currentByKey.get(item.key)!);
@@ -755,9 +862,14 @@ window.addEventListener('pde:selection-transform-context', event => {
     renderSelection(detail.selection, detail.pivotWorld, detail.multiCustomPivotLocal);
 });
 window.addEventListener('pde:object-transform-changed', event => {
-    const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; pivotMode: string; multiCustomPivotLocal?: Vector3 }>).detail;
+    const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; pivotMode: string; multiCustomPivotLocal?: Vector3; deltaMatrix?: Matrix4 }>).detail;
+    const updateMulti = detail.deltaMatrix && detail.multiCustomPivotLocal;
+    if (updateMulti) {
+        multiSelectionMatrix.premultiply(detail.deltaMatrix!);
+        updateMultiSelectionValues(detail.pivotWorld);
+    }
     currentPivotMode = detail.pivotMode;
-    renderSelection(detail.selection, detail.pivotWorld, detail.multiCustomPivotLocal);
+    renderSelection(detail.selection, detail.pivotWorld, detail.multiCustomPivotLocal, !updateMulti);
 });
 window.addEventListener('pde:blockbench-scale-mode-changed', event => {
     const enabled = (event as CustomEvent<boolean>).detail;

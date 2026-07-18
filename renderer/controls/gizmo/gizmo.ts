@@ -1032,7 +1032,8 @@ export function initGizmo({
                     selection: currentSelection,
                     pivotWorld: selectionHelper!.position.clone(),
                     pivotMode,
-                    multiCustomPivotLocal: _getMultiSelectionPivotLocal()
+                    multiCustomPivotLocal: _getMultiSelectionPivotLocal(),
+                    deltaMatrix: _tmpDeltaMatrix.clone()
                 }
             }));
         }
@@ -1380,6 +1381,29 @@ export function initGizmo({
     });
 
     window.addEventListener('pde:scene-updated', _handleSceneUpdated);
+    window.addEventListener('pde:multi-selection-pivot-change', event => {
+        if (!_isMultiSelection() || !selectionHelper) return;
+        const pivotWorld = (event as CustomEvent<Vector3>).detail;
+        selectionHelper.position.copy(pivotWorld);
+        selectionHelper.updateMatrixWorld();
+        CustomPivot.commitPivotEditFromDragEnd({
+            pivotWorldPos: pivotWorld,
+            isMultiPivotEdit: true,
+            singleGroupId: null,
+            currentSelection,
+            loadedObjectGroup
+        });
+        pivotMode = 'origin';
+        isCustomPivot = true;
+        _multiSelectionExplicitPivot = true;
+        _multiSelectionOriginAnchorPosition.copy(pivotWorld);
+        _multiSelectionOriginAnchorValid = true;
+        _gizmoAnchorPosition.copy(pivotWorld);
+        _gizmoAnchorValid = true;
+        _setMultiAnchorInitial(pivotWorld);
+        previousHelperMatrix.copy(selectionHelper.matrixWorld);
+        updateSelectionOverlay();
+    });
     window.addEventListener('pde:replace-object-selection', event => {
         const { mesh, instanceId } = (event as CustomEvent<{ mesh: PdeMesh; instanceId: number }>).detail;
         _replaceSelectionWithObjectsMap(new Map([[mesh, new Set([instanceId])]]));

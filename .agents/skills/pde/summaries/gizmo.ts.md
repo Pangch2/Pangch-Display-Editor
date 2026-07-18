@@ -31,9 +31,10 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `renderer/controls/vertex/vertex-*`
 
 ## Notes
-- TransformControls drag changes emit `pde:object-transform-changed` with the live gizmo world pivot; pivot edits also include the unsaved pivot offset for the properties panel.
+- TransformControls drag changes emit `pde:object-transform-changed` with the live gizmo world pivot and incremental world delta matrix so the properties panel can track multi-selection rotation and scale; pivot edits also include the unsaved pivot offset.
 - Selection overlay refreshes emit `pde:selection-transform-context` with the current gizmo world pivot so property edits honor origin, center, and custom pivot modes.
 - Single-object model replacement events run through the normal selection replacement path, resetting stale pivot state before recomputing the new model's origin and overlay.
 - Selection transform events expose the active `pivotMode` and `multiCustomPivotLocal`; the latter converts the current helper pivot through the primary group/object inverse world matrix, with the captured local anchor only as a fallback.
+- `pde:multi-selection-pivot-change` commits property-panel pivot edits through the normal custom-pivot path, updates all multi-selection anchors, and refreshes the overlay.
 - Committing a custom pivot entered from center mode switches the active pivot mode to origin instead of restoring center.
 This remains the highest-risk control module because it owns event wiring and mutable shared state. `initGizmo` now passes primitive keyboard state to `initHandleKey` through a local accessor-backed `HandleKeyState` object instead of individual getter/setter callbacks. It routes object selection and duplication through InstancedMesh paths and passes most overlay helpers directly. Multi-selection primary anchors use `CustomPivot.getObjectOriginWorld` so block and item display origins match single-selection behavior.
