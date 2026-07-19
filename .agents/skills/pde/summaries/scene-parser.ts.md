@@ -54,3 +54,4 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Display nodes may provide a UUID for targeted in-editor model replacement; normal project nodes still receive generated UUIDs.
 - Item names using `display=none` are normalized to the base item transform instead of being treated as an unsupported display transform.
 - Collection nodes preserve their NBT on group metadata.
+- Player-head texture parsing prefers a valid `tagHead` URL, then resolves numeric `paintTexture` indices through the nearest inherited `refs.paintTextures` (including project-root refs); direct texture strings, `paintTextures`, wrappers, serialized buffers, and byte arrays are also normalized to a PNG data URL.

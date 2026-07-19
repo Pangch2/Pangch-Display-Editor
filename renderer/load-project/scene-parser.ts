@@ -2,6 +2,7 @@ import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
 import { buildTextureAtlasForRenderList } from './texture-atlas-builder';
 import type { TexturePixelData } from './texture-atlas-builder';
+import { isNodeBufferLike } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GroupData as ParserGroupData } from './pbde-types';
 
@@ -1697,7 +1698,8 @@ async function prepareSceneTemplates(nodes: any[]): Promise<void> {
 }
 
 // 씬 그래프 노드를 재귀적으로 순회하며 렌더 항목을 만든다.
-function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null, renderItems: RenderItem[]): void {
+function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null, renderItems: RenderItem[], inheritedRefs?: any): void {
+    const refs = node.refs ?? inheritedRefs;
     const localTransform = (Array.isArray(node.transforms) || ArrayBuffer.isView(node.transforms))
         ? node.transforms
         : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
@@ -1784,6 +1786,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             };
             if (displayType) itemData.displayType = displayType;
             let textureUrl = null;
+            const rawPaintTexture = refs?.paintTextures?.[node.paintTexture] ?? node.paintTextures?.[0] ?? node.paintTexture;
             const defaultTextureValue = 'https://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
             if (node.tagHead && node.tagHead.Value) {
                 try {
@@ -1807,8 +1810,18 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
                         textureUrl = url.replace('http://', 'https://');
                     }
                 } catch (err) { /* ignore */ }
-            } else if (node.paintTexture) {
-                textureUrl = node.paintTexture.startsWith('data:image') ? node.paintTexture : `data:image/png;base64,${node.paintTexture}`;
+            }
+            if (!textureUrl && rawPaintTexture) {
+                const paintTextureValue = rawPaintTexture.Value ?? rawPaintTexture;
+                const paintTextureBytes = isNodeBufferLike(paintTextureValue)
+                    ? paintTextureValue.data
+                    : Array.isArray(paintTextureValue) ? paintTextureValue : paintTextureValue.data;
+                const paintTexture = Array.isArray(paintTextureBytes)
+                    ? btoa(String.fromCharCode(...Uint8Array.from(paintTextureBytes)))
+                    : paintTextureValue;
+                if (typeof paintTexture === 'string') {
+                    textureUrl = paintTexture.startsWith('data:image') ? paintTexture : `data:image/png;base64,${paintTexture}`;
+                }
             }
             itemData.textureUrl = textureUrl || defaultTextureValue;
 
@@ -1874,7 +1887,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
 
     if (node.children) {
         for (const child of node.children) {
-            processNode(child, worldTransform, currentGroupId, renderItems);
+            processNode(child, worldTransform, currentGroupId, renderItems, refs);
         }
     }
 }
@@ -1945,7 +1958,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         const sceneTraverseStartMs = performance.now();
         const renderList: RenderItem[] = [];
         for (const node of processedChildren) {
-            processNode(node, identityMatrix, null, renderList);
+            processNode(node, identityMatrix, null, renderList, project.refs);
         }
         const sceneTraverseElapsedMs = performance.now() - sceneTraverseStartMs;
 
