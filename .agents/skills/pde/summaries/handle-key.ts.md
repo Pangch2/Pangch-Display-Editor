@@ -1,7 +1,7 @@
 # handle-key.ts
 
 ## Purpose
-Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode, switch transform modes, toggle space, duplicate, delete, select all, group/ungroup, reset pivots, and enter/exit pivot edit mode.
+Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode and entity shading, switch transform modes, toggle space, duplicate, delete, select all, group/ungroup, reset pivots, and enter/exit pivot edit mode.
 
 ## Exports
 
@@ -18,9 +18,11 @@ Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode, sw
 - `../pivot/shear-remove` -- shear removal helper.
 - `./camera` -- focus camera action.
 - `../gizmo/blockbench-scale` -- Blockbench scale toggle.
+- `../../entityMaterial.js` -- shared entity shading toggle used by the `L` shortcut.
 
 ## Used By (known callers)
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
 Primitive state is read/written through `p.state`; object references and callbacks remain direct `HandleKeyParams` fields. Selection hotkeys assume InstancedMesh-only object handling in the control layer. Entering vertex mode and switching pivot modes preserve the current selection's tracked origin anchor.
+- `L` toggles entity shading globally without rebuilding materials.

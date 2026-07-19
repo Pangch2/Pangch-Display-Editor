@@ -26,6 +26,7 @@ export const dragSelectedAttributeName = 'dragSelected';
 export const dragDeltaMatrix = new Matrix4();
 
 const tintNodeCache = new Map();
+const shadingEnabled = uniform(1.0);
 const dragDeltaMatrixNode = uniform(dragDeltaMatrix).setGroup(renderGroup);
 const draggedPosition = modelWorldMatrixInverse
   .mul(dragDeltaMatrixNode)
@@ -61,6 +62,11 @@ const scaledLight = mul(lightSum, float(0.6));
 const biasedLight = add(scaledLight, float(0.4));
 const directionalLight = pow(min(float(1.0), biasedLight), 2.2);
 
+export function toggleShading() {
+  shadingEnabled.value = 1 - shadingEnabled.value;
+  return shadingEnabled.value === 1;
+}
+
 export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
@@ -86,6 +92,7 @@ export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstance
   const normalizedSkyLight = skyLightLevel.div(15.0);
   const lightMapColor = normalizedSkyLight.div(float(4.0).sub(normalizedSkyLight.mul(3.0)));
 
+  const unlitColor = vec4(mul(diffuseNode.xyz, tintVec), diffuseNode.w);
   const litColor = vec4(
     mul(mul(mul(diffuseNode.xyz, tintVec), directionalLight), lightMapColor),
     diffuseNode.w
@@ -93,7 +100,7 @@ export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstance
 
   const material = new MeshBasicNodeMaterial();
   material.positionNode = dragPreviewPositionNode;
-  material.colorNode = litColor;
+  material.colorNode = mix(unlitColor, litColor, shadingEnabled);
   material.map = diffuseTex;
   material.transparent = true;
   material.fog = false;

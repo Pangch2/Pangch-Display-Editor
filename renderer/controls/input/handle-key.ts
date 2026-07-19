@@ -15,6 +15,7 @@ import { resetCustomPivot } from '../pivot/custom-pivot-remove';
 import { removeShearFromSelection } from '../pivot/shear-remove';
 import { focusCameraOnSelection } from './camera';
 import { toggleBlockbenchScaleMode } from '../gizmo/blockbench-scale';
+import { toggleShading } from '../../entityMaterial.js';
 import type { SelectionState, SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
@@ -257,6 +258,9 @@ export function initHandleKey(p: HandleKeyParams): void {
                 toggleBlockbenchScaleMode();
                 break;
             }
+            case 'l':
+                console.log(toggleShading() ? 'Shading on' : 'Shading off');
+                break;
             case 'g': {
                 const groupCount = p.currentSelection.groups ? p.currentSelection.groups.size : 0;
                 const hasObjects = p.currentSelection.objects && p.currentSelection.objects.size > 0;
@@ -434,7 +438,7 @@ export function initHandleKey(p: HandleKeyParams): void {
 
         if (p.state.isGizmoBusy) return;
         const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'q', 'b', 'g', 'd', 'v'];
+        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'q', 'b', 'g', 'd', 'v', 'l'];
         if (p.getTransformControls().dragging && keysToHandle.includes(key)) {
             p.state.isGizmoBusy = true;
             const attachedObject = p.getTransformControls().object;

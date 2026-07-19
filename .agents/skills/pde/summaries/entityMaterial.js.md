@@ -1,12 +1,13 @@
 # entityMaterial.js
 
 ## Purpose
-Builds the shared node-based material used for entity-style rendering. It combines a diffuse texture, cached tint/light TSL nodes, simple two-direction lighting, sky-light darkening, and optional instanced UV offset or atlas UV transform attributes into a `MeshBasicNodeMaterial`.
+Builds the shared node-based material used for entity-style rendering. It combines a diffuse texture, cached tint/light TSL nodes, toggleable two-direction shading, sky-light darkening, and optional instanced UV offset or atlas UV transform attributes into a `MeshBasicNodeMaterial`.
 
 ## Exports
 
 ### Functions / Methods
 - `createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0)` -- returns `{ material, blockLightLevel, skyLightLevel }` for entity rendering and `0..15` light-level control; only sky light currently affects color.
+- `toggleShading()` -- toggles the shared TSL shading uniform for all entity materials and returns whether shading is enabled.
 
 ### Variables / Constants
 - `dragSelectedAttributeName: string` -- shared geometry attribute name used by the GPU drag mask.
@@ -17,6 +18,7 @@ Builds the shared node-based material used for entity-style rendering. It combin
 - Creates `uniform` nodes with block `0` and sky `15`; sky light is normalized and converted with the lightmap brightness curve, while block light is reserved for later use.
 - Caches converted tint `vec3` nodes by normalized hex color to avoid rebuilding constant TSL nodes for repeated materials.
 - Reuses module-level TSL nodes for static directional lighting.
+- Keeps a shared shading uniform, enabled by default, that blends every entity material between unlit texture/tint color and its lit result.
 - Reuses one module-level position graph that applies the shared world-space drag delta only when the current instance's `dragSelected` value is set; the delta uses Three.js's shared `renderGroup` instead of per-object uniform buffers.
 - Switches UV lookup to one requested `instancedUvTransform` or `instancedUvTransformN` vec4 scale/offset attribute, otherwise to `instancedUvOffset` when `useInstancedUv` is true.
 
