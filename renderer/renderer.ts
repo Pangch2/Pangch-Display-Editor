@@ -556,6 +556,7 @@ function onWindowResize(): void {
         camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
+        if (scene && !scenePrecompileInProgress) renderer.render(scene, camera);
     }
 }
 

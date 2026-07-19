@@ -37,6 +37,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - Instanced-matrix binding-name stabilization is installed after renderer initialization by wrapping the first backend node-builder creation, patching its shared builder prototype for both Three.js instance-matrix paths, and restoring the backend factory immediately.
 - `initScene()` is only called after assets finish initializing.
 - `animate()` renders the scene continuously and updates the gizmo each frame.
+- Window resize updates the camera and WebGPU canvas, then renders immediately so the resized drawing buffer is never displayed empty between animation frames.
 - Handles `pde:precompile-scene` by optionally profiling loaded mesh root compile costs, awaiting full `renderer.compileAsync(scene, camera)`, sampling the private pipeline-cache size, and optionally waiting for WebGPU queue completion before resolving split timing details to `upload-pbde.ts`.
 - `pde:wait-render-settled` resolves after the requested number of rendered frames; callers can opt into per-frame trace collection and WebGPU queue waiting for diagnostics.
 - `pde:get-camera-state` and `pde:set-camera-state` keep camera ownership in this module while allowing project tabs to preserve their last view.

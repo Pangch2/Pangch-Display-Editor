@@ -11,6 +11,7 @@ const docks: Record<DockSide, HTMLElement> = {
 };
 let dropPreview: HTMLElement | null = null;
 let draggedPanelId: PanelId | null = null;
+let resizeFrame = 0;
 
 const oldSide: DockSide = localStorage.getItem('scene-panel-dock') === 'left' ? 'left' : 'right';
 const oldOrder: PanelId[] = localStorage.getItem('project-details-first') === 'true'
@@ -34,7 +35,10 @@ try {
 function applyLayout(): void {
     mainContent.style.left = docks.left.classList.contains('empty') ? '0' : `${docks.left.offsetWidth}px`;
     mainContent.style.right = docks.right.classList.contains('empty') ? '0' : `${docks.right.offsetWidth}px`;
-    window.dispatchEvent(new Event('resize'));
+    if (!resizeFrame) resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        window.dispatchEvent(new Event('resize'));
+    });
 }
 
 function renderLayout(): void {
@@ -65,8 +69,7 @@ for (const side of ['left', 'right'] as DockSide[]) {
         const direction = side === 'left' ? 1 : -1;
 
         const move = (moveEvent: MouseEvent): void => {
-            const width = startWidth + direction * (moveEvent.clientX - startX);
-            if (width < 160 || width > 600) return;
+            const width = Math.max(280, Math.min(600, startWidth + direction * (moveEvent.clientX - startX)));
             dock.style.width = `${width}px`;
             applyLayout();
         };
