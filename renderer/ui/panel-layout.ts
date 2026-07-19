@@ -62,18 +62,39 @@ function renderLayout(): void {
 for (const side of ['left', 'right'] as DockSide[]) {
     const dock = docks[side];
     dock.style.width = localStorage.getItem(`panel-width-${side}`) ?? localStorage.getItem('scene-panel-width') ?? '';
+    dock.classList.toggle('minimized', dock.style.width === '0px');
     dock.querySelector<HTMLElement>('.scene-resizer')!.addEventListener('mousedown', (event) => {
         event.preventDefault();
         const startX = event.clientX;
         const startWidth = dock.offsetWidth;
         const direction = side === 'left' ? 1 : -1;
+        const wasMinimized = dock.classList.contains('minimized');
+        let minimize = wasMinimized;
+        let restore = false;
 
         const move = (moveEvent: MouseEvent): void => {
+            if (wasMinimized) {
+                restore = direction * (moveEvent.clientX - startX) >= 140;
+                dock.classList.toggle('restore-preview', restore);
+                return;
+            }
             const width = Math.max(280, Math.min(600, startWidth + direction * (moveEvent.clientX - startX)));
+            minimize = side === 'left'
+                ? moveEvent.clientX <= window.innerWidth * 0.1
+                : moveEvent.clientX >= window.innerWidth * 0.9;
+            dock.classList.remove('minimized');
+            dock.classList.toggle('minimize-preview', minimize);
             dock.style.width = `${width}px`;
             applyLayout();
         };
         const stop = (): void => {
+            dock.classList.remove('minimize-preview');
+            dock.classList.remove('restore-preview');
+            minimize = wasMinimized ? !restore : minimize;
+            dock.classList.toggle('minimized', minimize);
+            if (minimize) dock.style.width = '0px';
+            else if (wasMinimized) dock.style.width = '280px';
+            applyLayout();
             window.removeEventListener('mousemove', move);
             window.removeEventListener('mouseup', stop);
             localStorage.setItem(`panel-width-${side}`, dock.style.width);

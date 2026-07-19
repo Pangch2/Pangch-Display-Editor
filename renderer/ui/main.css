@@ -53,7 +53,7 @@ canvas {
 .panel-dock {
   position: absolute;
   top: 0;
-  width: 240px;
+  width: 280px;
   bottom: 0;
   background-color: #252528;
   box-sizing: border-box;
@@ -74,6 +74,33 @@ canvas {
 
 .panel-dock.empty {
   display: none;
+}
+
+.panel-dock.minimized > :not(.scene-resizer) {
+  display: none;
+}
+
+.panel-dock.minimize-preview::after,
+.panel-dock.restore-preview::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 10px;
+  background: rgba(112, 199, 255, 0.35);
+  border: 2px solid #70c7ff;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.panel-dock.dock-right.minimize-preview::after,
+.panel-dock.dock-right.restore-preview::after {
+  right: 0;
+  left: auto;
+}
+
+.panel-dock.restore-preview::after {
+  width: 280px;
 }
 
 .panel-dock.single-panel .panel-section,
