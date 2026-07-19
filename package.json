@@ -71,7 +71,7 @@
       "allowToChangeInstallationDirectory": false,
       "shortcutName": "PDE",
       "artifactName": "PDE-${version}-Setup.exe",
-      "uninstallDisplayName": "팽치류 디플편집기",
+      "uninstallDisplayName": "Panghch Display Editor",
       "installerIcon": "resources/Pangch-Face.ico",
       "uninstallerIcon": "resources/Pangch-Face.ico",
       "installerHeaderIcon": "resources/Pangch-Face.ico"
