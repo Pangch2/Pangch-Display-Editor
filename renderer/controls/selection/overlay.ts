@@ -80,10 +80,7 @@ const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
 
 let loadedObjectGroup: Group | null = null;
-let _dragCachePos = new Float32Array(0);
-let _dragCacheLocalExt = new Float32Array(0);
-let _dragCacheWorldMat3 = new Float32Array(0);
-let _dragCacheCount = 0;
+const _dragSelectionBox = new Box3();
 
 export function setLoadedObjectGroup(group: Group | null): void {
     loadedObjectGroup = group;
@@ -436,75 +433,8 @@ function _getSelectedObjectCount(currentSelection: SelectionState): number {
 }
 
 export function prepareMultiSelectionDrag(currentSelection: SelectionState): void {
-    if (!currentSelection) {
-        _dragCacheCount = 0;
-        return;
-    }
-    
-    const objCount = _getSelectedObjectCount(currentSelection);
-    const grpCount = currentSelection.groups ? currentSelection.groups.size : 0;
-    const totalCount = objCount + grpCount;
-
-    if (totalCount === 0) {
-        _dragCacheCount = 0;
-        return;
-    }
-
-    if (_dragCachePos.length < totalCount * 3) {
-        _dragCachePos       = new Float32Array(totalCount * 3);
-        _dragCacheLocalExt  = new Float32Array(totalCount * 3);
-        _dragCacheWorldMat3 = new Float32Array(totalCount * 9);
-    }
-    _dragCacheCount = 0;
-
-    const size    = _TMP_VEC3_A;
-    const center  = _TMP_VEC3_B;
-
-    const addBox = (localBox: Box3, worldMat: Matrix4) => {
-        if (!localBox || localBox.isEmpty()) return;
-
-        localBox.getCenter(center);
-        localBox.getSize(size);
-
-        center.applyMatrix4(worldMat);
-        const pIdx = _dragCacheCount * 3;
-        _dragCachePos[pIdx]   = center.x;
-        _dragCachePos[pIdx+1] = center.y;
-        _dragCachePos[pIdx+2] = center.z;
-
-        _dragCacheLocalExt[pIdx]   = size.x * 0.5;
-        _dragCacheLocalExt[pIdx+1] = size.y * 0.5;
-        _dragCacheLocalExt[pIdx+2] = size.z * 0.5;
-
-        const e = worldMat.elements;
-        const rIdx = _dragCacheCount * 9;
-        _dragCacheWorldMat3[rIdx]   = e[0]; _dragCacheWorldMat3[rIdx+1] = e[4]; _dragCacheWorldMat3[rIdx+2] = e[8];
-        _dragCacheWorldMat3[rIdx+3] = e[1]; _dragCacheWorldMat3[rIdx+4] = e[5]; _dragCacheWorldMat3[rIdx+5] = e[9];
-        _dragCacheWorldMat3[rIdx+6] = e[2]; _dragCacheWorldMat3[rIdx+7] = e[6]; _dragCacheWorldMat3[rIdx+8] = e[10];
-
-        _dragCacheCount++;
-    };
-
-    if (currentSelection.groups) {
-        for (const groupId of currentSelection.groups) {
-            const localBox = getGroupLocalBoundingBox(groupId);
-            const tempMat = new Matrix4();
-            getGroupWorldMatrixWithFallback(groupId, tempMat);
-            addBox(localBox, tempMat);
-        }
-    }
-
-    if (currentSelection.objects) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            for (const id of ids) {
-                const localBox = getInstanceLocalBox(mesh, id);
-                if (!localBox) continue;
-                const tempMat = new Matrix4();
-                getInstanceWorldMatrix(mesh, id, tempMat);
-                addBox(localBox, tempMat);
-            }
-        }
-    }
+    _dragSelectionBox.makeEmpty();
+    if (currentSelection) _dragSelectionBox.copy(getSelectionBoundingBox(currentSelection));
 }
 
 // --- Overlay State ---
@@ -775,23 +705,10 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection: Selectio
     activeBoxLine.visible = true;
 
     const worldBox = _TMP_BOX3_A.makeEmpty();
-    if (currentGizmoMat && initialGizmoMat && _dragCacheCount > 0) {
+    if (currentGizmoMat && initialGizmoMat && !_dragSelectionBox.isEmpty()) {
         const tMat = _TMP_MAT4_A.copy(initialGizmoMat).invert().premultiply(currentGizmoMat);
-        const te = tMat.elements;
-        const t00 = te[0], t01 = te[4], t02 = te[8], t10 = te[1], t11 = te[5], t12 = te[9], t20 = te[2], t21 = te[6], t22 = te[10], tx = te[12], ty = te[13], tz = te[14];
-        let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-
-        for (let i = 0; i < _dragCacheCount; i++) {
-            const pIdx = i * 3, rIdx = i * 9;
-            const px = _dragCachePos[pIdx], py = _dragCachePos[pIdx+1], pz = _dragCachePos[pIdx+2];
-            const nx = t00*px + t01*py + t02*pz + tx, ny = t10*px + t11*py + t12*pz + ty, nz = t20*px + t21*py + t22*pz + tz;
-            const m00 = _dragCacheWorldMat3[rIdx], m01 = _dragCacheWorldMat3[rIdx+1], m02 = _dragCacheWorldMat3[rIdx+2], m10 = _dragCacheWorldMat3[rIdx+3], m11 = _dragCacheWorldMat3[rIdx+4], m12 = _dragCacheWorldMat3[rIdx+5], m20 = _dragCacheWorldMat3[rIdx+6], m21 = _dragCacheWorldMat3[rIdx+7], m22 = _dragCacheWorldMat3[rIdx+8];
-            const c00 = t00*m00 + t01*m10 + t02*m20, c01 = t00*m01 + t01*m11 + t02*m21, c02 = t00*m02 + t01*m12 + t02*m22, c10 = t10*m00 + t11*m10 + t12*m20, c11 = t10*m01 + t11*m11 + t12*m21, c12 = t10*m02 + t11*m12 + t12*m22, c20 = t20*m00 + t21*m10 + t22*m20, c21 = t20*m01 + t21*m11 + t22*m21, c22 = t20*m02 + t21*m12 + t22*m22;
-            const ex = _dragCacheLocalExt[pIdx], ey = _dragCacheLocalExt[pIdx+1], ez = _dragCacheLocalExt[pIdx+2];
-            const nex = Math.abs(c00)*ex + Math.abs(c01)*ey + Math.abs(c02)*ez, ney = Math.abs(c10)*ex + Math.abs(c11)*ey + Math.abs(c12)*ez, nez = Math.abs(c20)*ex + Math.abs(c21)*ey + Math.abs(c22)*ez;
-            minX = Math.min(minX, nx-nex); maxX = Math.max(maxX, nx+nex); minY = Math.min(minY, ny-ney); maxY = Math.max(maxY, ny+ney); minZ = Math.min(minZ, nz-nez); maxZ = Math.max(maxZ, nz+nez);
-        }
-        worldBox.min.set(minX, minY, minZ); worldBox.max.set(maxX, maxY, maxZ);
+        // ponytail: aggregate AABB is conservative during rotation/shear; scan items here only if exact preview bounds become necessary.
+        worldBox.copy(_dragSelectionBox).applyMatrix4(tMat);
     } else {
         worldBox.copy(getSelectionBoundingBox(currentSelection));
     }
@@ -807,14 +724,22 @@ export function syncSelectionOverlay(deltaMatrix: Matrix4): void {
     if (selectionPointsOverlay) { selectionPointsOverlay.applyMatrix4(deltaMatrix); selectionPointsOverlay.updateMatrixWorld(true); }
 }
 
-export function commitSelectionOverlay(deltaMatrix: Matrix4): void {
-    if (!selectionOverlay) return;
-    const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
-    for (let i = 0; i < selectedCount; i++) {
-        selectionOverlay.getMatrixAt(i, _TMP_MAT4_A);
-        selectionOverlay.setMatrixAt(i, _TMP_MAT4_A.premultiply(deltaMatrix));
+export function commitSelectionOverlay(deltaMatrix: Matrix4, currentSelection: SelectionState): void {
+    if (selectionOverlay) {
+        const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
+        for (let i = 0; i < selectedCount; i++) {
+            selectionOverlay.getMatrixAt(i, _TMP_MAT4_A);
+            selectionOverlay.setMatrixAt(i, _TMP_MAT4_A.premultiply(deltaMatrix));
+        }
+        selectionOverlay.instanceMatrix.needsUpdate = true;
     }
-    selectionOverlay.instanceMatrix.needsUpdate = true;
+
+    const activeBoxLine = multiSelectionOverlay?.children[0] as LineSegments | undefined;
+    if (activeBoxLine) {
+        const finalBox = getSelectionBoundingBox(currentSelection);
+        if (!finalBox.isEmpty()) setBoxLineTransform(activeBoxLine, finalBox);
+    }
+    _dragSelectionBox.makeEmpty();
 }
 
 export function findClosestVertexForSnapping(gizmoWorldPos: Vector3, camera: Camera, renderer: Renderer, snapThreshold = 15): Vector3 | null {

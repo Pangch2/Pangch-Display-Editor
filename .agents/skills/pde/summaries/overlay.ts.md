@@ -21,19 +21,19 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - `calculateAvgOriginForChildren(children, out)` -- averages group-child origins in world space.
 - `getGroupWorldMatrixWithFallback(groupId, out)` -- gets stored group transform or composes its fallback.
 - `unionTransformedBox3(targetBox, localBox, matrix, tempBox)` -- unions transformed local bounds.
-- `getInstanceLocalBox(mesh, instanceId, out?)` -- returns instance-local bounds, optionally reusing an output box.
+- `getInstanceLocalBox(mesh, instanceId)` -- returns instance-local bounds.
 - `getInstanceWorldMatrix(mesh, instanceId, outMatrix)` -- returns the instance world matrix.
 - `getGroupLocalBoundingBox(groupId)` -- calculates group bounds in group-local space.
 - `getGroupOriginWorld(groupId, out)` -- resolves a group's world origin.
 - `getRotationFromMatrix(matrix)` -- extracts an orthonormal rotation quaternion.
 - `getSelectionBoundingBox(currentSelection)` -- calculates combined selection bounds.
-- `prepareMultiSelectionDrag(currentSelection)` -- caches bounds data used during drag.
+- `prepareMultiSelectionDrag(currentSelection)` -- caches one aggregate world-space selection box at drag start.
 - `getSelectionPointsOverlay()` -- returns the active vertex-marker group.
 - `updateSelectionOverlay(...)` -- rebuilds selection instances, vertex sprites, and overlay boxes.
-- `updateMultiSelectionOverlayDuringDrag(...)` -- updates the cached multi-selection box transform during drag.
+- `updateMultiSelectionOverlayDuringDrag(...)` -- transforms the cached aggregate box in constant time during drag.
 - `syncSelectionPointsOverlay(delta)` -- translates vertex markers with a selection.
 - `syncSelectionOverlay(deltaMatrix)` -- updates vertex-marker transforms during a drag; selected outlines follow the shared GPU preview matrix.
-- `commitSelectionOverlay(deltaMatrix)` -- commits the cumulative drag delta to selected outline instance matrices once at drag end.
+- `commitSelectionOverlay(deltaMatrix, currentSelection)` -- commits selected outline matrices and restores the exact aggregate box once at drag end.
 - `findClosestVertexForSnapping(...)` -- finds the closest projected vertex within a pixel threshold.
 - `getHoveredVertex(...)` -- hit-tests projected vertex sprites.
 - `updateVertexHoverHighlight(...)` -- updates hover colors and the selected-to-hovered guide line.
@@ -41,7 +41,7 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - `refreshSelectionPointColors(selectedVertexKeys)` -- reapplies selected vertex materials.
 
 ## Internal State
-- Active overlay objects, retained selection-overlay capacity, loaded group root, drag-bound typed arrays, and the last hovered sprite are module state.
+- Active overlay objects, loaded group root, one cached drag-start aggregate box, and the last hovered sprite are module state.
 - Unit geometries and selection, vertex, axis, and multi-selection materials are shared for the module lifetime.
 
 ## Dependencies (imports)
@@ -58,6 +58,6 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - Selected outlines use the same shared TSL drag matrix as entity geometry, while queued overlay boxes are masked out.
 - Selection overlay instance matrices use WebGPU storage attributes and are uploaded on selection changes or once at drag end instead of on every preview frame.
 - Selection boxes use one InstancedMesh; vertex sprites and drag boxes reuse shared GPU resources instead of recreating materials or geometry.
-- The selection InstancedMesh and power-of-two-capacity buffers persist across deselection and only reallocate when the required capacity grows; replaced buffers are disposed.
-- Normal selection mode writes matrices, colors, and drag flags directly into retained buffers with shared temporaries; vertex metadata is allocated only in vertex mode.
+- Selection refreshes recreate the selection InstancedMesh and its exact-sized attributes.
+- Drag-time multi-selection bounds transform only the cached aggregate box with no per-item scan; rotation or shear can temporarily produce a conservative AABB, which is tightened once at commit.
 - Repeated hover events for the same sprite are ignored; selection refreshes clear the transient hover guide.

@@ -519,7 +519,7 @@ function commitSelectionTransform(): void {
             selectedGroupIds: currentSelection.groups,
             loadedObjectGroup
         });
-        Overlay.commitSelectionOverlay(_dragTotalDeltaMatrix);
+        Overlay.commitSelectionOverlay(_dragTotalDeltaMatrix, currentSelection);
     }
     _dragPreviewActive = false;
     dragDeltaMatrix.identity();
