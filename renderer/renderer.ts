@@ -504,7 +504,6 @@ async function initScene(): Promise<void> {
         const axis = type.slice(-1) as keyof typeof viewHelperAxisColors;
         if (index < 3) {
             const axisLine = child as Object3D & { geometry: BufferGeometry; material: { color: Color; opacity: number; transparent: boolean } };
-            if (index === 0) axisLine.geometry.scale(2, 1, 1).translate(-0.8, 0, 0);
             const material = axisLine.material;
             material.color.set(viewHelperAxisColors[['X', 'Z', 'Y'][index] as keyof typeof viewHelperAxisColors]);
             material.opacity = 0.8;

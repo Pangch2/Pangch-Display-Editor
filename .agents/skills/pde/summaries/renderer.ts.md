@@ -38,7 +38,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - Uses `WebGPURenderer`; WebGL is not used.
 - Instanced-matrix binding-name stabilization is installed after renderer initialization by wrapping the first backend node-builder creation, patching its shared builder prototype for both Three.js instance-matrix paths, and restoring the backend factory immediately.
 - `initScene()` is only called after assets finish initializing.
-- `initScene()` extends ViewHelper axis lines through both positive and negative directions, applies the gizmo's X/Y/Z palette to every line and 128 px marker at 0.8 opacity, labels positive markers, and groups both floor grids with the `Z>` marker so they share axis-view changes.
+- `initScene()` keeps ViewHelper axis lines in their default positive directions, applies the gizmo's X/Y/Z palette to every line and 128 px positive/negative marker at 0.8 opacity, labels positive markers, and groups both floor grids with the `Z>` marker so they share axis-view changes.
 - `animate()` renders the scene and bottom-right ViewHelper continuously, syncing its center to the OrbitControls target, updating click-driven camera animations, rotating the floor grid to the selected view plane, and compositing the helper without clearing its viewport background.
 - ViewHelper transitions accept only left clicks and temporarily hide `Z>`; the next left-button interaction restores the grouped grids to the original XZ plane and shows `Z>` again.
 - Window resize updates the camera and WebGPU canvas, then renders immediately so the resized drawing buffer is never displayed empty between animation frames.
