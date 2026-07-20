@@ -26,16 +26,16 @@ interface DeleteUserData {
 // 성능을 위한 임시 변수
 const _TMP_MAT4_A = new Matrix4();
 
-function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, instanceId: number): void {
+function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, instanceId: number): string | undefined {
     const ud = loadedObjectGroup.userData as DeleteUserData;
     const keyToUuid = ud.instanceKeyToObjectUuid;
-    if (!keyToUuid) return;
+    if (!keyToUuid) return undefined;
 
     const key = GroupUtils.getGroupKey(mesh, instanceId);
     const objectUuid = keyToUuid.get(key);
     keyToUuid.delete(key);
 
-    if (!objectUuid) return;
+    if (!objectUuid) return undefined;
 
     ud.objectUuidToInstance?.delete(objectUuid);
     ud.objectNames?.delete(objectUuid);
@@ -43,9 +43,7 @@ function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, inst
     ud.objectDisplayTypes?.delete(objectUuid);
     ud.objectBlockProps?.delete(objectUuid);
 
-    if (Array.isArray(ud.sceneOrder)) {
-        ud.sceneOrder = ud.sceneOrder.filter(entry => !(entry.type === 'object' && entry.id === objectUuid));
-    }
+    return objectUuid;
 }
 
 /**
@@ -184,24 +182,42 @@ export function deleteSelectedItems(
 
     // 4. 객체 삭제 처리 (메쉬별 그룹화)
     const byMesh = new Map<Mesh, Set<number>>();
+    const deletedKeysByGroup = new Map<string, Set<string>>();
+    const deletedObjectUuids = new Set<string>();
 
     for (const { mesh, instanceId } of itemsToDelete.values()) {
         const key = GroupUtils.getGroupKey(mesh, instanceId);
-        _removeDeletedObjectMetadata(loadedObjectGroup, mesh, instanceId);
+        const objectUuid = _removeDeletedObjectMetadata(loadedObjectGroup, mesh, instanceId);
+        if (objectUuid) deletedObjectUuids.add(objectUuid);
         
-        if (objectToGroup.has(key)) {
-            const parentGroupId = objectToGroup.get(key)!;
+        const parentGroupId = objectToGroup.get(key);
+        if (parentGroupId) {
             if (groups.has(parentGroupId)) {
-                const pg = groups.get(parentGroupId);
-                if (pg && Array.isArray(pg.children)) {
-                     pg.children = pg.children.filter((c: GroupChild) => !(c.type === 'object' && c.mesh === mesh && c.instanceId === instanceId));
-                }
+                let deletedKeys = deletedKeysByGroup.get(parentGroupId);
+                if (!deletedKeys) deletedKeysByGroup.set(parentGroupId, deletedKeys = new Set());
+                deletedKeys.add(key);
             }
             objectToGroup.delete(key);
         }
 
         if (!byMesh.has(mesh)) byMesh.set(mesh, new Set());
         byMesh.get(mesh)!.add(instanceId);
+    }
+
+    for (const [groupId, deletedKeys] of deletedKeysByGroup) {
+        const group = groups.get(groupId);
+        if (group) {
+            group.children = group.children.filter(child => (
+                child.type !== 'object' || !deletedKeys.has(GroupUtils.getGroupKey(child.mesh, child.instanceId))
+            ));
+        }
+    }
+
+    const userData = loadedObjectGroup.userData as DeleteUserData;
+    if (deletedObjectUuids.size > 0 && Array.isArray(userData.sceneOrder)) {
+        userData.sceneOrder = userData.sceneOrder.filter(entry => (
+            entry.type !== 'object' || !deletedObjectUuids.has(entry.id)
+        ));
     }
 
     resetSelectionAndDeselect();

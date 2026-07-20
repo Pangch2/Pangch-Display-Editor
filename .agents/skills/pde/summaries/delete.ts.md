@@ -1,7 +1,7 @@
 # delete.ts
 
 ## Purpose
-Deletes selected groups and objects from the scene graph and from the editor custom group/object metadata structures.
+Deletes selected groups and objects from the scene graph and editor metadata structures, batching container cleanup for large multi-selections.
 
 ## Exports
 
@@ -9,7 +9,7 @@ Deletes selected groups and objects from the scene graph and from the editor cus
 - `DeleteSelectionCallbacks` -- callbacks needed after deletion to clear selection state.
 
 ### Functions / Methods
-- `deleteSelectedItems(loadedObjectGroup, currentSelection, callbacks): void` -- removes the selected groups and instanced objects, updates metadata maps, and compacts InstancedMesh instances.
+- `deleteSelectedItems(loadedObjectGroup, currentSelection, callbacks): void` -- removes selected groups and instanced objects, bulk-filters affected group/scene-order containers, updates metadata maps, and compacts InstancedMesh instances.
 
 ## Internal State
 Uses a shared temporary matrix for swap-pop instance handling.
@@ -23,4 +23,4 @@ Uses a shared temporary matrix for swap-pop instance handling.
 - `renderer/controls/input/handle-key.ts`
 
 ## Notes
-Deletion assumes InstancedMesh object instances only. Swap-pop updates group references after compaction; emptied duplication-only chunks are detached and their instance/geometry GPU resources are disposed.
+Deletion assumes InstancedMesh object instances only. Parent children and scene order are filtered once per deletion batch rather than once per object. Swap-pop updates group references after compaction; emptied duplication-only chunks are detached and their instance/geometry GPU resources are disposed.
