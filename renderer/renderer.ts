@@ -1,4 +1,5 @@
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { ViewHelper } from 'three/examples/jsm/helpers/ViewHelper.js';
 import { initGizmo } from './controls/gizmo/gizmo';
 import type { InitGizmoResult, OrbitControlsLike } from './controls/gizmo/gizmo';
 import {
@@ -13,7 +14,11 @@ import {
     WebGPURenderer,
     GridHelper,
     Renderer,
-    Object3D
+    Object3D,
+    Clock,
+    CanvasTexture,
+    SpriteMaterial,
+    SRGBColorSpace
 } from 'three/webgpu';
 import { initAssets } from './asset-manager';
 import { loadedObjectGroup } from './load-project/upload-pbde';
@@ -27,6 +32,10 @@ let scene: Scene;
 let camera: PerspectiveCamera;
 let renderer: WebGPURenderer;
 let controls: OrbitControls;
+let viewHelper: ViewHelper;
+let floorGrid: Group;
+let zSymbol: Group;
+let viewHelperWasAnimating = false;
 let gizmoModule: InitGizmoResult | null = null;
 type GpuQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike } } };
@@ -487,6 +496,52 @@ async function initScene(): Promise<void> {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
 
+    viewHelper = new ViewHelper(camera, renderer.domElement);
+    viewHelper.setLabels('X', 'Y', 'Z');
+    const viewHelperAxisColors = { X: '#EF3751', Y: '#6FA21C', Z: '#437FD0' };
+    viewHelper.children.forEach((child, index) => {
+        const type = String(child.userData.type);
+        const axis = type.slice(-1) as keyof typeof viewHelperAxisColors;
+        if (index < 3) {
+            const axisLine = child as Object3D & { geometry: BufferGeometry; material: { color: Color; opacity: number; transparent: boolean } };
+            if (index === 0) axisLine.geometry.scale(2, 1, 1).translate(-0.8, 0, 0);
+            const material = axisLine.material;
+            material.color.set(viewHelperAxisColors[['X', 'Z', 'Y'][index] as keyof typeof viewHelperAxisColors]);
+            material.opacity = 0.8;
+            material.transparent = true;
+            return;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 128;
+        const context = canvas.getContext('2d')!;
+        context.fillStyle = viewHelperAxisColors[axis];
+        context.beginPath();
+        context.arc(64, 64, 28, 0, Math.PI * 2);
+        context.fill();
+        if (type.startsWith('pos')) {
+            context.font = '48px Arial';
+            context.textAlign = 'center';
+            context.fillStyle = '#000000';
+            context.fillText(axis, 64, 82);
+        }
+
+        const texture = new CanvasTexture(canvas);
+        texture.colorSpace = SRGBColorSpace;
+        (child as Object3D & { material: SpriteMaterial }).material = new SpriteMaterial({ map: texture, opacity: 0.8, transparent: true, toneMapped: false });
+    });
+    renderer.domElement.addEventListener('pointerup', event => {
+        if (event.button !== 0) return;
+        viewHelperWasAnimating = viewHelper.handleClick(event);
+        if (viewHelperWasAnimating) zSymbol.visible = false;
+    });
+    renderer.domElement.addEventListener('pointerdown', event => {
+        if (event.button === 0) {
+            floorGrid.rotation.set(0, 0, 0);
+            zSymbol.visible = true;
+        }
+    });
+
     // Initialize gizmo module after creating controls
     gizmoModule = initGizmo({ 
         scene, 
@@ -504,26 +559,26 @@ async function initScene(): Promise<void> {
 
     const detailGrid = new GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
     detailGrid.renderOrder = -2; 
-    scene.add(detailGrid);
 
     const Grid = new GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
     Grid.renderOrder = -1; 
-    scene.add(Grid);
+    zSymbol = createZGreaterSymbol(new Vector3(0.5, 0, -0.25), 0.125, 0x515151);
+    zSymbol.renderOrder = 10;
+    floorGrid = new Group();
+    floorGrid.add(detailGrid, Grid, zSymbol);
+    scene.add(floorGrid);
     
     [detailGrid, Grid].forEach(helper => {
         const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
         materials.forEach(m => { (m as any).depthWrite = false; });
     });
-
-    const zSymbol = createZGreaterSymbol(new Vector3(0.5, 0, -0.25), 0.125, 0x515151);
-    zSymbol.renderOrder = 10;
-    scene.add(zSymbol);
 }
 
 //fps표시용1
 let lastTime = performance.now();
 let frameCount = 0;
 const fpsCounterElement = document.getElementById('fps-counter');
+const viewHelperClock = new Clock();
 
 function animate(): void {
     requestAnimationFrame(animate);
@@ -542,8 +597,19 @@ function animate(): void {
     // Update gizmo: overlay and axis orientation
     if (gizmoModule) gizmoModule.updateGizmo();
     if (renderer && scene && camera && !scenePrecompileInProgress) {
+        viewHelper.center.copy(controls.target);
+        if (viewHelper.animating) viewHelper.update(viewHelperClock.getDelta());
+        else viewHelperClock.getDelta();
+        if (viewHelperWasAnimating && !viewHelper.animating) {
+            const direction = camera.position.clone().sub(controls.target).normalize().round();
+            floorGrid.rotation.set(Math.abs(direction.z) * Math.PI / 2, 0, -Math.abs(direction.x) * Math.PI / 2);
+            viewHelperWasAnimating = false;
+        }
         const renderStartMs = performance.now();
         renderer.render(scene, camera);
+        renderer.autoClear = false;
+        viewHelper.render(renderer);
+        renderer.autoClear = true;
         resolveRenderSettledRequests(renderStartMs, performance.now());
     }
 }
@@ -556,7 +622,12 @@ function onWindowResize(): void {
         camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
-        if (scene && !scenePrecompileInProgress) renderer.render(scene, camera);
+        if (scene && !scenePrecompileInProgress) {
+            renderer.render(scene, camera);
+            renderer.autoClear = false;
+            viewHelper.render(renderer);
+            renderer.autoClear = true;
+        }
     }
 }
 
