@@ -71,17 +71,23 @@ interface OverlayItem {
     gizmoLocalPosition?: Vector3;
 }
 
+interface DragBoundsItem {
+    box: Box3;
+    matrix: Matrix4;
+}
+
 // --- Constants & Temporaries ---
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();
 const _TMP_MAT4_C = new Matrix4();
 const _TMP_BOX3_A = new Box3();
+const _TMP_BOX3_B = new Box3();
 const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
 
 let loadedObjectGroup: Group | null = null;
-const _dragSelectionBox = new Box3();
+const _dragBoundsItems: DragBoundsItem[] = [];
 
 export function setLoadedObjectGroup(group: Group | null): void {
     loadedObjectGroup = group;
@@ -436,8 +442,17 @@ function _getSelectedObjectCount(currentSelection: SelectionState): number {
 }
 
 export function prepareMultiSelectionDrag(currentSelection: SelectionState): void {
-    _dragSelectionBox.makeEmpty();
-    if (currentSelection) _dragSelectionBox.copy(getSelectionBoundingBox(currentSelection));
+    _dragBoundsItems.length = 0;
+    for (const groupId of currentSelection.groups) {
+        const box = getGroupLocalBoundingBox(groupId);
+        if (!box.isEmpty()) _dragBoundsItems.push({ box, matrix: getGroupWorldMatrixWithFallback(groupId) });
+    }
+    for (const [mesh, ids] of currentSelection.objects) {
+        for (const id of ids) {
+            const box = getInstanceLocalBox(mesh, id);
+            if (box) _dragBoundsItems.push({ box, matrix: getInstanceWorldMatrix(mesh, id, new Matrix4()) });
+        }
+    }
 }
 
 // --- Overlay State ---
@@ -708,9 +723,12 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection: Selectio
     activeBoxLine.visible = true;
 
     const worldBox = _TMP_BOX3_A.makeEmpty();
-    if (currentGizmoMat && initialGizmoMat && !_dragSelectionBox.isEmpty()) {
+    if (currentGizmoMat && initialGizmoMat && _dragBoundsItems.length > 0) {
         const tMat = _TMP_MAT4_C.copy(initialGizmoMat).invert().premultiply(currentGizmoMat);
-        worldBox.copy(getSelectionBoundingBox(currentSelection, tMat));
+        for (const item of _dragBoundsItems) {
+            _TMP_MAT4_A.multiplyMatrices(tMat, item.matrix);
+            worldBox.union(_TMP_BOX3_B.copy(item.box).applyMatrix4(_TMP_MAT4_A));
+        }
     } else {
         worldBox.copy(getSelectionBoundingBox(currentSelection));
     }
@@ -741,7 +759,7 @@ export function commitSelectionOverlay(deltaMatrix: Matrix4, currentSelection: S
         const finalBox = getSelectionBoundingBox(currentSelection);
         if (!finalBox.isEmpty()) setBoxLineTransform(activeBoxLine, finalBox);
     }
-    _dragSelectionBox.makeEmpty();
+    _dragBoundsItems.length = 0;
 }
 
 export function findClosestVertexForSnapping(gizmoWorldPos: Vector3, camera: Camera, renderer: Renderer, snapThreshold = 15): Vector3 | null {
