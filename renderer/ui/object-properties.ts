@@ -14,6 +14,10 @@ const tabs = document.getElementById('project-tabs')!;
 const projectProperties = document.getElementById('project-properties')!;
 const multiSelectionPivot = document.getElementById('multi-selection-pivot')!;
 const objectProperties = document.getElementById('object-properties')!;
+const propertyDetails = document.getElementById('project-details')!;
+const propertySectionEstimate = 250;
+const propertySectionSpacer = document.createElement('div');
+const propertySectionContent = document.createElement('div');
 const matrix = new Matrix4();
 const position = new Vector3();
 const rotation = new Euler();
@@ -35,7 +39,11 @@ let selectionOrder: PropertySelection[] = [];
 let multiSelectionKey = '';
 const multiSelectionMatrix = new Matrix4();
 const dragPreviewDelta = new Matrix4();
-const visibleSections = new Map<Element, number>();
+const renderedSections = new Map<number, HTMLElement>();
+const propertySectionHeights = new Map<string, number>();
+let propertySectionOffsets = [0];
+let renderedSelectionKeys: string[] = [];
+let propertySectionRenderFrame = 0;
 const sectionInputs = new WeakMap<Element, {
     transform: HTMLInputElement[];
     matrix: HTMLInputElement[];
@@ -49,32 +57,14 @@ let multiSelectionInputs: {
 } | null = null;
 let currentPivotWorld: Vector3 | undefined;
 let currentPivotMode = 'origin';
-const sectionObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-        if (!entry.isIntersecting) {
-            visibleSections.delete(entry.target);
-            continue;
-        }
-        const index = Array.prototype.indexOf.call(objectProperties.children, entry.target);
-        const item = selectionOrder[index];
-        if (item?.key === entry.target.getAttribute('data-key')) {
-            if (!entry.target.hasAttribute('data-hydrated')) {
-                const section = 'group' in item
-                    ? renderGroup(item.groupId, item.group, index, index === 0 ? currentPivotWorld : undefined)
-                    : renderObject(item.mesh, item.instanceId, index, index === 0 ? currentPivotWorld : undefined);
-                section.dataset.key = item.key;
-                section.dataset.hydrated = '';
-                entry.target.replaceWith(section);
-                sectionObserver.unobserve(entry.target);
-                sectionObserver.observe(section);
-                visibleSections.set(section, index);
-            } else {
-                visibleSections.set(entry.target, index);
-                updateSection(entry.target, item, index === 0 ? currentPivotWorld : undefined);
-            }
-        }
-    }
-}, { root: document.getElementById('project-details') });
+const propertySectionResizeObserver = new ResizeObserver(handlePropertySectionResize);
+
+propertySectionSpacer.className = 'object-properties-spacer';
+propertySectionContent.className = 'object-properties-content';
+objectProperties.replaceChildren(propertySectionSpacer, propertySectionContent);
+propertySectionResizeObserver.observe(propertyDetails);
+propertySectionResizeObserver.observe(multiSelectionPivot);
+propertyDetails.addEventListener('scroll', schedulePropertySectionRender, { passive: true });
 
 function format(value: number): string {
     return Number(value.toFixed(6)).toString();
@@ -237,6 +227,7 @@ function metadataProperty(key: string, labelText: string, control: HTMLElement):
     label.ondragend = () => {
         draggedMetadataKey = null;
         clearDropPreview();
+        schedulePropertySectionRender();
     };
     row.addEventListener('dragover', event => {
         if (!draggedMetadataKey || draggedMetadataKey === key) return;
@@ -297,6 +288,7 @@ function propertySection(key: string, label: string | HTMLElement, ...children: 
     heading.ondragend = () => {
         draggedPropertySection = null;
         clearDropPreview();
+        schedulePropertySectionRender();
     };
     wrapper.ondragover = event => {
         if (!draggedPropertySection || draggedPropertySection === wrapper) return;
@@ -852,6 +844,152 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
     }
 }
 
+function findPropertySectionIndex(offsets: number[], offset: number): number {
+    if (offsets.length < 2) return -1;
+    let low = 0;
+    let high = offsets.length - 2;
+    while (low < high) {
+        const middle = (low + high) >> 1;
+        if (offsets[middle + 1] <= offset) low = middle + 1;
+        else high = middle;
+    }
+    return low;
+}
+
+if (import.meta.env.DEV) {
+    const offsets = [0, 250, 600];
+    console.assert(findPropertySectionIndex(offsets, 249) === 0 && findPropertySectionIndex(offsets, 250) === 1, 'Property section range lookup failed.');
+}
+
+function getPropertyViewportAnchorIndex(): number | null {
+    const totalHeight = propertySectionOffsets[propertySectionOffsets.length - 1] ?? 0;
+    if (objectProperties.hidden || totalHeight <= 0) return null;
+    const rootRect = propertyDetails.getBoundingClientRect();
+    const listRect = objectProperties.getBoundingClientRect();
+    const offset = Math.min(totalHeight - 1, Math.max(0, rootRect.top - listRect.top));
+    return findPropertySectionIndex(propertySectionOffsets, offset);
+}
+
+function syncPropertySectionOffsets(anchorIndex: number | null = null): void {
+    // ponytail: O(n) prefix rebuilds stay simpler than an index tree; replace only if resize profiling proves this hot.
+    const previousAnchorOffset = anchorIndex === null ? 0 : propertySectionOffsets[anchorIndex] ?? 0;
+    const offsets = new Array<number>(selectionOrder.length + 1);
+    let totalHeight = 0;
+    selectionOrder.forEach((item, index) => {
+        offsets[index] = totalHeight;
+        totalHeight += propertySectionHeights.get(item.key) ?? propertySectionEstimate;
+    });
+    offsets[selectionOrder.length] = totalHeight;
+    propertySectionOffsets = offsets;
+    propertySectionSpacer.style.height = `${totalHeight}px`;
+    renderedSections.forEach((section, index) => {
+        section.style.top = `${offsets[index] ?? 0}px`;
+    });
+    if (anchorIndex !== null) {
+        const offsetDelta = (offsets[anchorIndex] ?? 0) - previousAnchorOffset;
+        if (Math.abs(offsetDelta) > 0.5) propertyDetails.scrollTop += offsetDelta;
+    }
+}
+
+function clearRenderedPropertySections(): void {
+    renderedSections.forEach(section => propertySectionResizeObserver.unobserve(section));
+    renderedSections.clear();
+    propertySectionContent.replaceChildren();
+}
+
+function updateRenderedPropertySections(pivotWorld?: Vector3, previewDelta?: Matrix4): void {
+    renderedSections.forEach((section, index) => {
+        const item = selectionOrder[index];
+        if (item?.key === section.dataset.key) updateSection(section, item, index === 0 ? pivotWorld : undefined, previewDelta);
+    });
+}
+
+function renderVisiblePropertySections(): void {
+    if (objectProperties.hidden || selectionOrder.length === 0) {
+        clearRenderedPropertySections();
+        return;
+    }
+
+    const rootRect = propertyDetails.getBoundingClientRect();
+    const listRect = objectProperties.getBoundingClientRect();
+    const totalHeight = propertySectionOffsets[propertySectionOffsets.length - 1] ?? 0;
+    const overscan = propertyDetails.clientHeight;
+    const startOffset = rootRect.top - listRect.top - overscan;
+    const endOffset = rootRect.bottom - listRect.top + overscan;
+    const wanted = new Set<number>();
+    if (overscan > 0 && endOffset > 0 && startOffset < totalHeight) {
+        const firstIndex = findPropertySectionIndex(propertySectionOffsets, Math.max(0, startOffset));
+        const lastIndex = findPropertySectionIndex(propertySectionOffsets, Math.min(totalHeight - 1, endOffset));
+        for (let index = firstIndex; index <= lastIndex; index++) wanted.add(index);
+    }
+
+    const activeElement = document.activeElement;
+    const dragging = draggedMetadataKey !== null || draggedPropertySection !== null;
+    let changed = false;
+    renderedSections.forEach((section, index) => {
+        if (wanted.has(index) || dragging || section.contains(activeElement)) return;
+        propertySectionResizeObserver.unobserve(section);
+        section.remove();
+        renderedSections.delete(index);
+        changed = true;
+    });
+
+    const fragment = document.createDocumentFragment();
+    const addedSections: HTMLElement[] = [];
+    wanted.forEach(index => {
+        if (renderedSections.has(index)) return;
+        const item = selectionOrder[index];
+        if (!item) return;
+        const section = 'group' in item
+            ? renderGroup(item.groupId, item.group, index, index === 0 ? currentPivotWorld : undefined)
+            : renderObject(item.mesh, item.instanceId, index, index === 0 ? currentPivotWorld : undefined);
+        section.dataset.key = item.key;
+        section.dataset.propertyIndex = String(index);
+        section.style.top = `${propertySectionOffsets[index]}px`;
+        renderedSections.set(index, section);
+        fragment.append(section);
+        addedSections.push(section);
+        changed = true;
+    });
+    propertySectionContent.append(fragment);
+    addedSections.forEach(section => propertySectionResizeObserver.observe(section));
+    if (changed) {
+        [...renderedSections.entries()]
+            .sort(([a], [b]) => a - b)
+            .forEach(([, section]) => propertySectionContent.append(section));
+    }
+}
+
+function schedulePropertySectionRender(): void {
+    if (propertySectionRenderFrame) return;
+    propertySectionRenderFrame = requestAnimationFrame(() => {
+        propertySectionRenderFrame = 0;
+        renderVisiblePropertySections();
+    });
+}
+
+function handlePropertySectionResize(entries: ResizeObserverEntry[]): void {
+    const anchorIndex = getPropertyViewportAnchorIndex();
+    let heightChanged = false;
+    let viewportChanged = false;
+    for (const entry of entries) {
+        if (entry.target === propertyDetails || entry.target === multiSelectionPivot) {
+            viewportChanged = true;
+            continue;
+        }
+        const section = entry.target as HTMLElement;
+        const index = Number(section.dataset.propertyIndex);
+        const item = selectionOrder[index];
+        if (!Number.isInteger(index) || renderedSections.get(index) !== section || item?.key !== section.dataset.key) continue;
+        const height = section.getBoundingClientRect().height;
+        if (height <= 0 || Math.abs((propertySectionHeights.get(item.key) ?? propertySectionEstimate) - height) < 0.5) continue;
+        propertySectionHeights.set(item.key, height);
+        heightChanged = true;
+    }
+    if (heightChanged) syncPropertySectionOffsets(anchorIndex);
+    if (heightChanged || viewportChanged) schedulePropertySectionRender();
+}
+
 function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multiCustomPivotLocal?: Vector3, renderMulti = true): void {
     const groups = loadedObjectGroup.userData.groups as Map<string, GroupData> | undefined;
     const current: PropertySelection[] = [
@@ -917,28 +1055,28 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
     tabs.hidden = selected;
     projectProperties.hidden = selected;
     objectProperties.hidden = !selected;
-    if (!selected) return;
-    const sections = objectProperties.children;
-    if (sections.length === selectionOrder.length
-        && selectionOrder.every((item, index) => sections[index].getAttribute('data-key') === item.key)) {
-        selectionOrder.forEach((item, index) => {
-            if (visibleSections.has(sections[index])) {
-                updateSection(sections[index], item, index === 0 ? propertyPivotWorld : undefined);
-            }
-        });
+    const nextSelectionKeys = selectionOrder.map(item => item.key);
+    if (!selected) {
+        renderedSelectionKeys = [];
+        propertySectionHeights.clear();
+        syncPropertySectionOffsets();
+        clearRenderedPropertySections();
         return;
     }
-    sectionObserver.disconnect();
-    visibleSections.clear();
-    const nextSections = selectionOrder.map(item => {
-        const section = document.createElement('section');
-        section.className = 'object-property';
-        section.style.minHeight = '250px';
-        section.dataset.key = item.key;
-        return section;
+    if (renderedSelectionKeys.length === nextSelectionKeys.length
+        && nextSelectionKeys.every((key, index) => renderedSelectionKeys[index] === key)) {
+        updateRenderedPropertySections(propertyPivotWorld);
+        schedulePropertySectionRender();
+        return;
+    }
+    const nextKeySet = new Set(nextSelectionKeys);
+    propertySectionHeights.forEach((_height, key) => {
+        if (!nextKeySet.has(key)) propertySectionHeights.delete(key);
     });
-    objectProperties.replaceChildren(...nextSections);
-    nextSections.forEach(section => sectionObserver.observe(section));
+    renderedSelectionKeys = nextSelectionKeys;
+    clearRenderedPropertySections();
+    syncPropertySectionOffsets();
+    schedulePropertySectionRender();
 }
 
 window.addEventListener('pde:replace-object-selection', event => {
@@ -949,6 +1087,7 @@ window.addEventListener('pde:replace-object-selection', event => {
         mesh: InstancedMesh;
         instanceId: number;
     }>).detail;
+    const nextHeights = new Map<string, number>();
     selectionOrder = selectionOrder.map((item, index) => {
         let next = item;
         if ('mesh' in item && item.mesh === oldMesh && item.instanceId === oldInstanceId) {
@@ -956,20 +1095,22 @@ window.addEventListener('pde:replace-object-selection', event => {
         } else if ('mesh' in item && item.mesh === oldMesh && item.instanceId === oldLastInstanceId) {
             next = { key: `object:${oldMesh.uuid}:${oldInstanceId}`, mesh: oldMesh, instanceId: oldInstanceId };
         }
+        nextHeights.set(next.key, propertySectionHeights.get(item.key) ?? propertySectionEstimate);
         if (next === item || !('mesh' in next)) return next;
 
-        const section = objectProperties.children[index] as HTMLElement | undefined;
-        if (!section?.hasAttribute('data-hydrated')) {
-            if (section) section.dataset.key = next.key;
-            return next;
-        }
-        section.style.minHeight = `${section.offsetHeight}px`;
+        const section = renderedSections.get(index);
+        if (!section) return next;
         const replacement = renderObject(next.mesh, next.instanceId, index, index === 0 ? currentPivotWorld : undefined);
         section.replaceChildren(...replacement.childNodes);
         section.dataset.key = next.key;
         sectionInputs.delete(section);
         return next;
     });
+    propertySectionHeights.clear();
+    nextHeights.forEach((height, key) => propertySectionHeights.set(key, height));
+    renderedSelectionKeys = selectionOrder.map(item => item.key);
+    syncPropertySectionOffsets(getPropertyViewportAnchorIndex());
+    schedulePropertySectionRender();
 });
 window.addEventListener('pde:selection-changed', event => renderSelection((event as CustomEvent<SelectionState>).detail));
 window.addEventListener('pde:selection-transform-context', event => {
@@ -984,12 +1125,7 @@ window.addEventListener('pde:object-transform-changed', event => {
         if (detail.deltaMatrix) {
             dragPreviewDelta.premultiply(detail.deltaMatrix);
             if (detail.multiCustomPivotLocal) multiSelectionMatrix.premultiply(detail.deltaMatrix);
-            visibleSections.forEach((index, section) => {
-                const item = selectionOrder[index];
-                if (item) {
-                    updateSection(section, item, index === 0 ? detail.pivotWorld : undefined, dragPreviewDelta);
-                }
-            });
+            updateRenderedPropertySections(detail.pivotWorld, dragPreviewDelta);
         }
         if (detail.multiCustomPivotLocal) updateMultiSelectionValues(detail.pivotWorld, detail.multiCustomPivotLocal);
         return;

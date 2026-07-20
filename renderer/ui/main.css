@@ -369,6 +369,28 @@ canvas {
   contain-intrinsic-size: auto 250px;
 }
 
+#object-properties {
+  position: relative;
+  overflow-anchor: none;
+}
+
+.object-properties-spacer {
+  width: 1px;
+  pointer-events: none;
+}
+
+.object-properties-content {
+  position: absolute;
+  inset: 0 0 auto;
+}
+
+.object-properties-content > .object-property {
+  position: absolute;
+  left: 0;
+  right: 0;
+  content-visibility: visible;
+}
+
 .object-property h3 {
   margin: 0 0 8px;
   color: #ccc;
