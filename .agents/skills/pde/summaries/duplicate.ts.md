@@ -37,4 +37,5 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 - Normal append path expects meshes created by `mesh-builder.ts` to have spare capacity; chunk spillover handles unlimited repeated duplication without rebinding existing buffers.
 - Group clone jobs rely on `group.ts` for structure cloning and object traversal.
 - Directly selected objects snapshot source locations by parent before cloning, queue clone entries by source UUID, and rebuild each affected parent/root container once so clones remain immediately after their originals; group-covered jobs keep the append path.
+- Direct clone jobs are appended iteratively so very large selections do not hit JavaScript's spread-argument call-stack limit.
 - `Duplicate timings` pbde log emits one summary line with job counts and timing buckets when enabled.
