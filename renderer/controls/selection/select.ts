@@ -164,7 +164,6 @@ export function pickInstanceByOverlayBox(
         for (let instanceId = 0; instanceId < Overlay.getInstanceCount(object); instanceId++) {
             if (!Overlay.isInstanceValid(object, instanceId)) continue;
             Overlay.getInstanceWorldMatrix(object, instanceId, worldMatrix);
-            if (worldMatrix.determinant() !== 0) continue;
 
             const localBox = Overlay.getInstanceLocalBox(object, instanceId);
             if (!localBox) continue;
