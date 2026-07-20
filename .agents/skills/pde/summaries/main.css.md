@@ -34,4 +34,4 @@ Defines renderer UI styling, including independent left/right panel docks, proje
 - Disabled matrix inputs force muted Chromium text/background styling and a blocked cursor.
 - The Project Details header places project navigation directly after its fixed title and lets it fill the remaining panel width; long names truncate and the dropdown stays inside that area, with each project row reserving a 30 px Lucide delete button beside its tab.
 - Project tab rows draw a 2 px sky-blue line above or below the target row while reordering, matching Scene object before/after drop feedback.
-- The canvas camera context menu uses the bundled Lucide font and reveals its absolutely positioned perspective/orthographic submenu beside the parent item on hover.
+- The canvas context menu uses the bundled Lucide font, reveals camera/axis-flip submenus on hover, hides selection-only rows via their `hidden` attribute, and places the native mirror-modeling checkbox at the row's right edge.

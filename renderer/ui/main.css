@@ -416,7 +416,8 @@ canvas {
 }
 
 .camera-menu-parent,
-.camera-submenu button {
+.camera-submenu button,
+.camera-menu-checkbox {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -427,8 +428,10 @@ canvas {
 }
 
 .camera-menu-parent { position: relative; }
+.camera-menu-parent[hidden] { display: none; }
 .camera-menu-parent:hover,
-.camera-submenu button:hover { background: #3b3b40; }
+.camera-submenu button:hover,
+.camera-menu-checkbox:hover { background: #3b3b40; }
 .camera-menu-arrow { margin-left: auto; }
 .lucide-icon { font-family: 'lucide'; }
 
@@ -448,6 +451,11 @@ canvas {
   background: transparent;
   font: inherit;
   cursor: default;
+}
+
+.camera-menu-checkbox input {
+  order: 2;
+  margin: 0 0 0 auto;
 }
 
 .object-name-heading {

@@ -35,4 +35,5 @@ Builds the shared node-based material used for entity-style rendering. It combin
 - `positionNode` converts the common world-space drag delta into each mesh's local space after Three.js applies its instance matrix.
 - `useInstancedUvTransform` expects geometry to provide `instancedUvTransform` for single-transform meshes or the indexed `instancedUvTransformN` selected for that material in multi-part meshes.
 - Lighting is intentionally lightweight and non-physical, tuned for game-like entity rendering.
+- Player-head materials optionally mirror UVs within each face using `uvMirrorCenter`, `instancedUvOffset`, and `instancedUvFlip`; other entity materials retain front-face rendering.
 - Texture sampling and per-material light uniforms remain per material; static tint/light graph parts are shared.

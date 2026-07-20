@@ -12,12 +12,13 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 ### Functions / Methods
 - `getPlayerHeadDisplayMatrix(displayType)` -- returns the shared player-head display transform matrix used by parsing and targeted object replacement.
 - `getItemDisplayModelMatrix(rawName)` -- returns a retained local model/display matrix for in-place display edits without requiring the cleared asset provider.
+- `findMirroredBlockName(name, axis, provider)` -- builds resource-defined candidate states and returns the least-changing state whose model occupancy and surface materials match the requested reflection; returns `null` when no property change is needed.
 - `parsePbdeProject(fileContent, provider)` -- main parser entry; returns packed geometry and metadata
 
 ## Internal State
 - `assetProvider` -- active provider for JSON and texture reads
 - `groups` and `sceneOrder` -- module-level accumulators reset per parse
-- Promise caches for JSON assets and block display templates to deduplicate concurrent scene traversal work
+- Promise caches for JSON assets and block display templates, including transformed element-volume descriptors used by reflection matching, to deduplicate concurrent scene traversal work
 - Multiple caches for model resolution, textures, block/item geometry, and worker-side state
 - Promise and resolved-template caches for block/item display templates deduplicate repeated geometry and display-matrix work before traversal.
 - Retained item display matrices store every editor-supported display variant per loaded item name after temporary parser caches are cleared.
@@ -42,6 +43,7 @@ Parse PBDE archive data into renderer-ready metadata. Decompresses PRJ2 content,
 - Player-head items retain their editable world transform; their display/render scale matrix is applied symmetrically by `mesh-builder.ts`.
 - Beds and trapped chests use hardcoded blockstates; bed geometry and split-texture compatibility remain isolated in the hardcoded assets.
 - Reuses identical block display templates and block model geometry during a parse; per-node transform/uuid metadata is still assigned separately.
+- Block-property mirroring is model-driven: it enumerates resource-defined variant/multipart states, completes boolean multipart domains generically, compares reflected 16³ solid occupancy, and uses textured surface quads to disambiguate directional full-volume models without property-name/value mappings. Occupancy comparison ignores equivalent cuboid partitioning, so vertical stair reflection changes `half` without changing `shape`; connected blocks can switch an enabled side off and the opposite side on.
 - Large scene traversal avoids cloning the full source tree, preloads repeated block/item templates once, and then walks nodes synchronously into a shared render list instead of creating per-node promises and nested arrays.
 - Pack key generation caches repeated matrix and structured JSON string keys within a parse.
 - Same-shape atlas geometry ignores texture location, item display type, and block props when every part has an atlas UV transform, the part model matrix is uniform, and the part count stays within the supported per-part UV transform limit; it splits batches by block/item source type and local model matrix so display classification and object origins remain correct. Legacy batches also split by geometry identity, part index, local matrix, texture, and tint.

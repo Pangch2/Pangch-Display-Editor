@@ -14,6 +14,9 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 ### Functions / Methods
 - `initGizmo(params): InitGizmoResult` -- builds the editor interaction stack and installs DOM event listeners.
 - `InitGizmoResult.setCamera(nextCamera): void` -- rebinds raycasting, TransformControls, and keyboard actions to a replacement camera.
+- `InitGizmoResult.hasSelection(): boolean` -- reports whether the context-menu flip command is available.
+- `InitGizmoResult.flipSelected(axis): Promise<void>` -- applies type-specific X/Y/Z reflection to the selected display objects.
+- `InitGizmoResult.setMirrorModeling(enabled): void` -- toggles mirrored duplication across the display X=-0.5 plane.
 
 ## Dependencies (imports)
 - `./gizmo-setup` -- TransformControls initialization and gizmo line patching.
@@ -24,6 +27,8 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - `../selection/select` -- selection state machine.
 - `../selection/drag` -- marquee selection and delta application.
 - `../selection/instance-ranges` -- selected instance ID sorting and contiguous-range merging.
+- `../flip` -- applies object and group reflection operations.
+- `../mirroring` -- owns mirror-modeling state, pairing, and linked transform deltas.
 - `../../entityMaterial.js` -- shared drag mask attribute name and GPU preview delta matrix.
 - `../pivot/custom-pivot` -- pivot recomputation and undo handling.
 - `../input/handle-key` -- keyboard bindings and `HandleKeyState` adapter type.
@@ -40,6 +45,11 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - Drag end commits CPU and outline matrices, tightens the aggregate selection box once, then immediately resets the GPU preview; loaded and overlay instance matrices use WebGPU storage buffers that upload the committed matrices in the next render without the large interleaved-buffer delay.
 - Selection overlay refreshes emit `pde:selection-transform-context` with the current gizmo world pivot so property edits honor origin, center, and custom pivot modes.
 - Internal group, ungroup, delete, and duplicate commands emit `pde:scene-updated` with `skipGizmoRefresh`; the gizmo listener skips its redundant refresh while other listeners still receive the event. Detail-free external scene updates retain the normal gizmo and overlay refresh.
+- Mirror-modeling duplication delegates fixed-pivot reflection and pair bookkeeping to the dedicated controls, then refreshes selection state and emits the scene update.
+- Direct selection flips delegate object/group reflection to `controls/flip.ts`; this controller preserves multi-selection pivot flags, offsets, anchors, and linked partner selection around the asynchronous operation.
+- Direct flips recompute center-mode pivots from the live selection bounds; center-mode reflections mirror the stored multi-selection origin/custom anchor instead of replacing it with the center pivot.
+- Object custom pivots are remapped through the reflection so their world positions remain consistent with the mirrored objects, and pivot state is recomputed before repositioning the gizmo.
+- Player-head, block-state, custom-pivot, and linked-partner reflection details live in `controls/flip.ts`.
 - Camera references accept the common Three.js `Camera` type so perspective/orthographic switching does not recreate the interaction system.
 - Model replacement events preserve the current group/object multi-selection, replace only the rebuilt object, remap a selected swap-pop source instance, and retain the primary selection where possible.
 - Selection transform events expose the active `pivotMode` and `multiCustomPivotLocal`; the latter converts the current helper pivot through the primary group/object inverse world matrix, with the captured local anchor only as a fallback.

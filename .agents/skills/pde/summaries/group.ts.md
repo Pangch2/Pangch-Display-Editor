@@ -9,7 +9,7 @@ Owns the editor custom group tree model, including group creation, cloning, ungr
 - `GroupChildObject` -- object instance entry stored under a group.
 - `GroupChildGroup` -- nested group reference stored under a group.
 - `GroupChild` -- union of group child node types.
-- `GroupData` -- full group record stored in `loadedObjectGroup.userData.groups`.
+- `GroupData` -- full group record stored in `loadedObjectGroup.userData.groups`, including optional group NBT.
 - `SceneOrderEntry` -- root-level ordering entry for groups and objects.
 - `CloneJobEntry` -- clone job produced while duplicating group contents.
 - `CollectCloneContext` -- callback context for clone planning.
@@ -31,7 +31,7 @@ Owns the editor custom group tree model, including group creation, cloning, ungr
 - `createGroupStructure(...)` -- inserts a new group and moves selected items under it.
 - `ungroupGroupStructure(...)` -- removes a group while preserving its children.
 - `createCloneGroupContext(loadedObjectGroup)` -- snapshots existing group names and initializes duplicate-name counters.
-- `cloneGroupStructure(...)` -- recursively clones a group subtree, optionally reusing `CloneGroupContext`.
+- `cloneGroupStructure(...)` -- recursively clones a group subtree and its NBT, optionally reusing `CloneGroupContext`.
 - `collectCloneJobsFromGroup(...)` -- walks a group subtree and emits object clone jobs.
 
 ## Dependencies (imports)

@@ -70,6 +70,7 @@ type GeometryBatchBuilder = {
 type BlockDisplayTemplate = {
     models: ModelData[];
     blockProps: Record<string, string>;
+    volumes: Array<{ from: [number, number, number]; to: [number, number, number]; matrix: number[] }>;
 };
 
 type ItemModelTemplate = {
@@ -515,6 +516,29 @@ function applyBlockstateRotation(matrix, rotX = 0, rotY = 0) {
     matrix.premultiply(m);
 }
 
+function getElementRotation(el: any): { matrix: THREE.Matrix4; rotation: THREE.Matrix4; hasRotation: boolean } {
+    const matrix = new THREE.Matrix4();
+    const rotation = new THREE.Matrix4();
+    const rot = el.rotation;
+    const hasRotation = rot && typeof rot.angle === 'number' && rot.angle !== 0 && typeof rot.axis === 'string' && Array.isArray(rot.origin);
+    if (!hasRotation) return { matrix, rotation, hasRotation: false };
+
+    const pivot = new THREE.Vector3(rot.origin[0] / 16, rot.origin[1] / 16, rot.origin[2] / 16);
+    const angleRad = rot.angle * Math.PI / 180;
+    if (rot.axis === 'x') rotation.makeRotationX(angleRad);
+    else if (rot.axis === 'y') rotation.makeRotationY(angleRad);
+    else if (rot.axis === 'z') rotation.makeRotationZ(angleRad);
+    matrix.makeTranslation(pivot.x, pivot.y, pivot.z).multiply(rotation);
+    if (rot.rescale === true) {
+        const scaleFactor = 1 / Math.cos(angleRad);
+        if (rot.axis === 'x') matrix.scale(new THREE.Vector3(1, scaleFactor, scaleFactor));
+        else if (rot.axis === 'y') matrix.scale(new THREE.Vector3(scaleFactor, 1, scaleFactor));
+        else matrix.scale(new THREE.Vector3(scaleFactor, scaleFactor, 1));
+    }
+    matrix.multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
+    return { matrix, rotation, hasRotation: true };
+}
+
 // UV 좌표 배열을 90도 단위 회전 규칙에 맞춰 재배열한다.
 function uvRotated(uv, rotation) {
     const r = ((rotation % 360) + 360) % 360;
@@ -620,33 +644,7 @@ async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = 
         const faces = el.faces || {};
         const from = el.from || [0,0,0];
         const to = el.to || [16,16,16];
-        const rot = el.rotation || null;
-        const hasRot = rot && typeof rot.angle === 'number' && rot.angle !== 0 && typeof rot.axis === 'string' && Array.isArray(rot.origin);
-        const rescale = hasRot && rot.rescale === true;
-        const pivot = hasRot ? new THREE.Vector3(rot.origin[0]/16, rot.origin[1]/16, rot.origin[2]/16) : null;
-        const angleRad = hasRot ? (rot.angle * Math.PI) / 180 : 0;
-        const rotMat = new THREE.Matrix4();
-        const rotOnly = new THREE.Matrix4();
-        if (hasRot) {
-            // 마인크래프트 회전 정의를 THREE 행렬로 변환한다.
-            const tNeg = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
-            const tPos = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
-            switch (rot.axis) {
-                case 'x': rotOnly.makeRotationX(angleRad); break;
-                case 'y': rotOnly.makeRotationY(angleRad); break;
-                case 'z': rotOnly.makeRotationZ(angleRad); break;
-            }
-            rotMat.copy(tPos).multiply(rotOnly);
-            if (rescale) {
-                const scaleFactor = 1.0 / Math.cos(angleRad);
-                const scaleMat = new THREE.Matrix4();
-                if (rot.axis === 'x') scaleMat.makeScale(1, scaleFactor, scaleFactor);
-                else if (rot.axis === 'y') scaleMat.makeScale(scaleFactor, 1, scaleFactor);
-                else if (rot.axis === 'z') scaleMat.makeScale(scaleFactor, scaleFactor, 1);
-                rotMat.multiply(scaleMat);
-            }
-            rotMat.multiply(tNeg);
-        }
+        const { matrix: rotMat, rotation: rotOnly, hasRotation: hasRot } = getElementRotation(el);
 
         for (const dir of ['north','south','west','east','up','down']) {
             const face = faces[dir];
@@ -799,6 +797,128 @@ async function prepareBlockDisplayTemplate(item: any): Promise<BlockDisplayTempl
     return template;
 }
 
+function blockTemplateSurfaceSignature(template: BlockDisplayTemplate, mirrorAxis = -1): string {
+    const faces = new Set<string>();
+    const matrix = new THREE.Matrix4();
+    const point = new THREE.Vector3();
+    for (const model of template.models) {
+        matrix.fromArray(model.modelMatrix);
+        for (const geometry of model.geometries) {
+            for (let i = 0; i < geometry.positions.length; i += 12) {
+                const points: string[] = [];
+                for (let offset = 0; offset < 12; offset += 3) {
+                    point.fromArray(geometry.positions, i + offset).applyMatrix4(matrix);
+                    if (mirrorAxis >= 0) point.setComponent(mirrorAxis, 1 - point.getComponent(mirrorAxis));
+                    points.push(`${Math.round(point.x * 1e5)},${Math.round(point.y * 1e5)},${Math.round(point.z * 1e5)}`);
+                }
+                faces.add(`${geometry.texPath}|${geometry.tintHex}|${points.sort().join(';')}`);
+            }
+        }
+    }
+    return [...faces].sort().join('|');
+}
+
+function blockTemplateOccupancySignature(template: BlockDisplayTemplate, mirrorAxis = -1): string {
+    const volumes = template.volumes.map(volume => ({
+        ...volume,
+        inverse: new THREE.Matrix4().fromArray(volume.matrix).invert()
+    }));
+    const point = new THREE.Vector3();
+    const local = new THREE.Vector3();
+    const cells: string[] = [];
+    for (let x = 0; x < 16; x++) for (let y = 0; y < 16; y++) for (let z = 0; z < 16; z++) {
+        point.set((x + 0.5) / 16, (y + 0.5) / 16, (z + 0.5) / 16);
+        if (mirrorAxis >= 0) point.setComponent(mirrorAxis, 1 - point.getComponent(mirrorAxis));
+        if (volumes.some(volume => {
+            local.copy(point).applyMatrix4(volume.inverse);
+            return local.x >= volume.from[0] && local.x <= volume.to[0]
+                && local.y >= volume.from[1] && local.y <= volume.to[1]
+                && local.z >= volume.from[2] && local.z <= volume.to[2];
+        })) cells.push(`${x},${y},${z}`);
+    }
+    return cells.join('|');
+}
+
+if (import.meta.env.DEV) {
+    const matrix = new THREE.Matrix4().toArray();
+    const lower = { models: [], blockProps: {}, volumes: [{ from: [0, 0, 0] as [number, number, number], to: [1, 0.5, 1] as [number, number, number], matrix }] };
+    const upper = { models: [], blockProps: {}, volumes: [{ from: [0, 0.5, 0] as [number, number, number], to: [1, 1, 1] as [number, number, number], matrix }] };
+    console.assert(blockTemplateOccupancySignature(lower, 1) === blockTemplateOccupancySignature(upper), 'Block occupancy reflection failed.');
+}
+
+function blockStateCandidates(blockstate: any, current: Record<string, string>): Record<string, string>[] {
+    const candidates: Record<string, string>[] = [{ ...current }];
+    if (blockstate.variants) {
+        for (const key of Object.keys(blockstate.variants)) {
+            candidates.push({
+                ...current,
+                ...Object.fromEntries(key.split(',').filter(Boolean).map((part: string) => part.split('=', 2)))
+            });
+        }
+    } else if (blockstate.multipart) {
+        const options = Object.fromEntries(Object.entries(current).map(([key, value]) => [key, new Set([value])])) as Record<string, Set<string>>;
+        const collect = (condition: any): void => {
+            if (!condition || typeof condition !== 'object') return;
+            for (const [key, value] of Object.entries(condition)) {
+                if (key === 'OR' || key === 'AND') (Array.isArray(value) ? value : [value]).forEach(collect);
+                else String(value).split('|').forEach(candidate => (options[key] ??= new Set()).add(candidate));
+            }
+        };
+        blockstate.multipart.forEach((part: any) => collect(part?.when));
+        for (const values of Object.values(options)) {
+            if (values.has('true') || values.has('false')) {
+                values.add('true');
+                values.add('false');
+            }
+        }
+        const entries = Object.entries(options);
+        const expand = (index: number, candidate: Record<string, string>): void => {
+            if (index === entries.length) { candidates.push(candidate); return; }
+            const [key, values] = entries[index];
+            for (const value of values) expand(index + 1, { ...candidate, [key]: value });
+        };
+        expand(0, {});
+    }
+    return [...new Map(candidates.map(candidate => [JSON.stringify(candidate), candidate])).values()];
+}
+
+if (import.meta.env.DEV) {
+    const candidates = blockStateCandidates({ multipart: [{ when: { connected: 'true' } }] }, { connected: 'true' });
+    console.assert(candidates.some(candidate => candidate.connected === 'false'), 'Multipart boolean candidate expansion failed.');
+}
+
+export async function findMirroredBlockName(name: string, axis: 'x' | 'y' | 'z', provider: PbdeAssetProvider): Promise<string | null> {
+    initializeAssetProvider(provider);
+    const { baseName, props } = blockNameToBaseAndProps(name) as { baseName: string; props: Record<string, string> };
+    const { ns, path } = nsAndPathFromId(baseName);
+    let blockstate: any;
+    try {
+        blockstate = await readJsonAsset(`assets/${ns}/blockstates/${path}.json`);
+    } catch {
+        blockstate = await readJsonAsset(`hardcoded/blockstates/${path}.json`);
+    }
+    const source = await prepareBlockDisplayTemplate({ name });
+    if (!source) return null;
+    const mirrorAxis = { x: 0, y: 1, z: 2 }[axis];
+    const targetOccupancy = blockTemplateOccupancySignature(source, mirrorAxis);
+    const targetSurface = blockTemplateSurfaceSignature(source, mirrorAxis);
+    const candidates = blockStateCandidates(blockstate, props);
+    const matches = (await Promise.all(candidates.map(async candidate => {
+        const candidateName = `${baseName}[${Object.entries(candidate).map(([key, value]) => `${key}=${value}`).join(',')}]`;
+        const template = await prepareBlockDisplayTemplate({ name: candidateName });
+        return template && blockTemplateOccupancySignature(template) === targetOccupancy
+            ? {
+                name: candidateName,
+                changes: Object.keys(props).filter(key => props[key] !== candidate[key]).length,
+                surfaceMatch: blockTemplateSurfaceSignature(template) === targetSurface
+            }
+            : null;
+    }))).filter((match): match is { name: string; changes: number; surfaceMatch: boolean } => !!match);
+    if (matches.some(match => match.surfaceMatch)) matches.splice(0, matches.length, ...matches.filter(match => match.surfaceMatch));
+    matches.sort((a, b) => a.changes - b.changes || a.name.localeCompare(b.name));
+    return matches[0]?.changes ? matches[0].name : null;
+}
+
 // block_display 엔티티 노드를 Minecraft 블록 모델 지오메트리로 변환한다.
 function processBlockDisplay(item: any): RenderItem | null {
     const cacheKey = String(item.name || '');
@@ -874,6 +994,7 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
         }
 
         const allGeometryData = [];
+        const volumes: BlockDisplayTemplate['volumes'] = [];
         // 항목명에서 "red_banner" 형태의 문자열을 분석해 틴트 색상을 추출한다.
         let bannerColorHex = null;
         try {
@@ -918,6 +1039,13 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
             });
 
             if (geometryData && geometryData.length > 0) {
+                for (const element of resolved.elements) {
+                    volumes.push({
+                        from: (element.from ?? [0, 0, 0]).map((value: number) => value / 16) as [number, number, number],
+                        to: (element.to ?? [16, 16, 16]).map((value: number) => value / 16) as [number, number, number],
+                        matrix: modelMatrix.clone().multiply(getElementRotation(element).matrix).toArray()
+                    });
+                }
                 // block_display 지오메트리는 별도 중심 이동을 하지 않는다. 아이템 디스플레이만 -0.5 보정을 적용한다.
                 allGeometryData.push({
                     modelMatrix: modelMatrix.elements,
@@ -930,7 +1058,8 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
         if (allGeometryData.length > 0) {
             return {
                 models: allGeometryData,
-                blockProps: props
+                blockProps: props,
+                volumes
             };
         }
 

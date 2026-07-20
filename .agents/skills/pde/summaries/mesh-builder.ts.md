@@ -17,10 +17,12 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `performSelection(newlyAddedSelectableMeshes)` -- selects only the newly loaded instance IDs after load/merge, preserving group-priority selection.
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
 - `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
+- `flipPlayerHeadTexture(objectUuid): void` -- toggles one head instance's horizontal face-local UV reflection without changing its transform.
 - `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
 - `updateObjectBrightness(objectUuid, brightness): void` -- updates one object's stored brightness and per-instance sky-light color without rebuilding its mesh.
 - `updateGlobalBrightness(brightness): void` -- stores project-level brightness and refreshes every rendered instance in place.
-- `replaceDisplayObject(objectUuid, name, transformContext?): Promise<void>` -- rebuilds one display object through the PBDE pipeline, preserves its pivot and user label, and reports both old/new instance references plus the pre-delete last index so selection can survive swap-pop removal.
+- `replaceDisplayObjects(requests): Promise<string[]>` -- rebuilds multiple display objects through one PBDE load while preserving request/result order, pivots, labels, hierarchy, scene order, and selection remapping.
+- `replaceDisplayObject(objectUuid, name, transformContext?): Promise<string>` -- rebuilds one display object through the PBDE pipeline, preserves its pivot and user label, reports selection replacement data, and returns the replacement UUID.
 
 ## Internal State
 - Texture/material caches for block and atlas assets
@@ -43,7 +45,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 
 ## Dependencies (imports)
 - `three/webgpu` -- scene graph, geometry, material, and texture classes
-- `fflate` -- creates the minimal compressed PBDE payload used for single-object replacement
+- `fflate` -- creates the minimal compressed PBDE payload used for display-object replacement batches
 - `../entityMaterial.js` -- entity/player-head material creation
 - `../controls/grouping/delete` -- removes the superseded instance after its replacement is ready
 - `../controls/selection/overlay` -- resolves display-specific default pivots and local bounds during object replacement
@@ -55,9 +57,11 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 ## Used By (known callers)
 - `upload-pbde.ts` -- drives load and merge flow
 - `ui/object-properties.ts` -- updates player-head textures and display matrices in place, rebuilding only geometry-changing properties
+- `controls/flip.ts` -- batches geometry-changing block-state replacements during multi-object reflection
 
 ## Notes
 - Uses WebGPU-only Three.js path; no WebGL fallback.
+- Block and regular item-display materials render front faces only; the separate player-head atlas material remains double-sided.
 - Clears caches and scene state on non-merge load, then builds block and item display objects as InstancedMesh roots.
 - Mesh building prefers `WorkerMetadata.geometryBatches`; if absent, it groups legacy geometry metadata by `itemId` before signature matching so all parts of one scene object merge into the same InstancedMesh geometry.
 - During InstancedMesh creation, hashed part signatures avoid long model-matrix string joins, merged geometry is cached by geometry layout, and materials are normally preloaded before meshes enter the scene to avoid placeholder-to-real material swaps.
@@ -75,6 +79,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Fresh loads store parser-provided project details on `loadedObjectGroup.userData`; merges preserve the current details.
 - `loadedObjectGroup.userData.objectNbt` maps object UUIDs to editable NBT strings for the properties panel.
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
+- Multi-object model/property changes share one PBDE parse/render pass; the single-object API delegates to the same batch path.
 - Property-panel replacement events carry enough old/new instance data for the gizmo to preserve multi-selection and remap any selected instance moved by swap-pop deletion.
 - Property-panel model changes keep the active Pivot Mode reference fixed: center uses bounds center, block origin uses local bounds minimum, and custom pivots retain their world position without changing the object transform.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
@@ -83,5 +88,6 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
 - Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.
 - Player-head texture edits redraw the existing atlas slot when exclusive; shared slots receive a new slot so other instances keep their skin. The instance matrix and UUID remain unchanged.
+- Player-head geometry stores per-vertex face UV centers and per-instance UV flip flags; duplication copies those instanced flags with the existing generic attribute path.
 - Player-head image load failures retry once with the default skin; property edits store that fallback URL instead of the invalid input.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items`, `Load timings`, `Geometry stats`, and `Mesh uploaded` default to enabled; `Finished processing` defaults to disabled.

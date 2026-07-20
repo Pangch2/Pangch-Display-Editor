@@ -80,10 +80,17 @@ export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstance
     const attributeName = uvTransformCount === 1 ? 'instancedUvTransform' : `instancedUvTransform${instancedUvTransformIndex}`;
     uvTransformNode = attribute(attributeName, 'vec4');
   }
+  const offsetUv = useInstancedUv
+    ? uvNode.add(attribute('instancedUvOffset', 'vec2'))
+    : uvNode;
   const finalUv = useInstancedUvTransform
     ? uvNode.mul(uvTransformNode.xy).add(uvTransformNode.zw)
     : useInstancedUv
-      ? uvNode.add(attribute('instancedUvOffset', 'vec2'))
+      ? mix(
+          offsetUv,
+          attribute('uvMirrorCenter', 'vec2').add(attribute('instancedUvOffset', 'vec2')).mul(2).sub(offsetUv),
+          attribute('instancedUvFlip', 'vec2')
+        )
       : uvNode;
   const diffuseNode = texture(diffuseTex, finalUv);
 

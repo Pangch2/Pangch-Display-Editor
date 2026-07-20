@@ -43,6 +43,15 @@ import type { SelectionState } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 import * as VertexQueue from '../vertex/vertex-queue';
+import { flipObjectUuids, reflectGroups, type FlipAxis } from '../flip';
+import {
+    applyLinkedMirrorDelta,
+    getMirrorPairs,
+    isMirrorModelingEnabled,
+    linkMirrorPair,
+    mirrorModelingPivot,
+    setMirrorModeling
+} from '../mirroring';
 import {
     createGroupCommand,
     deleteSelectedItemsCommand,
@@ -97,6 +106,9 @@ export interface InitGizmoResult {
     createGroup: () => string | undefined;
     getGroups: () => Map<string, GroupData>;
     setCamera: (nextCamera: Camera) => void;
+    hasSelection: () => boolean;
+    flipSelected: (axis: FlipAxis) => Promise<void>;
+    setMirrorModeling: (enabled: boolean) => void;
 }
 
 //  Aliases 
@@ -418,6 +430,10 @@ const _meshToInstanceRanges = new Map<Object3D, InstanceIdRange[]>();
 let selectionTransformDirty = false;
 let _dragPreviewActive = false;
 let _dragSelectedIdsByMesh = new Map<InstancedMesh, Set<number>>();
+function getItemUuid({ mesh, instanceId }: Select.SelectedItem): string | undefined {
+    return (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
+        ?.get(GroupUtils.getGroupKey(mesh, instanceId));
+}
 
 //  Selection helpers 
 
@@ -525,6 +541,7 @@ function commitSelectionTransform(): void {
             selectedGroupIds: currentSelection.groups,
             loadedObjectGroup
         });
+        applyLinkedMirrorDelta(loadedObjectGroup, _dragTotalDeltaMatrix, getSelectedItems(), currentSelection.groups);
         Overlay.commitSelectionOverlay(_dragTotalDeltaMatrix, currentSelection);
     }
     _dragPreviewActive = false;
@@ -844,6 +861,8 @@ function deleteSelectedItems(): void {
 
 function duplicateSelected(): void {
     _runWithoutVertexQueue(() => {
+        const sourceUuids = getSelectedItems().map(getItemUuid);
+        const sourceGroupIds = [...currentSelection.groups];
         duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, {
             hasAnySelection: _hasAnySelection,
             isMultiSelection: _isMultiSelection,
@@ -860,7 +879,68 @@ function duplicateSelected(): void {
                 pivotOffset.copy(state.pivotOffset);
             }
         });
+        if (!isMirrorModelingEnabled()) return;
+
+        const mirroredUuids = getSelectedItems().map(getItemUuid);
+        const mirroredGroupIds = [...currentSelection.groups];
+        void flipObjectUuids(loadedObjectGroup, mirroredUuids, 'x', mirrorModelingPivot, pivotMode).then(finalUuids => {
+            reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot);
+            sourceUuids.forEach((uuid, index) => linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs'), uuid, finalUuids[index]));
+            sourceGroupIds.forEach((id, index) => linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), id, mirroredGroupIds[index]));
+            updateHelperPosition();
+            updateSelectionOverlay();
+            _emitSceneUpdated();
+        }).catch(error => console.error('미러링 복제에 실패했습니다.', error));
     });
+}
+
+async function flipSelected(axis: FlipAxis): Promise<void> {
+    if (!_hasAnySelection() || !selectionHelper) return;
+    const isMulti = _isMultiSelection();
+    const activePivotMode = pivotMode;
+    updateHelperPosition();
+    const pivotWorld = activePivotMode === 'center'
+        ? _getSelectionCenterWorld()
+        : selectionHelper.position.clone();
+    const multiPivotState = isMulti ? {
+        isCustomPivot,
+        pivotOffset: pivotOffset.clone(),
+        explicitPivot: _multiSelectionExplicitPivot,
+        anchorMode: _selectionAnchorMode
+    } : null;
+    const selectedUuids = getSelectedItems().map(getItemUuid);
+    const selected = new Set(selectedUuids);
+    const pairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
+    const linkedUuids = selectedUuids.map(uuid => uuid && !selected.has(pairs.get(uuid)) ? pairs.get(uuid) : undefined);
+    await flipObjectUuids(loadedObjectGroup, selectedUuids, axis, pivotWorld, activePivotMode);
+    await flipObjectUuids(loadedObjectGroup, linkedUuids, axis, undefined, activePivotMode);
+    reflectGroups(loadedObjectGroup, currentSelection.groups, axis, pivotWorld);
+    if (multiPivotState) {
+        isCustomPivot = multiPivotState.isCustomPivot;
+        pivotOffset.copy(multiPivotState.pivotOffset);
+        _multiSelectionExplicitPivot = multiPivotState.explicitPivot;
+        _selectionAnchorMode = multiPivotState.anchorMode;
+    }
+    _recomputePivotStateForSelection();
+    if (isMulti) {
+        _gizmoAnchorPosition.copy(pivotWorld);
+        _gizmoAnchorValid = true;
+        if (activePivotMode === 'origin') {
+            _multiSelectionOriginAnchorPosition.copy(pivotWorld);
+            _multiSelectionOriginAnchorValid = true;
+            _setMultiAnchorInitial(pivotWorld);
+        } else if (_multiSelectionOriginAnchorValid) {
+            const axisIndex = { x: 0, y: 1, z: 2 }[axis];
+            _multiSelectionOriginAnchorPosition.setComponent(
+                axisIndex,
+                2 * pivotWorld.getComponent(axisIndex) - _multiSelectionOriginAnchorPosition.getComponent(axisIndex)
+            );
+            _setMultiAnchorInitial(_multiSelectionOriginAnchorPosition);
+        }
+    }
+    updateHelperPosition();
+    updateSelectionOverlay();
+    _emitSceneUpdated();
 }
 
 //  Main entry point 
@@ -1564,6 +1644,9 @@ export function initGizmo({
         resetSelection: resetSelectionAndDeselect,
         getSelectedObject: () => (currentSelection.primary && currentSelection.primary.type === 'object' ? currentSelection.primary.mesh : null),
         createGroup: createGroup,
-        getGroups: getGroups
+        getGroups: getGroups,
+        hasSelection: _hasAnySelection,
+        flipSelected,
+        setMirrorModeling
     };
 }

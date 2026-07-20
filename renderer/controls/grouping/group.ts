@@ -29,6 +29,7 @@ export interface GroupData {
     children: GroupChild[];
     parent: string | null;
     name: string;
+    nbt?: string;
     position: Vector3;
     quaternion: Quaternion;
     scale: Vector3;
@@ -696,6 +697,7 @@ export function cloneGroupStructure(
         children: [],
         parent: parentId,
         name: _getCloneName(sourceGroup.name, ctx),
+        nbt: sourceGroup.nbt,
         position: sourceGroup.position ? sourceGroup.position.clone() : new Vector3(),
         quaternion: sourceGroup.quaternion ? sourceGroup.quaternion.clone() : new Quaternion(),
         scale: sourceGroup.scale ? sourceGroup.scale.clone() : new Vector3(1, 1, 1),

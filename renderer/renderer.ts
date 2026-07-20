@@ -25,6 +25,7 @@ import {
 import { initAssets } from './asset-manager';
 import { loadedObjectGroup } from './load-project/upload-pbde';
 import { openWithAnimation, closeWithAnimation } from './ui/ui-open-close';
+import { initContextMenu } from './ui/context-menu';
 import './ui/scene-panel';
 import './ui/panel-layout';
 import './ui/object-properties';
@@ -500,7 +501,13 @@ async function initScene(): Promise<void> {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
 
-    initCameraContextMenu();
+    initContextMenu({
+        element: renderer.domElement,
+        setCameraType,
+        hasSelection: () => gizmoModule?.hasSelection() ?? false,
+        flipSelected: axis => gizmoModule?.flipSelected(axis) ?? Promise.resolve(),
+        setMirrorModeling: enabled => gizmoModule?.setMirrorModeling(enabled)
+    });
 
     viewHelper = new ViewHelper(camera, renderer.domElement);
     viewHelper.setLabels('X', 'Y', 'Z');
@@ -619,42 +626,6 @@ function setCameraType(type: 'perspective' | 'orthographic'): void {
     gizmoModule?.setCamera(camera);
     camera.updateProjectionMatrix();
     controls.update();
-}
-
-function initCameraContextMenu(): void {
-    const menu = document.createElement('div');
-    let pointerDownPosition = { x: 0, y: 0 };
-    menu.className = 'camera-context-menu';
-    menu.hidden = true;
-    menu.innerHTML = `<div class="camera-menu-parent"><span class="lucide-icon">&#xE17C;</span>카메라<span class="camera-menu-arrow">›</span><div class="camera-submenu"><button data-camera="perspective"><span class="lucide-icon">&#xE064;</span>원근 카메라</button><button data-camera="orthographic"><span class="lucide-icon">&#xE064;</span>직교 카메라</button></div></div>`;
-    document.body.appendChild(menu);
-    const closeMenu = (): void => {
-        if (menu.hidden) return;
-        void closeWithAnimation(menu).then(() => {
-            if (menu.style.animation.startsWith('uiClose')) menu.hidden = true;
-        });
-    };
-
-    renderer.domElement.addEventListener('pointerdown', event => {
-        if (event.button === 2) pointerDownPosition = { x: event.clientX, y: event.clientY };
-    });
-    renderer.domElement.addEventListener('contextmenu', event => {
-        event.preventDefault();
-        if (Math.hypot(event.clientX - pointerDownPosition.x, event.clientY - pointerDownPosition.y) > 5) return;
-        menu.hidden = false;
-        menu.style.left = `${Math.min(event.clientX, innerWidth - menu.offsetWidth)}px`;
-        menu.style.top = `${Math.min(event.clientY, innerHeight - menu.offsetHeight)}px`;
-        openWithAnimation(menu);
-    });
-    menu.addEventListener('click', event => {
-        const button = (event.target as Element).closest<HTMLButtonElement>('[data-camera]');
-        if (!button) return;
-        setCameraType(button.dataset.camera as 'perspective' | 'orthographic');
-        closeMenu();
-    });
-    window.addEventListener('pointerdown', event => {
-        if (!menu.contains(event.target as Node)) closeMenu();
-    });
 }
 
 //fps표시용1
