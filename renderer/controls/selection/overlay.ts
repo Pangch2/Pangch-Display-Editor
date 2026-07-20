@@ -29,6 +29,7 @@ import {
 import * as GroupUtils from '../grouping/group';
 import type { GroupChildObject } from '../grouping/group';
 import { dragPreviewPositionNode, dragSelectedAttributeName } from '../../entityMaterial.js';
+import { ConvexHull } from 'three/examples/jsm/math/ConvexHull.js';
 
 // --- Types & Interfaces ---
 
@@ -71,23 +72,18 @@ interface OverlayItem {
     gizmoLocalPosition?: Vector3;
 }
 
-interface DragBoundsItem {
-    box: Box3;
-    matrix: Matrix4;
-}
-
 // --- Constants & Temporaries ---
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();
 const _TMP_MAT4_C = new Matrix4();
 const _TMP_BOX3_A = new Box3();
-const _TMP_BOX3_B = new Box3();
 const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
 
 let loadedObjectGroup: Group | null = null;
-const _dragBoundsItems: DragBoundsItem[] = [];
+const _dragInitialOverlayMatrix = new Matrix4();
+let _dragBoundsHullPoints: Vector3[] = [];
 
 export function setLoadedObjectGroup(group: Group | null): void {
     loadedObjectGroup = group;
@@ -441,17 +437,33 @@ function _getSelectedObjectCount(currentSelection: SelectionState): number {
     return count;
 }
 
-export function prepareMultiSelectionDrag(currentSelection: SelectionState): void {
-    _dragBoundsItems.length = 0;
-    for (const groupId of currentSelection.groups) {
-        const box = getGroupLocalBoundingBox(groupId);
-        if (!box.isEmpty()) _dragBoundsItems.push({ box, matrix: getGroupWorldMatrixWithFallback(groupId) });
+export function prepareMultiSelectionDrag(_currentSelection: SelectionState): void {
+    const activeBoxLine = multiSelectionOverlay?.children[0] as LineSegments | undefined;
+    if (activeBoxLine) _dragInitialOverlayMatrix.copy(activeBoxLine.matrix);
+
+    _dragBoundsHullPoints = [];
+    if (!selectionOverlay) return;
+    const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
+    const points: Vector3[] = [];
+    for (let i = 0; i < selectedCount; i++) {
+        selectionOverlay.getMatrixAt(i, _TMP_MAT4_A);
+        for (const corner of _unitCubeCorners) points.push(corner.clone().applyMatrix4(_TMP_MAT4_A));
     }
-    for (const [mesh, ids] of currentSelection.objects) {
-        for (const id of ids) {
-            const box = getInstanceLocalBox(mesh, id);
-            if (box) _dragBoundsItems.push({ box, matrix: getInstanceWorldMatrix(mesh, id, new Matrix4()) });
+    if (points.length < 4) { _dragBoundsHullPoints = points; return; }
+
+    try {
+        const hull = new ConvexHull().setFromPoints(points);
+        const hullPoints = new Set<Vector3>();
+        for (const face of hull.faces) {
+            let edge = face.edge;
+            do {
+                hullPoints.add(edge.head().point);
+                edge = edge.next;
+            } while (edge !== face.edge);
         }
+        _dragBoundsHullPoints = hullPoints.size > 0 ? [...hullPoints] : points;
+    } catch {
+        _dragBoundsHullPoints = points;
     }
 }
 
@@ -722,16 +734,29 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection: Selectio
     if (_getSelectedObjectCount(currentSelection) + (currentSelection.groups?.size || 0) <= 1) { activeBoxLine.visible = false; return; }
     activeBoxLine.visible = true;
 
-    const worldBox = _TMP_BOX3_A.makeEmpty();
-    if (currentGizmoMat && initialGizmoMat && _dragBoundsItems.length > 0) {
+    if (currentGizmoMat && initialGizmoMat) {
         const tMat = _TMP_MAT4_C.copy(initialGizmoMat).invert().premultiply(currentGizmoMat);
-        for (const item of _dragBoundsItems) {
-            _TMP_MAT4_A.multiplyMatrices(tMat, item.matrix);
-            worldBox.union(_TMP_BOX3_B.copy(item.box).applyMatrix4(_TMP_MAT4_A));
+        const e = tMat.elements;
+        const axesStayAligned = Math.abs(e[1]) < 1e-10 && Math.abs(e[2]) < 1e-10
+            && Math.abs(e[4]) < 1e-10 && Math.abs(e[6]) < 1e-10
+            && Math.abs(e[8]) < 1e-10 && Math.abs(e[9]) < 1e-10;
+        if (axesStayAligned) {
+            activeBoxLine.matrix.multiplyMatrices(tMat, _dragInitialOverlayMatrix);
+            activeBoxLine.matrixWorldNeedsUpdate = true;
+            return;
         }
-    } else {
-        worldBox.copy(getSelectionBoundingBox(currentSelection));
+
+        const worldBox = _TMP_BOX3_A.makeEmpty();
+        if (_dragBoundsHullPoints.length > 0) {
+            for (const point of _dragBoundsHullPoints) worldBox.expandByPoint(_TMP_VEC3_A.copy(point).applyMatrix4(tMat));
+        } else {
+            worldBox.copy(getSelectionBoundingBox(currentSelection, tMat));
+        }
+        if (!worldBox.isEmpty()) setBoxLineTransform(activeBoxLine, worldBox);
+        return;
     }
+
+    const worldBox = _TMP_BOX3_A.copy(getSelectionBoundingBox(currentSelection));
     if (worldBox.isEmpty()) return;
     setBoxLineTransform(activeBoxLine, worldBox);
 }
@@ -759,7 +784,7 @@ export function commitSelectionOverlay(deltaMatrix: Matrix4, currentSelection: S
         const finalBox = getSelectionBoundingBox(currentSelection);
         if (!finalBox.isEmpty()) setBoxLineTransform(activeBoxLine, finalBox);
     }
-    _dragBoundsItems.length = 0;
+    _dragBoundsHullPoints = [];
 }
 
 export function findClosestVertexForSnapping(gizmoWorldPos: Vector3, camera: Camera, renderer: Renderer, snapThreshold = 15): Vector3 | null {

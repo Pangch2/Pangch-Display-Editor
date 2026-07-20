@@ -27,10 +27,10 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - `getGroupOriginWorld(groupId, out)` -- resolves a group's world origin.
 - `getRotationFromMatrix(matrix)` -- extracts an orthonormal rotation quaternion.
 - `getSelectionBoundingBox(currentSelection, previewMatrix?)` -- calculates combined selection bounds, optionally with a preview transform applied per selected item.
-- `prepareMultiSelectionDrag(currentSelection)` -- caches each selected item's local bounds and initial world matrix at drag start.
+- `prepareMultiSelectionDrag(currentSelection)` -- caches the aggregate matrix and reduces selected overlay corners to their convex-hull vertices at drag start.
 - `getSelectionPointsOverlay()` -- returns the active vertex-marker group.
 - `updateSelectionOverlay(...)` -- rebuilds selection instances, vertex sprites, and overlay boxes.
-- `updateMultiSelectionOverlayDuringDrag(...)` -- rebuilds exact aggregate bounds from cached items without traversing group children during drag.
+- `updateMultiSelectionOverlayDuringDrag(...)` -- updates exact drag-time aggregate bounds from the cached box or convex-hull vertices.
 - `syncSelectionPointsOverlay(delta)` -- translates vertex markers with a selection.
 - `syncSelectionOverlay(deltaMatrix)` -- updates vertex-marker transforms during a drag; selected outlines follow the shared GPU preview matrix.
 - `commitSelectionOverlay(deltaMatrix, currentSelection)` -- commits selected outline matrices and restores the exact aggregate box once at drag end.
@@ -41,11 +41,12 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - `refreshSelectionPointColors(selectedVertexKeys)` -- reapplies selected vertex materials.
 
 ## Internal State
-- Active overlay objects, loaded group root, cached drag-start item bounds/matrices, and the last hovered sprite are module state.
+- Active overlay objects, loaded group root, cached aggregate drag-start matrix, drag hull vertices, and the last hovered sprite are module state.
 - Unit geometries and selection, vertex, axis, and multi-selection materials are shared for the module lifetime.
 
 ## Dependencies (imports)
 - `three/webgpu` -- geometry, material, math, and scene types.
+- `three/examples/jsm/math/ConvexHull.js` -- reduces selected box corners to the exact outer hull once per drag.
 - `../grouping/group` -- group hierarchy and bounds helpers.
 - `../../entityMaterial.js` -- shared drag mask name and TSL preview position graph.
 
@@ -59,5 +60,5 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - Selection overlay instance matrices use WebGPU storage attributes and are uploaded on selection changes or once at drag end instead of on every preview frame.
 - Selection boxes use one InstancedMesh; vertex sprites and drag boxes reuse shared GPU resources instead of recreating materials or geometry.
 - Selection refreshes recreate the selection InstancedMesh and its exact-sized attributes.
-- Drag-time multi-selection bounds union cached item boxes after applying the preview matrix, avoiding group-tree traversal without compounding AABB growth.
+- Translation and world-axis scale transform the cached aggregate box in O(1); rotations and local-axis scales rebuild exact bounds from convex-hull vertices instead of every selected object. Degenerate hulls fall back to all cached corners.
 - Repeated hover events for the same sprite are ignored; selection refreshes clear the transient hover guide.
