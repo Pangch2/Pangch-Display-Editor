@@ -10,7 +10,9 @@ import {
     Vector3,
     Scene,
     Color,
+    Camera,
     PerspectiveCamera,
+    OrthographicCamera,
     WebGPURenderer,
     GridHelper,
     Renderer,
@@ -29,13 +31,15 @@ import './ui/object-properties';
 
 // 전역 변수로 선언
 let scene: Scene;
-let camera: PerspectiveCamera;
+let camera: Camera;
 let renderer: WebGPURenderer;
 let controls: OrbitControls;
 let viewHelper: ViewHelper;
 let floorGrid: Group;
 let zSymbol: Group;
 let viewHelperWasAnimating = false;
+let cameraTypeBeforeViewHelper: 'perspective' | 'orthographic' | null = null;
+let perspectiveDistanceBeforeOrthographic: number | null = null;
 let gizmoModule: InitGizmoResult | null = null;
 type GpuQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike } } };
@@ -496,6 +500,8 @@ async function initScene(): Promise<void> {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
 
+    initCameraContextMenu();
+
     viewHelper = new ViewHelper(camera, renderer.domElement);
     viewHelper.setLabels('X', 'Y', 'Z');
     const viewHelperAxisColors = { X: '#EF3751', Y: '#6FA21C', Z: '#437FD0' };
@@ -532,10 +538,22 @@ async function initScene(): Promise<void> {
     renderer.domElement.addEventListener('pointerup', event => {
         if (event.button !== 0) return;
         viewHelperWasAnimating = viewHelper.handleClick(event);
-        if (viewHelperWasAnimating) zSymbol.visible = false;
+        if (viewHelperWasAnimating) {
+            cameraTypeBeforeViewHelper ??= camera.isPerspectiveCamera ? 'perspective' : 'orthographic';
+            setCameraType('orthographic');
+            zSymbol.visible = false;
+        }
     });
+    let leftPointerDownPosition = { x: 0, y: 0 };
     renderer.domElement.addEventListener('pointerdown', event => {
-        if (event.button === 0) {
+        if (event.button === 0) leftPointerDownPosition = { x: event.clientX, y: event.clientY };
+    });
+    renderer.domElement.addEventListener('pointermove', event => {
+        if ((event.buttons & 1) && Math.hypot(event.clientX - leftPointerDownPosition.x, event.clientY - leftPointerDownPosition.y) > 5) {
+            if (cameraTypeBeforeViewHelper) {
+                setCameraType(cameraTypeBeforeViewHelper);
+                cameraTypeBeforeViewHelper = null;
+            }
             floorGrid.rotation.set(0, 0, 0);
             zSymbol.visible = true;
         }
@@ -570,6 +588,72 @@ async function initScene(): Promise<void> {
     [detailGrid, Grid].forEach(helper => {
         const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
         materials.forEach(m => { (m as any).depthWrite = false; });
+    });
+}
+
+function setCameraType(type: 'perspective' | 'orthographic'): void {
+    if ((type === 'perspective') === camera.isPerspectiveCamera) return;
+
+    const mainContent = document.getElementById('main-content')!;
+    const aspect = mainContent.clientWidth / mainContent.clientHeight;
+    const position = camera.position.clone();
+    const quaternion = camera.quaternion.clone();
+    const distance = position.distanceTo(controls.target);
+    const halfHeight = Math.max(distance * Math.tan(40 * Math.PI / 180), 10.5);
+    const nextCamera = type === 'perspective'
+        ? new PerspectiveCamera(80, aspect, 0.05, 1000)
+        : new OrthographicCamera(-halfHeight * aspect, halfHeight * aspect, halfHeight, -halfHeight, 0.05, 1000);
+
+    if (type === 'orthographic') {
+        perspectiveDistanceBeforeOrthographic = distance;
+        position.sub(controls.target).setLength(Math.max(distance, 20)).add(controls.target);
+    } else if (perspectiveDistanceBeforeOrthographic !== null) {
+        position.sub(controls.target).setLength(perspectiveDistanceBeforeOrthographic).add(controls.target);
+        perspectiveDistanceBeforeOrthographic = null;
+    }
+    nextCamera.position.copy(position);
+    nextCamera.quaternion.copy(quaternion);
+    camera = nextCamera;
+    controls.object = camera;
+    viewHelper.camera = camera;
+    gizmoModule?.setCamera(camera);
+    camera.updateProjectionMatrix();
+    controls.update();
+}
+
+function initCameraContextMenu(): void {
+    const menu = document.createElement('div');
+    let pointerDownPosition = { x: 0, y: 0 };
+    menu.className = 'camera-context-menu';
+    menu.hidden = true;
+    menu.innerHTML = `<div class="camera-menu-parent"><span class="lucide-icon">&#xE17C;</span>카메라<span class="camera-menu-arrow">›</span><div class="camera-submenu"><button data-camera="perspective"><span class="lucide-icon">&#xE064;</span>원근 카메라</button><button data-camera="orthographic"><span class="lucide-icon">&#xE064;</span>직교 카메라</button></div></div>`;
+    document.body.appendChild(menu);
+    const closeMenu = (): void => {
+        if (menu.hidden) return;
+        void closeWithAnimation(menu).then(() => {
+            if (menu.style.animation.startsWith('uiClose')) menu.hidden = true;
+        });
+    };
+
+    renderer.domElement.addEventListener('pointerdown', event => {
+        if (event.button === 2) pointerDownPosition = { x: event.clientX, y: event.clientY };
+    });
+    renderer.domElement.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        if (Math.hypot(event.clientX - pointerDownPosition.x, event.clientY - pointerDownPosition.y) > 5) return;
+        menu.hidden = false;
+        menu.style.left = `${Math.min(event.clientX, innerWidth - menu.offsetWidth)}px`;
+        menu.style.top = `${Math.min(event.clientY, innerHeight - menu.offsetHeight)}px`;
+        openWithAnimation(menu);
+    });
+    menu.addEventListener('click', event => {
+        const button = (event.target as Element).closest<HTMLButtonElement>('[data-camera]');
+        if (!button) return;
+        setCameraType(button.dataset.camera as 'perspective' | 'orthographic');
+        closeMenu();
+    });
+    window.addEventListener('pointerdown', event => {
+        if (!menu.contains(event.target as Node)) closeMenu();
     });
 }
 
@@ -618,7 +702,13 @@ function onWindowResize(): void {
     if (!mainContent || mainContent.clientWidth === 0 || mainContent.clientHeight === 0) return;
 
     if (camera && renderer) {
-        camera.aspect = mainContent.clientWidth / mainContent.clientHeight;
+        const aspect = mainContent.clientWidth / mainContent.clientHeight;
+        if (camera.isPerspectiveCamera) camera.aspect = aspect;
+        else if (camera.isOrthographicCamera) {
+            const halfHeight = (camera.top - camera.bottom) / 2;
+            camera.left = -halfHeight * aspect;
+            camera.right = halfHeight * aspect;
+        }
         camera.updateProjectionMatrix();
         renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
         if (scene && !scenePrecompileInProgress) {

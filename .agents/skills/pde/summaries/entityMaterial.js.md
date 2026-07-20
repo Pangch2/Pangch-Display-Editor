@@ -32,7 +32,6 @@ Builds the shared node-based material used for entity-style rendering. It combin
 - `renderer/controls/selection/overlay.ts` -- reuses the same GPU drag position graph for selected outlines.
 
 ## Notes
-- Material is configured with `transparent = true`, `fog = false`, `flatShading = true`, and `alphaTest = 0.1`.
 - `positionNode` converts the common world-space drag delta into each mesh's local space after Three.js applies its instance matrix.
 - `useInstancedUvTransform` expects geometry to provide `instancedUvTransform` for single-transform meshes or the indexed `instancedUvTransformN` selected for that material in multi-part meshes.
 - Lighting is intentionally lightweight and non-physical, tuned for game-like entity rendering.

@@ -13,6 +13,7 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 
 ### Functions / Methods
 - `initGizmo(params): InitGizmoResult` -- builds the editor interaction stack and installs DOM event listeners.
+- `InitGizmoResult.setCamera(nextCamera): void` -- rebinds raycasting, TransformControls, and keyboard actions to a replacement camera.
 
 ## Dependencies (imports)
 - `./gizmo-setup` -- TransformControls initialization and gizmo line patching.
@@ -39,6 +40,7 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - Drag end commits CPU and outline matrices, tightens the aggregate selection box once, then immediately resets the GPU preview; loaded and overlay instance matrices use WebGPU storage buffers that upload the committed matrices in the next render without the large interleaved-buffer delay.
 - Selection overlay refreshes emit `pde:selection-transform-context` with the current gizmo world pivot so property edits honor origin, center, and custom pivot modes.
 - Internal group, ungroup, delete, and duplicate commands emit `pde:scene-updated` with `skipGizmoRefresh`; the gizmo listener skips its redundant refresh while other listeners still receive the event. Detail-free external scene updates retain the normal gizmo and overlay refresh.
+- Camera references accept the common Three.js `Camera` type so perspective/orthographic switching does not recreate the interaction system.
 - Model replacement events preserve the current group/object multi-selection, replace only the rebuilt object, remap a selected swap-pop source instance, and retain the primary selection where possible.
 - Selection transform events expose the active `pivotMode` and `multiCustomPivotLocal`; the latter converts the current helper pivot through the primary group/object inverse world matrix, with the captured local anchor only as a fallback.
 - `pde:multi-selection-pivot-change` commits property-panel pivot edits through the normal custom-pivot path, updates all multi-selection anchors, and refreshes the overlay.

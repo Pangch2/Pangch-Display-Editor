@@ -1,4 +1,4 @@
-import { Vector3, PerspectiveCamera, Box3 } from 'three/webgpu';
+import { Vector3, Camera, Box3 } from 'three/webgpu';
 
 interface OrbitControlsLike {
     target: Vector3;
@@ -6,7 +6,7 @@ interface OrbitControlsLike {
 }
 
 export function focusCameraOnSelection(
-    camera: PerspectiveCamera, 
+    camera: Camera,
     controls: OrbitControlsLike, 
     hasAnySelection: boolean, 
     getSelectionBoundingBox: () => Box3, 
@@ -24,9 +24,14 @@ export function focusCameraOnSelection(
             const maxDim = Math.max(size.x, size.y, size.z);
             
             const fitSize = Math.max(maxDim, 1.0);
-            const fov = camera.fov * (Math.PI / 180);
-            distance = Math.abs(fitSize / (2 * Math.tan(fov / 2)));
-            distance *= 1.6; 
+            if (camera.isPerspectiveCamera) {
+                const fov = camera.fov * (Math.PI / 180);
+                distance = Math.abs(fitSize / (2 * Math.tan(fov / 2))) * 1.6;
+            } else if (camera.isOrthographicCamera) {
+                camera.zoom = (camera.top - camera.bottom) / (fitSize * 1.6);
+                camera.updateProjectionMatrix();
+                distance = camera.position.distanceTo(controls.target);
+            }
         } else {
              getSelectionCenterWorld(targetPosition);
         }

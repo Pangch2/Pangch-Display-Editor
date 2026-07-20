@@ -6,7 +6,7 @@ import {
     Mesh,
     Vector3,
     Scene,
-    PerspectiveCamera,
+    Camera,
     Renderer,
     Group,
     Object3D,
@@ -82,7 +82,7 @@ export interface GizmoState {
 
 export interface InitGizmoParams {
     scene: Scene;
-    camera: PerspectiveCamera;
+    camera: Camera;
     renderer: Renderer;
     controls: OrbitControlsLike;
     loadedObjectGroup: Group;
@@ -96,6 +96,7 @@ export interface InitGizmoResult {
     getSelectedObject: () => Object3D | null;
     createGroup: () => string | undefined;
     getGroups: () => Map<string, GroupData>;
+    setCamera: (nextCamera: Camera) => void;
 }
 
 //  Aliases 
@@ -200,7 +201,7 @@ const getSelectedItems = Select.getSelectedItems;
 //  Module-level scene references 
 
 let scene: Scene;
-let camera: PerspectiveCamera;
+let camera: Camera;
 let renderer: Renderer;
 let controls: OrbitControlsLike;
 let loadedObjectGroup: Group;
@@ -1166,7 +1167,7 @@ export function initGizmo({
         dragInitialScale,
         loadedObjectGroup,
 
-        camera,
+        get camera() { return camera; },
         renderer,
         getTransformControls:                     () => transformControls!,
         getSelectionHelper:                       () => selectionHelper!,
@@ -1515,6 +1516,10 @@ export function initGizmo({
     });
 
     return {
+        setCamera: (nextCamera: Camera) => {
+            camera = nextCamera;
+            transformControls!.camera = nextCamera;
+        },
         getTransformControls: () => transformControls!,
         updateGizmo: () => {
             flushSelectionTransform();

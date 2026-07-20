@@ -5,7 +5,7 @@ import {
     Matrix4,
     Quaternion,
     Group,
-    PerspectiveCamera,
+    Camera,
     Renderer,
     Object3D,
     Box3
@@ -81,7 +81,7 @@ export interface HandleKeyParams {
     loadedObjectGroup: Group;
 
     // -- Readonly references --
-    camera: PerspectiveCamera;
+    camera: Camera;
     renderer: Renderer;
     getTransformControls(): TransformControls;
     getSelectionHelper(): Mesh;

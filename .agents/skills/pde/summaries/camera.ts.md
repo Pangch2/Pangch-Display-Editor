@@ -1,7 +1,7 @@
 # camera.ts
 
 ## Purpose
-Centers the camera on the current selection using the selection bounds when available, or the selection center as fallback.
+Centers either perspective or orthographic cameras on the current selection using the selection bounds when available, or the selection center as fallback.
 
 ## Exports
 
@@ -15,4 +15,4 @@ Centers the camera on the current selection using the selection bounds when avai
 - `renderer/controls/input/handle-key.ts` -- bound to the `F` hotkey.
 
 ## Notes
-Distance is derived from the camera FOV and selection size, with a fallback distance when nothing is selected.
+Perspective distance is derived from FOV and selection size; orthographic framing adjusts zoom while preserving distance.

@@ -9,7 +9,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - `scene: Scene` -- exported scene reference for other modules that need the active scene.
 
 ## Internal State
-- Holds the live `scene`, `camera`, `renderer`, `controls`, `viewHelper`, grouped `floorGrid`, separate `zSymbol` visibility reference, ViewHelper transition state, and optional `gizmoModule` used by the animation loop and resize handler.
+- Holds the live `scene`, switchable perspective/orthographic `camera`, `renderer`, `controls`, `viewHelper`, grouped `floorGrid`, separate `zSymbol` visibility reference, ViewHelper transition state and prior camera type, and optional `gizmoModule` used by the animation loop and resize handler.
 - Uses `viewHelperClock` to animate ViewHelper camera-axis transitions at frame-rate-independent speed.
 - Tracks FPS with `lastTime`, `frameCount`, and `fpsCounterElement`.
 - Tracks whether a scene precompile is in progress so the normal animation render loop does not race `renderer.compileAsync()`.
@@ -18,6 +18,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - Tracks pending `pde:wait-render-settled` requests; per-frame render CPU timing and WebGPU queue completion waits are collected only when requested, while renderer pipeline-cache size is sampled before/after the settled render.
 - Stabilizes the generated WGSL binding name for both uniform-buffer and storage-buffer `InstancedMesh.instanceMatrix` nodes so structurally identical instanced shaders can share WebGPU pipelines while retaining separate per-object bindings.
 - Answers synchronous project camera-state events by snapshotting/restoring camera position, OrbitControls target, and zoom.
+- Creates the animated canvas context menu and switches its camera submenu between perspective and orthographic projections while rebinding all camera consumers.
 
 ## Dependencies (imports)
 - `three/examples/jsm/controls/OrbitControls.js` -- orbit camera controls.
@@ -40,8 +41,10 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 - `initScene()` is only called after assets finish initializing.
 - `initScene()` keeps ViewHelper axis lines in their default positive directions, applies the gizmo's X/Y/Z palette to every line and 128 px positive/negative marker at 0.8 opacity, labels positive markers, and groups both floor grids with the `Z>` marker so they share axis-view changes.
 - `animate()` renders the scene and bottom-right ViewHelper continuously, syncing its center to the OrbitControls target, updating click-driven camera animations, rotating the floor grid to the selected view plane, and compositing the helper without clearing its viewport background.
-- ViewHelper transitions accept only left clicks and temporarily hide `Z>`; the next left-button interaction restores the grouped grids to the original XZ plane and shows `Z>` again.
+- ViewHelper transitions accept only left clicks, temporarily switch to orthographic projection, and hide `Z>`; the next left-button drag beyond 5 px restores the prior camera type, the original XZ grid plane, and `Z>` without reacting to a held click.
 - Window resize updates the camera and WebGPU canvas, then renders immediately so the resized drawing buffer is never displayed empty between animation frames.
+- Camera switching preserves orientation and target; orthographic mode keeps the 20×20 grid within its vertical framing and moves the camera far enough back to avoid near-plane cuts, while returning to perspective restores its prior distance. Resize updates the active projection's aspect or orthographic horizontal bounds.
+- The canvas camera context menu uses the shared open/close animations and ignores right-button drags beyond 5 px so OrbitControls panning does not open it.
 - Handles `pde:precompile-scene` by optionally profiling loaded mesh root compile costs, awaiting full `renderer.compileAsync(scene, camera)`, sampling the private pipeline-cache size, and optionally waiting for WebGPU queue completion before resolving split timing details to `upload-pbde.ts`.
 - `pde:wait-render-settled` resolves after the requested number of rendered frames; callers can opt into per-frame trace collection and WebGPU queue waiting for diagnostics.
 - `pde:get-camera-state` and `pde:set-camera-state` keep camera ownership in this module while allowing project tabs to preserve their last view.

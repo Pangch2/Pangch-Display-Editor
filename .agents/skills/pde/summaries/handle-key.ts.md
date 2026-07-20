@@ -24,5 +24,5 @@ Installs keyboard shortcuts for the editor: focus camera, toggle vertex mode and
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Primitive state is read/written through `p.state`; object references and callbacks remain direct `HandleKeyParams` fields. Selection hotkeys assume InstancedMesh-only object handling in the control layer. Entering vertex mode and switching pivot modes preserve the current selection's tracked origin anchor.
+Primitive state is read/written through `p.state`; object references and callbacks remain direct `HandleKeyParams` fields. The camera contract accepts the common Three.js `Camera` type so focus works after perspective/orthographic replacement. Selection hotkeys assume InstancedMesh-only object handling in the control layer. Entering vertex mode and switching pivot modes preserve the current selection's tracked origin anchor.
 - `L` toggles entity shading globally without rebuilding materials.

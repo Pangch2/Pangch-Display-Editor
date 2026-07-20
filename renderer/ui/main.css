@@ -402,6 +402,54 @@ canvas {
   font-size: 12px;
 }
 
+.camera-context-menu,
+.camera-submenu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #29292d;
+  box-shadow: 0 4px 12px #0008;
+  font-size: 13px;
+}
+
+.camera-menu-parent,
+.camera-submenu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.camera-menu-parent { position: relative; }
+.camera-menu-parent:hover,
+.camera-submenu button:hover { background: #3b3b40; }
+.camera-menu-arrow { margin-left: auto; }
+.lucide-icon { font-family: 'lucide'; }
+
+.camera-submenu {
+  position: absolute;
+  display: none;
+  top: -5px;
+  left: 100%;
+}
+
+.camera-menu-parent:hover .camera-submenu { display: block; }
+
+.camera-submenu button {
+  width: 100%;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: default;
+}
+
 .object-name-heading {
   display: flex;
   align-items: center;
