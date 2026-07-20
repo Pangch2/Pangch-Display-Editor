@@ -29,10 +29,7 @@ function expandGroupAncestors(groupId: string, ud: LoadedObjectUserData, include
 
 function findObjectParentGroupId(uuid: string, ud: LoadedObjectUserData): string | null {
     const inst = ud.objectUuidToInstance?.get(uuid);
-    if (inst) {
-        const mappedParentId = ud.objectToGroup?.get(`${inst.mesh.uuid}_${inst.instanceId}`);
-        if (mappedParentId) return mappedParentId;
-    }
+    if (inst && ud.objectToGroup) return ud.objectToGroup.get(`${inst.mesh.uuid}_${inst.instanceId}`) ?? null;
 
     const groups = ud.groups;
     if (!groups) return null;

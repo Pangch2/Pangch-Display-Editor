@@ -26,4 +26,5 @@ Handles scene-panel click behavior and selection highlighting. It translates ren
 
 ## Notes
 - Object selection expands the containing group and its parents; group selection expands only parent groups.
+- Parent lookup uses the authoritative `objectToGroup` index when available; hierarchy scanning is only a legacy fallback when that index is absent.
 - Selection sync only decorates currently mounted virtual rows; offscreen selected rows are highlighted when rendered.
