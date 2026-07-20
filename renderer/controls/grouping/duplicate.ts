@@ -550,7 +550,7 @@ export function duplicateGroupsAndObjects(
         if (logTimings) collectMs += performance.now() - collectStart;
     }
 
-    jobs.push(...directJobs);
+    for (const job of directJobs) jobs.push(job);
 
     const instancedJobs = new Map<InstancedMesh, CloneJobEntry[]>();
     for (const job of jobs) {
