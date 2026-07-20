@@ -27,3 +27,4 @@ Defines the local scene-panel data model shared across the refactored scene-pane
 
 ## Notes
 - This file is type-only plumbing; it should stay free of runtime logic.
+- `LoadedObjectUserData.objectLabels` holds optional user-edited object display names separately from source/model names.

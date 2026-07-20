@@ -34,7 +34,7 @@ function setRowPosition(el: HTMLElement, row: ScenePanelRow): void {
 function makeObjectRow(row: ScenePanelRow): HTMLElement {
     const uuid = row.id;
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const rawName = ud.objectNames?.get(uuid) || uuid.slice(0, 8);
+    const rawName = ud.objectLabels?.get(uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
     const isItemDisplay = ud.objectIsItemDisplay?.has(uuid) ?? false;
 
     let extraInfo = '';
@@ -164,6 +164,53 @@ function makeGroupRow(row: ScenePanelRow): HTMLElement {
 
 function makeRowElement(row: ScenePanelRow): HTMLElement {
     return row.type === 'group' ? makeGroupRow(row) : makeObjectRow(row);
+}
+
+export function beginScenePanelRename(): void {
+    const row = scenePanelState.lastClickedItem;
+    if (!row || !scenePanelState.scenePanelList) return;
+    const selector = row.type === 'group'
+        ? `.scene-tree-group[data-group-id="${row.id}"]`
+        : `.scene-object-item[data-uuid="${row.id}"]`;
+    const rowEl = scenePanelState.scenePanelList.querySelector<HTMLElement>(selector);
+    const nameEl = rowEl?.querySelector<HTMLElement>('.scene-name');
+    if (!rowEl || !nameEl || nameEl.querySelector('input')) return;
+
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const current = row.type === 'group'
+        ? ud.groups?.get(row.id)?.name ?? ''
+        : ud.objectLabels?.get(row.id) ?? cleanLabel(ud.objectNames?.get(row.id) ?? row.id.slice(0, 8));
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'scene-name-input';
+    input.value = current;
+    const applyName = (value: string): void => {
+        if (row.type === 'group') {
+            const group = ud.groups?.get(row.id);
+            if (group) group.name = value;
+        } else {
+            (ud.objectLabels ??= new Map()).set(row.id, value);
+        }
+        window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key: `${row.type}:${row.id}`, value } }));
+    };
+    let finished = false;
+    const finish = (save: boolean): void => {
+        if (finished) return;
+        finished = true;
+        if (!save) applyName(current);
+        window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    };
+    input.addEventListener('input', () => applyName(input.value));
+    input.addEventListener('keydown', event => {
+        event.stopPropagation();
+        if (event.key === 'Enter') finish(true);
+        else if (event.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true), { once: true });
+    rowEl.draggable = false;
+    nameEl.replaceChildren(input);
+    input.focus();
+    input.select();
 }
 
 function appendGroupRows(rows: ScenePanelRow[], groupId: string, depth: number, parentGroupId: string | null): void {

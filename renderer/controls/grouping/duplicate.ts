@@ -26,6 +26,7 @@ interface DuplicateUserData {
     objectUuidToInstance?: Map<string, { mesh: Object3D; instanceId: number }>;
     objectToGroup?: Map<string, string>;
     objectNames?: Map<string, string>;
+    objectLabels?: Map<string, string>;
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, unknown>;
@@ -97,6 +98,7 @@ function ensureStores(loadedObjectGroup: Group) {
     if (!ud.instanceKeyToObjectUuid) ud.instanceKeyToObjectUuid = new Map<string, string>();
     if (!ud.objectUuidToInstance) ud.objectUuidToInstance = new Map<string, { mesh: Object3D; instanceId: number }>();
     if (!ud.objectNames) ud.objectNames = new Map<string, string>();
+    if (!ud.objectLabels) ud.objectLabels = new Map<string, string>();
     if (!ud.objectIsItemDisplay) ud.objectIsItemDisplay = new Set<string>();
     if (!ud.objectDisplayTypes) ud.objectDisplayTypes = new Map<string, string>();
     if (!ud.objectBlockProps) ud.objectBlockProps = new Map<string, unknown>();
@@ -126,6 +128,8 @@ function registerClone(
 
     const sourceName = stores.objectNames!.get(sourceUuid);
     if (sourceName) stores.objectNames!.set(targetUuid, sourceName);
+    const sourceLabel = stores.objectLabels!.get(sourceUuid);
+    if (sourceLabel !== undefined) stores.objectLabels!.set(targetUuid, sourceLabel);
     if (stores.objectIsItemDisplay!.has(sourceUuid)) stores.objectIsItemDisplay!.add(targetUuid);
 
     const displayType = stores.objectDisplayTypes!.get(sourceUuid);

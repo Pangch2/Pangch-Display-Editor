@@ -402,6 +402,18 @@ canvas {
   font-size: 12px;
 }
 
+.object-name-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.object-name-heading input {
+  min-width: 0;
+  padding: 2px 5px;
+  font: inherit;
+}
+
 .object-property h3.object-metadata-title {
   margin: 10px 0 0;
 }
@@ -658,6 +670,25 @@ canvas {
 .scene-name-text {
   white-space: nowrap;
   min-width: 0;
+}
+
+.scene-name-input {
+  width: 100%;
+  min-width: 0;
+  padding: 1px 4px;
+  border: 1px solid #4ea6ff;
+  border-radius: 2px;
+  background: #202024;
+  color: #eee;
+  font: inherit;
+}
+
+.scene-name:has(.scene-name-input) {
+  flex: 1;
+}
+
+.scene-name:has(.scene-name-input) ~ .scene-extra {
+  display: none;
 }
 
 .scene-name-dots {

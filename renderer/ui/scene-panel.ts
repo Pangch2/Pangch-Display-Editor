@@ -6,7 +6,7 @@ import {
     handleScenePanelDragOver,
     handleScenePanelDrop
 } from './scene-panel-dnd';
-import { refreshScenePanel, scheduleSceneExtraFit, scheduleScenePanelRender } from './scene-panel-render';
+import { beginScenePanelRename, refreshScenePanel, scheduleSceneExtraFit, scheduleScenePanelRender } from './scene-panel-render';
 import { syncScenePanelSelection } from './scene-panel-selection';
 
 if (scenePanelState.scenePanelList) {
@@ -27,6 +27,15 @@ window.addEventListener('resize', () => {
     scenePanelVisible = visible;
 });
 window.addEventListener('pde:scene-updated', refreshScenePanel);
+window.addEventListener('pde:object-renamed', () => {
+    if (!(document.activeElement as HTMLElement | null)?.classList.contains('scene-name-input')) refreshScenePanel();
+});
+window.addEventListener('keydown', event => {
+    const target = event.target as HTMLElement;
+    if (event.key !== 'F2' || target.matches('input, textarea') || target.isContentEditable) return;
+    event.preventDefault();
+    beginScenePanelRename();
+});
 window.addEventListener('pde:selection-changed', (e: Event) => {
     if (!scenePanelState.scenePanelList?.offsetParent) return;
     const customEvent = e as CustomEvent<ScenePanelSelectionState>;

@@ -84,6 +84,7 @@ export interface LoadedObjectUserData {
     objectUuidToInstance?: Map<string, { mesh: Object3D; instanceId: number }>;
     instanceKeyToObjectUuid?: Map<string, string>;
     objectNames?: Map<string, string>;
+    objectLabels?: Map<string, string>;
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, any>;

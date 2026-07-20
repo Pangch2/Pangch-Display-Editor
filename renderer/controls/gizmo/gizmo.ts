@@ -347,6 +347,7 @@ function getSelectionCallbacks(): Select.SelectionCallbacks {
             pivotOffset.set(0, 0, 0);
             isCustomPivot = false;
         },
+        recomputePivotState: () => _recomputePivotStateForSelection(),
         updateHelperPosition: () => updateHelperPosition(),
         updateSelectionOverlay: () => updateSelectionOverlay(),
         pushToVertexQueue: () => {

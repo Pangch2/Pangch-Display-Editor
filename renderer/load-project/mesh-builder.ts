@@ -1715,6 +1715,7 @@ export async function replaceDisplayObject(
     const pivotWorld = transformContext?.pivotWorld?.clone()
         ?? pivot?.applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
     const replacementUuid = THREE.MathUtils.generateUUID();
+    const label = (ud.objectLabels as Map<string, string> | undefined)?.get(objectUuid);
     const isItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
     const texture = (ud.objectTextures as Map<string, string> | undefined)?.get(objectUuid);
     const node = {
@@ -1737,6 +1738,7 @@ export async function replaceDisplayObject(
     await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
     const replacement = (ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }>).get(replacementUuid);
     if (!replacement) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
+    if (label !== undefined) (ud.objectLabels as Map<string, string>).set(replacementUuid, label);
     const oldLastInstanceId = oldRef.mesh.count - 1;
 
     deleteSelectedItems(loadedObjectGroup, {

@@ -20,7 +20,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
 - `updateObjectBrightness(objectUuid, brightness): void` -- updates one object's stored brightness and per-instance sky-light color without rebuilding its mesh.
 - `updateGlobalBrightness(brightness): void` -- stores project-level brightness and refreshes every rendered instance in place.
-- `replaceDisplayObject(objectUuid, name, transformContext?): Promise<void>` -- rebuilds one display object through the PBDE pipeline, preserves its pivot, and reports both old/new instance references plus the pre-delete last index so selection can survive swap-pop removal.
+- `replaceDisplayObject(objectUuid, name, transformContext?): Promise<void>` -- rebuilds one display object through the PBDE pipeline, preserves its pivot and user label, and reports both old/new instance references plus the pre-delete last index so selection can survive swap-pop removal.
 
 ## Internal State
 - Texture/material caches for block and atlas assets
@@ -78,6 +78,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Property-panel replacement events carry enough old/new instance data for the gizmo to preserve multi-selection and remap any selected instance moved by swap-pop deletion.
 - Property-panel model changes keep the active Pivot Mode reference fixed: center uses bounds center, block origin uses local bounds minimum, and custom pivots retain their world position without changing the object transform.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
+- Optional UUID-indexed `objectLabels` remain separate from source/model names and survive property-driven object replacement.
 - Brightness panel edits update the selected instance color in place from the sky-light palette; enabled global brightness applies only to objects whose own brightness is the default sky `15` / block `0`, while custom values remain unchanged. Block brightness remains stored but does not affect rendering yet.
 - Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
 - Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.

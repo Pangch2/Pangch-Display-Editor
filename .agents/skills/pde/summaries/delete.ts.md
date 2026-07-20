@@ -1,7 +1,7 @@
 # delete.ts
 
 ## Purpose
-Deletes selected groups and objects from the scene graph and editor metadata structures, batching container cleanup for large multi-selections.
+Deletes selected groups and objects from the scene graph and editor metadata structures, including user-edited object labels, while batching container cleanup for large multi-selections.
 
 ## Exports
 

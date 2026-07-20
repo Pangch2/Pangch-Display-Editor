@@ -4,6 +4,7 @@ import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture } from '../load-project/mesh-builder';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel-types';
+import { cleanLabel } from './scene-panel-model';
 import * as GroupUtils from '../controls/grouping/group';
 import * as Overlay from '../controls/selection/overlay';
 import { applyDeltaToSelection } from '../controls/selection/drag';
@@ -350,6 +351,23 @@ function replaceNameDisplay(name: string, display: string): string {
     return display === 'none' ? baseName : `${baseName}[display=${display}]`;
 }
 
+function nameHeading(index: number, value: string, key: string, onChange: (value: string) => void): HTMLElement {
+    const heading = document.createElement('h3');
+    heading.className = 'object-name-heading';
+    heading.append(`${index + 1}. `);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = value;
+    input.dataset.renameKey = key;
+    input.oninput = () => {
+        const next = input.value;
+        onChange(next);
+        window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key, value: next } }));
+    };
+    heading.append(input);
+    return heading;
+}
+
 function scaleInput(value: number, onChange: (value: number, direction: '+' | '-') => void): HTMLElement {
     let direction: '+' | '-' = '+';
     const wrapper = document.createElement('span');
@@ -559,12 +577,12 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
 
     const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
         ?.get(`${mesh.uuid}_${instanceId}`) ?? `${mesh.name || '오브젝트'} ${instanceId}`;
-    const name = (loadedObjectGroup.userData.objectNames as Map<string, string> | undefined)?.get(uuid) ?? uuid;
+    const names = loadedObjectGroup.userData.objectNames as Map<string, string> | undefined;
+    const name = names?.get(uuid) ?? uuid;
+    const labels = (loadedObjectGroup.userData.objectLabels ??= new Map<string, string>()) as Map<string, string>;
     const section = document.createElement('section');
     section.className = 'object-property';
-    const heading = document.createElement('h3');
-    heading.textContent = `${index + 1}. ${name}`;
-    section.append(heading);
+    section.append(nameHeading(index, labels.get(uuid) ?? cleanLabel(name), `object:${uuid}`, value => labels.set(uuid, value)));
 
     const pivotBase = new Vector3();
     const displayType = Overlay.getDisplayType(mesh, instanceId);
@@ -718,9 +736,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     };
     const section = document.createElement('section');
     section.className = 'object-property';
-    const heading = document.createElement('h3');
-    heading.textContent = `${index + 1}. ${group.name}`;
-    section.append(heading);
+    section.append(nameHeading(index, group.name, `group:${groupId}`, value => { group.name = value; }));
     const transformSection = propertySection('transform', '변환');
     const values = [groupPosition.clone(), groupRotation.clone(), groupScale.clone()];
     ['위치', '회전', '크기'].forEach((label, rowIndex) => {
@@ -1113,6 +1129,12 @@ window.addEventListener('pde:replace-object-selection', event => {
     schedulePropertySectionRender();
 });
 window.addEventListener('pde:selection-changed', event => renderSelection((event as CustomEvent<SelectionState>).detail));
+window.addEventListener('pde:object-renamed', event => {
+    const { key, value } = (event as CustomEvent<{ key: string; value: string }>).detail;
+    document.querySelectorAll<HTMLInputElement>('.object-name-heading input').forEach(input => {
+        if (input.dataset.renameKey === key && input.value !== value) input.value = value;
+    });
+});
 window.addEventListener('pde:selection-transform-context', event => {
     const detail = (event as CustomEvent<{ selection: SelectionState; pivotWorld?: Vector3; pivotMode: string; multiCustomPivotLocal?: Vector3 }>).detail;
     currentPivotMode = detail.pivotMode;

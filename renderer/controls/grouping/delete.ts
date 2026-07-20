@@ -17,6 +17,7 @@ interface DeleteUserData {
     instanceKeyToObjectUuid?: Map<string, string>;
     objectUuidToInstance?: Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }>;
     objectNames?: Map<string, string>;
+    objectLabels?: Map<string, string>;
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, unknown>;
@@ -39,6 +40,7 @@ function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, inst
 
     ud.objectUuidToInstance?.delete(objectUuid);
     ud.objectNames?.delete(objectUuid);
+    ud.objectLabels?.delete(objectUuid);
     ud.objectIsItemDisplay?.delete(objectUuid);
     ud.objectDisplayTypes?.delete(objectUuid);
     ud.objectBlockProps?.delete(objectUuid);

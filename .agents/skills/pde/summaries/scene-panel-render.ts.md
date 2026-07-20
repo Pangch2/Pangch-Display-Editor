@@ -6,6 +6,7 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 ## Exports
 
 ### Functions / Methods
+- `beginScenePanelRename(): void` -- replaces the primary scene row name with a focused text input, applies every input event immediately, and restores the original value on Escape.
 - `scheduleSceneExtraFit(): void` -- schedules a deferred pass that fits rendered row labels and extra metadata.
 - `renderVisibleSceneRows(): void` -- when visible, reconciles the viewport row DOM against `scenePanelState.visibleRows`.
 - `scheduleScenePanelRender(): void` -- RAF-coalesces scroll/resize viewport rendering.
@@ -16,6 +17,7 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 - Uses `scenePanelState.renderedRowEls` to track mounted virtual rows by visible index; group row keys include expansion state so toggles and styling are recreated when it changes.
 - Uses `scenePanelState.scenePanelSpacerEl` and `scenePanelContentEl` to maintain scroll height while rendering only visible rows.
 - `scenePanelState.sceneExtraFitRaf` and `scenePanelRenderRaf` gate deferred work.
+- Object rows prefer editable `objectLabels` while retaining `objectNames` as the model/resource identifier fallback.
 
 ## Dependencies (imports)
 - `../controls/selection/select` -- provides the current selection snapshot for highlight sync.
