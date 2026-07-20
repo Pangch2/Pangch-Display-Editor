@@ -675,6 +675,7 @@ canvas {
 .scene-name-input {
   width: 100%;
   min-width: 0;
+  margin-left: -5px;
   padding: 1px 4px;
   border: 1px solid #4ea6ff;
   border-radius: 2px;

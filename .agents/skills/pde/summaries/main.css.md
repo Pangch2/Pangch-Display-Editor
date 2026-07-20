@@ -13,6 +13,7 @@ Defines renderer UI styling, including independent left/right panel docks, proje
 
 ## Notes
 - Scene panel rows have fixed 28 px height for virtualization.
+- Scene rename inputs offset their border and padding so edited text stays aligned with the display label.
 - `.scene-virtual-spacer` preserves scroll height while `.scene-virtual-content` holds absolutely positioned rendered rows.
 - Selection colors differ for item displays, block displays, and groups.
 - Empty docks are hidden; a single window fills its dock, while two windows use the Scene Objects basis and Project Details fills the remainder.
