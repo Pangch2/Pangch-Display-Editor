@@ -132,12 +132,17 @@ export async function flipObjectUuids(
             name: nextName,
             transformContext: { pivotMode: activePivotMode }
         })));
-        for (const { ref, previousMatrix, previousCustomPivot } of pending) {
-            ref.mesh.setMatrixAt(ref.instanceId, previousMatrix);
-            if (previousCustomPivot) (ref.mesh.userData.customPivots as Map<number, Vector3>).set(ref.instanceId, previousCustomPivot);
-            ref.mesh.instanceMatrix.needsUpdate = true;
+        let newUuids: string[];
+        try {
+            newUuids = await replacement;
+        } catch (error) {
+            for (const { ref, previousMatrix, previousCustomPivot } of pending) {
+                ref.mesh.setMatrixAt(ref.instanceId, previousMatrix);
+                if (previousCustomPivot) (ref.mesh.userData.customPivots as Map<number, Vector3>).set(ref.instanceId, previousCustomPivot);
+                ref.mesh.instanceMatrix.needsUpdate = true;
+            }
+            throw error;
         }
-        const newUuids = await replacement;
         pending.forEach(({ index, uuid }, replacementIndex) => {
             const newUuid = newUuids[replacementIndex];
             replaceMirrorUuid(loadedObjectGroup, uuid, newUuid);
