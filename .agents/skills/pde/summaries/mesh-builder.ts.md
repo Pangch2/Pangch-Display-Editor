@@ -81,7 +81,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
 - Multi-object model/property changes share one PBDE parse/render pass; the single-object API delegates to the same batch path.
 - Property-panel replacement events carry enough old/new instance data for the gizmo to preserve multi-selection and remap any selected instance moved by swap-pop deletion.
-- Property-panel model changes keep the active Pivot Mode reference fixed: center uses bounds center, block origin uses local bounds minimum, and custom pivots retain their world position without changing the object transform.
+- Property-panel model changes keep the active Pivot Mode reference fixed: center uses bounds center, block origin uses local bounds minimum, and custom pivots retain their world position without mutating the stored local pivot during world-space calculations.
 - UUID-indexed brightness and player-head texture metadata feed the properties panel and survive property-driven object replacement.
 - Optional UUID-indexed `objectLabels` remain separate from source/model names and survive property-driven object replacement.
 - Brightness panel edits update the selected instance color in place from the sky-light palette; enabled global brightness applies only to objects whose own brightness is the default sky `15` / block `0`, while custom values remain unchanged. Block brightness remains stored but does not affect rendering yet.

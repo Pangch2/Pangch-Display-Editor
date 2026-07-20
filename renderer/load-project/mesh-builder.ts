@@ -1726,7 +1726,7 @@ export async function replaceDisplayObjects(requests: Array<{
                 : Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3()));
         if (oldGeometryDisplayType === 'item_display' && oldRef.mesh.userData.hasHat) pivot?.setY(Overlay.isItemDisplayHatEnabled(oldRef.mesh, oldRef.instanceId) ? 0.03125 : 0);
         const pivotWorld = transformContext?.pivotWorld?.clone()
-            ?? pivot?.applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
+            ?? pivot?.clone().applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
         const replacementUuid = THREE.MathUtils.generateUUID();
         const label = (ud.objectLabels as Map<string, string> | undefined)?.get(objectUuid);
         const isItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
