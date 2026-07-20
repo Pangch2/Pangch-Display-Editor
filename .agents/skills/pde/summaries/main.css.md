@@ -18,6 +18,7 @@ Defines renderer UI styling, including independent left/right panel docks, proje
 - Empty docks are hidden; a single window fills its dock, while two windows use the Scene Objects basis and Project Details fills the remainder.
 - Scene Objects and Project Details headers share one single-line, ellipsis-overflow style.
 - Global `:focus` and `:focus-visible` outlines are removed, so native keyboard focus rings are suppressed across the UI.
+- All inputs and textareas override the body's disabled text selection so native drag selection can extend through horizontally hidden content.
 - Panel drag previews are fixed, opaque copies that follow the pointer above the editor UI.
 - Valid panel drop positions use a sky-blue highlighted region; its shared edge is drawn by the layout script.
 - The FPS counter has an opaque black background and stays above dragged panels.

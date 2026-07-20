@@ -24,6 +24,11 @@ body {
   user-select: none;
 }
 
+input,
+textarea {
+  user-select: text;
+}
+
 :focus,
 :focus-visible {
   outline: none;
