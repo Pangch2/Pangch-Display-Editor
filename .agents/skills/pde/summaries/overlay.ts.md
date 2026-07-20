@@ -26,7 +26,7 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - `getGroupLocalBoundingBox(groupId)` -- calculates group bounds in group-local space.
 - `getGroupOriginWorld(groupId, out)` -- resolves a group's world origin.
 - `getRotationFromMatrix(matrix)` -- extracts an orthonormal rotation quaternion.
-- `getSelectionBoundingBox(currentSelection)` -- calculates combined selection bounds.
+- `getSelectionBoundingBox(currentSelection, previewMatrix?)` -- calculates combined selection bounds, optionally with a preview transform applied per selected item.
 - `prepareMultiSelectionDrag(currentSelection)` -- caches one aggregate world-space selection box at drag start.
 - `getSelectionPointsOverlay()` -- returns the active vertex-marker group.
 - `updateSelectionOverlay(...)` -- rebuilds selection instances, vertex sprites, and overlay boxes.
@@ -59,5 +59,5 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - Selection overlay instance matrices use WebGPU storage attributes and are uploaded on selection changes or once at drag end instead of on every preview frame.
 - Selection boxes use one InstancedMesh; vertex sprites and drag boxes reuse shared GPU resources instead of recreating materials or geometry.
 - Selection refreshes recreate the selection InstancedMesh and its exact-sized attributes.
-- Drag-time multi-selection bounds transform only the cached aggregate box with no per-item scan; rotation or shear can temporarily produce a conservative AABB, which is tightened once at commit.
+- Drag-time multi-selection bounds apply the preview matrix per selected group or object, keeping rotation and shear bounds exact before commit.
 - Repeated hover events for the same sprite are ignored; selection refreshes clear the transient hover guide.

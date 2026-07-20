@@ -75,6 +75,7 @@ interface OverlayItem {
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();
+const _TMP_MAT4_C = new Matrix4();
 const _TMP_BOX3_A = new Box3();
 const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
@@ -392,7 +393,7 @@ export function getRotationFromMatrix(matrix: Matrix4): Quaternion {
     return quaternion;
 }
 
-export function getSelectionBoundingBox(currentSelection: SelectionState): Box3 {
+export function getSelectionBoundingBox(currentSelection: SelectionState, previewMatrix?: Matrix4): Box3 {
     const box = new Box3();
     const tempMat = new Matrix4();
     const tempBox = new Box3();
@@ -402,6 +403,7 @@ export function getSelectionBoundingBox(currentSelection: SelectionState): Box3 
             const localBox = getGroupLocalBoundingBox(groupId);
             if (!localBox || localBox.isEmpty()) continue;
             getGroupWorldMatrixWithFallback(groupId, tempMat);
+            if (previewMatrix) tempMat.premultiply(previewMatrix);
             tempBox.copy(localBox).applyMatrix4(tempMat);
             box.union(tempBox);
         }
@@ -413,6 +415,7 @@ export function getSelectionBoundingBox(currentSelection: SelectionState): Box3 
                 const localBox = getInstanceLocalBox(mesh, id);
                 if (!localBox) continue;
                 getInstanceWorldMatrix(mesh, id, tempMat);
+                if (previewMatrix) tempMat.premultiply(previewMatrix);
                 tempBox.copy(localBox).applyMatrix4(tempMat);
                 box.union(tempBox);
             }
@@ -706,9 +709,8 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection: Selectio
 
     const worldBox = _TMP_BOX3_A.makeEmpty();
     if (currentGizmoMat && initialGizmoMat && !_dragSelectionBox.isEmpty()) {
-        const tMat = _TMP_MAT4_A.copy(initialGizmoMat).invert().premultiply(currentGizmoMat);
-        // ponytail: aggregate AABB is conservative during rotation/shear; scan items here only if exact preview bounds become necessary.
-        worldBox.copy(_dragSelectionBox).applyMatrix4(tMat);
+        const tMat = _TMP_MAT4_C.copy(initialGizmoMat).invert().premultiply(currentGizmoMat);
+        worldBox.copy(getSelectionBoundingBox(currentSelection, tMat));
     } else {
         worldBox.copy(getSelectionBoundingBox(currentSelection));
     }
