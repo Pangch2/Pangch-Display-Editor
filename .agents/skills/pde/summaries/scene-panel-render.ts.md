@@ -7,9 +7,9 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 
 ### Functions / Methods
 - `scheduleSceneExtraFit(): void` -- schedules a deferred pass that fits rendered row labels and extra metadata.
-- `renderVisibleSceneRows(): void` -- reconciles the viewport row DOM against `scenePanelState.visibleRows`.
+- `renderVisibleSceneRows(): void` -- when visible, reconciles the viewport row DOM against `scenePanelState.visibleRows`.
 - `scheduleScenePanelRender(): void` -- RAF-coalesces scroll/resize viewport rendering.
-- `refreshScenePanel(): void` -- rebuilds flat row metadata, updates spacer height, renders the current viewport, syncs selection, and logs timings.
+- `refreshScenePanel(): void` -- when visible, rebuilds flat row metadata, updates spacer height, renders the current viewport, syncs selection, and logs timings.
 
 ## Internal State
 - Uses `scenePanelState.visibleRows` as the canonical rendered tree order.
@@ -34,5 +34,6 @@ Renders the scene panel as a virtualized flat tree from `loadedObjectGroup.userD
 ## Notes
 - Root rendering respects `sceneOrder` first, then falls back to groups and object names.
 - Group expand/collapse rebuilds the flat row list and spacer height, not the full scene DOM.
+- Full refreshes, viewport reconciliation, and label fitting return immediately while the panel is hidden by a minimized dock.
 - Expanded group rows receive the `expanded` class for their visual state.
 - Optional `Scene panel timings` and slow `Scene panel viewport render` logs are disabled by default and can be enabled through `localStorage` using the human-readable log name.

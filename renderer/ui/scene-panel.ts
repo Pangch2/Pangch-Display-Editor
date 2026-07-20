@@ -16,12 +16,19 @@ if (scenePanelState.scenePanelList) {
     scenePanelState.scenePanelList.addEventListener('dragleave', handleScenePanelDragLeave);
 }
 
+let scenePanelVisible = Boolean(scenePanelState.scenePanelList?.offsetParent);
 window.addEventListener('resize', () => {
-    scheduleScenePanelRender();
-    scheduleSceneExtraFit();
+    const visible = Boolean(scenePanelState.scenePanelList?.offsetParent);
+    if (visible && !scenePanelVisible) refreshScenePanel();
+    else if (visible) {
+        scheduleScenePanelRender();
+        scheduleSceneExtraFit();
+    }
+    scenePanelVisible = visible;
 });
 window.addEventListener('pde:scene-updated', refreshScenePanel);
 window.addEventListener('pde:selection-changed', (e: Event) => {
+    if (!scenePanelState.scenePanelList?.offsetParent) return;
     const customEvent = e as CustomEvent<ScenePanelSelectionState>;
     syncScenePanelSelection(customEvent.detail ?? (currentSelection as unknown as ScenePanelSelectionState));
 });

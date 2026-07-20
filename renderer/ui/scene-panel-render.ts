@@ -235,7 +235,7 @@ function syncScenePanelSpacerHeight(): void {
 }
 
 function fitSceneExtraBlocks(): void {
-    if (!scenePanelState.scenePanelContentEl) return;
+    if (!scenePanelState.scenePanelContentEl?.offsetParent) return;
 
     const rows = scenePanelState.scenePanelContentEl.querySelectorAll('.scene-object-item, .scene-tree-group') as NodeListOf<HTMLElement>;
 
@@ -376,7 +376,7 @@ export function renderVisibleSceneRows(): void {
     const list = scenePanelState.scenePanelList;
     const content = scenePanelState.scenePanelContentEl;
     const spacer = scenePanelState.scenePanelSpacerEl;
-    if (!list || !content || !spacer) return;
+    if (!list || !content || !spacer || !list.offsetParent) return;
 
     const renderStartMs = performance.now();
     const rowHeight = scenePanelState.rowHeight;
@@ -428,7 +428,7 @@ export function refreshScenePanel(): void {
     const list = scenePanelState.scenePanelList;
     const content = scenePanelState.scenePanelContentEl;
     const spacer = scenePanelState.scenePanelSpacerEl;
-    if (!list || !content || !spacer) return;
+    if (!list || !content || !spacer || !list.offsetParent) return;
 
     const totalStartMs = performance.now();
     const previousScrollTop = list.scrollTop;

@@ -1,7 +1,7 @@
 # scene-panel.ts
 
 ## Purpose
-Bootstraps the scene panel module cluster while preserving the existing `./ui/scene-panel` import path. It installs scroll, resize, drag/drop, scene-update, and selection listeners and re-exports `refreshScenePanel()`.
+Bootstraps the scene panel module cluster while preserving the existing `./ui/scene-panel` import path. It installs scroll, resize, drag/drop, scene-update, and selection listeners, pauses updates while the dock is minimized, refreshes once when restored, and re-exports `refreshScenePanel()`.
 
 ## Exports
 
@@ -20,5 +20,9 @@ Bootstraps the scene panel module cluster while preserving the existing `./ui/sc
 - `renderer.ts` -- imports this module for bootstrapping side effects.
 - `window` event listeners -- `pde:scene-updated` triggers rerender; `pde:selection-changed` updates highlight state.
 
+## Internal State
+- `scenePanelVisible` tracks visibility across resize events so restoration triggers one full refresh.
+
 ## Notes
 - Scroll events schedule virtual viewport rendering instead of full tree rendering.
+- Selection and resize-driven updates are skipped while the panel is hidden; restoration refreshes current scene data and selection.
