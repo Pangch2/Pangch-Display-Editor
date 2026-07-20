@@ -66,7 +66,8 @@ export async function flipObjectUuids(
     uuids: Array<string | undefined>,
     axis: FlipAxis,
     pivotWorld?: Vector3,
-    activePivotMode = 'origin'
+    activePivotMode = 'origin',
+    onPreviewApplied?: () => void
 ): Promise<Array<string | undefined>> {
     const userData = loadedObjectGroup.userData;
     const isItemDisplay = userData.objectIsItemDisplay as Set<string> | undefined;
@@ -125,6 +126,7 @@ export async function flipObjectUuids(
         }
         pending.push({ index, uuid, ref, previousMatrix, previousCustomPivot, nextName });
     }
+    onPreviewApplied?.();
 
     if (pending.length > 0) {
         const replacement = replaceDisplayObjects(pending.map(({ uuid, nextName }) => ({

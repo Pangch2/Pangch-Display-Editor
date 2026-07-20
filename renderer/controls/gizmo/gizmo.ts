@@ -912,7 +912,7 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     const selected = new Set(selectedUuids);
     const pairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
     const linkedUuids = selectedUuids.map(uuid => uuid && !selected.has(pairs.get(uuid)) ? pairs.get(uuid) : undefined);
-    await flipObjectUuids(loadedObjectGroup, selectedUuids, axis, pivotWorld, activePivotMode);
+    await flipObjectUuids(loadedObjectGroup, selectedUuids, axis, pivotWorld, activePivotMode, updateSelectionOverlay);
     await flipObjectUuids(loadedObjectGroup, linkedUuids, axis, undefined, activePivotMode);
     reflectGroups(loadedObjectGroup, currentSelection.groups, axis, pivotWorld);
     if (multiPivotState) {

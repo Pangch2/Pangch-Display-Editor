@@ -47,6 +47,7 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - Internal group, ungroup, delete, and duplicate commands emit `pde:scene-updated` with `skipGizmoRefresh`; the gizmo listener skips its redundant refresh while other listeners still receive the event. Detail-free external scene updates retain the normal gizmo and overlay refresh.
 - Mirror-modeling duplication delegates fixed-pivot reflection and pair bookkeeping to the dedicated controls, then refreshes selection state and emits the scene update.
 - Direct selection flips delegate object/group reflection to `controls/flip.ts`; this controller preserves multi-selection pivot flags, offsets, anchors, and linked partner selection around the asynchronous operation.
+- Direct selection flips refresh the selection overlay as soon as the reflected preview matrices are applied, before asynchronous block-state replacement completes.
 - Direct flips recompute center-mode pivots from the live selection bounds; center-mode reflections mirror the stored multi-selection origin/custom anchor instead of replacing it with the center pivot.
 - Object custom pivots are remapped through the reflection so their world positions remain consistent with the mirrored objects, and pivot state is recomputed before repositioning the gizmo.
 - Player-head, block-state, custom-pivot, and linked-partner reflection details live in `controls/flip.ts`.
