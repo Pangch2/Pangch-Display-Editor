@@ -89,6 +89,14 @@ function numberInput(value: number, onChange: (value: number) => void): HTMLInpu
     return input;
 }
 
+function scaleNumberInput(value: number, onChange: (value: number) => void): HTMLInputElement {
+    const input = numberInput(value, next => {
+        if (next === 0) input.value = '0.0001';
+        onChange(next === 0 ? 0.0001 : next);
+    });
+    return input;
+}
+
 function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTMLElement[] {
     let current = value.clone();
     const heading = document.createElement('h3');
@@ -372,7 +380,7 @@ function scaleInput(value: number, onChange: (value: number, direction: '+' | '-
     let direction: '+' | '-' = '+';
     const wrapper = document.createElement('span');
     wrapper.className = 'object-scale-input';
-    const input = numberInput(value, next => onChange(next, direction));
+    const input = scaleNumberInput(value, next => onChange(next, direction));
     const arrow = document.createElement('button');
     arrow.type = 'button';
     arrow.className = 'object-scale-direction';
@@ -445,7 +453,7 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
         row.append(rowLabel);
         (['x', 'y', 'z'] as const).forEach(axis => {
             const value = rowIndex === 1 ? values[rowIndex][axis] * 180 / Math.PI : values[rowIndex][axis];
-            row.append(numberInput(value, next => {
+            row.append((rowIndex === 2 ? scaleNumberInput : numberInput)(value, next => {
                 selectionMatrix.decompose(position, quaternion, scale);
                 rotation.setFromQuaternion(quaternion);
                 if (rowIndex === 0) position[axis] = next;
