@@ -36,4 +36,5 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 - New chunks clone the source geometry/materials and instance-color buffer, allocate a WebGPU storage instance-matrix attribute, carry a `pdeDuplicateChunk` marker for deletion cleanup, remain hidden while empty or being populated, and become visible only after all copied GPU attributes are marked for upload; idle prewarm skips stale source meshes removed by project reloads.
 - Normal append path expects meshes created by `mesh-builder.ts` to have spare capacity; chunk spillover handles unlimited repeated duplication without rebinding existing buffers.
 - Group clone jobs rely on `group.ts` for structure cloning and object traversal.
+- Directly selected objects snapshot source locations by parent before cloning, queue clone entries by source UUID, and rebuild each affected parent/root container once so clones remain immediately after their originals; group-covered jobs keep the append path.
 - `Duplicate timings` pbde log emits one summary line with job counts and timing buckets when enabled.

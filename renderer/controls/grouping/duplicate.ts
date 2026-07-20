@@ -35,11 +35,21 @@ interface DuplicateUserData {
     sceneOrder?: SceneOrderEntry[];
 }
 
-interface SourceObjectLocation {
+interface DirectSourceLocation {
     parentGroupId: string | null;
-    containerKind: 'group' | 'scene';
-    container: Array<{ type: 'group' | 'object'; id?: string; mesh?: Object3D; instanceId?: number }>;
     index: number;
+}
+
+type PendingObjectEntry = GroupUtils.GroupChildObject | SceneOrderEntry;
+
+interface PendingContainerInsertions {
+    afterSource: Map<string, PendingObjectEntry[]>;
+    fallback: PendingObjectEntry[];
+}
+
+interface DirectInsertionPlan {
+    sourceLocations: Map<string, DirectSourceLocation>;
+    byParent: Map<string | null, PendingContainerInsertions>;
 }
 
 interface CloneResult {
@@ -133,33 +143,95 @@ function registerClone(
     return targetUuid;
 }
 
-function findSourceObjectLocation(
+function prepareDirectInsertionPlan(
     loadedObjectGroup: Group,
-    sourceMesh: Mesh | InstancedMesh,
-    sourceInstanceId: number
-): SourceObjectLocation | null {
+    jobs: CloneJobEntry[]
+): DirectInsertionPlan {
     const stores = ensureStores(loadedObjectGroup);
-    const sourceKey = GroupUtils.getGroupKey(sourceMesh, sourceInstanceId);
-    const sourceUuid = stores.instanceKeyToObjectUuid!.get(sourceKey);
-    if (!sourceUuid) return null;
-
     const groups = GroupUtils.getGroups(loadedObjectGroup);
-    const parentGroupId = stores.objectToGroup?.get(sourceKey) ?? null;
+    const sourceLocations = new Map<string, DirectSourceLocation>();
+    const wantedByParent = new Map<string | null, Set<string>>();
 
-    if (parentGroupId) {
-        const parentGroup = groups.get(parentGroupId);
-        if (parentGroup && Array.isArray(parentGroup.children)) {
-            const index = parentGroup.children.findIndex(child => child.type === 'object' && child.id === sourceUuid);
-            if (index !== -1) return { parentGroupId, containerKind: 'group', container: parentGroup.children, index };
+    for (const job of jobs) {
+        const sourceKey = GroupUtils.getGroupKey(job.mesh, job.instanceId);
+        const sourceUuid = stores.instanceKeyToObjectUuid!.get(sourceKey);
+        if (!sourceUuid) continue;
+        const parentGroupId = stores.objectToGroup?.get(sourceKey) ?? null;
+        let wanted = wantedByParent.get(parentGroupId);
+        if (!wanted) wantedByParent.set(parentGroupId, wanted = new Set());
+        wanted.add(sourceUuid);
+    }
+
+    for (const [parentGroupId, wanted] of wantedByParent) {
+        const container = parentGroupId
+            ? groups.get(parentGroupId)?.children
+            : stores.sceneOrder;
+        if (!Array.isArray(container)) continue;
+        for (let index = 0; index < container.length; index++) {
+            const entry = container[index];
+            if (entry.type === 'object' && wanted.has(entry.id!)) {
+                sourceLocations.set(entry.id!, { parentGroupId, index });
+            }
         }
     }
 
-    if (Array.isArray(stores.sceneOrder)) {
-        const index = stores.sceneOrder.findIndex(entry => entry.type === 'object' && entry.id === sourceUuid);
-        if (index !== -1) return { parentGroupId: null, containerKind: 'scene', container: stores.sceneOrder, index };
+    return { sourceLocations, byParent: new Map() };
+}
+
+function getPendingContainer(plan: DirectInsertionPlan, parentGroupId: string | null): PendingContainerInsertions {
+    let pending = plan.byParent.get(parentGroupId);
+    if (!pending) {
+        pending = { afterSource: new Map(), fallback: [] };
+        plan.byParent.set(parentGroupId, pending);
+    }
+    return pending;
+}
+
+function queueDirectCloneEntry(
+    plan: DirectInsertionPlan,
+    sourceUuid: string | undefined,
+    targetGroupId: string | null,
+    entry: PendingObjectEntry
+): void {
+    const location = sourceUuid ? plan.sourceLocations.get(sourceUuid) : undefined;
+    const pending = getPendingContainer(plan, targetGroupId);
+    if (!sourceUuid || location?.parentGroupId !== targetGroupId) {
+        pending.fallback.push(entry);
+        return;
     }
 
-    return null;
+    let entries = pending.afterSource.get(sourceUuid);
+    if (!entries) pending.afterSource.set(sourceUuid, entries = []);
+    entries.push(entry);
+}
+
+function flushDirectCloneInsertions(loadedObjectGroup: Group, plan: DirectInsertionPlan): void {
+    const groups = GroupUtils.getGroups(loadedObjectGroup);
+    const stores = ensureStores(loadedObjectGroup);
+
+    for (const [parentGroupId, pending] of plan.byParent) {
+        const container = parentGroupId ? groups.get(parentGroupId)?.children : stores.sceneOrder;
+        if (!Array.isArray(container)) continue;
+
+        const rebuilt: PendingObjectEntry[] = [];
+        for (const entry of container) {
+            rebuilt.push(entry);
+            if (entry.type !== 'object' || !entry.id) continue;
+            const additions = pending.afterSource.get(entry.id);
+            if (!additions) continue;
+            rebuilt.push(...additions);
+            pending.afterSource.delete(entry.id);
+        }
+        for (const additions of pending.afterSource.values()) rebuilt.push(...additions);
+        rebuilt.push(...pending.fallback);
+
+        if (parentGroupId) {
+            const parent = groups.get(parentGroupId);
+            if (parent) parent.children = rebuilt as GroupUtils.GroupChild[];
+        } else {
+            stores.sceneOrder = rebuilt as SceneOrderEntry[];
+        }
+    }
 }
 
 function insertCloneEntry(
@@ -170,9 +242,12 @@ function insertCloneEntry(
     targetMesh: Mesh | InstancedMesh,
     targetInstanceId: number,
     targetUuid: string,
-    coveredByGroup: boolean
+    coveredByGroup: boolean,
+    insertionPlan: DirectInsertionPlan
 ): void {
     const stores = ensureStores(loadedObjectGroup);
+    const sourceKey = GroupUtils.getGroupKey(sourceMesh, sourceInstanceId);
+    const sourceUuid = stores.instanceKeyToObjectUuid!.get(sourceKey);
     const targetKey = GroupUtils.getGroupKey(targetMesh, targetInstanceId);
 
     if (targetGroupId) {
@@ -184,28 +259,17 @@ function insertCloneEntry(
         stores.objectToGroup.set(targetKey, targetGroupId);
 
         if (!coveredByGroup) {
-            const sourceLocation = findSourceObjectLocation(loadedObjectGroup, sourceMesh, sourceInstanceId);
-            if (sourceLocation?.parentGroupId === targetGroupId && sourceLocation.containerKind === 'group') {
-                sourceLocation.container.splice(sourceLocation.index + 1, 0, {
-                    type: 'object',
-                    mesh: targetMesh,
-                    instanceId: targetInstanceId,
-                    id: targetUuid
-                });
-                return;
-            }
+            queueDirectCloneEntry(insertionPlan, sourceUuid, targetGroupId, {
+                type: 'object', mesh: targetMesh, instanceId: targetInstanceId, id: targetUuid
+            });
+            return;
         }
 
         targetGroup.children.push({ type: 'object', mesh: targetMesh, instanceId: targetInstanceId, id: targetUuid });
         return;
     }
 
-    const sourceLocation = findSourceObjectLocation(loadedObjectGroup, sourceMesh, sourceInstanceId);
-    if (sourceLocation?.parentGroupId === null && sourceLocation.containerKind === 'scene') {
-        sourceLocation.container.splice(sourceLocation.index + 1, 0, { type: 'object', id: targetUuid });
-    } else if (Array.isArray(stores.sceneOrder)) {
-        stores.sceneOrder.push({ type: 'object', id: targetUuid });
-    }
+    queueDirectCloneEntry(insertionPlan, sourceUuid, null, { type: 'object', id: targetUuid });
 }
 
 function getAncestorSelected(groups: Map<string, GroupUtils.GroupData>, groupId: string | null | undefined, selectedGroups: Set<string> | null): boolean {
@@ -277,14 +341,15 @@ function clonePlainMesh(
     sourceMesh: Mesh,
     sourceInstanceId: number,
     targetGroupId: string | null,
-    coveredByGroup: boolean
+    coveredByGroup: boolean,
+    insertionPlan: DirectInsertionPlan
 ): CloneResult {
     const clone = sourceMesh.clone() as Mesh;
     clone.userData = cloneData(sourceMesh.userData);
     loadedObjectGroup.add(clone);
 
     const objectUuid = registerClone(loadedObjectGroup, sourceMesh, sourceInstanceId, clone, 0);
-    insertCloneEntry(loadedObjectGroup, sourceMesh, sourceInstanceId, targetGroupId, clone, 0, objectUuid, coveredByGroup);
+    insertCloneEntry(loadedObjectGroup, sourceMesh, sourceInstanceId, targetGroupId, clone, 0, objectUuid, coveredByGroup, insertionPlan);
     return { mesh: clone, instanceId: 0, objectUuid, coveredByGroup };
 }
 
@@ -348,6 +413,7 @@ function cloneInstancedBatch(
     loadedObjectGroup: Group,
     sourceMesh: InstancedMesh,
     jobs: CloneJobEntry[],
+    insertionPlan: DirectInsertionPlan,
     timings?: DuplicateTimingStats
 ): CloneResult[] {
     if (!sourceMesh.geometry || jobs.length === 0) return [];
@@ -392,7 +458,8 @@ function cloneInstancedBatch(
             targetMesh,
             targetId,
             objectUuid,
-            job.coveredByGroup
+            job.coveredByGroup,
+            insertionPlan
         );
         if (timings) timings.metadataMs += performance.now() - metadataStart;
         results.push({ mesh: targetMesh, instanceId: targetId, objectUuid, coveredByGroup: job.coveredByGroup });
@@ -439,7 +506,21 @@ export function duplicateGroupsAndObjects(
     const groups = GroupUtils.getGroups(loadedObjectGroup);
     const idMap = new Map<string, string>();
     const jobs: CloneJobEntry[] = [];
+    const directJobs: CloneJobEntry[] = [];
     const cloneGroupCtx = groupIds ? GroupUtils.createCloneGroupContext(loadedObjectGroup) : undefined;
+
+    if (objectEntries) {
+        const collectStart = logTimings ? performance.now() : 0;
+        const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
+        for (const { mesh, instanceId } of objectEntries) {
+            const parentGroupId = objectToGroup.get(GroupUtils.getGroupKey(mesh, instanceId)) ?? null;
+            if (getAncestorSelected(groups, parentGroupId, groupIds)) continue;
+            directJobs.push({ mesh, instanceId, targetGroupId: parentGroupId as string, coveredByGroup: false });
+        }
+        if (logTimings) collectMs += performance.now() - collectStart;
+    }
+
+    const insertionPlan = prepareDirectInsertionPlan(loadedObjectGroup, directJobs);
 
     if (groupIds) {
         const groupCloneStart = logTimings ? performance.now() : 0;
@@ -469,16 +550,7 @@ export function duplicateGroupsAndObjects(
         if (logTimings) collectMs += performance.now() - collectStart;
     }
 
-    if (objectEntries) {
-        const collectStart = logTimings ? performance.now() : 0;
-        const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
-        for (const { mesh, instanceId } of objectEntries) {
-            const parentGroupId = objectToGroup.get(GroupUtils.getGroupKey(mesh, instanceId)) ?? null;
-            if (getAncestorSelected(groups, parentGroupId, groupIds)) continue;
-            jobs.push({ mesh, instanceId, targetGroupId: parentGroupId as string, coveredByGroup: false });
-        }
-        if (logTimings) collectMs += performance.now() - collectStart;
-    }
+    jobs.push(...directJobs);
 
     const instancedJobs = new Map<InstancedMesh, CloneJobEntry[]>();
     for (const job of jobs) {
@@ -497,7 +569,8 @@ export function duplicateGroupsAndObjects(
                 job.mesh as Mesh,
                 job.instanceId,
                 job.targetGroupId,
-                job.coveredByGroup
+                job.coveredByGroup,
+                insertionPlan
             ));
             if (logTimings) plainCloneMs += performance.now() - plainStart;
         }
@@ -505,12 +578,14 @@ export function duplicateGroupsAndObjects(
 
     for (const [sourceMesh, batchJobs] of instancedJobs) {
         const instancedStart = logTimings ? performance.now() : 0;
-        const results = cloneInstancedBatch(loadedObjectGroup, sourceMesh, batchJobs, timings);
+        const results = cloneInstancedBatch(loadedObjectGroup, sourceMesh, batchJobs, insertionPlan, timings);
         if (logTimings) instancedCloneMs += performance.now() - instancedStart;
         for (const result of results) {
             addSelection(newSelection, result);
         }
     }
+
+    flushDirectCloneInsertions(loadedObjectGroup, insertionPlan);
 
     if (logTimings && timings) {
         const instancedJobsCount = jobs.length - plainJobs;

@@ -54,6 +54,10 @@ import {
 
 type PdeMesh = InstancedMesh | Mesh;
 
+interface SceneUpdatedDetail {
+    skipGizmoRefresh?: boolean;
+}
+
 export interface OrbitControlsLike {
     enabled: boolean;
     target: Vector3;
@@ -781,10 +785,13 @@ function _promoteVertexQueueBundleOnExit(): boolean {
 }
 
 function _emitSceneUpdated(): void {
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    window.dispatchEvent(new CustomEvent<SceneUpdatedDetail>('pde:scene-updated', {
+        detail: { skipGizmoRefresh: true }
+    }));
 }
 
-function _handleSceneUpdated(): void {
+function _handleSceneUpdated(event: Event): void {
+    if ((event as CustomEvent<SceneUpdatedDetail>).detail?.skipGizmoRefresh) return;
     invalidateSelectionCaches();
     _recomputePivotStateForSelection();
     updateHelperPosition();

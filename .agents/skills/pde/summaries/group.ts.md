@@ -42,3 +42,4 @@ Owns the editor custom group tree model, including group creation, cloning, ungr
 
 ## Notes
 This module is the canonical access point for group metadata. Callers should use its accessors rather than mutating `loadedObjectGroup.userData` directly. Duplicate callers should share one `CloneGroupContext` across related `cloneGroupStructure` calls to avoid rescanning all group names and retrying duplicate name prefixes from low numbers per cloned group.
+- `createGroupStructure` snapshots the primary insertion location, groups selected removals by parent, and stably rebuilds each affected `children`/`sceneOrder` container once before preserving the existing empty-ancestor cleanup.

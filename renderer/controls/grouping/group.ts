@@ -443,7 +443,7 @@ export function createGroupStructure(
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
     const ud = loadedObjectGroup.userData;
     const keyToUuid = ud?.instanceKeyToObjectUuid as Map<string, string> | undefined;
-    const sceneOrder = ud?.sceneOrder as SceneOrderEntry[] | undefined;
+    let sceneOrder = ud?.sceneOrder as SceneOrderEntry[] | undefined;
 
     const newGroupId = MathUtils.generateUUID();
     const newGroup: GroupData = {
@@ -485,15 +485,13 @@ export function createGroupStructure(
         return null;
     })();
 
+    let insertionParentId: string | null | undefined;
+    let insertionContainerKind: 'group' | 'scene' | undefined;
     if (insertionLocation) {
         newGroup.parent = insertionLocation.parentGroupId;
         insertionIndex = insertionLocation.index;
-
-        if (insertionLocation.containerKind === 'group') {
-            (insertionLocation.container as GroupChild[]).splice(insertionIndex, 0, { type: 'group', id: newGroupId });
-        } else {
-            (insertionLocation.container as SceneOrderEntry[]).splice(insertionIndex, 0, { type: 'group', id: newGroupId });
-        }
+        insertionParentId = insertionLocation.parentGroupId;
+        insertionContainerKind = insertionLocation.containerKind;
     } else if (sceneOrder) {
         newGroup.parent = null;
         if (primaryId) {
@@ -508,11 +506,22 @@ export function createGroupStructure(
         }
 
         if (insertionIndex !== -1) {
-            sceneOrder.splice(insertionIndex, 0, { type: 'group', id: newGroupId });
+            insertionParentId = null;
+            insertionContainerKind = 'scene';
         }
     }
 
     const affectedGroupIds = new Set<string>();
+    const removedGroupIdsByParent = new Map<string, Set<string>>();
+    const removedObjectKeysByParent = new Map<string, Set<string>>();
+    const removedRootGroupIds = new Set<string>();
+    const removedRootObjectUuids = new Set<string>();
+
+    const addRemoval = (targets: Map<string, Set<string>>, parentId: string, id: string) => {
+        let ids = targets.get(parentId);
+        if (!ids) targets.set(parentId, ids = new Set());
+        ids.add(id);
+    };
 
     for (const childGroupId of selectedGroupIds) {
         const childGroup = groups.get(childGroupId);
@@ -520,15 +529,9 @@ export function createGroupStructure(
 
         if (childGroup.parent) {
             affectedGroupIds.add(childGroup.parent);
-            const oldParent = groups.get(childGroup.parent);
-            if (oldParent && Array.isArray(oldParent.children)) {
-                const childIndex = oldParent.children.findIndex(c => c && c.type === 'group' && (c as GroupChildGroup).id === childGroupId);
-                if (childIndex !== -1) oldParent.children.splice(childIndex, 1);
-            }
+            addRemoval(removedGroupIdsByParent, childGroup.parent, childGroupId);
         } else if (sceneOrder) {
-            // Root group being moved: remove from sceneOrder (excluding the newly inserted one)
-            const rootIndex = sceneOrder.findIndex((entry) => entry.type === 'group' && entry.id === childGroupId);
-            if (rootIndex !== -1) sceneOrder.splice(rootIndex, 1);
+            removedRootGroupIds.add(childGroupId);
         }
 
         childGroup.parent = newGroupId;
@@ -542,18 +545,50 @@ export function createGroupStructure(
         const oldGroupId = objectToGroup.get(key);
         if (oldGroupId) {
             affectedGroupIds.add(oldGroupId);
-            const oldGroup = groups.get(oldGroupId);
-            if (oldGroup && Array.isArray(oldGroup.children)) {
-                const childIndex = oldGroup.children.findIndex(c => c && c.type === 'object' && (c as GroupChildObject).mesh === mesh && (c as GroupChildObject).instanceId === instanceId);
-                if (childIndex !== -1) oldGroup.children.splice(childIndex, 1);
-            }
+            addRemoval(removedObjectKeysByParent, oldGroupId, key);
         } else if (objectUuid && sceneOrder) {
-            // Root object being moved: remove from sceneOrder
-            const rootIndex = sceneOrder.findIndex((entry) => entry.type === 'object' && entry.id === objectUuid);
-            if (rootIndex !== -1) sceneOrder.splice(rootIndex, 1);
+            removedRootObjectUuids.add(objectUuid);
         }
         newGroup.children.push({ type: 'object', mesh, instanceId, id: objectUuid });
         objectToGroup.set(key, newGroupId);
+    }
+
+    let insertedNewGroup = false;
+    const affectedParents = new Set([...removedGroupIdsByParent.keys(), ...removedObjectKeysByParent.keys()]);
+    if (insertionContainerKind === 'group' && insertionParentId) affectedParents.add(insertionParentId);
+
+    for (const parentId of affectedParents) {
+        const parent = groups.get(parentId);
+        if (!parent || !Array.isArray(parent.children)) continue;
+
+        const removedGroupIds = removedGroupIdsByParent.get(parentId);
+        const removedObjectKeys = removedObjectKeysByParent.get(parentId);
+        const rebuilt: GroupChild[] = [];
+        for (let index = 0; index < parent.children.length; index++) {
+            const child = parent.children[index];
+            if (insertionContainerKind === 'group' && insertionParentId === parentId && index === insertionIndex) {
+                rebuilt.push({ type: 'group', id: newGroupId });
+                insertedNewGroup = true;
+            }
+            if (child.type === 'group' ? removedGroupIds?.has(child.id) : removedObjectKeys?.has(getGroupKey(child.mesh, child.instanceId))) continue;
+            rebuilt.push(child);
+        }
+        parent.children = rebuilt;
+    }
+
+    if (sceneOrder && (removedRootGroupIds.size > 0 || removedRootObjectUuids.size > 0 || insertionContainerKind === 'scene')) {
+        const rebuilt: SceneOrderEntry[] = [];
+        for (let index = 0; index < sceneOrder.length; index++) {
+            const entry = sceneOrder[index];
+            if (insertionContainerKind === 'scene' && index === insertionIndex) {
+                rebuilt.push({ type: 'group', id: newGroupId });
+                insertedNewGroup = true;
+            }
+            if (entry.type === 'group' ? removedRootGroupIds.has(entry.id) : removedRootObjectUuids.has(entry.id)) continue;
+            rebuilt.push(entry);
+        }
+        sceneOrder = rebuilt;
+        ud.sceneOrder = sceneOrder;
     }
 
     // Recursive cleanup of empty affected groups
@@ -588,11 +623,8 @@ export function createGroupStructure(
     groups.set(newGroupId, newGroup);
 
     // If it's a root group and wasn't inserted via index (e.g. no sceneOrder match), push to bottom
-    if (newGroup.parent === null && sceneOrder) {
-        const exists = sceneOrder.some(e => e.type === 'group' && e.id === newGroupId);
-        if (!exists) {
-            sceneOrder.push({ type: 'group', id: newGroupId });
-        }
+    if (newGroup.parent === null && sceneOrder && !insertedNewGroup) {
+        sceneOrder.push({ type: 'group', id: newGroupId });
     }
 
     return newGroupId;
