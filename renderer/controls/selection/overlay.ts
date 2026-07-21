@@ -212,7 +212,7 @@ export function isInstanceValid(mesh: Mesh | InstancedMesh, instanceId: number):
 export function getDisplayType(mesh: PdeMesh, instanceId: number): string | undefined {
     if (!mesh) return undefined;
     if (mesh.userData?.displayTypes instanceof Map) {
-        return mesh.userData.displayTypes.get(instanceId);
+        return mesh.userData.displayTypes.get(instanceId) ?? mesh.userData?.displayType;
     }
     return mesh.userData?.displayType;
 }

@@ -90,6 +90,6 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
 - Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.
 - Player-head texture edits redraw the existing atlas slot when exclusive; shared slots receive a new slot so other instances keep their skin. The instance matrix and UUID remain unchanged.
-- Player-head reflection prepares skins in parallel with reflected/swapped face regions, then commits the PNG data URLs and clears transient UV flip flags; callers await this preparation before synchronously applying reflected matrices so no partial frame is rendered.
+- Player-head reflection prepares skins in parallel with reflected/swapped face regions, preserves the original texture value when the resulting pixels are unchanged, then commits changed PNG data URLs and clears transient UV flip flags; callers await preparation before synchronously applying reflected matrices.
 - Player-head image load failures retry once with the default skin; property edits store that fallback URL instead of the invalid input.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items`, `Load timings`, `Geometry stats`, and `Mesh uploaded` default to enabled; `Finished processing` defaults to disabled.

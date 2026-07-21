@@ -62,3 +62,4 @@ Builds selection overlays and vertex markers, updates drag-time bounds, and prov
 - Selection refreshes recreate the selection InstancedMesh and its exact-sized attributes.
 - Translation and world-axis scale transform the cached aggregate box in O(1); rotations and local-axis scales rebuild exact bounds from convex-hull vertices instead of every selected object. Degenerate hulls fall back to all cached corners.
 - Repeated hover events for the same sprite are ignored; selection refreshes clear the transient hover guide.
+- Per-instance display types fall back to the mesh-level display type when a sparse `displayTypes` map has no entry for an instance.

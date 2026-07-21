@@ -708,14 +708,15 @@ function mirroredPlayerHeadFace(key: keyof typeof playerHeadFaceParts): keyof ty
         : key.endsWith('left') ? key.replace('left', 'right') : key) as keyof typeof playerHeadFaceParts;
 }
 
-function playerHeadTextureDataUrl(image: HTMLImageElement, mirrored: boolean): string {
+function playerHeadTextureDataUrl(image: HTMLImageElement, mirrored: boolean): string | null {
     const canvas = document.createElement('canvas');
     canvas.width = image.naturalWidth;
     canvas.height = image.naturalHeight;
-    const context = canvas.getContext('2d');
+    const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) throw new Error('플레이어 헤드 텍스처 캔버스를 만들 수 없습니다.');
     context.imageSmoothingEnabled = false;
     context.drawImage(image, 0, 0);
+    const originalPixels = mirrored ? context.getImageData(0, 0, canvas.width, canvas.height).data : null;
     if (mirrored) {
         for (const [key, [x, y]] of Object.entries(playerHeadFaceParts)) {
             const sourceKey = mirroredPlayerHeadFace(key as keyof typeof playerHeadFaceParts);
@@ -727,6 +728,8 @@ function playerHeadTextureDataUrl(image: HTMLImageElement, mirrored: boolean): s
             context.restore();
         }
     }
+    const mirroredPixels = mirrored ? context.getImageData(0, 0, canvas.width, canvas.height).data : null;
+    if (!mirrored || originalPixels?.every((value, index) => value === mirroredPixels![index])) return null;
     const dataUrl = canvas.toDataURL('image/png');
     if (import.meta.env.DEV) console.assert(dataUrl.startsWith('data:image/png;base64,'), 'Player head reflection did not produce a PNG data URL.');
     return dataUrl;
@@ -1694,10 +1697,10 @@ export async function flipPlayerHeadTextures(objectUuids: string[]): Promise<voi
         const texture = (userData.objectTextures as Map<string, string> | undefined)?.get(objectUuid) ?? DEFAULT_PLAYER_HEAD_TEXTURE;
         const image = await loadPlayerHeadImage(texture);
         const dataUrl = playerHeadTextureDataUrl(image, flips.getX(ref.instanceId) < 0.5);
-        return { objectUuid, ref, flips, dataUrl, image: await loadPlayerHeadImage(dataUrl) };
+        return { objectUuid, ref, flips, dataUrl, image: dataUrl ? await loadPlayerHeadImage(dataUrl) : null };
     }))).filter(prepared => prepared !== null);
     for (const { objectUuid, ref, flips, dataUrl, image } of prepared) {
-        applyPlayerHeadTexture(objectUuid, dataUrl, image);
+        if (dataUrl && image) applyPlayerHeadTexture(objectUuid, dataUrl, image);
         flips.setX(ref.instanceId, 0);
         flips.needsUpdate = true;
     }
