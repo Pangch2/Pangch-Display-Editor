@@ -200,9 +200,9 @@ export function processVertexRotate(
         const sourceGroup = src.type === 'group' ? getGroups().get(src.id) : null;
         const customPivot = src.type === 'object'
             ? src.mesh.userData.customPivots?.get(src.instanceId)
-            : sourceGroup?.isCustomPivot ? sourceGroup.pivot : null;
+            : sourceGroup?.isCustomPivot ? GroupUtils.normalizePivotToVector3(sourceGroup.pivot) : null;
         const pivotWorld = customPivot
-            ? customPivot.clone().applyMatrix4(sourceWorldMatrix)
+            ? src.type === 'group' ? customPivot : customPivot.clone().applyMatrix4(sourceWorldMatrix)
             : isSrcEffectiveSelected && state._gizmoAnchorValid
                 ? state._gizmoAnchorPosition
                 : _TMP_VEC3_C;
@@ -317,6 +317,9 @@ export function processVertexRotate(
             const groups = getGroups();
             const group = groups.get(groupId);
             if (group) {
+                if (GroupUtils.shouldUseGroupPivot(group)) {
+                    group.pivot = GroupUtils.normalizePivotToVector3(group.pivot)?.applyMatrix4(sourceTransformMat);
+                }
                 if (!group.matrix) {
                     const gPos = group.position || new Vector3();
                     const gQuat = group.quaternion || new Quaternion();

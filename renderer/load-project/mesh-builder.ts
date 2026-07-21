@@ -33,7 +33,7 @@ const playerHeadPartOrder = Object.keys(playerHeadFaceParts) as Array<keyof type
 const playerHeadLayerRegions = [[48, 8, 8, 8], [32, 8, 8, 8], [40, 0, 8, 8], [48, 0, 8, 8], [56, 8, 8, 8], [40, 8, 8, 8]];
 const playerHeadAtlases = new WeakMap<THREE.Material, { context: CanvasRenderingContext2D; texture: THREE.Texture; nextSlot: number }>();
 
-function getPlayerHeadRenderMatrix(displayType?: string): THREE.Matrix4 {
+export function getPlayerHeadRenderMatrix(displayType?: string): THREE.Matrix4 {
     return (getPlayerHeadDisplayMatrix(displayType) ?? new THREE.Matrix4())
         .multiply(new THREE.Matrix4().makeScale(0.5, 0.5, 0.5));
 }
@@ -986,6 +986,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             if (!(p instanceof THREE.Vector3)) {
                                 group.position = new THREE.Vector3(p.x, p.y, p.z);
                             }
+                        }
+                        if (group.pivot && !(group.pivot instanceof THREE.Vector3)) {
+                            group.pivot = new THREE.Vector3(group.pivot[0], group.pivot[1], group.pivot[2]);
                         }
 
                         effectiveGroups.set(newId, group);

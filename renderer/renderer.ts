@@ -17,7 +17,7 @@ import {
     GridHelper,
     Renderer,
     Object3D,
-    Clock,
+    Timer,
     CanvasTexture,
     SpriteMaterial,
     SRGBColorSpace
@@ -632,7 +632,7 @@ function setCameraType(type: 'perspective' | 'orthographic'): void {
 let lastTime = performance.now();
 let frameCount = 0;
 const fpsCounterElement = document.getElementById('fps-counter');
-const viewHelperClock = new Clock();
+const viewHelperTimer = new Timer();
 
 function animate(): void {
     requestAnimationFrame(animate);
@@ -652,8 +652,8 @@ function animate(): void {
     if (gizmoModule) gizmoModule.updateGizmo();
     if (renderer && scene && camera && !scenePrecompileInProgress) {
         viewHelper.center.copy(controls.target);
-        if (viewHelper.animating) viewHelper.update(viewHelperClock.getDelta());
-        else viewHelperClock.getDelta();
+        viewHelperTimer.update();
+        if (viewHelper.animating) viewHelper.update(viewHelperTimer.getDelta());
         if (viewHelperWasAnimating && !viewHelper.animating) {
             const direction = camera.position.clone().sub(controls.target).normalize().round();
             floorGrid.rotation.set(Math.abs(direction.z) * Math.PI / 2, 0, -Math.abs(direction.x) * Math.PI / 2);

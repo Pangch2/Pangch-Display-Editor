@@ -20,3 +20,5 @@ Renders and updates the project details / object properties side panel for the s
 - `renderSelection()` is the main entrypoint driven by selection-related window events.
 - During gizmo drags, only the multi-selection position/rotation/scale inputs update from frame deltas; individual sections and matrix fields refresh once on drag end.
 - The module mutates loaded object userData/maps in place when properties change.
+- In mirror-modeling mode, single/group/multi transforms, flip-mapped object pivots, reflection-aware group pivots, NBT, and brightness changes also update linked partners.
+- Group pivot fields display and store world coordinates; local conversion is limited to fixed-pivot transform math.

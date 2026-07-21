@@ -1,10 +1,11 @@
 import { BoxGeometry, Group, InstancedMesh, Matrix4, Mesh, Vector3 } from 'three/webgpu';
 import { applyDeltaToSelection } from './selection/drag';
-import { flipPlayerHeadTextures, replaceDisplayObjects } from '../load-project/mesh-builder';
+import { flipPlayerHeadTextures, getPlayerHeadRenderMatrix, replaceDisplayObjects } from '../load-project/mesh-builder';
 import { findMirroredBlockName } from '../load-project/scene-parser';
 import { mainThreadAssetProvider } from '../load-project/pbde-assets';
 import { replaceMirrorUuid } from './mirroring';
 import * as Overlay from './selection/overlay';
+import * as GroupUtils from './grouping/group';
 
 type PdeMesh = InstancedMesh | Mesh;
 export type FlipAxis = 'x' | 'y' | 'z';
@@ -46,13 +47,32 @@ function reflectCustomPivot(
         .applyMatrix4(mesh.matrixWorld.clone().multiply(matrix).invert());
 }
 
-export function reflectGroups(loadedObjectGroup: Group, groupIds: Set<string>, axis: FlipAxis, pivotWorld: Vector3): void {
+export function reflectGroups(loadedObjectGroup: Group, groupIds: Set<string>, axis: FlipAxis, pivotWorld: Vector3, originPivotWorld = pivotWorld): void {
     if (groupIds.size === 0) return;
+    const groups = GroupUtils.getGroups(loadedObjectGroup);
+    const reflectedIds = new Set(groupIds);
+    groupIds.forEach(id => GroupUtils.getAllDescendantGroups(loadedObjectGroup, id).forEach(childId => reflectedIds.add(childId)));
+    const defaultPivots = new Map([...reflectedIds].flatMap(id => {
+        const group = groups.get(id);
+        return group && !GroupUtils.shouldUseGroupPivot(group)
+            ? [[id, group.children.length > 0 ? Overlay.getGroupOriginWorld(id) : group.position.clone()] as const]
+            : [];
+    }));
+    const worldReflection = getWorldReflection(axis, pivotWorld);
+    const originReflection = getWorldReflection(axis, originPivotWorld);
     applyDeltaToSelection({
-        deltaMatrix: getWorldReflection(axis, pivotWorld),
+        deltaMatrix: worldReflection,
         selectedGroupIds: groupIds,
         loadedObjectGroup
     });
+
+    const localReflection = getWorldReflection(axis, new Vector3());
+    for (const id of reflectedIds) {
+        const group = groups.get(id);
+        if (!group?.matrix) continue;
+        group.pivot = defaultPivots.get(id)?.applyMatrix4(originReflection) ?? group.pivot;
+        group.matrix.multiply(localReflection).decompose(group.position, group.quaternion, group.scale);
+    }
 }
 
 export async function flipObjectUuids(
@@ -61,7 +81,8 @@ export async function flipObjectUuids(
     axis: FlipAxis,
     pivotWorld?: Vector3,
     activePivotMode = 'origin',
-    onPreviewApplied?: () => void
+    onPreviewApplied?: () => void,
+    playerHeadPivotWorld?: Vector3
 ): Promise<Array<string | undefined>> {
     const userData = loadedObjectGroup.userData;
     const isItemDisplay = userData.objectIsItemDisplay as Set<string> | undefined;
@@ -69,20 +90,19 @@ export async function flipObjectUuids(
     const blockProps = userData.objectBlockProps as Map<string, Record<string, string>> | undefined;
     const refs = userData.objectUuidToInstance as Map<string, { mesh: PdeMesh; instanceId: number }> | undefined;
     const result = [...uuids];
-    const nextNames = await Promise.all(uuids.map(uuid => {
+    const nextNamesPromise = Promise.all(uuids.map(uuid => {
         if (!uuid || isItemDisplay?.has(uuid) || !blockProps?.get(uuid)) return undefined;
         return findMirroredBlockName(names?.get(uuid) ?? '', axis, mainThreadAssetProvider);
     }));
-    await flipPlayerHeadTextures(uuids.filter((uuid): uuid is string =>
+    const playerHeadTextures = flipPlayerHeadTextures(uuids.filter((uuid): uuid is string =>
         !!uuid && (names?.get(uuid) ?? '').startsWith('player_head')
     ));
-    const pending: Array<{
+    const reflected: Array<{
         index: number;
         uuid: string;
         ref: { mesh: PdeMesh; instanceId: number };
         previousMatrix: Matrix4;
         previousCustomPivot?: Vector3;
-        nextName: string;
     }> = [];
     for (let index = 0; index < uuids.length; index++) {
         const uuid = uuids[index];
@@ -94,8 +114,12 @@ export async function flipObjectUuids(
             const matrix = new Matrix4();
             ref.mesh.getMatrixAt(ref.instanceId, matrix);
             const previousMatrix = matrix.clone();
-            reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, pivotWorld, activePivotMode === 'center');
-            reflectCustomPivot(ref.mesh, ref.instanceId, axis, pivotWorld, previousMatrix, matrix);
+            const renderMatrix = getPlayerHeadRenderMatrix((userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid));
+            matrix.multiply(renderMatrix.clone().invert());
+            const headPivotWorld = playerHeadPivotWorld ?? pivotWorld;
+            reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, headPivotWorld, !playerHeadPivotWorld && activePivotMode === 'center');
+            matrix.multiply(renderMatrix);
+            reflectCustomPivot(ref.mesh, ref.instanceId, axis, headPivotWorld, previousMatrix, matrix);
             ref.mesh.setMatrixAt(ref.instanceId, matrix);
             ref.mesh.instanceMatrix.needsUpdate = true;
             continue;
@@ -103,7 +127,6 @@ export async function flipObjectUuids(
 
         const ref = refs?.get(uuid);
         if (!ref) continue;
-        const nextName = nextNames[index];
         const matrix = new Matrix4();
         ref.mesh.getMatrixAt(ref.instanceId, matrix);
         const previousMatrix = matrix.clone();
@@ -113,13 +136,16 @@ export async function flipObjectUuids(
         ref.mesh.setMatrixAt(ref.instanceId, matrix);
         ref.mesh.instanceMatrix.needsUpdate = true;
 
-        if (isItemDisplay?.has(uuid) || !nextName) {
-            continue;
-        }
-        pending.push({ index, uuid, ref, previousMatrix, previousCustomPivot, nextName });
+        reflected.push({ index, uuid, ref, previousMatrix, previousCustomPivot });
     }
     onPreviewApplied?.();
+    const nextNames = await nextNamesPromise;
+    await playerHeadTextures;
 
+    const pending = reflected.flatMap(entry => {
+        const nextName = nextNames[entry.index];
+        return isItemDisplay?.has(entry.uuid) || !nextName ? [] : [{ ...entry, nextName }];
+    });
     if (pending.length > 0) {
         const replacement = replaceDisplayObjects(pending.map(({ uuid, nextName }) => ({
             objectUuid: uuid,
@@ -150,6 +176,12 @@ if (import.meta.env.DEV) {
     const example = new Matrix4().set(-0.8660254038, -0.5, 0, -0.125, -0.5, 0.8660254038, 0, 1.09125, 0, 0, -1, 0.5, 0, 0, 0, 1);
     reflectDisplayMatrix(example, new Mesh(), 0, 'x');
     console.assert(Math.abs(example.elements[4] - 0.5) < 1e-9 && Math.abs(example.elements[1] - 0.5) < 1e-9 && Math.abs(example.elements[12] + 0.125) < 1e-9, 'X-axis display reflection failed.');
+    const headRender = getPlayerHeadRenderMatrix();
+    const head = new Matrix4().makeTranslation(0.25941, 0, 0).multiply(headRender);
+    head.multiply(headRender.clone().invert());
+    reflectDisplayMatrix(head, new Mesh(), 0, 'x', new Vector3());
+    head.multiply(headRender);
+    console.assert(Math.abs(head.elements[12] + 0.25941) < 1e-9, 'Mirrored player head changed its logical X offset.');
     const centered = new Matrix4().makeTranslation(-9.9, 0, 0);
     reflectDisplayMatrix(centered, new Mesh(new BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5)), 0, 'x', new Vector3(-9.4, 0, 0), true);
     console.assert(Math.abs(centered.elements[12] + 9.9) < 1e-9, 'Center display reflection moved the block origin.');
@@ -176,8 +208,8 @@ if (import.meta.env.DEV) {
     console.assert(block.userData.customPivots.get(0).clone().applyMatrix4(blockMatrix).distanceTo(blockPivot) < 1e-9, 'Custom block pivot moved during reflection.');
     const group = new Group();
     const groupMatrix = new Matrix4().makeScale(2, 3, 4).setPosition(2, 0, 0);
-    group.userData.groups = new Map([['group', { id: 'group', children: [], matrix: groupMatrix, position: new Vector3(2, 0, 0), quaternion: undefined, scale: new Vector3(2, 3, 4) }]]);
-    reflectGroups(group, new Set(['group']), 'x', new Vector3(2, 0, 0));
+    group.userData.groups = new Map([['group', { id: 'group', children: [], matrix: groupMatrix, position: new Vector3(2, 0, 0), quaternion: undefined, scale: new Vector3(2, 3, 4), pivot: GroupUtils.DEFAULT_GROUP_PIVOT.clone() }]]);
+    reflectGroups(group, new Set(['group']), 'x', new Vector3(-0.5, 0, 0));
     const flippedGroup = group.userData.groups.get('group');
-    console.assert(flippedGroup.position.x === 2 && flippedGroup.matrix.determinant() < 0, 'Group reflection did not update the root group transform.');
+    console.assert(flippedGroup.position.x === -3 && flippedGroup.scale.equals(new Vector3(2, 3, 4)) && flippedGroup.pivot.x === -3, 'Group reflection left a negative scale or stale world pivot.');
 }

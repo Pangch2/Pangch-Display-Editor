@@ -31,10 +31,11 @@ Tracks two module-level undo hooks for transient pivot edits. Uses one internal 
 - `three/webgpu` -- vector, matrix, mesh, and group types.
 - `../grouping/group` -- group pivot and hierarchy helpers.
 - `../selection/overlay` -- world-matrix and bounding-box helpers.
+- `../mirroring` -- mirrors committed object/group custom pivots to linked partners while mirror modeling is enabled.
 
 ## Used By (known callers)
 - `renderer/controls/gizmo/gizmo.ts`
 - `renderer/controls/input/handle-key.ts`
 
 ## Notes
-Handles both single-object and grouped selection pivots using InstancedMesh customPivots maps. Object and multi-selection anchor pivots must use `getObjectOriginWorld` so type-specific origins stay consistent; custom offsets apply only in origin mode so pivot mode changes still move the gizmo.
+Handles both single-object and grouped selection pivots using InstancedMesh customPivots maps. Object custom pivots remain local, while group custom pivots are stored directly in world coordinates. Object and multi-selection anchor pivots must use `getObjectOriginWorld` so type-specific origins stay consistent; custom offsets apply only in origin mode so pivot mode changes still move the gizmo. Mirror modeling sign-negates group world-pivot X without the display-space X=-0.5 translation.

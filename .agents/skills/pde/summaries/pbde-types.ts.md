@@ -14,7 +14,7 @@ Shared type layer for load-project pipeline. Keeps parser output, batched geomet
 - `GeometryInstanceBatch` -- compressed parser output with shared geometry `parts` and repeated `instances`
 - `OtherItem` -- non-geometry render item such as player head display data
 - `GroupChild` -- child entry in `GroupData.children`
-- `GroupData` -- group node with transform, children, parent, optional pivot, and editable NBT
+- `GroupData` -- group node with transform, children, parent, optional pivot/custom-pivot flag, and editable NBT
 - `ProjectDetails` -- normalized project name, project NBT, and full NBT strings.
 - `WorkerMetadata` -- parser output consumed by `loadAndRenderPbde`, with optional `geometryBatches` and required project details.
 
@@ -28,6 +28,7 @@ Shared type layer for load-project pipeline. Keeps parser output, batched geomet
 
 ## Notes
 - `GroupData.position/quaternion/scale` may be plain objects or THREE instances.
+- `GroupData.pivot` may be a PBDE number array or a normalized runtime `Vector3`.
 - `GeometryMeta.geometryBufferKey` distinguishes actual buffer slices when different batches share the same model id/index.
 - `GeometryMeta.uvTransform`, `GeometryInstanceMeta.atlasUvTransform`, and `GeometryInstanceMeta.atlasUvTransforms` allow same-shape atlas geometry to vary texture location per instance and per part.
 - `GeometryInstanceMeta.blockProps` preserves per-object properties when different variants share one geometry batch.

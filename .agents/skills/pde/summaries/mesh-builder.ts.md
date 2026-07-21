@@ -16,6 +16,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `beginPbdeLoadGeneration()` -- bumps generation token so stale async work can be ignored
 - `performSelection(newlyAddedSelectableMeshes)` -- selects only the newly loaded instance IDs after load/merge, preserving group-priority selection.
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
+- `getPlayerHeadRenderMatrix(displayType?): THREE.Matrix4` -- returns the player-head display and half-scale render transform.
 - `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
 - `flipPlayerHeadTextures(objectUuids): Promise<void>` -- prepares horizontally reflected PNG data URLs in parallel, including left/right face-region swaps, then commits every head's atlas and UV update together without per-head scene refreshes.
 - `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
@@ -77,6 +78,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Load results track new instance IDs per mesh so appending to an existing mesh does not cause its older instances to be selected.
 - Special-cases atlas textures, item-display player heads, and stale async load cancellation.
 - Fresh loads store parser-provided project details on `loadedObjectGroup.userData`; merges preserve the current details.
+- Parser-provided group pivots preserve their PBDE values; `mesh-builder` normalizes them to `Vector3` and preserves the `isCustomPivot` marker while restoring Three.js transform objects.
 - `loadedObjectGroup.userData.objectNbt` maps object UUIDs to editable NBT strings for the properties panel.
 - Property-panel model changes finish building the replacement before deleting the current instance, so load failures preserve the original object.
 - Multi-object model/property changes share one PBDE parse/render pass; the single-object API delegates to the same batch path.

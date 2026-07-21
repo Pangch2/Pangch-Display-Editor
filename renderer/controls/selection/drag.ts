@@ -165,6 +165,10 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
             const g = groups.get(id);
             if (!g) continue;
 
+            if (GroupUtils.shouldUseGroupPivot(g)) {
+                g.pivot = GroupUtils.normalizePivotToVector3(g.pivot)?.applyMatrix4(deltaMatrix);
+            }
+
             if (!g.matrix) {
                 const gPos = g.position || new Vector3();
                 const gQuat = g.quaternion || new Quaternion();

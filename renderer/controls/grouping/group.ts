@@ -33,6 +33,7 @@ export interface GroupData {
     position: Vector3;
     quaternion: Quaternion;
     scale: Vector3;
+    /** Custom pivot in world coordinates. */
     pivot?: Vector3;
     isCustomPivot?: boolean;
     matrix?: Matrix4;

@@ -9,6 +9,13 @@ import * as GroupUtils from '../controls/grouping/group';
 import * as Overlay from '../controls/selection/overlay';
 import { applyDeltaToSelection } from '../controls/selection/drag';
 import { blockbenchScaleMode } from '../controls/gizmo/blockbench-scale';
+import {
+    applyLinkedMirrorDelta,
+    getLinkedMirrorUuid,
+    isMirrorModelingEnabled,
+    syncLinkedMirrorGroupPivot,
+    syncLinkedMirrorPivot
+} from '../controls/mirroring';
 
 const title = document.getElementById('details-title')!;
 const tabs = document.getElementById('project-tabs')!;
@@ -416,6 +423,12 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
         selection.groups.forEach(groupId => GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId)
             .forEach(child => child.mesh instanceof InstancedMesh && add(child.mesh, child.instanceId)));
         applyDeltaToSelection({ deltaMatrix, meshToInstanceIds, selectedGroupIds: selection.groups, loadedObjectGroup });
+        applyLinkedMirrorDelta(
+            loadedObjectGroup,
+            deltaMatrix,
+            Array.from(selection.objects, ([mesh, ids]) => [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))).flat(),
+            selection.groups
+        );
         meshToInstanceIds.forEach((_ids, mesh) => {
             mesh.computeBoundingBox();
             mesh.computeBoundingSphere();
@@ -571,6 +584,12 @@ function applySelectionDelta(deltaMatrix: Matrix4, target: PropertySelection): v
         selectedGroupIds: 'group' in target ? new Set([target.groupId]) : undefined,
         loadedObjectGroup
     });
+    applyLinkedMirrorDelta(
+        loadedObjectGroup,
+        deltaMatrix,
+        'group' in target ? [] : [{ type: 'object', mesh: target.mesh, instanceId: target.instanceId }],
+        'group' in target ? new Set([target.groupId]) : new Set()
+    );
     meshToInstanceIds.forEach((_ids, mesh) => {
         mesh.computeBoundingBox();
         mesh.computeBoundingSphere();
@@ -647,6 +666,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         pivot[axis] = next;
         localPivot.copy(pivot);
         (mesh.userData.customPivots as Map<number, Vector3>).set(instanceId, localPivot.clone());
+        syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
         window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
     })));
     transformSection.append(pivotRow);
@@ -669,13 +689,19 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const nbt = document.createElement('input');
     const objectNbt = loadedObjectGroup.userData.objectNbt as Map<string, string> | undefined;
     nbt.value = objectNbt?.get(uuid) ?? '';
-    nbt.oninput = () => objectNbt?.set(uuid, nbt.value);
+    nbt.oninput = () => {
+        objectNbt?.set(uuid, nbt.value);
+        const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
+        if (partnerUuid) objectNbt?.set(partnerUuid, nbt.value);
+    };
     section.append(propertySection('nbt', 'NBT', nbt));
     const isItemDisplay = (loadedObjectGroup.userData.objectIsItemDisplay as Set<string> | undefined)?.has(uuid) ?? false;
     const brightnessMap = loadedObjectGroup.userData.objectBrightness as Map<string, { sky?: number; block?: number }>;
     const brightness = brightnessMap.get(uuid) ?? {};
     const updateBrightness = async (value: { sky: number; block: number }) => {
         updateObjectBrightness(uuid, value);
+        const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
+        if (partnerUuid) updateObjectBrightness(partnerUuid, value);
     };
     if (isItemDisplay) {
         const metadataSection = propertySection('metadata', '개체 속성');
@@ -734,9 +760,8 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     const groupScale = new Vector3(group.scale.x, group.scale.y, group.scale.z);
     const groupRotation = new Euler().setFromQuaternion(groupQuaternion);
     const groupMatrix = group.matrix?.clone() ?? new Matrix4().compose(groupPosition, groupQuaternion, groupScale);
-    const localPivot = pivotWorld
-        ? pivotWorld.clone().applyMatrix4(groupMatrix.clone().invert())
-        : new Vector3(...(group.pivot ?? [0, 0, 0]));
+    const worldPivot = pivotWorld?.clone() ?? GroupUtils.normalizePivotToVector3(group.pivot) ?? new Vector3();
+    const localPivot = worldPivot.clone().applyMatrix4(groupMatrix.clone().invert());
     const commitMatrix = (next: Matrix4): void => {
         const deltaMatrix = next.clone().multiply(groupMatrix.clone().invert());
         applySelectionDelta(deltaMatrix, { key: '', groupId, group });
@@ -771,7 +796,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
         transformSection.append(row);
     });
 
-    const pivot = localPivot.clone();
+    const pivot = worldPivot.clone();
     const pivotRow = document.createElement('div');
     pivotRow.className = 'object-property-row';
     const pivotLabel = document.createElement('label');
@@ -780,6 +805,8 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     (['x', 'y', 'z'] as const).forEach(axis => pivotRow.append(numberInput(pivot[axis], next => {
         pivot[axis] = next;
         group.pivot = [pivot.x, pivot.y, pivot.z];
+        localPivot.copy(pivot).applyMatrix4(groupMatrix.clone().invert());
+        syncLinkedMirrorGroupPivot(loadedObjectGroup, groupId, pivot);
         window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
     })));
     transformSection.append(pivotRow);
@@ -815,7 +842,7 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
         nextMatrix.copy(group.matrix ?? new Matrix4().compose(nextPosition, nextQuaternion, nextScale));
         if (previewDelta) nextMatrix.premultiply(previewDelta);
         nextMatrix.decompose(nextPosition, nextQuaternion, nextScale);
-        if (!previewDelta) pivot = pivotWorld?.clone().applyMatrix4(nextMatrix.clone().invert()) ?? new Vector3(...(group.pivot ?? [0, 0, 0]));
+        if (!previewDelta) pivot = pivotWorld?.clone() ?? GroupUtils.normalizePivotToVector3(group.pivot) ?? new Vector3();
     } else {
         item.mesh.getMatrixAt(item.instanceId, nextMatrix);
         if (previewDelta) {

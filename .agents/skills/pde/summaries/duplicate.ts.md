@@ -24,6 +24,7 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 - `./group` -- canonical group tree, object mapping, and clone job helpers.
 - `../selection/overlay` -- resolves per-instance display type.
 - `../../load-project/pbde-log` -- gates optional duplicate performance timing logs.
+- `../../entityMaterial.js` -- identifies the transient GPU drag-selection attribute.
 
 ## Used By (known callers)
 - `renderer/controls/gizmo/gizmo-commands.ts` -- calls `duplicateGroupsAndObjects` from duplicate-selected command handling.
@@ -31,7 +32,7 @@ Duplicates selected groups and objects in the editor scene while preserving grou
 ## Notes
 - Plain Mesh objects use `clone()`, then restore editor `userData` with `cloneData` so repeated duplication keeps metadata.
 - InstancedMesh objects copy matrix/color/instanced attribute rows into available slots and increase `mesh.count`; when capacity is full, duplication first consumes a prewarmed spare chunk, otherwise creates another InstancedMesh chunk instead of resizing existing WebGPU buffers.
-- Per-instance geometry attributes such as atlas UV offsets/transforms are copied with typed-array slices from source instance to appended instance so texture mapping is preserved.
+- Persistent per-instance geometry attributes such as atlas UV offsets/transforms are copied with typed-array slices; the transient `dragSelected` mask is reset so clones do not inherit the source's active GPU drag preview.
 - UUID-indexed user labels, NBT, brightness, and texture values are copied to the clone so its properties panel and later edits retain the source values.
 - New chunks clone the source geometry/materials and instance-color buffer, allocate a WebGPU storage instance-matrix attribute, carry a `pdeDuplicateChunk` marker for deletion cleanup, remain hidden while empty or being populated, and become visible only after all copied GPU attributes are marked for upload; idle prewarm skips stale source meshes removed by project reloads.
 - Normal append path expects meshes created by `mesh-builder.ts` to have spare capacity; chunk spillover handles unlimited repeated duplication without rebinding existing buffers.

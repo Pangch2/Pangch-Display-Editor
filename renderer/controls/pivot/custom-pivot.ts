@@ -8,6 +8,7 @@ import {
 } from 'three/webgpu';
 // @ts-ignore
 import * as GroupUtils from '../grouping/group';
+import { syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../mirroring';
 // @ts-ignore
 import * as Overlay from '../selection/overlay';
 
@@ -191,10 +192,9 @@ export function recomputePivotStateForSelection(
         const groups = GroupUtils.getGroups(loadedObjectGroup);
         const group = groups.get(singleGroupId);
         if (group && GroupUtils.shouldUseGroupPivot(group)) {
-            const localPivot = GroupUtils.normalizePivotToVector3(group.pivot, new Vector3());
-            if (localPivot) {
+            const worldPivot = GroupUtils.normalizePivotToVector3(group.pivot, new Vector3());
+            if (worldPivot) {
                 const groupMatrix = GroupUtils.getGroupWorldMatrix(group, new Matrix4());
-                const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
                 
                 const baseWorld = new Vector3(0, 0, 0);
                 const box = getGroupLocalBoundingBox(singleGroupId) as Box3;
@@ -204,7 +204,7 @@ export function recomputePivotStateForSelection(
                     if (children.length > 0) Overlay.calculateAvgOriginForChildren(children, baseWorld);
                 }
 
-                pivotOffset.subVectors(targetWorld, baseWorld);
+                pivotOffset.subVectors(worldPivot, baseWorld);
                 newIsCustomPivot = true;
             }
         }
@@ -378,17 +378,13 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
     if (singleGroupId) {
         const group = groups.get(singleGroupId);
         if (group) {
-            const groupMatrix = GroupUtils.getGroupWorldMatrix(group, new Matrix4());
-            const invGroupMatrix = groupMatrix.clone().invert();
-            const localPivot = pivotWorldPos.clone().applyMatrix4(invGroupMatrix);
-
-            group.pivot = localPivot.clone();
+            group.pivot = pivotWorldPos.clone();
             group.isCustomPivot = true;
+            syncLinkedMirrorGroupPivot(loadedObjectGroup, singleGroupId, pivotWorldPos);
 
             // @ts-ignore
             const baseWorld = Overlay.getGroupOriginWorld(singleGroupId);
-            const targetWorld = localPivot.clone().applyMatrix4(groupMatrix);
-            newPivotOffset.subVectors(targetWorld, baseWorld);
+            newPivotOffset.subVectors(pivotWorldPos, baseWorld);
             newIsCustomPivot = true;
         }
     } else if (!isMultiPivotEdit) {
@@ -407,6 +403,9 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
                     if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
                     for (const id of ids) {
                         mesh.userData.customPivots.set(id, localPivot.clone());
+                        const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
+                            ?.get(GroupUtils.getGroupKey(mesh, id));
+                        if (uuid) syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
                     }
                 } else {
                     mesh.userData.customPivot = localPivot.clone();
@@ -436,11 +435,9 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
             if (prim.type === 'group' && prim.id) {
                 const group = groups.get(prim.id);
                 if (group) {
-                    const groupMatrix = GroupUtils.getGroupWorldMatrix(group, new Matrix4());
-                    const invGroupMatrix = groupMatrix.invert();
-                    const localPivot = pivotWorldPos.clone().applyMatrix4(invGroupMatrix);
-                    group.pivot = localPivot;
+                    group.pivot = pivotWorldPos.clone();
                     group.isCustomPivot = true;
+                    syncLinkedMirrorGroupPivot(loadedObjectGroup, prim.id, pivotWorldPos);
                 }
             }
 

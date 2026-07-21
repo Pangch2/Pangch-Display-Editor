@@ -31,4 +31,4 @@ Uses a shared temporary matrix and zero vector for source and world conversions.
 - `renderer/controls/vertex/vertex-scale.ts`
 
 ## Notes
-This module is the bridge between geometric snap actions and persistent selection state. It handles InstancedMesh-only object sources in controls. Snap finalization preserves any valid transformed multi-selection anchor and only clears anchor state when no valid multi anchor remains. Queue restoration treats its stored primary-local anchor as authoritative and recomputes the world-space pivot offset from that restored position.
+This module is the bridge between geometric snap actions and persistent selection state. It handles InstancedMesh-only object sources in controls. Group custom pivots are read as world positions and converted to group-local coordinates only for queue entries. Snap finalization preserves any valid transformed multi-selection anchor and only clears anchor state when no valid multi anchor remains. Queue restoration treats its stored primary-local anchor as authoritative and recomputes the world-space pivot offset from that restored position.

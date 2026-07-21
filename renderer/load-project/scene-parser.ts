@@ -1845,7 +1845,10 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
         const scale = new THREE.Vector3();
         m.decompose(position, quaternion, scale);
 
-        const pivot = node.pivotCustom || [0.5, 0.5, 0.5];
+        const hasCustomPivot = Array.isArray(node.pivotCustom) && node.pivotCustom.length >= 3;
+        const pivot = hasCustomPivot
+            ? new THREE.Vector3().fromArray(node.pivotCustom).applyMatrix4(m).toArray()
+            : [0.5, 0.5, 0.5];
 
         groups.set(newGroupId, {
             id: newGroupId,
@@ -1857,6 +1860,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             quaternion: { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w },
             scale: { x: scale.x, y: scale.y, z: scale.z },
             pivot: pivot,
+            isCustomPivot: hasCustomPivot,
             nbt: typeof node.nbt === 'string' ? node.nbt : ''
         });
 

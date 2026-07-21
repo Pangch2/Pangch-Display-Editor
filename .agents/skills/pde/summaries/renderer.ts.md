@@ -10,7 +10,7 @@ Bootstraps the main PDE app UI. It initializes the loading overlay, waits for as
 
 ## Internal State
 - Holds the live `scene`, switchable perspective/orthographic `camera`, `renderer`, `controls`, `viewHelper`, grouped `floorGrid`, separate `zSymbol` visibility reference, ViewHelper transition state and prior camera type, and optional `gizmoModule` used by the animation loop and resize handler.
-- Uses `viewHelperClock` to animate ViewHelper camera-axis transitions at frame-rate-independent speed.
+- Uses `viewHelperTimer` to animate ViewHelper camera-axis transitions at frame-rate-independent speed.
 - Tracks FPS with `lastTime`, `frameCount`, and `fpsCounterElement`.
 - Tracks whether a scene precompile is in progress so the normal animation render loop does not race `renderer.compileAsync()`.
 - Captures scene precompile timings split into optional per-root profile time, final full-scene compile time, optional WebGPU queue wait, and renderer pipeline-cache size before/after compilation.

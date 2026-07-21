@@ -89,7 +89,8 @@ export interface GroupData {
     position: { x: number; y: number; z: number } | THREE.Vector3;
     quaternion: { x: number; y: number; z: number; w: number } | THREE.Quaternion;
     scale: { x: number; y: number; z: number } | THREE.Vector3;
-    pivot?: [number, number, number] | number[];
+    pivot?: [number, number, number] | number[] | THREE.Vector3;
+    isCustomPivot?: boolean;
     nbt?: string;
 }
 

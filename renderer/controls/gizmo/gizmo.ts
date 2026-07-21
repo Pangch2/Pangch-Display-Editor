@@ -46,11 +46,13 @@ import * as VertexQueue from '../vertex/vertex-queue';
 import { flipObjectUuids, reflectGroups, type FlipAxis } from '../flip';
 import {
     applyLinkedMirrorDelta,
+    getLinkedMirrorSelection,
     getMirrorPairs,
     isMirrorModelingEnabled,
     linkMirrorPair,
     mirrorModelingPivot,
-    setMirrorModeling
+    setMirrorModeling,
+    syncLinkedMirrorGroupPivot
 } from '../mirroring';
 import {
     createGroupCommand,
@@ -436,6 +438,12 @@ function getItemUuid({ mesh, instanceId }: Select.SelectedItem): string | undefi
         ?.get(GroupUtils.getGroupKey(mesh, instanceId));
 }
 
+function getDirectSelectedItems(): Select.SelectedItem[] {
+    return Array.from(currentSelection.objects, ([mesh, ids]) =>
+        [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))
+    ).flat();
+}
+
 //  Selection helpers 
 
 function getGroupRotationQuaternion(groupId: string | null, out = new Quaternion()): Quaternion {
@@ -517,6 +525,7 @@ function flushSelectionTransform(): void {
     _dragTotalDeltaMatrix.multiplyMatrices(_pendingHelperMatrix, _tmpPrevInvMatrix);
     dragDeltaMatrix.copy(_dragTotalDeltaMatrix);
     _dragPreviewActive = true;
+    applyLinkedMirrorDelta(loadedObjectGroup, _tmpDeltaMatrix, getDirectSelectedItems(), currentSelection.groups);
     Overlay.syncSelectionOverlay(_tmpDeltaMatrix);
     _updateMultiSelectionOverlayDuringDrag();
     window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
@@ -542,7 +551,6 @@ function commitSelectionTransform(): void {
             selectedGroupIds: currentSelection.groups,
             loadedObjectGroup
         });
-        applyLinkedMirrorDelta(loadedObjectGroup, _dragTotalDeltaMatrix, getSelectedItems(), currentSelection.groups);
         Overlay.commitSelectionOverlay(_dragTotalDeltaMatrix, currentSelection);
     }
     _dragPreviewActive = false;
@@ -600,11 +608,7 @@ function updateHelperPosition(): void {
             const group = groups.get(prim.id);
             if (group) {
                 if (shouldUseGroupPivot(group)) {
-                    const localPivot = normalizePivotToVector3(group.pivot, _TMP_VEC3_A);
-                    if (localPivot) {
-                        const groupMatrix = getGroupWorldMatrix(group, _TMP_MAT4_A);
-                        primaryPivotWorld = localPivot.applyMatrix4(groupMatrix);
-                    }
+                    primaryPivotWorld = normalizePivotToVector3(group.pivot, _TMP_VEC3_A);
                 }
                 if (!primaryPivotWorld) {
                     primaryPivotWorld = Overlay.getGroupOriginWorld(prim.id, _TMP_VEC3_A);
@@ -845,9 +849,17 @@ function _getGizmoCommandCallbacks() {
 }
 
 function createGroup(): string | undefined {
-    return _runWithoutVertexQueue(() => (
-        createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks())
-    ));
+    return _runWithoutVertexQueue(() => {
+        const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
+        const sourceGroupId = createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
+        if (!sourceGroupId || (linked.objects.size === 0 && linked.groups.size === 0)) return sourceGroupId;
+
+        _replaceSelectionWithGroupsAndObjects(linked.groups, linked.objects);
+        const mirrorGroupId = createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
+        linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), sourceGroupId, mirrorGroupId);
+        applySelection(null, [], sourceGroupId);
+        return sourceGroupId;
+    });
 }
 
 function ungroupGroup(groupId: string): void {
@@ -858,6 +870,16 @@ function ungroupGroup(groupId: string): void {
 
 function deleteSelectedItems(): void {
     _runWithoutVertexQueue(() => {
+        const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
+        if (linked.objects.size > 0 || linked.groups.size > 0) {
+            const objects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+            linked.objects.forEach((ids, mesh) => {
+                const selectedIds = objects.get(mesh) ?? new Set<number>();
+                ids.forEach(id => selectedIds.add(id));
+                objects.set(mesh, selectedIds);
+            });
+            _replaceSelectionWithGroupsAndObjects(new Set([...currentSelection.groups, ...linked.groups]), objects);
+        }
         deleteSelectedItemsCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
     });
 }
@@ -866,6 +888,8 @@ function duplicateSelected(): void {
     _runWithoutVertexQueue(() => {
         const sourceUuids = getSelectedItems().map(getItemUuid);
         const sourceGroupIds = [...currentSelection.groups];
+        const sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+        const sourcePrimary = currentSelection.primary;
         duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, {
             hasAnySelection: _hasAnySelection,
             isMultiSelection: _isMultiSelection,
@@ -886,10 +910,26 @@ function duplicateSelected(): void {
 
         const mirroredUuids = getSelectedItems().map(getItemUuid);
         const mirroredGroupIds = [...currentSelection.groups];
-        void flipObjectUuids(loadedObjectGroup, mirroredUuids, 'x', mirrorModelingPivot, pivotMode).then(finalUuids => {
-            reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot);
+        _replaceSelectionWithGroupsAndObjects(new Set(sourceGroupIds), sourceObjects, {
+            preserveAnchors: true,
+            explicitPrimary: sourcePrimary
+        });
+        reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot, mirrorModelingPivot.clone().setX(0));
+        const flipPromise = flipObjectUuids(loadedObjectGroup, mirroredUuids, 'x', mirrorModelingPivot, pivotMode, undefined, mirrorModelingPivot.clone().setX(0));
+        sourceGroupIds.forEach((id, index) => {
+            linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), id, mirroredGroupIds[index]);
+            const group = GroupUtils.getGroups(loadedObjectGroup).get(id);
+            const customPivot = group && GroupUtils.shouldUseGroupPivot(group)
+                ? GroupUtils.normalizePivotToVector3(group.pivot)
+                : null;
+            if (customPivot) syncLinkedMirrorGroupPivot(loadedObjectGroup, id, customPivot);
+        });
+        updateHelperPosition();
+        updateSelectionOverlay();
+        _emitSceneUpdated();
+
+        void flipPromise.then(finalUuids => {
             sourceUuids.forEach((uuid, index) => linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs'), uuid, finalUuids[index]));
-            sourceGroupIds.forEach((id, index) => linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), id, mirroredGroupIds[index]));
             updateHelperPosition();
             updateSelectionOverlay();
             _emitSceneUpdated();
@@ -916,9 +956,9 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     const selected = new Set(selectedUuids);
     const pairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
     const linkedUuids = selectedUuids.map(uuid => uuid && !selected.has(pairs.get(uuid)) ? pairs.get(uuid) : undefined);
+    reflectGroups(loadedObjectGroup, currentSelection.groups, axis, pivotWorld);
     await flipObjectUuids(loadedObjectGroup, selectedUuids, axis, pivotWorld, preserveGroupBounds ? 'center' : activePivotMode, updateSelectionOverlay);
     await flipObjectUuids(loadedObjectGroup, linkedUuids, axis, undefined, activePivotMode);
-    reflectGroups(loadedObjectGroup, currentSelection.groups, axis, pivotWorld);
     if (multiPivotState) {
         isCustomPivot = multiPivotState.isCustomPivot;
         pivotOffset.copy(multiPivotState.pivotOffset);

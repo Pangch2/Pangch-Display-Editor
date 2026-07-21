@@ -19,4 +19,4 @@ Handles vertex-mode scale snapping. It computes a scale transform from two selec
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Ctrl-modified scaling still removes shear first. The selection and queue logic now target InstancedMesh objects only. After applying scale matrices, a transformed multi-selection anchor is explicitly recaptured in primary-local coordinates.
+Ctrl-modified scaling still removes shear first. The selection and queue logic now target InstancedMesh objects only. Scaled groups carry their world-space custom pivots through the same delta. After applying scale matrices, a transformed multi-selection anchor is explicitly recaptured in primary-local coordinates.

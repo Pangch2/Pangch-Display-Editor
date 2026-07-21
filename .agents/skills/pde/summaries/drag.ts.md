@@ -23,3 +23,4 @@ Handles marquee selection and drag initiation, and applies transform deltas back
 
 ## Notes
 Marquee selection traverses InstancedMesh objects only and intersects the marquee with each projected box's convex hull, avoiding screen-AABB false positives for rotated or sheared instances. Drag transforms can consume merged instance ranges and register only those matrix component ranges for WebGPU buffer updates; property edits retain the direct-ID path.
+- `applyDeltaToSelection` applies the same world delta to each transformed group's world-space custom pivot.

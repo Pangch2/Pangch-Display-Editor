@@ -8,7 +8,8 @@ import {
     Box3
 } from 'three/webgpu';
 import * as Overlay from '../selection/overlay';
-import { GroupData } from '../grouping/group';
+import * as GroupUtils from '../grouping/group';
+import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
 
 const _TMP_MAT4_A = new Matrix4();
@@ -184,8 +185,7 @@ export function performSelectionSwap(
             const groups = getGroups();
             const group = groups.get(source.id);
             if (group && group.isCustomPivot && group.pivot) {
-                const gMat = getGroupWorldMatrixWithFallback(source.id, _TMP_MAT4_A);
-                pivotWorld = group.pivot.clone().applyMatrix4(gMat);
+                pivotWorld = GroupUtils.normalizePivotToVector3(group.pivot);
             }
         }
 
@@ -316,7 +316,8 @@ export function performSelectionSwap(
                 const groups = getGroups();
                 const group = groups.get(source.id);
                 if (group && group.isCustomPivot && group.pivot) {
-                    targetLocalPivot.copy(group.pivot);
+                    targetLocalPivot.copy(GroupUtils.normalizePivotToVector3(group.pivot)!)
+                        .applyMatrix4(getSourceWorldMatrix(source, _TMP_MAT4_A).invert());
                     hasCustomPivot = true;
                 }
 

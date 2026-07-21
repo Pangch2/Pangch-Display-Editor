@@ -174,10 +174,9 @@ export function processVertexSnap(
                 const group = groups.get(src.id);
                 if (group) {
                     const groupMatrix = getGroupWorldMatrixWithFallback(src.id, _TMP_MAT4_A);
-                    const inv = groupMatrix.clone().invert();
-                    group.pivot = targetPos.clone().applyMatrix4(inv);
+                    group.pivot = targetPos.clone();
                     group.isCustomPivot = true;
-                    updateQueueItemPivot(src, group.pivot);
+                    updateQueueItemPivot(src, targetPos.clone().applyMatrix4(groupMatrix.clone().invert()));
                     console.log(`Cloned Gizmo: Custom pivot updated for group ${src.id}`);
                 }
             }
@@ -248,10 +247,9 @@ export function processVertexSnap(
                         const group = groups.get(groupId);
                         if (group) {
                             const groupMatrix = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
-                            const inv = groupMatrix.clone().invert();
-                            group.pivot = targetPos.clone().applyMatrix4(inv);
+                            group.pivot = targetPos.clone();
                             group.isCustomPivot = true;
-                            updateQueueItemPivot({ type: 'group', id: groupId }, group.pivot);
+                            updateQueueItemPivot({ type: 'group', id: groupId }, targetPos.clone().applyMatrix4(groupMatrix.clone().invert()));
                         }
                     }
                 }
@@ -431,6 +429,9 @@ export function processVertexSnap(
             const groups = getGroups();
             const group = groups.get(groupId);
             if (group) {
+                if (GroupUtils.shouldUseGroupPivot(group)) {
+                    group.pivot = GroupUtils.normalizePivotToVector3(group.pivot)?.applyMatrix4(tMat);
+                }
                 if (!group.matrix) {
                     const gPos = group.position || new Vector3();
                     const gQuat = group.quaternion || new Quaternion();

@@ -13,6 +13,7 @@ import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
 import * as Overlay from '../selection/overlay';
 import { isPbdeLogEnabled, pbdeLogNames } from '../../load-project/pbde-log';
+import { dragSelectedAttributeName } from '../../entityMaterial.js';
 
 const getDisplayType = Overlay.getDisplayType;
 
@@ -312,7 +313,8 @@ function copyInstancedGeometryAttributes(
         const itemSize = Math.min(sourceAttribute.itemSize, targetAttribute.itemSize);
         const srcOffset = sourceId * sourceAttribute.itemSize;
         const dstOffset = targetId * targetAttribute.itemSize;
-        targetAttribute.array.set(sourceAttribute.array.subarray(srcOffset, srcOffset + itemSize), dstOffset);
+        if (name === dragSelectedAttributeName) targetAttribute.setX(targetId, 0);
+        else targetAttribute.array.set(sourceAttribute.array.subarray(srcOffset, srcOffset + itemSize), dstOffset);
         updatedAttributes.add(targetAttribute);
     }
 }

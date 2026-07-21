@@ -326,6 +326,9 @@ export function processVertexScale(
         const groups = getGroups();
         const group = groups.get(groupId);
         if (group) {
+            if (GroupUtils.shouldUseGroupPivot(group)) {
+                group.pivot = GroupUtils.normalizePivotToVector3(group.pivot)?.applyMatrix4(transformMatrix);
+            }
             if (!group.matrix) {
                 const gPos = group.position || new Vector3();
                 const gQuat = group.quaternion || new Quaternion();

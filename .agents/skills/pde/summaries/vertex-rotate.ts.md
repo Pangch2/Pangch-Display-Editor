@@ -18,4 +18,4 @@ Handles vertex-mode rotate snapping. It derives one Blockbench-style rotation fr
 - `renderer/controls/gizmo/gizmo.ts`
 
 ## Notes
-Requires exactly two selected vertex keys. A stored object/group custom pivot takes precedence and is converted from local to world coordinates; otherwise an effectively selected source uses the active gizmo anchor, then falls back to its world origin. After applying rotation matrices, a transformed multi-selection anchor is explicitly recaptured in primary-local coordinates.
+Requires exactly two selected vertex keys. Stored object pivots are converted from local to world coordinates, while stored group pivots are already world positions. Rotated groups carry their world pivots through the same delta. Otherwise an effectively selected source uses the active gizmo anchor, then falls back to its world origin. After applying rotation matrices, a transformed multi-selection anchor is explicitly recaptured in primary-local coordinates.
