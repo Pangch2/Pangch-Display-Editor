@@ -97,6 +97,7 @@ export async function flipObjectUuids(
     const playerHeadTextures = flipPlayerHeadTextures(uuids.filter((uuid): uuid is string =>
         !!uuid && (names?.get(uuid) ?? '').startsWith('player_head')
     ));
+    await playerHeadTextures;
     const reflected: Array<{
         index: number;
         uuid: string;
@@ -141,7 +142,6 @@ export async function flipObjectUuids(
     }
     onPreviewApplied?.();
     const nextNames = await nextNamesPromise;
-    await playerHeadTextures;
 
     const pending = reflected.flatMap(entry => {
         const nextName = nextNames[entry.index];
