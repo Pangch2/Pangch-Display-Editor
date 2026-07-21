@@ -915,7 +915,7 @@ function duplicateSelected(): void {
             explicitPrimary: sourcePrimary
         });
         reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot, mirrorModelingPivot.clone().setX(0));
-        const flipPromise = flipObjectUuids(loadedObjectGroup, mirroredUuids, 'x', mirrorModelingPivot, pivotMode, undefined, mirrorModelingPivot.clone().setX(0));
+        const flipPromise = flipObjectUuids(loadedObjectGroup, mirroredUuids, 'x', mirrorModelingPivot, mirroredGroupIds.length > 0 ? 'center' : pivotMode, undefined, mirrorModelingPivot.clone().setX(0));
         sourceGroupIds.forEach((id, index) => {
             linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), id, mirroredGroupIds[index]);
             const group = GroupUtils.getGroups(loadedObjectGroup).get(id);

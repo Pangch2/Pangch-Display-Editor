@@ -23,7 +23,7 @@ function reflectDisplayMatrix(matrix: Matrix4, mesh: PdeMesh, instanceId: number
     const pivot = pivotWorld ?? new Vector3().setFromMatrixPosition(worldMatrix);
     worldMatrix.premultiply(getWorldReflection(axis, pivot));
     const isBlock = Overlay.getDisplayType(mesh, instanceId) === 'block_display';
-    const localPivot = center || (isBlock && (mesh.userData.customPivots as Map<number, Vector3> | undefined)?.has(instanceId))
+    const localPivot = isBlock && (center || (mesh.userData.customPivots as Map<number, Vector3> | undefined)?.has(instanceId))
         ? Overlay.getInstanceLocalBox(mesh, instanceId)?.getCenter(new Vector3())
         : isBlock ? Overlay.getInstanceLocalBoxMin(mesh, instanceId) : null;
     worldMatrix.multiply(getWorldReflection(axis, localPivot ?? new Vector3()));
@@ -82,7 +82,7 @@ export async function flipObjectUuids(
     pivotWorld?: Vector3,
     activePivotMode = 'origin',
     onPreviewApplied?: () => void,
-    playerHeadPivotWorld?: Vector3
+    centeredPivotWorld?: Vector3
 ): Promise<Array<string | undefined>> {
     const userData = loadedObjectGroup.userData;
     const isItemDisplay = userData.objectIsItemDisplay as Set<string> | undefined;
@@ -116,8 +116,8 @@ export async function flipObjectUuids(
             const previousMatrix = matrix.clone();
             const renderMatrix = getPlayerHeadRenderMatrix((userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid));
             matrix.multiply(renderMatrix.clone().invert());
-            const headPivotWorld = playerHeadPivotWorld ?? pivotWorld;
-            reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, headPivotWorld, !playerHeadPivotWorld && activePivotMode === 'center');
+            const headPivotWorld = centeredPivotWorld ?? pivotWorld;
+            reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, headPivotWorld, !centeredPivotWorld && activePivotMode === 'center');
             matrix.multiply(renderMatrix);
             reflectCustomPivot(ref.mesh, ref.instanceId, axis, headPivotWorld, previousMatrix, matrix);
             ref.mesh.setMatrixAt(ref.instanceId, matrix);
@@ -131,8 +131,9 @@ export async function flipObjectUuids(
         ref.mesh.getMatrixAt(ref.instanceId, matrix);
         const previousMatrix = matrix.clone();
         const previousCustomPivot = (ref.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(ref.instanceId)?.clone();
-        reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, pivotWorld, activePivotMode === 'center');
-        reflectCustomPivot(ref.mesh, ref.instanceId, axis, pivotWorld, previousMatrix, matrix);
+        const objectPivotWorld = isItemDisplay?.has(uuid) ? centeredPivotWorld ?? pivotWorld : pivotWorld;
+        reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, objectPivotWorld, activePivotMode === 'center');
+        reflectCustomPivot(ref.mesh, ref.instanceId, axis, objectPivotWorld, previousMatrix, matrix);
         ref.mesh.setMatrixAt(ref.instanceId, matrix);
         ref.mesh.instanceMatrix.needsUpdate = true;
 
@@ -182,9 +183,22 @@ if (import.meta.env.DEV) {
     reflectDisplayMatrix(head, new Mesh(), 0, 'x', new Vector3());
     head.multiply(headRender);
     console.assert(Math.abs(head.elements[12] + 0.25941) < 1e-9, 'Mirrored player head changed its logical X offset.');
+    const centeredMesh = new Mesh(new BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5));
+    centeredMesh.userData.displayType = 'block_display';
     const centered = new Matrix4().makeTranslation(-9.9, 0, 0);
-    reflectDisplayMatrix(centered, new Mesh(new BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5)), 0, 'x', new Vector3(-9.4, 0, 0), true);
+    reflectDisplayMatrix(centered, centeredMesh, 0, 'x', new Vector3(-9.4, 0, 0), true);
     console.assert(Math.abs(centered.elements[12] + 9.9) < 1e-9, 'Center display reflection moved the block origin.');
+    const item = new InstancedMesh(new BoxGeometry(1, 1, 1), undefined!, 1);
+    item.setMatrixAt(0, new Matrix4());
+    const itemGroup = new Group();
+    itemGroup.userData.objectIsItemDisplay = new Set(['item']);
+    itemGroup.userData.objectNames = new Map([['item', 'stone']]);
+    itemGroup.userData.objectUuidToInstance = new Map([['item', { mesh: item, instanceId: 0 }]]);
+    void flipObjectUuids(itemGroup, ['item'], 'x', new Vector3(-0.5, 0, 0), 'center', undefined, new Vector3()).then(() => {
+        const itemMatrix = new Matrix4();
+        item.getMatrixAt(0, itemMatrix);
+        console.assert(Math.abs(itemMatrix.elements[12]) < 1e-9, 'Centered item display reflection added a block-size gap.');
+    });
     const fence = new Mesh(new BoxGeometry(0.25, 1, 0.25).translate(0.5, 0.5, 0.5));
     fence.userData.displayType = 'block_display';
     const fenceMatrix = new Matrix4();
