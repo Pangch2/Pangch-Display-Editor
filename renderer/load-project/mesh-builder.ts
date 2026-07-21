@@ -703,6 +703,41 @@ function drawPlayerHeadSlot(context: CanvasRenderingContext2D, image: HTMLImageE
     return !isLayerTransparent(image, playerHeadLayerRegions);
 }
 
+function mirroredPlayerHeadFace(key: keyof typeof playerHeadFaceParts): keyof typeof playerHeadFaceParts {
+    return (key.endsWith('right') ? key.replace('right', 'left')
+        : key.endsWith('left') ? key.replace('left', 'right') : key) as keyof typeof playerHeadFaceParts;
+}
+
+function playerHeadTextureDataUrl(image: HTMLImageElement, mirrored: boolean): string {
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('플레이어 헤드 텍스처 캔버스를 만들 수 없습니다.');
+    context.imageSmoothingEnabled = false;
+    context.drawImage(image, 0, 0);
+    if (mirrored) {
+        for (const [key, [x, y]] of Object.entries(playerHeadFaceParts)) {
+            const sourceKey = mirroredPlayerHeadFace(key as keyof typeof playerHeadFaceParts);
+            const [sourceX, sourceY] = playerHeadFaceParts[sourceKey];
+            context.save();
+            context.translate(2 * x + PLAYER_HEAD_PART_SIZE, 0);
+            context.scale(-1, 1);
+            context.drawImage(image, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE, x, y, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
+            context.restore();
+        }
+    }
+    const dataUrl = canvas.toDataURL('image/png');
+    if (import.meta.env.DEV) console.assert(dataUrl.startsWith('data:image/png;base64,'), 'Player head reflection did not produce a PNG data URL.');
+    return dataUrl;
+}
+
+if (import.meta.env.DEV) {
+    console.assert(mirroredPlayerHeadFace('right') === 'left'
+        && mirroredPlayerHeadFace('layer_left') === 'layer_right'
+        && mirroredPlayerHeadFace('front') === 'front', 'Player head reflection mapped a face to the wrong texture region.');
+}
+
 /**
  * PBDE 파일을 로드하고 3D 씬에 객체를 배치합니다.
  * @param {File} file - 불러올 .pbde 또는 .bde 파일
@@ -1596,7 +1631,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
 }
 
-export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
+function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: HTMLImageElement): void {
     const userData = loadedObjectGroup.userData;
     const ref = (userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) throw new Error('텍스처를 변경할 플레이어 헤드를 찾을 수 없습니다.');
@@ -1627,7 +1662,6 @@ export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: st
     const maxSlots = PLAYER_HEAD_BLOCKS_PER_ROW * Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT);
     if (slot >= maxSlots) throw new Error('플레이어 헤드 아틀라스 슬롯이 부족합니다.');
 
-    const image = await loadPlayerHeadImage(textureUrl);
     ref.mesh.userData.hasHat[ref.instanceId] = drawPlayerHeadSlot(atlas.context, image, slot);
     uvOffsets.setXY(
         ref.instanceId,
@@ -1640,15 +1674,30 @@ export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: st
         objectUuid,
         image.src === DEFAULT_PLAYER_HEAD_TEXTURE ? DEFAULT_PLAYER_HEAD_TEXTURE : textureUrl
     );
+}
+
+export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
+    applyPlayerHeadTexture(objectUuid, textureUrl, await loadPlayerHeadImage(textureUrl));
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
-export function flipPlayerHeadTexture(objectUuid: string): void {
-    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
-    const flips = ref?.mesh.geometry.getAttribute('instancedUvFlip') as THREE.InstancedBufferAttribute | undefined;
-    if (!ref || !flips) return;
-    flips.setX(ref.instanceId, 1 - flips.getX(ref.instanceId));
-    flips.needsUpdate = true;
+export async function flipPlayerHeadTextures(objectUuids: string[]): Promise<void> {
+    const userData = loadedObjectGroup.userData;
+    const refs = userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
+    const prepared = (await Promise.all(objectUuids.map(async objectUuid => {
+        const ref = refs?.get(objectUuid);
+        const flips = ref?.mesh.geometry.getAttribute('instancedUvFlip') as THREE.InstancedBufferAttribute | undefined;
+        if (!ref || !flips) return null;
+        const texture = (userData.objectTextures as Map<string, string> | undefined)?.get(objectUuid) ?? DEFAULT_PLAYER_HEAD_TEXTURE;
+        const image = await loadPlayerHeadImage(texture);
+        const dataUrl = playerHeadTextureDataUrl(image, flips.getX(ref.instanceId) < 0.5);
+        return { objectUuid, ref, flips, dataUrl, image: await loadPlayerHeadImage(dataUrl) };
+    }))).filter(prepared => prepared !== null);
+    for (const { objectUuid, ref, flips, dataUrl, image } of prepared) {
+        applyPlayerHeadTexture(objectUuid, dataUrl, image);
+        flips.setX(ref.instanceId, 0);
+        flips.needsUpdate = true;
+    }
 }
 
 export async function updateDisplayObjectMatrix(objectUuid: string, name: string): Promise<void> {

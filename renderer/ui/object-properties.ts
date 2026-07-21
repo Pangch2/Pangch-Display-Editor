@@ -647,7 +647,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         pivot[axis] = next;
         localPivot.copy(pivot);
         (mesh.userData.customPivots as Map<number, Vector3>).set(instanceId, localPivot.clone());
-        window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+        window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
     })));
     transformSection.append(pivotRow);
     section.append(transformSection);
@@ -780,7 +780,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     (['x', 'y', 'z'] as const).forEach(axis => pivotRow.append(numberInput(pivot[axis], next => {
         pivot[axis] = next;
         group.pivot = [pivot.x, pivot.y, pivot.z];
-        window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+        window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
     })));
     transformSection.append(pivotRow);
     section.append(transformSection);

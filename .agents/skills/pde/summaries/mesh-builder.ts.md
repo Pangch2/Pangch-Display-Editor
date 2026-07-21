@@ -17,7 +17,7 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - `performSelection(newlyAddedSelectableMeshes)` -- selects only the newly loaded instance IDs after load/merge, preserving group-priority selection.
 - `loadAndRenderPbde(file, isMerge, overrideGen?)` -- parse file and instantiate scene objects
 - `updatePlayerHeadTexture(objectUuid, textureUrl): Promise<void>` -- redraws one player head's atlas slot in place, splitting a shared slot when necessary, and updates its UV offset and hat state without rebuilding the object.
-- `flipPlayerHeadTexture(objectUuid): void` -- toggles one head instance's horizontal face-local UV reflection without changing its transform.
+- `flipPlayerHeadTextures(objectUuids): Promise<void>` -- prepares horizontally reflected PNG data URLs in parallel, including left/right face-region swaps, then commits every head's atlas and UV update together without per-head scene refreshes.
 - `updateDisplayObjectMatrix(objectUuid, name): Promise<void>` -- applies item/player-head display changes to the existing instance matrix while preserving its UUID, selection, and pivot.
 - `updateObjectBrightness(objectUuid, brightness): void` -- updates one object's stored brightness and per-instance sky-light color without rebuilding its mesh.
 - `updateGlobalBrightness(brightness): void` -- stores project-level brightness and refreshes every rendered instance in place.
@@ -88,6 +88,6 @@ Main-thread renderer for parsed PBDE projects. Loads parsed metadata, consumes b
 - Player-head display and half-scale transforms share one renderer matrix; replacement reverses that same matrix before parsing, preventing display/property edits from accumulating scale or translation.
 - Display-only edits update the current instance slot and metadata without running the PBDE replacement/delete pipeline.
 - Player-head texture edits redraw the existing atlas slot when exclusive; shared slots receive a new slot so other instances keep their skin. The instance matrix and UUID remain unchanged.
-- Player-head geometry stores per-vertex face UV centers and per-instance UV flip flags; duplication copies those instanced flags with the existing generic attribute path.
+- Player-head reflection prepares URL or data-URL skins in parallel, swaps the base/layer left and right face regions while reflecting their pixels, then synchronously commits the PNG data URLs and clears transient UV flip flags; flip orchestration applies every affected matrix immediately afterward so group and pivot refresh never observes a partial batch.
 - Player-head image load failures retry once with the default skin; property edits store that fallback URL instead of the invalid input.
 - Logs are controlled through `pbde-log.ts` registry helpers. `Processing items`, `Load timings`, `Geometry stats`, and `Mesh uploaded` default to enabled; `Finished processing` defaults to disabled.

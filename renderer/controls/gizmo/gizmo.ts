@@ -65,6 +65,7 @@ type PdeMesh = InstancedMesh | Mesh;
 
 interface SceneUpdatedDetail {
     skipGizmoRefresh?: boolean;
+    pivotChanged?: boolean;
 }
 
 export interface OrbitControlsLike {
@@ -810,7 +811,9 @@ function _emitSceneUpdated(): void {
 }
 
 function _handleSceneUpdated(event: Event): void {
-    if ((event as CustomEvent<SceneUpdatedDetail>).detail?.skipGizmoRefresh) return;
+    const detail = (event as CustomEvent<SceneUpdatedDetail>).detail;
+    if (detail?.skipGizmoRefresh) return;
+    if (detail?.pivotChanged) pivotMode = 'origin';
     invalidateSelectionCaches();
     _recomputePivotStateForSelection();
     updateHelperPosition();
@@ -898,8 +901,9 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     if (!_hasAnySelection() || !selectionHelper) return;
     const isMulti = _isMultiSelection();
     const activePivotMode = pivotMode;
+    const preserveGroupBounds = currentSelection.groups.size > 0;
     updateHelperPosition();
-    const pivotWorld = activePivotMode === 'center'
+    const pivotWorld = activePivotMode === 'center' || preserveGroupBounds
         ? _getSelectionCenterWorld()
         : selectionHelper.position.clone();
     const multiPivotState = isMulti ? {
@@ -912,7 +916,7 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     const selected = new Set(selectedUuids);
     const pairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
     const linkedUuids = selectedUuids.map(uuid => uuid && !selected.has(pairs.get(uuid)) ? pairs.get(uuid) : undefined);
-    await flipObjectUuids(loadedObjectGroup, selectedUuids, axis, pivotWorld, activePivotMode, updateSelectionOverlay);
+    await flipObjectUuids(loadedObjectGroup, selectedUuids, axis, pivotWorld, preserveGroupBounds ? 'center' : activePivotMode, updateSelectionOverlay);
     await flipObjectUuids(loadedObjectGroup, linkedUuids, axis, undefined, activePivotMode);
     reflectGroups(loadedObjectGroup, currentSelection.groups, axis, pivotWorld);
     if (multiPivotState) {

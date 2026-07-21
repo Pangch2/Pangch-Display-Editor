@@ -45,10 +45,11 @@ Main interaction controller for the editor. It wires TransformControls, selectio
 - Drag end commits CPU and outline matrices, tightens the aggregate selection box once, then immediately resets the GPU preview; loaded and overlay instance matrices use WebGPU storage buffers that upload the committed matrices in the next render without the large interleaved-buffer delay.
 - Selection overlay refreshes emit `pde:selection-transform-context` with the current gizmo world pivot so property edits honor origin, center, and custom pivot modes.
 - Internal group, ungroup, delete, and duplicate commands emit `pde:scene-updated` with `skipGizmoRefresh`; the gizmo listener skips its redundant refresh while other listeners still receive the event. Detail-free external scene updates retain the normal gizmo and overlay refresh.
+- Property-panel object/group pivot edits mark `pde:scene-updated` with `pivotChanged`, switching the active pivot mode to origin before recomputing the gizmo.
 - Mirror-modeling duplication delegates fixed-pivot reflection and pair bookkeeping to the dedicated controls, then refreshes selection state and emits the scene update.
 - Direct selection flips delegate object/group reflection to `controls/flip.ts`; this controller preserves multi-selection pivot flags, offsets, anchors, and linked partner selection around the asynchronous operation.
 - Direct selection flips refresh the selection overlay as soon as the reflected preview matrices are applied, before asynchronous block-state replacement completes.
-- Direct flips recompute center-mode pivots from the live selection bounds; center-mode reflections mirror the stored multi-selection origin/custom anchor instead of replacing it with the center pivot.
+- Direct group flips use the live selection-bounds center so reflection stays in place, then apply the same world reflection to selected root and descendant group transforms. Non-group flips continue to honor the active pivot mode.
 - Object custom pivots are remapped through the reflection so their world positions remain consistent with the mirrored objects, and pivot state is recomputed before repositioning the gizmo.
 - Player-head, block-state, custom-pivot, and linked-partner reflection details live in `controls/flip.ts`.
 - Camera references accept the common Three.js `Camera` type so perspective/orthographic switching does not recreate the interaction system.
