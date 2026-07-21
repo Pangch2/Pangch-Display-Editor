@@ -132,6 +132,33 @@ canvas {
   text-overflow: ellipsis;
 }
 
+#scene-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  transform: translateX(-50%) scale(1.3);
+  transform-origin: top center;
+  border: 1px solid #45454a;
+  border-radius: 7.5px;
+  background: #252528;
+  color: #ccc;
+}
+
+#scene-toolbar i {
+  font: normal 400 18.75px/1 'lucide';
+}
+
+#scene-toolbar .player-head-icon {
+  width: 20px;
+  height: 20px;
+  background: url('../../resources/player_head.svg') center / contain no-repeat;
+}
+
 .panel-drag-preview {
   position: fixed;
   inset: 0 auto auto 0;
