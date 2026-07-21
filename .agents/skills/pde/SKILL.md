@@ -1,11 +1,10 @@
 ---
 name: pde
 description: >
-  PDE (Pangch-Display-Editor) code-summary awareness skill.
+  PDE (Pangch-Display-Editor) CodeGraph awareness skill.
   Enabled by default for every new session in this workspace. When active,
-  it reads the stored code summary for any tracked PDE source file before
-  performing work on it, generates a summary if none exists, and updates the
-  summary after any modification. `/pde on` re-enables it immediately.
+  it uses the repository CodeGraph before reading or changing tracked PDE files.
+  `/pde on` re-enables it immediately.
   `/pde off` disables it for the current session only.
 triggers:
   - any request involving tracked PDE files
@@ -72,77 +71,10 @@ Tracked files — any time one mentioned in request while skill active, follow *
 
 ---
 
-## Summary Storage
-
-Summaries live at:
-
-```
-.agents/skills/pde/summaries/<filename>.md
-```
-
-Example: summary for `gizmo.ts` -> `summaries/gizmo.ts.md`
-
----
-
 ## Workflow
 
 For **every tracked file** mentioned in request while skill active:
 
-### Step 1 - Check for existing summary
-
-Look for `summaries/<filename>.md`.
-
-- **Exists** -> read fully before proceeding.
-- **Does not exist** -> go to **Generate Summary** first, then proceed.
-
-### Step 2 - Generate Summary (only when missing)
-
-1. Read full source file from disk.
-2. Write `summaries/<filename>.md` using **Summary Format** below.
-3. Continue with requested task.
-
-### Step 3 - Perform the requested task
-
-Use summary as context. Shows what file does, what it exports, which files depend on it — avoid breaking callers.
-
-### Step 4 - Update summary after any modification
-
-If task modified file:
-1. Re-read changed file.
-2. Overwrite `summaries/<filename>.md` with updated summary.
-
----
-
-## Summary Format
-
-```markdown
-# <filename>
-
-## Purpose
-One-paragraph description of what this file does and why it exists.
-
-## Exports
-
-### Types / Interfaces
-- `TypeName` -- description
-
-### Functions / Methods
-- `fnName(params): ReturnType` -- description
-
-### Variables / Constants
-- `CONST_NAME: Type` -- description
-
-## Internal State
-Key module-level variables, closures, or side effects worth knowing.
-
-## Dependencies (imports)
-- `file-or-package` -- why it is imported
-
-## Used By (known callers)
-- `file` -- what it uses from this file
-
-## Notes
-Any gotchas, patterns, or invariants the agent should respect.
-```
-
-Omit empty sections. Entries concise — one line each unless critical detail requires more. Do **not** reproduce source code in summary; use references.
+1. Run `codegraph explore` with the relevant file names, symbols, and question before grep/find or direct file reads.
+2. Use the returned current source and call paths to understand dependencies and blast radius.
+3. Perform the requested task and use CodeGraph again when verification needs updated call-path context.

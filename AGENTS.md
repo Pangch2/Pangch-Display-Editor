@@ -25,9 +25,4 @@
 
 ## Rules
 
-- Never skip reading existing summary before touching tracked file.
-- Never skip updating summary after modifying tracked file.
-- Multiple tracked files in one request: process all summaries before beginning work.
-- Summary generation is pre-task step, not task itself — complete actual request after generating.
-- Keep summaries accurate and minimal. Remove stale entries on update.
 - Never use `npm run build`.
