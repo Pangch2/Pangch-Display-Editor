@@ -51,6 +51,7 @@ export function initContextMenu({ element, setCameraType, hasSelection, flipSele
     });
     menu.querySelector<HTMLInputElement>('[data-mirror]')!.addEventListener('change', event => {
         setMirrorModeling((event.target as HTMLInputElement).checked);
+        closeMenu();
     });
     window.addEventListener('pointerdown', event => {
         if (!menu.contains(event.target as Node)) closeMenu();
