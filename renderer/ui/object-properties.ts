@@ -951,7 +951,7 @@ function clearRenderedPropertySections(): void {
 function updateRenderedPropertySections(pivotWorld?: Vector3, previewDelta?: Matrix4): void {
     renderedSections.forEach((section, index) => {
         const item = selectionOrder[index];
-        if (item?.key === section.dataset.key) updateSection(section, item, index === 0 ? pivotWorld : undefined, previewDelta);
+        if (item?.key === section.dataset.key) updateSection(section, item, index === 0 && selectionOrder.length === 1 ? pivotWorld : undefined, previewDelta);
     });
 }
 
@@ -992,8 +992,8 @@ function renderVisiblePropertySections(): void {
         const item = selectionOrder[index];
         if (!item) return;
         const section = 'group' in item
-            ? renderGroup(item.groupId, item.group, index, index === 0 ? currentPivotWorld : undefined)
-            : renderObject(item.mesh, item.instanceId, index, index === 0 ? currentPivotWorld : undefined);
+            ? renderGroup(item.groupId, item.group, index, index === 0 && selectionOrder.length === 1 ? currentPivotWorld : undefined)
+            : renderObject(item.mesh, item.instanceId, index, index === 0 && selectionOrder.length === 1 ? currentPivotWorld : undefined);
         section.dataset.key = item.key;
         section.dataset.propertyIndex = String(index);
         section.style.top = `${propertySectionOffsets[index]}px`;
@@ -1151,7 +1151,7 @@ window.addEventListener('pde:replace-object-selection', event => {
 
         const section = renderedSections.get(index);
         if (!section) return next;
-        const replacement = renderObject(next.mesh, next.instanceId, index, index === 0 ? currentPivotWorld : undefined);
+        const replacement = renderObject(next.mesh, next.instanceId, index, index === 0 && selectionOrder.length === 1 ? currentPivotWorld : undefined);
         section.replaceChildren(...replacement.childNodes);
         section.dataset.key = next.key;
         sectionInputs.delete(section);
@@ -1182,8 +1182,8 @@ window.addEventListener('pde:object-transform-changed', event => {
         if (detail.deltaMatrix) {
             dragPreviewDelta.premultiply(detail.deltaMatrix);
             if (detail.multiCustomPivotLocal) multiSelectionMatrix.premultiply(detail.deltaMatrix);
-            updateRenderedPropertySections(detail.pivotWorld, dragPreviewDelta);
         }
+        updateRenderedPropertySections(detail.pivotWorld, detail.deltaMatrix ? dragPreviewDelta : undefined);
         if (detail.multiCustomPivotLocal) updateMultiSelectionValues(detail.pivotWorld, detail.multiCustomPivotLocal);
         return;
     }
