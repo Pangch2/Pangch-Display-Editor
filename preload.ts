@@ -14,8 +14,8 @@ contextBridge.exposeInMainWorld('ipcApi', {
     }
   },
   // Renderer -> Main (송신)
-  send: (channel: 'download-assets', data?: unknown) => {
-    const validChannels = ['download-assets'];
+  send: (channel: 'download-assets' | 'log-atlas-generation-time', data?: unknown) => {
+    const validChannels = ['download-assets', 'log-atlas-generation-time'];
     if (validChannels.includes(channel)) {
       ipcRenderer.send(channel, data);
     }

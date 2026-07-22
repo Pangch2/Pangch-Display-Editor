@@ -11,16 +11,77 @@ const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
 const CACHE_COMPLETE_FLAG = path.join(CACHE_DIR, '.cache-complete');
+const clientUrl = 'https://piston-data.mojang.com/v1/objects/0cda4b16710f5b42e532b20ed9b8965c105e77a8/client.jar';
+const serverUrl = 'https://piston-data.mojang.com/v1/objects/bc881a3fc6e63c490e614ab3bf9c43adc0449ab2/server.jar';
 // When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
 // For reading hardcoded JSON at runtime, prefer resolved path within the asar; when unpacked dev, use __dirname.
 const APP_ROOT = path.dirname(__dirname);
 const HARDCODED_DIR = path.join(APP_ROOT, 'hardcoded');
 
 type ConstantPoolEntry = [number, string | number, number?] | undefined;
-type CreativeTab = { name: string; items: string[] };
+type CreativeTab = { name?: string; items: string[] };
+
+const registryExcludes = {
+  item: new Set(['air']),
+  block: new Set(['air', 'cave_air', 'void_air'])
+};
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function extractRegistryNames(classBytes: Uint8Array, registry: keyof typeof registryExcludes): string[] {
+  const view = new DataView(classBytes.buffer, classBytes.byteOffset, classBytes.byteLength);
+  let offset = 0;
+  const u1 = () => view.getUint8(offset++);
+  const u2 = () => (offset += 2, view.getUint16(offset - 2));
+  const u4 = () => (offset += 4, view.getUint32(offset - 4));
+
+  if (u4() !== 0xcafebabe) throw new Error(`Invalid ${registry} registry class.`);
+  u2();
+  u2();
+  const utf8 = new Map<number, string>();
+  for (let i = 1, count = u2(); i < count; i++) {
+    const tag = u1();
+    if (tag === 1) {
+      const length = u2();
+      utf8.set(i, new TextDecoder().decode(classBytes.subarray(offset, offset + length)));
+      offset += length;
+    } else if (tag === 3 || tag === 4) offset += 4;
+    else if (tag === 5 || tag === 6) { offset += 8; i++; }
+    else if (tag === 7 || tag === 8 || tag === 16 || tag === 19 || tag === 20) offset += 2;
+    else if ([9, 10, 11, 12, 17, 18].includes(tag)) offset += 4;
+    else if (tag === 15) offset += 3;
+    else throw new Error(`Unsupported class constant tag: ${tag}`);
+  }
+
+  const skipAttributes = () => {
+    for (let i = 0, count = u2(); i < count; i++) {
+      u2();
+      const length = u4();
+      offset += length;
+    }
+  };
+  u2();
+  u2();
+  u2();
+  const interfaceCount = u2();
+  offset += interfaceCount * 2;
+
+  const descriptorSuffix = registry === 'item' ? 'Item;' : 'Block;';
+  const names: string[] = [];
+  for (let i = 0, count = u2(); i < count; i++) {
+    const access = u2();
+    const name = utf8.get(u2());
+    const descriptor = utf8.get(u2());
+    skipAttributes();
+    if ((access & 0x19) === 0x19 && name && descriptor?.endsWith(descriptorSuffix)) {
+      const id = name.toLowerCase();
+      if (!registryExcludes[registry].has(id)) names.push(id);
+    }
+  }
+  if (!names.includes('stone')) throw new Error(`${registry} registry was not found in the server jar.`);
+  return names.sort();
 }
 
 function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; items: string[]; blocks: string[] } {
@@ -137,7 +198,7 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
 
   if (tabs.length === 0) {
     fallbackTabs.sort((a, b) => Number(a.name.match(/\d+$/)?.[0]) - Number(b.name.match(/\d+$/)?.[0]));
-    tabs.push(...fallbackTabs.map((tab, index) => ({ name: `tab_${index + 1}`, items: tab.items })));
+    tabs.push(...fallbackTabs.map(tab => ({ items: tab.items })));
   }
   const orderedItems = [...new Set(tabs.flatMap(tab => tab.items))];
   if (tabs.length === 0 || orderedItems.length === 0) throw new Error('Creative tab item order was not found.');
@@ -220,6 +281,10 @@ function createWindow() {
     }
   });
 
+  ipcMain.on('log-atlas-generation-time', (_event, duration: number) => {
+    if (Number.isFinite(duration)) console.log(`Icon atlases generated in ${Math.round(duration)}ms`);
+  });
+
   // Serve local hardcoded files from the packaged app directory
   ipcMain.handle('get-hardcoded-content', async (_event, relPath: string) => {
     try {
@@ -256,10 +321,6 @@ function createWindow() {
   ipcMain.on('download-assets', async (event) => {
     try {
       await fs.access(CACHE_COMPLETE_FLAG);
-      const list = JSON.parse(await fs.readFile(path.join(CACHE_DIR, 'item-block-list.json'), 'utf8'));
-      if (!Array.isArray(list.tabs) || list.tabs.length === 0 || !Array.isArray(list.items) || list.items.length === 0) {
-        throw new Error('Creative tab order cache is outdated.');
-      }
       console.log('Assets are already cached. Sending ready signal.');
       event.sender.send('assets-downloaded', []);
     } catch {
@@ -269,25 +330,21 @@ function createWindow() {
 
         const startTime = Date.now();
 
-        // client.jar 다운로드
-        const url = 'https://piston-data.mojang.com/v1/objects/647abf5c48ac9211f7fa26b137519880b36b20a8/client.jar';
-        console.log('Downloading client.jar...');
-        const response = await axios<ArrayBuffer>({
-          url,
-          method: 'GET',
-          responseType: 'arraybuffer'
-        });
-        console.log(`Download complete: ${(response.data.byteLength / 1024 / 1024).toFixed(2)} MB`);
+        console.log('Downloading client.jar and server.jar...');
+        const [clientResponse, serverResponse] = await Promise.all([
+          axios<ArrayBuffer>({ url: clientUrl, method: 'GET', responseType: 'arraybuffer' }),
+          axios<ArrayBuffer>({ url: serverUrl, method: 'GET', responseType: 'arraybuffer' })
+        ]);
+        console.log(`Download complete: ${((clientResponse.data.byteLength + serverResponse.data.byteLength) / 1024 / 1024).toFixed(2)} MB`);
 
         // assets 폴더만 선택적으로 압축 해제
         console.log('Unzipping assets only...');
         const unzipStart = Date.now();
         
         const unzipped = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
-          unzip(new Uint8Array(response.data), {
+          unzip(new Uint8Array(clientResponse.data), {
             filter(file) {
-              return file.name === 'net/minecraft/world/item/CreativeModeTabs.class'
-                || (file.name.startsWith('assets/minecraft/') && !file.name.endsWith('/'));
+              return file.name.startsWith('assets/minecraft/') && !file.name.endsWith('/');
             }
           }, (err, data) => {
             if (err) reject(err);
@@ -296,6 +353,23 @@ function createWindow() {
         });
         
         console.log(`Unzip complete in ${Date.now() - unzipStart}ms`);
+
+        const serverBundle = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
+          unzip(new Uint8Array(serverResponse.data), {
+            filter: file => /^META-INF\/versions\/.+\/server-.+\.jar$/.test(file.name)
+          }, (err, data) => err ? reject(err) : resolve(data));
+        });
+        const bundledServer = Object.values(serverBundle)[0];
+        if (!bundledServer) throw new Error('Bundled server jar was not found.');
+        const serverClasses = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
+          unzip(bundledServer, {
+            filter: file => [
+              'net/minecraft/world/item/CreativeModeTabs.class',
+              'net/minecraft/world/item/Items.class',
+              'net/minecraft/world/level/block/Blocks.class'
+            ].includes(file.name)
+          }, (err, data) => err ? reject(err) : resolve(data));
+        });
 
         // 필요한 prefix만 추가 필터링
         const allNames = Object.keys(unzipped);
@@ -327,15 +401,19 @@ function createWindow() {
 
         console.log(`File writing complete in ${Date.now() - writeStart}ms`);
 
-        const creativeItems = extractCreativeItems(unzipped['net/minecraft/world/item/CreativeModeTabs.class']);
-        const assetNames = new Set(assetEntries);
-        creativeItems.blocks = creativeItems.items.filter(name =>
-          assetNames.has(`assets/minecraft/blockstates/${name}.json`)
-        );
+        const registryStart = Date.now();
+        const itemRegistry = extractRegistryNames(serverClasses['net/minecraft/world/item/Items.class'], 'item');
+        const blockRegistry = extractRegistryNames(serverClasses['net/minecraft/world/level/block/Blocks.class'], 'block');
+        const creativeItems = extractCreativeItems(serverClasses['net/minecraft/world/item/CreativeModeTabs.class']);
+        const creativeOrder = new Map(creativeItems.items.map((name, index) => [name, index]));
+        const byCreativeOrder = (a: string, b: string) => (creativeOrder.get(a) ?? Infinity) - (creativeOrder.get(b) ?? Infinity);
+        creativeItems.items = itemRegistry.sort(byCreativeOrder);
+        creativeItems.blocks = blockRegistry.sort(byCreativeOrder);
         await fs.writeFile(
           path.join(CACHE_DIR, 'item-block-list.json'),
-          JSON.stringify(creativeItems)
+          JSON.stringify({ registry: 'server-jar', tabs: creativeItems.tabs, items: creativeItems.items, blocks: creativeItems.blocks })
         );
+        console.log(`item-block-list.json generated in ${Date.now() - registryStart}ms`);
 
         await fs.writeFile(CACHE_COMPLETE_FLAG, new Date().toISOString());
         const totalTime = Date.now() - startTime;

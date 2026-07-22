@@ -17,7 +17,7 @@ interface ResolvedModel {
     ignoreDisplayIds?: string[] | Set<string>;
 }
 
-interface GeometryData {
+export interface GeometryData {
     positions: number[];
     normals: number[];
     uvs: number[];
@@ -27,7 +27,7 @@ interface GeometryData {
     uvTransform?: [number, number, number, number];
 }
 
-interface ModelData {
+export interface ModelData {
     modelMatrix: number[] | Float32Array;
     geometries: GeometryData[];
     geometryId: string;
@@ -67,7 +67,7 @@ type GeometryBatchBuilder = {
     }>;
 };
 
-type BlockDisplayTemplate = {
+export type BlockDisplayTemplate = {
     models: ModelData[];
     blockProps: Record<string, string>;
     volumes: Array<{ from: [number, number, number]; to: [number, number, number]; matrix: number[] }>;
@@ -969,7 +969,7 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
                     }
                 }
             }
-            const picked = bestMatch ? bestMatch.value : blockstate.variants[''];
+            const picked = bestMatch ? bestMatch.value : blockstate.variants[''] ?? entries[0]?.[1];
             if (picked) {
                 const applyList = Array.isArray(picked) ? picked : [picked];
                 if (applyList.length > 0) {
@@ -1587,6 +1587,17 @@ async function buildBuiltinBorderBetweenPlanesGeometry(texId, tintHex = 0xffffff
 
 // 불투명 경계 픽셀만 얇게 돌출해 림 효과를 주는 용도다.
 const extrudedItemGeometryCache = new Map(); // 텍스처 경로별로 돌출 지오메트리를 캐싱한다.
+
+export async function buildBlockIconTemplate(name: string, provider: PbdeAssetProvider): Promise<BlockDisplayTemplate | null> {
+    initializeAssetProvider(provider);
+    return prepareBlockDisplayTemplate({ name });
+}
+
+export async function buildItemIconModels(name: string, provider: PbdeAssetProvider): Promise<ModelData[] | null> {
+    initializeAssetProvider(provider);
+    const template = await prepareItemModelTemplate(name);
+    return template ? [{ modelMatrix: template.modelMatrix, geometries: template.geometries, geometryId: template.geometryId }] : null;
+}
 
 async function buildItemModelGeometryData(resolved) {
     if (!resolved) return null;
