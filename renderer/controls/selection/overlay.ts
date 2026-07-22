@@ -28,7 +28,7 @@ import {
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import type { GroupChildObject } from '../grouping/group';
-import { dragPreviewPositionNode, dragSelectedAttributeName } from '../../entityMaterial.js';
+import { dragPreviewPositionNode, dragSelectedAttributeName } from '../../entity-material';
 import { ConvexHull } from 'three/examples/jsm/math/ConvexHull.js';
 
 // --- Types & Interfaces ---

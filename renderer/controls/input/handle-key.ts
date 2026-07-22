@@ -15,7 +15,7 @@ import { resetCustomPivot } from '../pivot/custom-pivot-remove';
 import { removeShearFromSelection } from '../pivot/shear-remove';
 import { focusCameraOnSelection } from './camera';
 import { toggleBlockbenchScaleMode } from '../gizmo/blockbench-scale';
-import { toggleShading } from '../../entityMaterial.js';
+import { toggleShading } from '../../entity-material';
 import type { SelectionState, SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';

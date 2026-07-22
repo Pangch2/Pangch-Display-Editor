@@ -1,4 +1,4 @@
-import { Matrix4, MeshBasicNodeMaterial } from 'three/webgpu';
+import { Matrix4, MeshBasicNodeMaterial, type Texture } from 'three/webgpu';
 import {
   uniform,
   renderGroup,
@@ -25,7 +25,7 @@ import {
 export const dragSelectedAttributeName = 'dragSelected';
 export const dragDeltaMatrix = new Matrix4();
 
-const tintNodeCache = new Map();
+const tintNodeCache = new Map<number, ReturnType<typeof vec3>>();
 const shadingEnabled = uniform(1.0);
 const dragDeltaMatrixNode = uniform(dragDeltaMatrix).setGroup(renderGroup);
 const draggedPosition = modelWorldMatrixInverse
@@ -34,12 +34,12 @@ const draggedPosition = modelWorldMatrixInverse
   .mul(vec4(positionLocal, 1.0)).xyz;
 export const dragPreviewPositionNode = mix(positionLocal, draggedPosition, attribute(dragSelectedAttributeName, 'float'));
 
-const srgbToLinear = (c) => {
+const srgbToLinear = (c: number): number => {
   const x = Math.min(1, Math.max(0, c));
   return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
 };
 
-const getTintNode = (tintHex) => {
+const getTintNode = (tintHex?: number): ReturnType<typeof vec3> => {
   const normalizedTint = (tintHex ?? 0xffffff) >>> 0;
   let tintNode = tintNodeCache.get(normalizedTint);
   if (!tintNode) {
@@ -62,12 +62,12 @@ const scaledLight = mul(lightSum, float(0.6));
 const biasedLight = add(scaledLight, float(0.4));
 const directionalLight = pow(min(float(1.0), biasedLight), 2.2);
 
-export function toggleShading() {
+export function toggleShading(): boolean {
   shadingEnabled.value = 1 - shadingEnabled.value;
   return shadingEnabled.value === 1;
 }
 
-export function createEntityMaterial(diffuseTex, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0) {
+export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
 

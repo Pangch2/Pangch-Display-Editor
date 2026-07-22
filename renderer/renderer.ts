@@ -23,6 +23,7 @@ import {
     SRGBColorSpace
 } from 'three/webgpu';
 import { initAssets } from './asset-manager';
+import { getItemIconAtlas } from './ui/item-icon-atlas';
 import { loadedObjectGroup } from './load-project/upload-pbde';
 import { openWithAnimation, closeWithAnimation } from './ui/ui-open-close';
 import { initContextMenu } from './ui/context-menu';
@@ -378,6 +379,8 @@ async function startApp(): Promise<void> {
   try {
     // 에셋 캐싱/준비가 완료될 때까지 기다림
     await initAssets();
+    const atlas = await getItemIconAtlas();
+    window.dispatchEvent(new CustomEvent('pde:item-icon-atlas-ready', { detail: atlas }));
   } catch (error) {
     console.error("Asset initialization failed:", error);
     // 에러 발생 시 사용자에게 알림 (예: 로딩 텍스트 변경)

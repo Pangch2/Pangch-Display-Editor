@@ -19,7 +19,7 @@ import {
     MeshBasicMaterial,
     InstancedBufferAttribute
 } from 'three/webgpu';
-import { dragDeltaMatrix, dragSelectedAttributeName } from '../../entityMaterial.js';
+import { dragDeltaMatrix, dragSelectedAttributeName } from '../../entity-material';
 import {
     blockbenchScaleMode,
     computeBlockbenchPivotFrame,

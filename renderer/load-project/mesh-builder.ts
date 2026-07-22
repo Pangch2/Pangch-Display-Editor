@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { compressSync, strToU8 } from 'fflate';
-import { createEntityMaterial, dragSelectedAttributeName } from '../entityMaterial.js';
+import { createEntityMaterial, dragSelectedAttributeName } from '../entity-material';
 import { deleteSelectedItems } from '../controls/grouping/delete';
 import * as Overlay from '../controls/selection/overlay';
 import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject } from './scene-parser';

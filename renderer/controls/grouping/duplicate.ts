@@ -13,7 +13,7 @@ import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
 import * as Overlay from '../selection/overlay';
 import { isPbdeLogEnabled, pbdeLogNames } from '../../load-project/pbde-log';
-import { dragSelectedAttributeName } from '../../entityMaterial.js';
+import { dragSelectedAttributeName } from '../../entity-material';
 
 const getDisplayType = Overlay.getDisplayType;
 

@@ -18,6 +18,8 @@
     "noImplicitReturns": true
   },
   "include": [
+    "main.ts",
+    "preload.ts",
     "renderer/**/*.ts",
     "renderer/**/*.d.ts",
     "renderer/**/*.tsx",

@@ -1,15 +1,16 @@
 {
   "name": "pangch-display-editor",
   "version": "0.0.1",
-  "main": "main.js",
+  "main": "electron-dist/main.js",
   "type": "module",
   "scripts": {
     "dev:renderer": "vite",
-    "dev:main": "cross-env NODE_ENV=development nodemon --watch main.js --exec electron .",
+    "dev:main": "cross-env NODE_ENV=development nodemon --watch main.ts --watch preload.ts --exec \"tsc -p tsconfig.electron.json && electron .\"",
     "dev": "concurrently --kill-others-on-fail -n \"main,renderer\" \"npm:dev:main\" \"npm:dev:renderer\"",
     "build": "vite build",
-    "pack": "electron-builder --dir",
-    "dist": "npm run build && electron-builder",
+    "compile:electron": "tsc -p tsconfig.electron.json",
+    "pack": "npm run compile:electron && electron-builder --dir",
+    "dist": "npm run build && npm run compile:electron && electron-builder",
     "type-check": "tsc --noEmit"
   },
   "devDependencies": {
@@ -44,8 +45,7 @@
     },
     "files": [
   "renderer-dist/**/*",
-      "main.js",
-      "preload.js",
+      "electron-dist/**/*",
       "hardcoded/**/*"
     ],
     "icon": "resources/Pangch-Face.ico",

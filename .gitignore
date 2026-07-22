@@ -10,6 +10,7 @@ out/
 build/
 release/
 renderer-dist/
+electron-dist/
 *.asar
 *.app
 *.dmg
