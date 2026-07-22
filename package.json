@@ -16,7 +16,7 @@
     "typescript": "^7.0.2",
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
-    "electron": "^43.1.1",
+    "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
     "vite": "^8.1.5",
     "nodemon": "^3.1.14",
@@ -25,7 +25,7 @@
   "dependencies": {
     "axios": "^1.17.0",
     "fflate": "^0.8.3",
-    "p-limit": "^7.3.0"
+    "p-limit": "^7.3.1"
   },
   "author": {
     "name": "Pangch"
