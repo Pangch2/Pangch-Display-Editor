@@ -31,6 +31,7 @@ export interface ModelData {
     modelMatrix: number[] | Float32Array;
     geometries: GeometryData[];
     geometryId: string;
+    fromHardcoded?: boolean;
 }
 
 interface RenderItem {
@@ -71,6 +72,7 @@ export type BlockDisplayTemplate = {
     models: ModelData[];
     blockProps: Record<string, string>;
     volumes: Array<{ from: [number, number, number]; to: [number, number, number]; matrix: number[] }>;
+    fromHardcoded?: boolean;
 };
 
 type ItemModelTemplate = {
@@ -80,6 +82,7 @@ type ItemModelTemplate = {
     modelMatrix: number[];
     geometries: GeometryData[];
     geometryId: string;
+    fromHardcoded: boolean;
 };
 
 // tintColor 모듈을 워커에서 직접 불러올 수 없으므로 여기에서 구현을 포함한다.
@@ -291,6 +294,7 @@ function getHardcodedModelCandidates(modelId) {
     } else if (normalized.startsWith('block/')) {
         const withoutBlock = normalized.slice('block/'.length);
         push(`block/${withoutBlock}`);
+        push(`item/${withoutBlock}`);
     } else {
         push(`block/${normalized}`);
         push(`item/${normalized}`);
@@ -995,6 +999,7 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
 
         const allGeometryData = [];
         const volumes: BlockDisplayTemplate['volumes'] = [];
+        let fromHardcoded = false;
         // 항목명에서 "red_banner" 형태의 문자열을 분석해 틴트 색상을 추출한다.
         let bannerColorHex = null;
         try {
@@ -1027,6 +1032,7 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
             if (!apply?.model) continue;
             const resolved = await resolveModelTree(apply.model, modelCache);
             if (!resolved || !resolved.elements) continue;
+            fromHardcoded ||= resolved.fromHardcoded;
             
             const modelMatrix = new THREE.Matrix4();
             applyBlockstateRotation(modelMatrix, apply.x || 0, apply.y || 0);
@@ -1059,7 +1065,8 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
             return {
                 models: allGeometryData,
                 blockProps: props,
-                volumes
+                volumes,
+                fromHardcoded
             };
         }
 
@@ -1596,7 +1603,12 @@ export async function buildBlockIconTemplate(name: string, provider: PbdeAssetPr
 export async function buildItemIconModels(name: string, provider: PbdeAssetProvider): Promise<ModelData[] | null> {
     initializeAssetProvider(provider);
     const template = await prepareItemModelTemplate(name);
-    return template ? [{ modelMatrix: template.modelMatrix, geometries: template.geometries, geometryId: template.geometryId }] : null;
+    return template ? [{
+        modelMatrix: template.modelMatrix,
+        geometries: template.geometries,
+        geometryId: template.geometryId,
+        fromHardcoded: template.fromHardcoded
+    }] : null;
 }
 
 async function buildItemModelGeometryData(resolved) {
@@ -1666,7 +1678,8 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
         tints: tintList || null,
         modelMatrix: modelMatrix.elements.slice(),
         geometries: geomData,
-        geometryId: modelId
+        geometryId: modelId,
+        fromHardcoded: resolved.fromHardcoded
     };
 }
 

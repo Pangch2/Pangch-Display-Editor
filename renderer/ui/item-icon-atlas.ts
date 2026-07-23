@@ -5,16 +5,22 @@ import { buildBlockIconTemplate, buildItemIconModels, type ModelData } from '../
 import { buildTextureAtlasForRenderList, type TexturePixelData } from '../load-project/texture-atlas-builder';
 
 const iconSize = 32;
-const atlasVersion = '4';
-const minecraftGuiRotation = new THREE.Euler(
-    THREE.MathUtils.degToRad(30),
-    THREE.MathUtils.degToRad(225),
-    0,
-    'XYZ'
-);
+const atlasVersion = '13';
+const defaultBlockGuiTransform = {
+    rotation: [30, 225, 0],
+    translation: [0, 0, 0],
+    scale: [0.625, 0.625, 0.625]
+};
 
 type IconMap = Map<string, { x: number; y: number; size: number }>;
-type PreparedIcon = { name: string; models: ModelData[]; rotateAsBlock: boolean };
+type GuiTransform = { rotation?: number[]; translation?: number[]; scale?: number[] };
+type PreparedIcon = {
+    name: string;
+    models: ModelData[];
+    applyGuiTransform: boolean;
+    guiTransform?: GuiTransform | null;
+    blockProps?: Record<string, string>;
+};
 
 function atlasGrid(count: number): { columns: number; width: number; height: number } {
     const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
@@ -32,10 +38,147 @@ function cloneModels(models: ModelData[]): ModelData[] {
     }));
 }
 
+const blockPropertyDefaults: Record<string, string[]> = {
+    attachment: ['floor'],
+    axis: ['y'],
+    distance: ['7'],
+    enabled: ['true'],
+    face: ['wall'],
+    facing: ['north'],
+    half: ['bottom', 'lower'],
+    hinge: ['left'],
+    layers: ['1'],
+    part: ['foot'],
+    shape: ['straight', 'north_south'],
+    thickness: ['tip'],
+    type: ['single', 'bottom'],
+    vertical_direction: ['up']
+};
+
+function preferredBlockProperty(key: string, values: string[]): string | undefined {
+    return [...(blockPropertyDefaults[key] ?? []), 'false', '0', 'none', '1']
+        .find(value => values.includes(value));
+}
+
+function defaultBlockProperties(blockstate: any): Record<string, string> {
+    const candidates: Record<string, string>[] = Object.keys(blockstate?.variants ?? {}).map(key =>
+        Object.fromEntries(key.split(',').filter(Boolean).map(part => part.split('=', 2))) as Record<string, string>
+    );
+    if (candidates.length) {
+        const values = new Map<string, Set<string>>();
+        candidates.forEach(candidate => Object.entries(candidate).forEach(([key, value]) =>
+            (values.get(key) ?? values.set(key, new Set()).get(key)!).add(value)
+        ));
+        const preferred = new Map([...values].map(([key, options]) =>
+            [key, preferredBlockProperty(key, [...options])]
+        ));
+        return candidates.reduce((best, candidate) => {
+            const score = (value: Record<string, string>) =>
+                Object.entries(value).filter(([key, option]) => preferred.get(key) === option).length;
+            return score(candidate) > score(best) ? candidate : best;
+        }, candidates[0]);
+    }
+
+    const values = new Map<string, Set<string>>();
+    const collect = (condition: any): void => {
+        if (!condition || typeof condition !== 'object') return;
+        for (const [key, value] of Object.entries(condition)) {
+            if (key === 'OR' || key === 'AND') (Array.isArray(value) ? value : [value]).forEach(collect);
+            else String(value).split('|').forEach(option =>
+                (values.get(key) ?? values.set(key, new Set()).get(key)!).add(option)
+            );
+        }
+    };
+    blockstate?.multipart?.forEach((part: any) => collect(part.when));
+    return Object.fromEntries([...values].flatMap(([key, options]) => {
+        const value = preferredBlockProperty(key, [...options]);
+        return value ? [[key, value]] : [];
+    }));
+}
+
+const blockIconNamePromises = new Map<string, Promise<string>>();
+
+function getBlockIconName(name: string): Promise<string> {
+    let promise = blockIconNamePromises.get(name);
+    if (!promise) {
+        promise = (async () => {
+            const [namespace, path] = name.includes(':') ? name.split(':', 2) : ['minecraft', name];
+            const blockstate = await readJson(`assets/${namespace}/blockstates/${path}.json`)
+                ?? await readJson(`hardcoded/blockstates/${path}.json`);
+            const properties = defaultBlockProperties(blockstate);
+            if (path.endsWith('shulker_box')) properties.facing = 'up';
+            const suffix = Object.entries(properties).map(([key, value]) => `${key}=${value}`).join(',');
+            return suffix ? `${name}[${suffix}]` : name;
+        })();
+        blockIconNamePromises.set(name, promise);
+    }
+    return promise;
+}
+
+function findDisplayModelId(value: any): string | null {
+    if (typeof value === 'string') return value;
+    if (!value || typeof value !== 'object') return null;
+    if (typeof value.base === 'string') return value.base;
+    if (typeof value.model === 'string') return value.model;
+    for (const key of ['model', 'fallback', 'on_true', 'on_false']) {
+        const found = findDisplayModelId(value[key]);
+        if (found) return found;
+    }
+    for (const key of ['models', 'cases', 'entries']) {
+        for (const entry of Array.isArray(value[key]) ? value[key] : []) {
+            const found = findDisplayModelId(entry);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+function needsHardcodedItemGeometry(definition: any): boolean {
+    const type = definition?.model?.type;
+    return typeof type === 'string' && type !== 'minecraft:model';
+}
+
+async function usesHardcodedItemGeometry(name: string): Promise<boolean> {
+    const [namespace, path] = name.includes(':') ? name.split(':', 2) : ['minecraft', name];
+    return needsHardcodedItemGeometry(await readJson(`assets/${namespace}/items/${path}.json`));
+}
+
+async function getGuiTransform(name: string): Promise<GuiTransform | null> {
+    const [namespace, path] = name.includes(':') ? name.split(':', 2) : ['minecraft', name];
+    const definition = await readJson(`assets/${namespace}/items/${path}.json`);
+    let modelId = findDisplayModelId(definition?.model) ?? `${namespace}:item/${path}`;
+    const seen = new Set<string>();
+    while (modelId && !seen.has(modelId)) {
+        seen.add(modelId);
+        const [modelNamespace, modelPath] = modelId.includes(':') ? modelId.split(':', 2) : ['minecraft', modelId];
+        const model = await readJson(`assets/${modelNamespace}/models/${modelPath}.json`);
+        if (!model) return null;
+        if (model.display?.gui) return model.display.gui;
+        modelId = model.parent;
+    }
+    return null;
+}
+
 if (import.meta.env.DEV) {
     const grid = atlasGrid(1201);
     console.assert(grid.columns === 35 && grid.width * grid.height / iconSize ** 2 >= 1201, 'Atlas grid is too small.');
-    console.assert(Math.round(THREE.MathUtils.radToDeg(minecraftGuiRotation.y)) === 225, 'Minecraft GUI rotation changed.');
+    console.assert(
+        defaultBlockProperties({ variants: {
+            'facing=east,half=bottom,shape=inner_left': {},
+            'facing=north,half=bottom,shape=straight': {}
+        }}).shape === 'straight',
+        'Default block icon properties changed.'
+    );
+    console.assert(
+        findDisplayModelId({ type: 'minecraft:select', fallback: { type: 'minecraft:special', base: 'minecraft:item/chest' } })
+            === 'minecraft:item/chest',
+        'Special item display model lookup failed.'
+    );
+    console.assert(
+        needsHardcodedItemGeometry({ model: { type: 'minecraft:special' } })
+            && !needsHardcodedItemGeometry({ model: { type: 'minecraft:model' } }),
+        'Hardcoded item geometry selection failed.'
+    );
 }
 
 export type ItemIconAtlas = {
@@ -77,14 +220,28 @@ async function loadTexturePixels(texPath: string): Promise<TexturePixelData | nu
     }
 }
 
-async function prepareIcons(names: string[], blocks: boolean): Promise<PreparedIcon[]> {
+async function prepareIcons(names: string[], blocks: boolean, blockNames = new Set<string>()): Promise<PreparedIcon[]> {
     const icons: PreparedIcon[] = [];
     for (let start = 0; start < names.length; start += 32) {
-        const chunk = await Promise.all(names.slice(start, start + 32).map(async name => {
-            const models = blocks
-                ? (await buildBlockIconTemplate(name, mainThreadAssetProvider))?.models
-                : await buildItemIconModels(`${name}[display=gui]`, mainThreadAssetProvider);
-            return models ? { name, models: cloneModels(models), rotateAsBlock: blocks } : null;
+        const chunk = await Promise.all(names.slice(start, start + 32).map(async (name): Promise<PreparedIcon | null> => {
+            const itemModels = await buildItemIconModels(`${name}[display=gui]`, mainThreadAssetProvider);
+            const blockIcon = blocks || blockNames.has(name) ? await getBlockIconName(name) : null;
+            const blockTemplate = blockIcon
+                ? await buildBlockIconTemplate(blockIcon, mainThreadAssetProvider)
+                : null;
+            const applyHardcodedGuiTransform = !!itemModels?.some(model => model.fromHardcoded)
+                && await usesHardcodedItemGeometry(name);
+            const useBlock = !!blockTemplate && (
+                !itemModels || !!blockTemplate.fromHardcoded && applyHardcodedGuiTransform
+            );
+            const models = useBlock ? blockTemplate?.models : itemModels;
+            return models ? {
+                name,
+                models: cloneModels(models),
+                applyGuiTransform: useBlock || applyHardcodedGuiTransform,
+                guiTransform: useBlock || applyHardcodedGuiTransform ? await getGuiTransform(name) : null,
+                blockProps: useBlock ? blockTemplate?.blockProps : undefined
+            } : null;
         }));
         icons.push(...chunk.filter((icon): icon is PreparedIcon => icon !== null));
     }
@@ -109,9 +266,16 @@ function createModelGroup(
     materials: Map<string, THREE.Material>
 ): THREE.Group {
     const group = new THREE.Group();
-    if (icon.rotateAsBlock) {
-        group.rotation.copy(minecraftGuiRotation);
-        group.scale.setScalar(0.625);
+    if (icon.applyGuiTransform) {
+        const { rotation, translation, scale } = icon.guiTransform ?? defaultBlockGuiTransform;
+        group.position.set(translation?.[0] ?? 0, translation?.[1] ?? 0, translation?.[2] ?? 0).multiplyScalar(1 / 16);
+        group.rotation.set(
+            THREE.MathUtils.degToRad(rotation?.[0] ?? 0),
+            THREE.MathUtils.degToRad(rotation?.[1] ?? 0),
+            THREE.MathUtils.degToRad(rotation?.[2] ?? 0),
+            'XYZ'
+        );
+        group.scale.set(scale?.[0] ?? 1, scale?.[1] ?? 1, scale?.[2] ?? 1);
     }
 
     for (const model of icon.models) for (const part of model.geometries) {
@@ -160,14 +324,14 @@ async function renderIcon(
     const bounds = new THREE.Box3().setFromObject(group);
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
-    const viewSize = Math.max(size.x, size.y) / 0.88 || 1;
+    const viewSize = Math.max(1, size.x, size.y) / 0.88;
     camera.left = camera.bottom = -viewSize / 2;
     camera.right = camera.top = viewSize / 2;
     camera.position.set(center.x, center.y, center.z + Math.max(10, size.z * 2));
     camera.lookAt(center);
     camera.updateProjectionMatrix();
 
-    await renderer.renderAsync(scene, camera);
+    renderer.render(scene, camera);
     scene.remove(group);
     group.traverse(object => {
         if ((object as THREE.Mesh).isMesh) (object as THREE.Mesh).geometry.dispose();
@@ -245,6 +409,12 @@ async function loadAtlases(): Promise<ItemIconAtlas | null> {
     const itemNames = [...new Set<string>(list?.items ?? [])];
     const blockNames = [...new Set<string>(list?.blocks ?? [])];
     const [itemImage, blockImage] = await Promise.all([loadAtlas('item-atlas.png'), loadAtlas('block-atlas.png')]);
+    const itemGrid = atlasGrid(itemNames.length);
+    const blockGrid = atlasGrid(blockNames.length);
+    if (
+        itemImage?.width !== itemGrid.width || itemImage.height !== itemGrid.height
+        || blockImage?.width !== blockGrid.width || blockImage.height !== blockGrid.height
+    ) return null;
     return itemImage && blockImage ? {
         itemImage,
         blockImage,
@@ -259,12 +429,12 @@ async function createAtlases(): Promise<ItemIconAtlas> {
     const blockNames = [...new Set<string>(list?.blocks ?? [])];
     const atlasStart = performance.now();
     const [itemEntries, blockEntries] = await Promise.all([
-        prepareIcons(itemNames, false),
+        prepareIcons(itemNames, false, new Set(blockNames)),
         prepareIcons(blockNames, true)
     ]);
     const entries = [...itemEntries, ...blockEntries];
     const textureAtlas = await buildTextureAtlasForRenderList(
-        entries.map(entry => ({ type: 'itemDisplayModel', models: entry.models })),
+        entries.map(entry => ({ type: 'itemDisplayModel', models: entry.models, blockProps: entry.blockProps })),
         loadTexturePixels
     );
     if (!textureAtlas) throw new Error('Failed to build the item icon texture atlas.');

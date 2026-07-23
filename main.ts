@@ -17,9 +17,32 @@ const serverUrl = 'https://piston-data.mojang.com/v1/objects/bc881a3fc6e63c490e6
 // For reading hardcoded JSON at runtime, prefer resolved path within the asar; when unpacked dev, use __dirname.
 const APP_ROOT = path.dirname(__dirname);
 const HARDCODED_DIR = path.join(APP_ROOT, 'hardcoded');
+const blockColors = ['white', 'light_gray', 'gray', 'black', 'brown', 'red', 'orange', 'yellow', 'lime', 'green', 'cyan', 'light_blue', 'blue', 'purple', 'magenta', 'pink'];
 
 type ConstantPoolEntry = [number, string | number, number?] | undefined;
 type CreativeTab = { name?: string; items: string[] };
+type RegistryList = { tabs?: CreativeTab[]; items: string[]; blocks: string[] };
+
+async function includeHardcodedRegistryItems(registry: RegistryList): Promise<boolean> {
+  const modelNames = (await fs.readdir(path.join(HARDCODED_DIR, 'models', 'block')))
+    .filter(name => name.endsWith('.json'))
+    .map(name => name.slice(0, -5));
+  const itemNames = (await Promise.all(modelNames.map(async name => {
+    try {
+      await fs.access(path.join(CACHE_DIR, 'assets', 'minecraft', 'items', `${name}.json`));
+      return name;
+    } catch {
+      return null;
+    }
+  }))).filter((name): name is string => !!name);
+  const previousItems = registry.items.join('\0');
+  const previousBlocks = registry.blocks.join('\0');
+  const hadTabs = !!registry.tabs;
+  registry.items = [...new Set([...registry.items, ...registry.blocks, ...itemNames])];
+  registry.blocks = [...new Set([...registry.blocks, ...itemNames])];
+  delete registry.tabs;
+  return hadTabs || registry.items.join('\0') !== previousItems || registry.blocks.join('\0') !== previousBlocks;
+}
 
 const registryExcludes = {
   item: new Set(['air']),
@@ -84,7 +107,7 @@ function extractRegistryNames(classBytes: Uint8Array, registry: keyof typeof reg
   return names.sort();
 }
 
-function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; items: string[]; blocks: string[] } {
+function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; items: string[]; blocks: string[]; coloredItems: string[] } {
   const view = new DataView(classBytes.buffer, classBytes.byteOffset, classBytes.byteLength);
   let offset = 0;
   const u1 = () => view.getUint8(offset++);
@@ -122,12 +145,13 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
     const value = pool[index]?.[1];
     return typeof value === 'string' ? value : undefined;
   };
-  const field = (index: number): { owner?: string; name?: string } | null => {
+  const field = (index: number): { owner?: string; name?: string; descriptor?: string } | null => {
     const entry = pool[index];
     if (entry?.[0] !== 9) return null;
     return {
       owner: utf8(Number(pool[Number(entry[1])]?.[1])),
-      name: utf8(Number(pool[Number(entry[2])]?.[1]))
+      name: utf8(Number(pool[Number(entry[2])]?.[1])),
+      descriptor: utf8(Number(pool[Number(entry[2])]?.[2]))
     };
   };
   const skipAttributes = () => {
@@ -151,6 +175,7 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
   const tabs: CreativeTab[] = [];
   const fallbackTabs: CreativeTab[] = [];
   const allBlocks = new Set<string>();
+  const coloredItems = new Set<string>();
   for (let i = 0, count = u2(); i < count; i++) {
     u2();
     const methodName = utf8(u2());
@@ -179,8 +204,15 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
       if (!ref?.name) continue;
       const name = ref.name.toLowerCase();
       if (ref.owner === 'net/minecraft/world/item/Items') {
-        if (!seen.has(name)) ordered.push(name);
-        seen.add(name);
+        const isColorCollection = ref.descriptor?.endsWith('/ColorCollection;');
+        const names = isColorCollection
+          ? blockColors.map(color => `${color}_${name.replace(/^dyed_/, '')}`)
+          : [name];
+        names.forEach(itemName => {
+          if (!seen.has(itemName)) ordered.push(itemName);
+          seen.add(itemName);
+          if (isColorCollection) coloredItems.add(itemName);
+        });
       } else if (ref.owner === 'net/minecraft/world/level/block/Blocks') {
         allBlocks.add(name);
       }
@@ -202,7 +234,7 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
   }
   const orderedItems = [...new Set(tabs.flatMap(tab => tab.items))];
   if (tabs.length === 0 || orderedItems.length === 0) throw new Error('Creative tab item order was not found.');
-  return { tabs, items: orderedItems, blocks: [...allBlocks] };
+  return { tabs, items: orderedItems, blocks: [...allBlocks], coloredItems: [...coloredItems] };
 }
 
 function createWindow() {
@@ -321,6 +353,11 @@ function createWindow() {
   ipcMain.on('download-assets', async (event) => {
     try {
       await fs.access(CACHE_COMPLETE_FLAG);
+      const registryPath = path.join(CACHE_DIR, 'item-block-list.json');
+      const registry = JSON.parse(await fs.readFile(registryPath, 'utf8')) as RegistryList;
+      if (await includeHardcodedRegistryItems(registry)) {
+        await fs.writeFile(registryPath, JSON.stringify(registry));
+      }
       console.log('Assets are already cached. Sending ready signal.');
       event.sender.send('assets-downloaded', []);
     } catch {
@@ -405,13 +442,16 @@ function createWindow() {
         const itemRegistry = extractRegistryNames(serverClasses['net/minecraft/world/item/Items.class'], 'item');
         const blockRegistry = extractRegistryNames(serverClasses['net/minecraft/world/level/block/Blocks.class'], 'block');
         const creativeItems = extractCreativeItems(serverClasses['net/minecraft/world/item/CreativeModeTabs.class']);
+        itemRegistry.push(...creativeItems.coloredItems);
+        blockRegistry.push(...creativeItems.coloredItems.filter(name => unzipped[`assets/minecraft/blockstates/${name}.json`]));
         const creativeOrder = new Map(creativeItems.items.map((name, index) => [name, index]));
         const byCreativeOrder = (a: string, b: string) => (creativeOrder.get(a) ?? Infinity) - (creativeOrder.get(b) ?? Infinity);
-        creativeItems.items = itemRegistry.sort(byCreativeOrder);
-        creativeItems.blocks = blockRegistry.sort(byCreativeOrder);
+        creativeItems.items = [...new Set([...itemRegistry, ...blockRegistry])].sort(byCreativeOrder);
+        creativeItems.blocks = [...new Set(blockRegistry)].sort(byCreativeOrder);
+        await includeHardcodedRegistryItems(creativeItems);
         await fs.writeFile(
           path.join(CACHE_DIR, 'item-block-list.json'),
-          JSON.stringify({ registry: 'server-jar', tabs: creativeItems.tabs, items: creativeItems.items, blocks: creativeItems.blocks })
+          JSON.stringify({ registry: 'server-jar', items: creativeItems.items, blocks: creativeItems.blocks })
         );
         console.log(`item-block-list.json generated in ${Date.now() - registryStart}ms`);
 
