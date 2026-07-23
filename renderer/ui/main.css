@@ -151,12 +151,95 @@ canvas {
 
 #scene-toolbar i {
   font: normal 400 18.75px/1 'lucide';
+  cursor: pointer;
 }
 
 #scene-toolbar .player-head-icon {
   width: 20px;
   height: 20px;
   background: url('../../resources/player_head.svg') center / contain no-repeat;
+}
+
+.block-item-search {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 70px;
+  box-sizing: border-box;
+  background: rgba(10, 10, 12, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.block-item-search[hidden] {
+  display: none;
+}
+
+.block-item-search-window {
+  display: flex;
+  flex-direction: column;
+  width: 40%;
+  height: 80%;
+  overflow: hidden;
+  border: 1px solid #45454a;
+  border-radius: 8px;
+  box-sizing: border-box;
+  background: #252528;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  color: #f0f0f0;
+}
+
+.block-item-search-window header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #3a3a3e;
+  color: #aaa;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.block-item-search-window button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #aaa;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.block-item-search-window button:hover {
+  background: #3b3b40;
+  color: #f0f0f0;
+}
+
+.block-item-search-content {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  background: #1e1e21;
+  text-align: center;
+  scrollbar-color: #4a4a50 transparent;
+  scrollbar-width: thin;
+}
+
+.block-item-search-grid {
+  width: 100%;
+}
+
+.block-item-search-grid canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
 }
 
 .panel-drag-preview {

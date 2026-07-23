@@ -18,11 +18,36 @@ const serverUrl = 'https://piston-data.mojang.com/v1/objects/bc881a3fc6e63c490e6
 const APP_ROOT = path.dirname(__dirname);
 const HARDCODED_DIR = path.join(APP_ROOT, 'hardcoded');
 const blockColors = ['white', 'light_gray', 'gray', 'black', 'brown', 'red', 'orange', 'yellow', 'lime', 'green', 'cyan', 'light_blue', 'blue', 'purple', 'magenta', 'pink'];
+const testBlockVariants = ['start', 'log', 'fail', 'accept'].map(mode => `test_block[mode=${mode}]`);
+const lightVariants = Array.from({ length: 16 }, (_, index) => `light[level=${15 - index}]`);
 
 type ConstantPoolEntry = [number, string | number, number?] | undefined;
 type CreativeTab = { name?: string; items: string[] };
 type RegistryTab = { name?: string; entries: string[] };
-type RegistryList = { itemTabs?: RegistryTab[]; blockTabs?: RegistryTab[]; items: string[]; blocks: string[] };
+type RegistryList = {
+  itemTabs?: RegistryTab[];
+  blockTabs?: RegistryTab[];
+  items: string[];
+  blocks: string[];
+  threeDimensionalItems: string[];
+};
+
+const registryNameOverrides: Record<string, string> = {
+  dry_short_grass: 'short_dry_grass',
+  dry_tall_grass: 'tall_dry_grass',
+  cut_standstone_slab: 'cut_sandstone_slab',
+  potted_azalea: 'potted_azalea_bush',
+  potted_flowering_azalea: 'potted_flowering_azalea_bush'
+};
+
+function registryName(fieldName: string): string {
+  const name = fieldName.toLowerCase();
+  return registryNameOverrides[name] ?? name;
+}
+
+function expandStatefulBlocks(names: string[]): string[] {
+  return names.flatMap(name => name === 'test_block' ? testBlockVariants : name === 'light' ? lightVariants : [name]);
+}
 
 async function includeHardcodedRegistryItems(registry: RegistryList): Promise<boolean> {
   const modelNames = (await fs.readdir(path.join(HARDCODED_DIR, 'models', 'block')))
@@ -39,12 +64,28 @@ async function includeHardcodedRegistryItems(registry: RegistryList): Promise<bo
   const previousItems = registry.items.join('\0');
   const previousBlocks = registry.blocks.join('\0');
   const previousTabs = JSON.stringify([registry.itemTabs, registry.blockTabs]);
+  registry.items = [...new Set(registry.items.map(registryName))];
+  registry.blocks = [...new Set(registry.blocks.map(registryName))];
+  registry.threeDimensionalItems = [...new Set(registry.threeDimensionalItems.map(registryName))];
+  registry.itemTabs?.forEach(tab => tab.entries = [...new Set(tab.entries.map(registryName))]);
+  registry.blockTabs?.forEach(tab => tab.entries = [...new Set(tab.entries.map(registryName))]);
   registry.items = [...new Set([...registry.items, ...registry.blocks, ...itemNames])].filter(name => !isRegistryExcluded(name, 'item'));
+  const blockItemNames = (await Promise.all(registry.items.map(async name => {
+    try {
+      await fs.access(path.join(CACHE_DIR, 'assets', 'minecraft', 'blockstates', `${name}.json`));
+      return name;
+    } catch {
+      return null;
+    }
+  }))).filter((name): name is string => !!name);
   const itemOrder = new Map(registry.items.map((name, index) => [name, index]));
-  registry.blocks = [...new Set([...registry.blocks, ...itemNames])]
+  registry.blocks = [...new Set([...registry.blocks, ...itemNames, ...blockItemNames])]
     .filter(name => !isRegistryExcluded(name, 'block'))
     .sort((a, b) => (itemOrder.get(a) ?? Infinity) - (itemOrder.get(b) ?? Infinity));
+  registry.blocks = expandStatefulBlocks(registry.blocks);
+  registry.threeDimensionalItems = [...new Set([...registry.threeDimensionalItems, ...itemNames])];
   if (registry.itemTabs && registry.blockTabs) {
+    registry.blockTabs.forEach(tab => tab.entries = expandStatefulBlocks(tab.entries));
     for (const [type, tabs] of [['items', registry.itemTabs], ['blocks', registry.blockTabs]] as const) {
       const etcTab = tabs.find(tab => tab.name === 'etc') ?? { name: 'etc', entries: [] };
       const searchItems = new Set(tabs.filter(tab => tab !== etcTab).flatMap(tab => tab.entries));
@@ -58,8 +99,8 @@ async function includeHardcodedRegistryItems(registry: RegistryList): Promise<bo
 }
 
 const registryExcludes = {
-  item: new Set(['air', '*_air', '*_wall_sign', '*_wall_hanging_sign', 'player_head']),
-  block: new Set(['air', '*_air', '*_wall_sign', '*_wall_hanging_sign', 'player_head'])
+  item: new Set(['air', '*_air', 'moving_piston', '*_wall_sign', '*_wall_hanging_sign', 'player_head', 'bubble_column', '*_wall_head','*_wall_skull', 'wool', 'end_portal', 'end_gateway']),
+  block: new Set(['air', '*_air', 'moving_piston', '*_wall_sign', '*_wall_hanging_sign', 'player_head', 'water', 'lava', 'barrier', 'bubble_column', '*_wall_head', '*_wall_skull', 'wool', 'end_portal', 'end_gateway'])
 };
 
 function isRegistryExcluded(id: string, registry: keyof typeof registryExcludes): boolean {
@@ -82,6 +123,16 @@ function weatheringCopperNames(name: string, methods: string[], hasItem: (name: 
 }
 
 if (process.env.NODE_ENV === 'development') {
+  console.assert(registryName('POTTED_AZALEA') === 'potted_azalea_bush', 'Registry name override failed.');
+  console.assert(
+    expandStatefulBlocks(['stone', 'test_block']).join(',') ===
+      'stone,test_block[mode=start],test_block[mode=log],test_block[mode=fail],test_block[mode=accept]',
+    'Test block variant expansion failed.'
+  );
+  console.assert(
+    expandStatefulBlocks(['light']).join(',') === Array.from({ length: 16 }, (_, index) => `light[level=${15 - index}]`).join(','),
+    'Light block variant expansion failed.'
+  );
   console.assert(
     weatheringCopperNames('copper_chest', ['forEach'], name => !name.startsWith('waxed_oxidized_')).join(',') ===
       'copper_chest,exposed_copper_chest,weathered_copper_chest,oxidized_copper_chest,waxed_copper_chest,waxed_exposed_copper_chest,waxed_weathered_copper_chest',
@@ -135,7 +186,7 @@ function extractRegistryNames(classBytes: Uint8Array, registry: keyof typeof reg
     const descriptor = utf8.get(u2());
     skipAttributes();
     if ((access & 0x19) === 0x19 && name && descriptor?.endsWith(descriptorSuffix)) {
-      const id = name.toLowerCase();
+      const id = registryName(name);
       if (!isRegistryExcluded(id, registry)) names.push(id);
     }
   }
@@ -245,7 +296,7 @@ function extractCreativeItems(classBytes: Uint8Array, hasItem = (_name: string) 
       if (code[cursor] !== 0xb2) continue;
       const ref = field((code[cursor + 1] << 8) | code[cursor + 2]);
       if (!ref?.name) continue;
-      const name = ref.name.toLowerCase();
+      const name = registryName(ref.name);
       if (ref.owner === 'net/minecraft/world/item/Items') {
         const isColorCollection = ref.descriptor?.endsWith('/ColorCollection;');
         const isWeatheringCopperCollection = ref.descriptor?.endsWith('/WeatheringCopperCollection;');
@@ -267,6 +318,7 @@ function extractCreativeItems(classBytes: Uint8Array, hasItem = (_name: string) 
           if (!seen.has(itemName)) ordered.push(itemName);
           seen.add(itemName);
           if (isColorCollection) coloredItems.add(itemName);
+          if (isWeatheringCopperCollection) allBlocks.add(itemName);
         });
       } else if (ref.owner === 'net/minecraft/world/level/block/Blocks') {
         allBlocks.add(name);
@@ -419,7 +471,9 @@ function createWindow() {
       await fs.access(CACHE_COMPLETE_FLAG);
       const registryPath = path.join(CACHE_DIR, 'item-block-list.json');
       const registry = JSON.parse(await fs.readFile(registryPath, 'utf8')) as RegistryList;
-      if (!registry.itemTabs || !registry.blockTabs) throw new Error('Cached registry has no creative tabs.');
+      if (!registry.itemTabs || !registry.blockTabs || !registry.threeDimensionalItems) {
+        throw new Error('Cached registry has no creative item model rules.');
+      }
       if (await includeHardcodedRegistryItems(registry)) {
         await fs.writeFile(registryPath, JSON.stringify(registry));
       }
@@ -525,7 +579,8 @@ function createWindow() {
             { name: 'etc', entries: [] }
           ],
           items,
-          blocks
+          blocks,
+          threeDimensionalItems: creativeItems.blocks
         };
         await includeHardcodedRegistryItems(registry);
         await fs.writeFile(

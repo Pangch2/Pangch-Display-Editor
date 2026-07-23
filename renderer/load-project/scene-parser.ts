@@ -334,12 +334,14 @@ function resolveTextureRef(value, textures, guard = 0) {
         if (!next) return null;
         return resolveTextureRef(next, textures, guard + 1);
     }
+    if (textures?.[value]) return resolveTextureRef(textures[value], textures, guard + 1);
     return value;
 }
 
 if (import.meta.env.DEV) {
     console.assert(
-        resolveTextureRef({ force_translucent: true, sprite: 'minecraft:block/glass' }, {}) === 'minecraft:block/glass',
+        resolveTextureRef({ force_translucent: true, sprite: 'minecraft:block/glass' }, {}) === 'minecraft:block/glass'
+            && resolveTextureRef('all', { all: 'minecraft:block/heavy_core' }) === 'minecraft:block/heavy_core',
         'Object texture reference resolution failed.'
     );
 }
