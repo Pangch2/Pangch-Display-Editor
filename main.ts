@@ -21,7 +21,8 @@ const blockColors = ['white', 'light_gray', 'gray', 'black', 'brown', 'red', 'or
 
 type ConstantPoolEntry = [number, string | number, number?] | undefined;
 type CreativeTab = { name?: string; items: string[] };
-type RegistryList = { tabs?: CreativeTab[]; items: string[]; blocks: string[] };
+type RegistryTab = { name?: string; entries: string[] };
+type RegistryList = { itemTabs?: RegistryTab[]; blockTabs?: RegistryTab[]; items: string[]; blocks: string[] };
 
 async function includeHardcodedRegistryItems(registry: RegistryList): Promise<boolean> {
   const modelNames = (await fs.readdir(path.join(HARDCODED_DIR, 'models', 'block')))
@@ -37,20 +38,55 @@ async function includeHardcodedRegistryItems(registry: RegistryList): Promise<bo
   }))).filter((name): name is string => !!name);
   const previousItems = registry.items.join('\0');
   const previousBlocks = registry.blocks.join('\0');
-  const hadTabs = !!registry.tabs;
-  registry.items = [...new Set([...registry.items, ...registry.blocks, ...itemNames])];
-  registry.blocks = [...new Set([...registry.blocks, ...itemNames])];
-  delete registry.tabs;
-  return hadTabs || registry.items.join('\0') !== previousItems || registry.blocks.join('\0') !== previousBlocks;
+  const previousTabs = JSON.stringify([registry.itemTabs, registry.blockTabs]);
+  registry.items = [...new Set([...registry.items, ...registry.blocks, ...itemNames])].filter(name => !isRegistryExcluded(name, 'item'));
+  const itemOrder = new Map(registry.items.map((name, index) => [name, index]));
+  registry.blocks = [...new Set([...registry.blocks, ...itemNames])]
+    .filter(name => !isRegistryExcluded(name, 'block'))
+    .sort((a, b) => (itemOrder.get(a) ?? Infinity) - (itemOrder.get(b) ?? Infinity));
+  if (registry.itemTabs && registry.blockTabs) {
+    for (const [type, tabs] of [['items', registry.itemTabs], ['blocks', registry.blockTabs]] as const) {
+      const etcTab = tabs.find(tab => tab.name === 'etc') ?? { name: 'etc', entries: [] };
+      const searchItems = new Set(tabs.filter(tab => tab !== etcTab).flatMap(tab => tab.entries));
+      etcTab.entries = registry[type].filter(name => !searchItems.has(name));
+      if (!tabs.includes(etcTab)) tabs.push(etcTab);
+    }
+  }
+  return registry.items.join('\0') !== previousItems
+    || registry.blocks.join('\0') !== previousBlocks
+    || JSON.stringify([registry.itemTabs, registry.blockTabs]) !== previousTabs;
 }
 
 const registryExcludes = {
-  item: new Set(['air']),
-  block: new Set(['air', 'cave_air', 'void_air'])
+  item: new Set(['air', '*_air', '*_wall_sign', '*_wall_hanging_sign', 'player_head']),
+  block: new Set(['air', '*_air', '*_wall_sign', '*_wall_hanging_sign', 'player_head'])
 };
+
+function isRegistryExcluded(id: string, registry: keyof typeof registryExcludes): boolean {
+  return [...registryExcludes[registry]].some(exclude => exclude.startsWith('*') ? id.endsWith(exclude.slice(1)) : id === exclude);
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function weatheringCopperNames(name: string, methods: string[], hasItem: (name: string) => boolean): string[] {
+  const prefixes = methods.includes('unaffected')
+    ? [methods.includes('waxed') ? 'waxed_' : '']
+    : methods.includes('waxed')
+      ? ['waxed_', 'waxed_exposed_', 'waxed_weathered_', 'waxed_oxidized_']
+      : methods.includes('weathering')
+        ? ['', 'exposed_', 'weathered_', 'oxidized_']
+        : ['', 'exposed_', 'weathered_', 'oxidized_', 'waxed_', 'waxed_exposed_', 'waxed_weathered_', 'waxed_oxidized_'];
+  return prefixes.map(prefix => `${prefix}${name}`).filter(hasItem);
+}
+
+if (process.env.NODE_ENV === 'development') {
+  console.assert(
+    weatheringCopperNames('copper_chest', ['forEach'], name => !name.startsWith('waxed_oxidized_')).join(',') ===
+      'copper_chest,exposed_copper_chest,weathered_copper_chest,oxidized_copper_chest,waxed_copper_chest,waxed_exposed_copper_chest,waxed_weathered_copper_chest',
+    'Weathering copper item expansion failed.'
+  );
 }
 
 function extractRegistryNames(classBytes: Uint8Array, registry: keyof typeof registryExcludes): string[] {
@@ -100,14 +136,14 @@ function extractRegistryNames(classBytes: Uint8Array, registry: keyof typeof reg
     skipAttributes();
     if ((access & 0x19) === 0x19 && name && descriptor?.endsWith(descriptorSuffix)) {
       const id = name.toLowerCase();
-      if (!registryExcludes[registry].has(id)) names.push(id);
+      if (!isRegistryExcluded(id, registry)) names.push(id);
     }
   }
   if (!names.includes('stone')) throw new Error(`${registry} registry was not found in the server jar.`);
   return names.sort();
 }
 
-function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; items: string[]; blocks: string[]; coloredItems: string[] } {
+function extractCreativeItems(classBytes: Uint8Array, hasItem = (_name: string) => true): { tabs: CreativeTab[]; items: string[]; blocks: string[]; coloredItems: string[] } {
   const view = new DataView(classBytes.buffer, classBytes.byteOffset, classBytes.byteLength);
   let offset = 0;
   const u1 = () => view.getUint8(offset++);
@@ -154,6 +190,12 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
       descriptor: utf8(Number(pool[Number(entry[2])]?.[2]))
     };
   };
+  const memberMethodName = (index: number): string | undefined => {
+    const entry = pool[index];
+    return entry && (entry[0] === 10 || entry[0] === 11)
+      ? utf8(Number(pool[Number(entry[2])]?.[1]))
+      : undefined;
+  };
   const skipAttributes = () => {
     for (let i = 0, count = u2(); i < count; i++) {
       u2();
@@ -176,6 +218,7 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
   const fallbackTabs: CreativeTab[] = [];
   const allBlocks = new Set<string>();
   const coloredItems = new Set<string>();
+  const copperFamilies: string[] = [];
   for (let i = 0, count = u2(); i < count; i++) {
     u2();
     const methodName = utf8(u2());
@@ -205,9 +248,21 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
       const name = ref.name.toLowerCase();
       if (ref.owner === 'net/minecraft/world/item/Items') {
         const isColorCollection = ref.descriptor?.endsWith('/ColorCollection;');
+        const isWeatheringCopperCollection = ref.descriptor?.endsWith('/WeatheringCopperCollection;');
+        if (methodName === 'copperBlockFamilies' && isWeatheringCopperCollection) copperFamilies.push(name);
+        const methods: string[] = [];
+        for (let look = cursor + 3; look < code.length - 2; look++) {
+          if (code[look] === 0xb2 && field((code[look + 1] << 8) | code[look + 2])) break;
+          if (code[look] === 0xb6 || code[look] === 0xb9) {
+            const called = memberMethodName((code[look + 1] << 8) | code[look + 2]);
+            if (called) methods.push(called);
+          }
+        }
         const names = isColorCollection
           ? blockColors.map(color => `${color}_${name.replace(/^dyed_/, '')}`)
-          : [name];
+          : isWeatheringCopperCollection
+            ? weatheringCopperNames(name, methods, hasItem)
+            : [name];
         names.forEach(itemName => {
           if (!seen.has(itemName)) ordered.push(itemName);
           seen.add(itemName);
@@ -231,6 +286,15 @@ function extractCreativeItems(classBytes: Uint8Array): { tabs: CreativeTab[]; it
   if (tabs.length === 0) {
     fallbackTabs.sort((a, b) => Number(a.name.match(/\d+$/)?.[0]) - Number(b.name.match(/\d+$/)?.[0]));
     tabs.push(...fallbackTabs.map(tab => ({ items: tab.items })));
+  }
+  const buildingBlocks = tabs.find(tab => tab.name === 'building_blocks') ?? tabs.find(tab => tab.items.includes('netherite_block'));
+  if (buildingBlocks && copperFamilies.length) {
+    const copperItems = [
+      ...copperFamilies.flatMap(name => weatheringCopperNames(name, ['weathering'], hasItem)),
+      ...copperFamilies.flatMap(name => weatheringCopperNames(name, ['waxed'], hasItem))
+    ];
+    buildingBlocks.items.splice(buildingBlocks.items.indexOf('netherite_block') + 1, 0, ...copperItems);
+    copperItems.forEach(name => allBlocks.add(name));
   }
   const orderedItems = [...new Set(tabs.flatMap(tab => tab.items))];
   if (tabs.length === 0 || orderedItems.length === 0) throw new Error('Creative tab item order was not found.');
@@ -355,6 +419,7 @@ function createWindow() {
       await fs.access(CACHE_COMPLETE_FLAG);
       const registryPath = path.join(CACHE_DIR, 'item-block-list.json');
       const registry = JSON.parse(await fs.readFile(registryPath, 'utf8')) as RegistryList;
+      if (!registry.itemTabs || !registry.blockTabs) throw new Error('Cached registry has no creative tabs.');
       if (await includeHardcodedRegistryItems(registry)) {
         await fs.writeFile(registryPath, JSON.stringify(registry));
       }
@@ -441,17 +506,31 @@ function createWindow() {
         const registryStart = Date.now();
         const itemRegistry = extractRegistryNames(serverClasses['net/minecraft/world/item/Items.class'], 'item');
         const blockRegistry = extractRegistryNames(serverClasses['net/minecraft/world/level/block/Blocks.class'], 'block');
-        const creativeItems = extractCreativeItems(serverClasses['net/minecraft/world/item/CreativeModeTabs.class']);
+        const creativeItems = extractCreativeItems(
+          serverClasses['net/minecraft/world/item/CreativeModeTabs.class'],
+          name => !!unzipped[`assets/minecraft/items/${name}.json`]
+        );
         itemRegistry.push(...creativeItems.coloredItems);
         blockRegistry.push(...creativeItems.coloredItems.filter(name => unzipped[`assets/minecraft/blockstates/${name}.json`]));
-        const creativeOrder = new Map(creativeItems.items.map((name, index) => [name, index]));
-        const byCreativeOrder = (a: string, b: string) => (creativeOrder.get(a) ?? Infinity) - (creativeOrder.get(b) ?? Infinity);
-        creativeItems.items = [...new Set([...itemRegistry, ...blockRegistry])].sort(byCreativeOrder);
-        creativeItems.blocks = [...new Set(blockRegistry)].sort(byCreativeOrder);
-        await includeHardcodedRegistryItems(creativeItems);
+        const searchItems = new Set(creativeItems.items);
+        const searchOrder = new Map(creativeItems.items.map((name, index) => [name, index]));
+        const bySearchOrder = (a: string, b: string) => (searchOrder.get(a) ?? Infinity) - (searchOrder.get(b) ?? Infinity);
+        const items = [...creativeItems.items, ...[...new Set([...itemRegistry, ...blockRegistry])].filter(name => !searchItems.has(name))];
+        const blocks = [...new Set([...blockRegistry, ...creativeItems.blocks])].sort(bySearchOrder);
+        const blockNames = new Set(blocks);
+        const registry: RegistryList = {
+          itemTabs: [...creativeItems.tabs.map(tab => ({ name: tab.name, entries: tab.items })), { name: 'etc', entries: [] }],
+          blockTabs: [
+            ...creativeItems.tabs.map(tab => ({ name: tab.name, entries: tab.items.filter(name => blockNames.has(name)) })).filter(tab => tab.entries.length),
+            { name: 'etc', entries: [] }
+          ],
+          items,
+          blocks
+        };
+        await includeHardcodedRegistryItems(registry);
         await fs.writeFile(
           path.join(CACHE_DIR, 'item-block-list.json'),
-          JSON.stringify({ registry: 'server-jar', items: creativeItems.items, blocks: creativeItems.blocks })
+          JSON.stringify({ registry: 'server-jar', ...registry })
         );
         console.log(`item-block-list.json generated in ${Date.now() - registryStart}ms`);
 

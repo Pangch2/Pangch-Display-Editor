@@ -96,6 +96,7 @@ const blocksUsingDefaultGrassColors = [
   'fern',
   'large_fern_top',
   'large_fern_bottom',
+  'large_fern',
   'potted_fern',
 ];
 
@@ -324,6 +325,8 @@ function collectIgnoreDisplayIdsForModelId(modelId) {
 // 텍스처 참조 체인을 따라가 실제 경로를 찾는다.
 function resolveTextureRef(value, textures, guard = 0) {
     if (!value) return null;
+    if (typeof value === 'object') value = value.sprite;
+    if (typeof value !== 'string') return null;
     if (guard > 10) return value;
     if (value.startsWith('#')) {
         const key = value.slice(1);
@@ -332,6 +335,13 @@ function resolveTextureRef(value, textures, guard = 0) {
         return resolveTextureRef(next, textures, guard + 1);
     }
     return value;
+}
+
+if (import.meta.env.DEV) {
+    console.assert(
+        resolveTextureRef({ force_translucent: true, sprite: 'minecraft:block/glass' }, {}) === 'minecraft:block/glass',
+        'Object texture reference resolution failed.'
+    );
 }
 
 // 주어진 경로의 모델 JSON을 읽어 파싱한다.
@@ -560,7 +570,8 @@ function shouldAllowHardcodedTextureSize(resolved) {
     if (!resolved || !resolved.id) return false;
     const id = resolved.id; // 예: minecraft:block/sign
     // sign, wall_sign, hanging_sign 등 모든 표지판 변형을 포함한다.
-    if (/([^:]*:)?block\/(?:.*_)?sign/.test(id)) return true;
+    if (/([^:]*:)?block\/(?:.*_)?sign/.test(id)
+        || Object.values(resolved.textures ?? {}).some(texture => /^entity\/signs\//.test(String(texture)))) return true;
     // 배너 등 추가 대상이 생기면 아래와 같이 조건을 확장할 수 있다: if (/banner/.test(id)) return true;
     return false;
 }
@@ -1375,7 +1386,8 @@ function parseItemNameCached(raw: string): { baseName: string; displayType: stri
 // items 디렉터리에서 아이템 정의 JSON을 읽어 캐싱한다.
 async function loadItemDefinition(itemName) {
     if (itemDefinitionCache.has(itemName)) return itemDefinitionCache.get(itemName);
-    const path = `assets/minecraft/items/${itemName}.json`;
+    const { ns, path: itemPath } = nsAndPathFromId(itemName);
+    const path = `assets/${ns}/items/${itemPath}.json`;
     try {
         const json = await readJsonAsset(path);
         itemDefinitionCache.set(itemName, json);
@@ -1724,7 +1736,10 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
                 if (Array.isArray(definition.model.tints)) tintList = definition.model.tints.slice();
             }
         }
-        if (!modelId) modelId = `minecraft:item/${baseName}`;
+        if (!modelId) {
+            const { ns, path } = nsAndPathFromId(baseName);
+            modelId = `${ns}:item/${path}`;
+        }
 
         const tintKey = tintList ? JSON.stringify(tintList) : '';
         const cacheKey = `${baseName}|${modelId}|${displayType || ''}|${tintKey}`;

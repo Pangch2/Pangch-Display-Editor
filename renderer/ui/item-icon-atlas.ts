@@ -5,7 +5,7 @@ import { buildBlockIconTemplate, buildItemIconModels, type ModelData } from '../
 import { buildTextureAtlasForRenderList, type TexturePixelData } from '../load-project/texture-atlas-builder';
 
 const iconSize = 32;
-const atlasVersion = '13';
+const atlasVersion = '3';
 const defaultBlockGuiTransform = {
     rotation: [30, 225, 0],
     translation: [0, 0, 0],
@@ -17,6 +17,7 @@ type GuiTransform = { rotation?: number[]; translation?: number[]; scale?: numbe
 type PreparedIcon = {
     name: string;
     models: ModelData[];
+    image?: ImageBitmap;
     applyGuiTransform: boolean;
     guiTransform?: GuiTransform | null;
     blockProps?: Record<string, string>;
@@ -138,6 +139,23 @@ function needsHardcodedItemGeometry(definition: any): boolean {
     return typeof type === 'string' && type !== 'minecraft:model';
 }
 
+function usesFlatItemIcon(name: string): boolean {
+    return name.endsWith('_sign') || name.endsWith('_amethyst_bud');
+}
+
+async function loadFlatItemIcon(name: string): Promise<ImageBitmap | null> {
+    try {
+        const [namespace, path] = name.includes(':') ? name.split(':', 2) : ['minecraft', name];
+        const textureType = name.endsWith('_amethyst_bud') ? 'block' : 'item';
+        const asset = await mainThreadAssetProvider.getAsset(`assets/${namespace}/textures/${textureType}/${path}.png`);
+        return asset instanceof Uint8Array
+            ? createImageBitmap(new Blob([asset as BlobPart], { type: 'image/png' }))
+            : null;
+    } catch {
+        return null;
+    }
+}
+
 async function usesHardcodedItemGeometry(name: string): Promise<boolean> {
     const [namespace, path] = name.includes(':') ? name.split(':', 2) : ['minecraft', name];
     return needsHardcodedItemGeometry(await readJson(`assets/${namespace}/items/${path}.json`));
@@ -178,6 +196,13 @@ if (import.meta.env.DEV) {
         needsHardcodedItemGeometry({ model: { type: 'minecraft:special' } })
             && !needsHardcodedItemGeometry({ model: { type: 'minecraft:model' } }),
         'Hardcoded item geometry selection failed.'
+    );
+    console.assert(
+        usesFlatItemIcon('oak_sign')
+            && usesFlatItemIcon('oak_hanging_sign')
+            && usesFlatItemIcon('small_amethyst_bud')
+            && !usesFlatItemIcon('oak_planks'),
+        'Flat item icon selection failed.'
     );
 }
 
@@ -224,20 +249,23 @@ async function prepareIcons(names: string[], blocks: boolean, blockNames = new S
     const icons: PreparedIcon[] = [];
     for (let start = 0; start < names.length; start += 32) {
         const chunk = await Promise.all(names.slice(start, start + 32).map(async (name): Promise<PreparedIcon | null> => {
-            const itemModels = await buildItemIconModels(`${name}[display=gui]`, mainThreadAssetProvider);
-            const blockIcon = blocks || blockNames.has(name) ? await getBlockIconName(name) : null;
+            const image = usesFlatItemIcon(name) ? await loadFlatItemIcon(name) : null;
+            const itemModels = image ? null : await buildItemIconModels(`${name}[display=gui]`, mainThreadAssetProvider);
+            const blockIcon = !image && (blocks || blockNames.has(name)) ? await getBlockIconName(name) : null;
             const blockTemplate = blockIcon
                 ? await buildBlockIconTemplate(blockIcon, mainThreadAssetProvider)
                 : null;
-            const applyHardcodedGuiTransform = !!itemModels?.some(model => model.fromHardcoded)
+            const applyHardcodedGuiTransform = !usesFlatItemIcon(name)
+                && !!itemModels?.some(model => model.fromHardcoded)
                 && await usesHardcodedItemGeometry(name);
-            const useBlock = !!blockTemplate && (
+            const useBlock = !usesFlatItemIcon(name) && !!blockTemplate && (
                 !itemModels || !!blockTemplate.fromHardcoded && applyHardcodedGuiTransform
             );
             const models = useBlock ? blockTemplate?.models : itemModels;
-            return models ? {
+            return models || image ? {
                 name,
-                models: cloneModels(models),
+                models: models ? cloneModels(models) : [],
+                image: image ?? undefined,
                 applyGuiTransform: useBlock || applyHardcodedGuiTransform,
                 guiTransform: useBlock || applyHardcodedGuiTransform ? await getGuiTransform(name) : null,
                 blockProps: useBlock ? blockTemplate?.blockProps : undefined
@@ -360,8 +388,13 @@ async function buildAtlas(
         const y = Math.floor(index / grid.columns) * iconSize;
         const icon = prepared.get(name);
         if (icon) {
-            await renderIcon(renderer, scene, camera, icon, atlasTexture, materials);
-            context.drawImage(renderer.domElement, x, y);
+            if (icon.image) {
+                context.drawImage(icon.image, x, y, iconSize, iconSize);
+                icon.image.close();
+            } else {
+                await renderIcon(renderer, scene, camera, icon, atlasTexture, materials);
+                context.drawImage(renderer.domElement, x, y);
+            }
         }
         icons.set(name, { x, y, size: iconSize });
     }
