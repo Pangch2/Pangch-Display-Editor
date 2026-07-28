@@ -10,7 +10,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
-const CACHE_COMPLETE_FLAG = path.join(CACHE_DIR, '.cache-complete');
 const clientUrl = 'https://piston-data.mojang.com/v1/objects/0cda4b16710f5b42e532b20ed9b8965c105e77a8/client.jar';
 const serverUrl = 'https://piston-data.mojang.com/v1/objects/bc881a3fc6e63c490e614ab3bf9c43adc0449ab2/server.jar';
 // When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
@@ -23,13 +22,9 @@ const lightVariants = Array.from({ length: 16 }, (_, index) => `light[level=${15
 
 type ConstantPoolEntry = [number, string | number, number?] | undefined;
 type CreativeTab = { name?: string; items: string[] };
-type RegistryTab = { name?: string; entries: string[] };
 type RegistryList = {
-  itemTabs?: RegistryTab[];
-  blockTabs?: RegistryTab[];
   items: string[];
   blocks: string[];
-  threeDimensionalItems: string[];
 };
 
 const registryNameOverrides: Record<string, string> = {
@@ -46,10 +41,10 @@ function registryName(fieldName: string): string {
 }
 
 function expandStatefulBlocks(names: string[]): string[] {
-  return names.flatMap(name => name === 'test_block' ? testBlockVariants : name === 'light' ? lightVariants : [name]);
+  return [...new Set(names.flatMap(name => name === 'test_block' ? testBlockVariants : name === 'light' ? lightVariants : [name]))];
 }
 
-async function includeHardcodedRegistryItems(registry: RegistryList): Promise<boolean> {
+async function includeHardcodedRegistryItems(registry: RegistryList): Promise<void> {
   const modelNames = (await fs.readdir(path.join(HARDCODED_DIR, 'models', 'block')))
     .filter(name => name.endsWith('.json'))
     .map(name => name.slice(0, -5));
@@ -61,15 +56,10 @@ async function includeHardcodedRegistryItems(registry: RegistryList): Promise<bo
       return null;
     }
   }))).filter((name): name is string => !!name);
-  const previousItems = registry.items.join('\0');
-  const previousBlocks = registry.blocks.join('\0');
-  const previousTabs = JSON.stringify([registry.itemTabs, registry.blockTabs]);
-  registry.items = [...new Set(registry.items.map(registryName))];
+  registry.items = [...new Set([...registry.items, ...itemNames].map(registryName))]
+    .filter(name => !name.startsWith('test_block[') && !name.startsWith('light['))
+    .filter(name => !isRegistryExcluded(name, 'item'));
   registry.blocks = [...new Set(registry.blocks.map(registryName))];
-  registry.threeDimensionalItems = [...new Set(registry.threeDimensionalItems.map(registryName))];
-  registry.itemTabs?.forEach(tab => tab.entries = [...new Set(tab.entries.map(registryName))]);
-  registry.blockTabs?.forEach(tab => tab.entries = [...new Set(tab.entries.map(registryName))]);
-  registry.items = [...new Set([...registry.items, ...registry.blocks, ...itemNames])].filter(name => !isRegistryExcluded(name, 'item'));
   const blockItemNames = (await Promise.all(registry.items.map(async name => {
     try {
       await fs.access(path.join(CACHE_DIR, 'assets', 'minecraft', 'blockstates', `${name}.json`));
@@ -83,19 +73,6 @@ async function includeHardcodedRegistryItems(registry: RegistryList): Promise<bo
     .filter(name => !isRegistryExcluded(name, 'block'))
     .sort((a, b) => (itemOrder.get(a) ?? Infinity) - (itemOrder.get(b) ?? Infinity));
   registry.blocks = expandStatefulBlocks(registry.blocks);
-  registry.threeDimensionalItems = [...new Set([...registry.threeDimensionalItems, ...itemNames])];
-  if (registry.itemTabs && registry.blockTabs) {
-    registry.blockTabs.forEach(tab => tab.entries = expandStatefulBlocks(tab.entries));
-    for (const [type, tabs] of [['items', registry.itemTabs], ['blocks', registry.blockTabs]] as const) {
-      const etcTab = tabs.find(tab => tab.name === 'etc') ?? { name: 'etc', entries: [] };
-      const searchItems = new Set(tabs.filter(tab => tab !== etcTab).flatMap(tab => tab.entries));
-      etcTab.entries = registry[type].filter(name => !searchItems.has(name));
-      if (!tabs.includes(etcTab)) tabs.push(etcTab);
-    }
-  }
-  return registry.items.join('\0') !== previousItems
-    || registry.blocks.join('\0') !== previousBlocks
-    || JSON.stringify([registry.itemTabs, registry.blockTabs]) !== previousTabs;
 }
 
 const registryExcludes = {
@@ -109,6 +86,10 @@ function isRegistryExcluded(id: string, registry: keyof typeof registryExcludes)
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  return fs.access(filePath).then(() => true, () => false);
 }
 
 function weatheringCopperNames(name: string, methods: string[], hasItem: (name: string) => boolean): string[] {
@@ -128,6 +109,10 @@ if (process.env.NODE_ENV === 'development') {
     expandStatefulBlocks(['stone', 'test_block']).join(',') ===
       'stone,test_block[mode=start],test_block[mode=log],test_block[mode=fail],test_block[mode=accept]',
     'Test block variant expansion failed.'
+  );
+  console.assert(
+    expandStatefulBlocks([...testBlockVariants, 'test_block']).join(',') === testBlockVariants.join(','),
+    'Stateful block expansion must not create duplicates.'
   );
   console.assert(
     expandStatefulBlocks(['light']).join(',') === Array.from({ length: 16 }, (_, index) => `light[level=${15 - index}]`).join(','),
@@ -467,32 +452,19 @@ function createWindow() {
   });
 
   ipcMain.on('download-assets', async (event) => {
+    const assetsPath = path.join(CACHE_DIR, 'assets');
+    const registryPath = path.join(CACHE_DIR, 'item-block-list.json');
     try {
-      await fs.access(CACHE_COMPLETE_FLAG);
-      const registryPath = path.join(CACHE_DIR, 'item-block-list.json');
-      const registry = JSON.parse(await fs.readFile(registryPath, 'utf8')) as RegistryList;
-      if (!registry.itemTabs || !registry.blockTabs || !registry.threeDimensionalItems) {
-        throw new Error('Cached registry has no creative item model rules.');
-      }
-      if (await includeHardcodedRegistryItems(registry)) {
-        await fs.writeFile(registryPath, JSON.stringify(registry));
-      }
-      console.log('Assets are already cached. Sending ready signal.');
-      event.sender.send('assets-downloaded', []);
-    } catch {
-      console.log('Cache not found. Starting asset download and caching process...');
-      try {
-        await fs.mkdir(CACHE_DIR, { recursive: true });
+      await fs.mkdir(CACHE_DIR, { recursive: true });
+      const startTime = Date.now();
+      const [hasAssets, hasRegistry] = await Promise.all([pathExists(assetsPath), pathExists(registryPath)]);
+      const [clientResponse, serverResponse] = await Promise.all([
+        hasAssets ? null : axios<ArrayBuffer>({ url: clientUrl, method: 'GET', responseType: 'arraybuffer' }),
+        hasRegistry ? null : axios<ArrayBuffer>({ url: serverUrl, method: 'GET', responseType: 'arraybuffer' })
+      ]);
 
-        const startTime = Date.now();
-
-        console.log('Downloading client.jar and server.jar...');
-        const [clientResponse, serverResponse] = await Promise.all([
-          axios<ArrayBuffer>({ url: clientUrl, method: 'GET', responseType: 'arraybuffer' }),
-          axios<ArrayBuffer>({ url: serverUrl, method: 'GET', responseType: 'arraybuffer' })
-        ]);
-        console.log(`Download complete: ${((clientResponse.data.byteLength + serverResponse.data.byteLength) / 1024 / 1024).toFixed(2)} MB`);
-
+        if (clientResponse) {
+        console.log('Assets not found. Downloading client assets...');
         // assets 폴더만 선택적으로 압축 해제
         console.log('Unzipping assets only...');
         const unzipStart = Date.now();
@@ -509,23 +481,6 @@ function createWindow() {
         });
         
         console.log(`Unzip complete in ${Date.now() - unzipStart}ms`);
-
-        const serverBundle = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
-          unzip(new Uint8Array(serverResponse.data), {
-            filter: file => /^META-INF\/versions\/.+\/server-.+\.jar$/.test(file.name)
-          }, (err, data) => err ? reject(err) : resolve(data));
-        });
-        const bundledServer = Object.values(serverBundle)[0];
-        if (!bundledServer) throw new Error('Bundled server jar was not found.');
-        const serverClasses = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
-          unzip(bundledServer, {
-            filter: file => [
-              'net/minecraft/world/item/CreativeModeTabs.class',
-              'net/minecraft/world/item/Items.class',
-              'net/minecraft/world/level/block/Blocks.class'
-            ].includes(file.name)
-          }, (err, data) => err ? reject(err) : resolve(data));
-        });
 
         // 필요한 prefix만 추가 필터링
         const allNames = Object.keys(unzipped);
@@ -556,31 +511,53 @@ function createWindow() {
         ));
 
         console.log(`File writing complete in ${Date.now() - writeStart}ms`);
+        }
 
+        if (serverResponse) {
+        console.log('item-block-list.json not found. Downloading server registry...');
+        const serverBundle = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
+          unzip(new Uint8Array(serverResponse.data), {
+            filter: file => /^META-INF\/versions\/.+\/server-.+\.jar$/.test(file.name)
+          }, (err, data) => err ? reject(err) : resolve(data));
+        });
+        const bundledServer = Object.values(serverBundle)[0];
+        if (!bundledServer) throw new Error('Bundled server jar was not found.');
+        const serverClasses = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
+          unzip(bundledServer, {
+            filter: file => [
+              'net/minecraft/world/item/CreativeModeTabs.class',
+              'net/minecraft/world/item/Items.class',
+              'net/minecraft/world/level/block/Blocks.class'
+            ].includes(file.name)
+          }, (err, data) => err ? reject(err) : resolve(data));
+        });
+        const itemAssetNames = new Set(
+          (await fs.readdir(path.join(assetsPath, 'minecraft', 'items')))
+            .filter(name => name.endsWith('.json'))
+            .map(name => name.slice(0, -5))
+        );
+        const blockStateNames = new Set(
+          (await fs.readdir(path.join(assetsPath, 'minecraft', 'blockstates')))
+            .filter(name => name.endsWith('.json'))
+            .map(name => name.slice(0, -5))
+        );
         const registryStart = Date.now();
         const itemRegistry = extractRegistryNames(serverClasses['net/minecraft/world/item/Items.class'], 'item');
         const blockRegistry = extractRegistryNames(serverClasses['net/minecraft/world/level/block/Blocks.class'], 'block');
         const creativeItems = extractCreativeItems(
           serverClasses['net/minecraft/world/item/CreativeModeTabs.class'],
-          name => !!unzipped[`assets/minecraft/items/${name}.json`]
+          name => itemAssetNames.has(name)
         );
         itemRegistry.push(...creativeItems.coloredItems);
-        blockRegistry.push(...creativeItems.coloredItems.filter(name => unzipped[`assets/minecraft/blockstates/${name}.json`]));
+        blockRegistry.push(...creativeItems.coloredItems.filter(name => blockStateNames.has(name)));
         const searchItems = new Set(creativeItems.items);
         const searchOrder = new Map(creativeItems.items.map((name, index) => [name, index]));
         const bySearchOrder = (a: string, b: string) => (searchOrder.get(a) ?? Infinity) - (searchOrder.get(b) ?? Infinity);
         const items = [...creativeItems.items, ...[...new Set([...itemRegistry, ...blockRegistry])].filter(name => !searchItems.has(name))];
         const blocks = [...new Set([...blockRegistry, ...creativeItems.blocks])].sort(bySearchOrder);
-        const blockNames = new Set(blocks);
         const registry: RegistryList = {
-          itemTabs: [...creativeItems.tabs.map(tab => ({ name: tab.name, entries: tab.items })), { name: 'etc', entries: [] }],
-          blockTabs: [
-            ...creativeItems.tabs.map(tab => ({ name: tab.name, entries: tab.items.filter(name => blockNames.has(name)) })).filter(tab => tab.entries.length),
-            { name: 'etc', entries: [] }
-          ],
           items,
-          blocks,
-          threeDimensionalItems: creativeItems.blocks
+          blocks
         };
         await includeHardcodedRegistryItems(registry);
         await fs.writeFile(
@@ -588,16 +565,20 @@ function createWindow() {
           JSON.stringify({ registry: 'server-jar', ...registry })
         );
         console.log(`item-block-list.json generated in ${Date.now() - registryStart}ms`);
-
-        await fs.writeFile(CACHE_COMPLETE_FLAG, new Date().toISOString());
+        } else {
+          const cachedRegistry = await fs.readFile(registryPath, 'utf8');
+          const registry = JSON.parse(cachedRegistry) as RegistryList;
+          if (!Array.isArray(registry.items) || !Array.isArray(registry.blocks)) throw new Error('Cached registry is invalid.');
+          await includeHardcodedRegistryItems(registry);
+          const normalizedRegistry = JSON.stringify({ registry: 'server-jar', items: registry.items, blocks: registry.blocks });
+          if (normalizedRegistry !== cachedRegistry) await fs.writeFile(registryPath, normalizedRegistry);
+        }
         const totalTime = Date.now() - startTime;
-        console.log(`Asset caching complete. ${savedCount} assets saved in ${(totalTime / 1000).toFixed(2)}s`);
+        console.log(`Asset cache ready in ${(totalTime / 1000).toFixed(2)}s`);
         event.sender.send('assets-downloaded', []);
-
-      } catch (error) {
-        console.error('Asset download and caching failed:', error);
-        event.sender.send('assets-download-failed', errorMessage(error));
-      }
+    } catch (error) {
+      console.error('Asset download and caching failed:', error);
+      event.sender.send('assets-download-failed', errorMessage(error));
     }
   });
 

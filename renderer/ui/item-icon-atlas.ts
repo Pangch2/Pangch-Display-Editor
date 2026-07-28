@@ -23,11 +23,11 @@ type PreparedIcon = {
 };
 
 function atlasGrid(count: number): { columns: number; width: number; height: number } {
-    const columns = Math.max(1, Math.min(9, count));
+    const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
     return {
         columns,
         width: columns * iconSize,
-        height: Math.max(1, Math.ceil(count / columns)) * iconSize
+        height: columns * iconSize
     };
 }
 
@@ -235,7 +235,10 @@ async function getGuiTransform(name: string): Promise<GuiTransform | null> {
 
 if (import.meta.env.DEV) {
     const grid = atlasGrid(1201);
-    console.assert(grid.columns === 9 && grid.width * grid.height / iconSize ** 2 >= 1201, 'Atlas grid is too small.');
+    console.assert(
+        grid.columns === 35 && grid.width === grid.height && grid.width * grid.height / iconSize ** 2 >= 1201,
+        'Atlas grid must be square and large enough.'
+    );
     console.assert(
         defaultBlockProperties({ variants: {
             'facing=east,half=bottom,shape=inner_left': {},
@@ -430,38 +433,43 @@ async function renderIcon(
     });
 }
 
-async function buildAtlas(
-    names: string[],
+async function buildAtlases(
+    itemNames: string[],
+    blockNames: string[],
     prepared: Map<string, PreparedIcon>,
     renderer: THREE.WebGPURenderer,
     scene: THREE.Scene,
     camera: THREE.OrthographicCamera,
     atlasTexture: THREE.Texture,
     materials: Map<string, THREE.Material>
-): Promise<{ image: HTMLCanvasElement; icons: IconMap }> {
-    const grid = atlasGrid(names.length);
-    const image = document.createElement('canvas');
-    image.width = grid.width;
-    image.height = grid.height;
-    const context = image.getContext('2d')!;
-    context.imageSmoothingEnabled = false;
-    const icons: IconMap = new Map();
+): Promise<{
+    items: { image: HTMLCanvasElement; icons: IconMap };
+    blocks: { image: HTMLCanvasElement; icons: IconMap };
+}> {
+    const targets = [itemNames, blockNames].map(names => {
+        const grid = atlasGrid(names.length);
+        const image = document.createElement('canvas');
+        image.width = grid.width;
+        image.height = grid.height;
+        const context = image.getContext('2d')!;
+        context.imageSmoothingEnabled = false;
+        return { image, context, icons: createIconMap(names, grid.columns) };
+    });
 
-    for (const [index, name] of names.entries()) {
-        const x = index % grid.columns * iconSize;
-        const y = Math.floor(index / grid.columns) * iconSize;
+    for (const name of new Set([...itemNames, ...blockNames])) {
         const icon = prepared.get(name);
-        if (icon) {
-            if (icon.image) {
-                context.drawImage(icon.image, x, y, iconSize, iconSize);
-            } else {
-                await renderIcon(renderer, scene, camera, icon, atlasTexture, materials);
-                context.drawImage(renderer.domElement, x, y);
-            }
+        if (!icon) continue;
+        if (!icon.image) await renderIcon(renderer, scene, camera, icon, atlasTexture, materials);
+        for (const target of targets) {
+            const position = target.icons.get(name);
+            if (!position) continue;
+            target.context.drawImage(icon.image ?? renderer.domElement, position.x, position.y, iconSize, iconSize);
         }
-        icons.set(name, { x, y, size: iconSize });
     }
-    return { image, icons };
+    return {
+        items: { image: targets[0].image, icons: targets[0].icons },
+        blocks: { image: targets[1].image, icons: targets[1].icons }
+    };
 }
 
 async function saveAtlas(name: 'block-atlas.png' | 'item-atlas.png', image: HTMLCanvasElement): Promise<void> {
@@ -536,8 +544,9 @@ async function createAtlases(): Promise<ItemIconAtlas> {
     const materials = new Map<string, THREE.Material>();
 
     try {
-        const items = await buildAtlas(itemNames, prepared, renderer, scene, camera, atlasTexture, materials);
-        const blocks = await buildAtlas(blockNames, prepared, renderer, scene, camera, atlasTexture, materials);
+        const { items, blocks } = await buildAtlases(
+            itemNames, blockNames, prepared, renderer, scene, camera, atlasTexture, materials
+        );
         await Promise.all([saveAtlas('item-atlas.png', items.image), saveAtlas('block-atlas.png', blocks.image)]);
         window.ipcApi.send?.('log-atlas-generation-time', performance.now() - atlasStart);
         return { itemImage: items.image, blockImage: blocks.image, itemIcons: items.icons, blockIcons: blocks.icons };
