@@ -1,5 +1,6 @@
-import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { currentSelection } from '../controls/selection/select';
+import { loadedObjectGroup } from '../../load-project/upload-pbde';
+import { currentSelection } from '../../controls/selection/select';
+import { getMirrorPairs, isMirrorModelingEnabled } from '../../controls/mirroring';
 import { scheduleSceneExtraFit } from './scene-panel-render';
 import { scenePanelState } from './scene-panel-state';
 import type {
@@ -468,7 +469,29 @@ export function handleScenePanelDrop(event: DragEvent): void {
 
     let moved = false;
     if (hint && isValidSceneDropHint(scenePanelState.sceneDragBundle, hint, ud)) {
+        const bundle = scenePanelState.sceneDragBundle;
+        const objectPairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
+        const groupPairs = getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs');
+        const mirrorId = (type: 'group' | 'object', id: string | null) => id && (type === 'group' ? groupPairs : objectPairs).get(id);
+        const bundleKeys = new Set(bundle.items.map(getSceneDragItemKey));
+        const mirrorItems = isMirrorModelingEnabled()
+            ? bundle.items.flatMap(item => {
+                const id = mirrorId(item.type, item.id);
+                return id && !bundleKeys.has(`${item.type}:${id}`) ? [{ type: item.type, id }] : [];
+            })
+            : [];
+        const mirrorTargetId = hint.targetType === 'root' ? null : mirrorId(hint.targetType, hint.targetId);
+        const mirrorParentId = hint.parentGroupId ? groupPairs.get(hint.parentGroupId) : null;
+
         moved = moveSceneItemsByDropHint(scenePanelState.sceneDragBundle, hint, ud);
+        if (mirrorItems.length && (hint.targetType === 'root' || mirrorTargetId)) {
+            moved = moveSceneItemsByDropHint({ lead: mirrorItems[0], items: mirrorItems }, {
+                ...hint,
+                targetId: mirrorTargetId ?? null,
+                targetEl: null,
+                parentGroupId: mirrorParentId ?? null
+            }, ud) || moved;
+        }
     }
 
     handleSceneItemDragEnd();

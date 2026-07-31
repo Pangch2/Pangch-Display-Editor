@@ -3,8 +3,8 @@ import type { SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture } from '../load-project/mesh-builder';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
-import type { GroupData } from './scene-panel-types';
-import { cleanLabel } from './scene-panel-model';
+import type { GroupData } from './scene-panel/scene-panel-types';
+import { cleanLabel } from './scene-panel/scene-panel-model';
 import * as GroupUtils from '../controls/grouping/group';
 import * as Overlay from '../controls/selection/overlay';
 import { applyDeltaToSelection } from '../controls/selection/drag';
@@ -12,6 +12,7 @@ import { blockbenchScaleMode } from '../controls/gizmo/blockbench-scale';
 import {
     applyLinkedMirrorDelta,
     getLinkedMirrorUuid,
+    getMirrorPairs,
     isMirrorModelingEnabled,
     syncLinkedMirrorGroupPivot,
     syncLinkedMirrorPivot
@@ -609,7 +610,14 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const labels = (loadedObjectGroup.userData.objectLabels ??= new Map<string, string>()) as Map<string, string>;
     const section = document.createElement('section');
     section.className = 'object-property';
-    section.append(nameHeading(index, labels.get(uuid) ?? cleanLabel(name), `object:${uuid}`, value => labels.set(uuid, value)));
+    section.append(nameHeading(index, labels.get(uuid) ?? cleanLabel(name), `object:${uuid}`, value => {
+        labels.set(uuid, value);
+        const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
+        if (partnerUuid) {
+            labels.set(partnerUuid, value);
+            window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key: `object:${partnerUuid}`, value } }));
+        }
+    }));
 
     const pivotBase = new Vector3();
     const displayType = Overlay.getDisplayType(mesh, instanceId);
@@ -715,13 +723,18 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             input.onchange = async () => {
                 input.value = textureUrl(input.value.trim());
                 await updatePlayerHeadTexture(uuid, input.value);
+                const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
+                if (partnerUuid) await updatePlayerHeadTexture(partnerUuid, input.value);
             };
             metadataSection.append(metadataProperty('texture', '텍스쳐', input));
         }
         metadataSection.append(brightnessProperty(brightness, updateBrightness));
         const displayType = (loadedObjectGroup.userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid) ?? 'none';
         metadataSection.append(metadataProperty('display', '디스플레이', propertySelect(displayType, itemDisplayValues, async value => {
-            await updateDisplayObjectMatrix(uuid, replaceNameDisplay(name, value));
+            const nextName = replaceNameDisplay(name, value);
+            await updateDisplayObjectMatrix(uuid, nextName);
+            const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
+            if (partnerUuid) await updateDisplayObjectMatrix(partnerUuid, nextName);
         })));
         sortMetadataRows(metadataSection);
     } else {
@@ -769,7 +782,15 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     };
     const section = document.createElement('section');
     section.className = 'object-property';
-    section.append(nameHeading(index, group.name, `group:${groupId}`, value => { group.name = value; }));
+    section.append(nameHeading(index, group.name, `group:${groupId}`, value => {
+        group.name = value;
+        const partnerId = isMirrorModelingEnabled() ? getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').get(groupId) : undefined;
+        const partner = partnerId ? GroupUtils.getGroups(loadedObjectGroup).get(partnerId) : undefined;
+        if (partner) {
+            partner.name = value;
+            window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key: `group:${partnerId}`, value } }));
+        }
+    }));
     const transformSection = propertySection('transform', '변환');
     const values = [groupPosition.clone(), groupRotation.clone(), groupScale.clone()];
     ['위치', '회전', '크기'].forEach((label, rowIndex) => {
@@ -821,7 +842,12 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
 
     const nbt = document.createElement('input');
     nbt.value = group.nbt ?? '';
-    nbt.oninput = () => { group.nbt = nbt.value; };
+    nbt.oninput = () => {
+        group.nbt = nbt.value;
+        const partnerId = isMirrorModelingEnabled() ? getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').get(groupId) : undefined;
+        const partner = partnerId ? GroupUtils.getGroups(loadedObjectGroup).get(partnerId) : undefined;
+        if (partner) partner.nbt = nbt.value;
+    };
     section.append(propertySection('nbt', 'NBT', nbt));
     sortPropertySections(section);
     return section;
@@ -1131,31 +1157,50 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
 }
 
 window.addEventListener('pde:replace-object-selection', event => {
-    const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } = (event as CustomEvent<{
+    const replacements = (event as CustomEvent<Array<{
         oldMesh: InstancedMesh;
         oldInstanceId: number;
         oldLastInstanceId: number;
         mesh: InstancedMesh;
         instanceId: number;
-    }>).detail;
-    const nextHeights = new Map<string, number>();
-    selectionOrder = selectionOrder.map((item, index) => {
-        let next = item;
-        if ('mesh' in item && item.mesh === oldMesh && item.instanceId === oldInstanceId) {
-            next = { key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId };
-        } else if ('mesh' in item && item.mesh === oldMesh && item.instanceId === oldLastInstanceId) {
-            next = { key: `object:${oldMesh.uuid}:${oldInstanceId}`, mesh: oldMesh, instanceId: oldInstanceId };
+    }>>).detail;
+    const oldHeights = selectionOrder.map(item => propertySectionHeights.get(item.key) ?? propertySectionEstimate);
+    const selectionIndexes = new Map(selectionOrder.map((item, index) => [item.key, index]));
+    const changedIndexes = new Set<number>();
+    const replacedIndexes: Array<{ index: number; mesh: InstancedMesh; instanceId: number }> = [];
+    for (const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } of replacements) {
+        const oldKey = `object:${oldMesh.uuid}:${oldInstanceId}`;
+        const oldLastKey = `object:${oldMesh.uuid}:${oldLastInstanceId}`;
+        const replacedIndex = selectionIndexes.get(oldKey);
+        const movedIndex = oldInstanceId < oldLastInstanceId ? selectionIndexes.get(oldLastKey) : undefined;
+        if (replacedIndex !== undefined) {
+            selectionIndexes.delete(oldKey);
+            replacedIndexes.push({ index: replacedIndex, mesh, instanceId });
         }
-        nextHeights.set(next.key, propertySectionHeights.get(item.key) ?? propertySectionEstimate);
-        if (next === item || !('mesh' in next)) return next;
-
+        if (movedIndex !== undefined) {
+            const moved = { key: oldKey, mesh: oldMesh, instanceId: oldInstanceId };
+            selectionOrder[movedIndex] = moved;
+            selectionIndexes.delete(oldLastKey);
+            selectionIndexes.set(oldKey, movedIndex);
+            changedIndexes.add(movedIndex);
+        }
+    }
+    for (const { index, mesh, instanceId } of replacedIndexes) {
+        const replacement = { key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId };
+        selectionOrder[index] = replacement;
+        selectionIndexes.set(replacement.key, index);
+        changedIndexes.add(index);
+    }
+    const nextHeights = new Map<string, number>();
+    selectionOrder.forEach((item, index) => {
+        nextHeights.set(item.key, oldHeights[index]);
+        if (!changedIndexes.has(index) || !('mesh' in item)) return;
         const section = renderedSections.get(index);
-        if (!section) return next;
-        const replacement = renderObject(next.mesh, next.instanceId, index, index === 0 && selectionOrder.length === 1 ? currentPivotWorld : undefined);
+        if (!section) return;
+        const replacement = renderObject(item.mesh, item.instanceId, index, index === 0 && selectionOrder.length === 1 ? currentPivotWorld : undefined);
         section.replaceChildren(...replacement.childNodes);
-        section.dataset.key = next.key;
+        section.dataset.key = item.key;
         sectionInputs.delete(section);
-        return next;
     });
     propertySectionHeights.clear();
     nextHeights.forEach((height, key) => propertySectionHeights.set(key, height));

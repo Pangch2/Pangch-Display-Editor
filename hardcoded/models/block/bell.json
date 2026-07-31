@@ -1,0 +1,35 @@
+{
+	"texture_size": [32, 32],
+	"textures": {
+		"0": "entity/bell/bell_body",
+		"particle": "block/bell_bottom"
+	},
+	"elements": [
+		{
+			"name": "bell_body",
+			"from": [5, 6, 5],
+			"to": [11, 13, 11],
+			"faces": {
+				"north": {"uv": [3, 3, 6, 6.5], "texture": "#0"},
+				"east": {"uv": [0, 3, 3, 6.5], "texture": "#0"},
+				"south": {"uv": [9, 3, 12, 6.5], "texture": "#0"},
+				"west": {"uv": [6, 3, 9, 6.5], "texture": "#0"},
+				"up": {"uv": [6, 3, 3, 0], "texture": "#0"},
+				"down": {"uv": [9, 0, 6, 3], "texture": "#0"}
+			}
+		},
+		{
+			"name": "bell_base",
+			"from": [4, 4, 4],
+			"to": [12, 6, 12],
+			"faces": {
+				"north": {"uv": [4, 10.5, 8, 11.5], "texture": "#0"},
+				"east": {"uv": [0, 10.5, 4, 11.5], "texture": "#0"},
+				"south": {"uv": [12, 10.5, 16, 11.5], "texture": "#0"},
+				"west": {"uv": [8, 10.5, 12, 11.5], "texture": "#0"},
+				"up": {"uv": [8, 10.5, 4, 6.5], "texture": "#0"},
+				"down": {"uv": [12, 6.5, 8, 10.5], "texture": "#0"}
+			}
+		}
+	]
+}

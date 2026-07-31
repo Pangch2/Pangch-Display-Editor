@@ -1,0 +1,14 @@
+{
+  "multipart": [
+    {
+      "apply": {
+        "model": "minecraft:block/straw_bed_head"
+      }
+    },
+    {
+      "apply": {
+        "model": "minecraft:block/straw_bed_foot_full"
+      }
+    }
+  ]
+}

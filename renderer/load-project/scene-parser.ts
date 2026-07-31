@@ -260,19 +260,19 @@ function textureIdToAssetPath(texId) {
 function hasHardcodedBlockstate(p) {
     if (!p) return false;
     // 침대와 트랩 상자만 고정 블록스테이트를 갖는다.
-    return /(bed|trapped_chest)/i.test(p);
+    return /(bed|bell|trapped_chest)/i.test(p);
 }
 
 // 하드코딩된 모델 JSON을 사용해야 하는 경로인지 확인한다.
 function isHardcodedModelPath(p) {
     if (!p) return false;
-    return /(chest|conduit|shulker_box|bed|banner|sign|decorated_pot|creeper_head|dragon_head|piglin_head|zombie_head|wither_skeleton_skull|skeleton_skull|shield|trident|spyglass|copper_golem_statue)$/i.test(p);
+    return /(chest|conduit|shulker_box|bed|banner|sign|decorated_pot|creeper_head|dragon_head|piglin_head|zombie_head|wither_skeleton_skull|skeleton_skull|shield|trident|spyglass|copper_golem_statue|end_portal|end_gateway)$/i.test(p);
 }
 
 // 모델 ID가 하드코딩 모델 목록에 해당하는지 검사한다.
 function isHardcodedModelId(modelId) {
     const { path } = nsAndPathFromId(modelId);
-    return isHardcodedModelPath(path);
+    return !/^item\/.*sign$/i.test(path) && isHardcodedModelPath(path);
 }
 
 // 주어진 모델 ID에서 가능한 하드코딩 파일 경로 후보를 생성한다.
@@ -343,6 +343,10 @@ if (import.meta.env.DEV) {
         resolveTextureRef({ force_translucent: true, sprite: 'minecraft:block/glass' }, {}) === 'minecraft:block/glass'
             && resolveTextureRef('all', { all: 'minecraft:block/heavy_core' }) === 'minecraft:block/heavy_core',
         'Object texture reference resolution failed.'
+    );
+    console.assert(
+        !isHardcodedModelId('minecraft:item/oak_sign') && isHardcodedModelId('minecraft:block/oak_sign'),
+        'Sign item models must remain generated sprites.'
     );
 }
 
@@ -609,6 +613,25 @@ function flipUCorners(c) { return [c[1], c[0], c[3], c[2]]; }
 function flipVCorners(c) { return [c[3], c[2], c[1], c[0]]; }
 
 // 큐브 면 하나를 버퍼에 추가한다.
+function getDefaultFaceUv(dir, from, to) {
+    switch (dir) {
+        case 'down': return [from[0], 16 - to[2], to[0], 16 - from[2]];
+        case 'up': return [from[0], from[2], to[0], to[2]];
+        case 'north': return [16 - to[0], 16 - to[1], 16 - from[0], 16 - from[1]];
+        case 'south': return [from[0], 16 - to[1], to[0], 16 - from[1]];
+        case 'west': return [from[2], 16 - to[1], to[2], 16 - from[1]];
+        case 'east': return [16 - to[2], 16 - to[1], 16 - from[2], 16 - from[1]];
+        default: return [0, 0, 16, 16];
+    }
+}
+
+if (import.meta.env.DEV) {
+    console.assert(
+        getDefaultFaceUv('south', [1, 0, 1], [15, 8, 15]).join(',') === '1,8,15,16',
+        'Default block face UV calculation failed.'
+    );
+}
+
 function pushQuad(buff, a, b, c, d, n, uvTL, uvTR, uvBR, uvBL) {
     const base = buff.positions.length / 3;
     buff.positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
@@ -676,6 +699,8 @@ async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = 
                 const ti = (typeof face.tintindex === 'number') ? face.tintindex : undefined;
                 tintHex = getTextureColor(modelResLoc, undefined, ti);
             } catch (_) { tintHex = 0xffffff; }
+            if (resolved.fromHardcoded && /(?:^|:)block\/end_gateway$/i.test(resolved.id)) tintHex = -1;
+            else if (resolved.fromHardcoded && /(?:^|:)block\/end_portal$/i.test(resolved.id)) tintHex = 0xfeffffff;
 
             // 배너 모델의 깃발 요소는 추출한 틴트 색상으로 덮어쓴다.
             if (opts && opts.bannerColorHex != null) {
@@ -705,14 +730,7 @@ async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = 
 
             const hasExplicitFaceUV = Array.isArray(face.uv) && face.uv.length === 4;
             let faceUV = face.uv;
-            if (!faceUV) {
-                switch (dir) {
-                    case 'north': case 'south': faceUV = [from[0], from[1], to[0], to[1]]; break;
-                    case 'west': case 'east': faceUV = [from[2], from[1], to[2], to[1]]; break;
-                    case 'up': case 'down': faceUV = [from[0], from[2], to[0], to[2]]; break;
-                    default: faceUV = [0, 0, 16, 16]; break;
-                }
-            }
+            if (!faceUV) faceUV = getDefaultFaceUv(dir, from, to);
 
             let extraUVRot = 0;
             if (opts && opts.uvlock) {

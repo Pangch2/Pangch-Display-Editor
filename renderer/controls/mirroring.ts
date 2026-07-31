@@ -125,6 +125,9 @@ if (import.meta.env.DEV) {
         ['partner', { mesh: partner, instanceId: 0 }]
     ]);
     linkMirrorPair(getMirrorPairs(testGroup, 'objectMirrorPairs'), 'source', 'partner');
+    replaceMirrorUuid(testGroup, 'source', 'replacement');
+    console.assert(getLinkedMirrorUuid(testGroup, 'replacement') === 'partner' && getLinkedMirrorUuid(testGroup, 'partner') === 'replacement', 'Mirror UUID replacement broke the pair.');
+    replaceMirrorUuid(testGroup, 'replacement', 'source');
     const groupChild = new InstancedMesh(undefined!, undefined!, 1);
     groupChild.setMatrixAt(0, new Matrix4());
     testGroup.userData.groups = new Map([

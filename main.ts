@@ -17,6 +17,7 @@ const serverUrl = 'https://piston-data.mojang.com/v1/objects/bc881a3fc6e63c490e6
 const APP_ROOT = path.dirname(__dirname);
 const HARDCODED_DIR = path.join(APP_ROOT, 'hardcoded');
 const blockColors = ['white', 'light_gray', 'gray', 'black', 'brown', 'red', 'orange', 'yellow', 'lime', 'green', 'cyan', 'light_blue', 'blue', 'purple', 'magenta', 'pink'];
+const candleCakeVariants = ['candle_cake', ...blockColors.map(color => `${color}_candle_cake`)];
 const testBlockVariants = ['start', 'log', 'fail', 'accept'].map(mode => `test_block[mode=${mode}]`);
 const lightVariants = Array.from({ length: 16 }, (_, index) => `light[level=${15 - index}]`);
 
@@ -41,7 +42,12 @@ function registryName(fieldName: string): string {
 }
 
 function expandStatefulBlocks(names: string[]): string[] {
-  return [...new Set(names.flatMap(name => name === 'test_block' ? testBlockVariants : name === 'light' ? lightVariants : [name]))];
+  return [...new Set(names.flatMap(name =>
+    name === 'candle_cake' ? candleCakeVariants
+      : name === 'test_block' ? testBlockVariants
+        : name === 'light' ? lightVariants
+          : [name]
+  ))];
 }
 
 async function includeHardcodedRegistryItems(registry: RegistryList): Promise<void> {
@@ -77,7 +83,7 @@ async function includeHardcodedRegistryItems(registry: RegistryList): Promise<vo
 
 const registryExcludes = {
   item: new Set(['air', '*_air', 'moving_piston', '*_wall_sign', '*_wall_hanging_sign', 'player_head', 'bubble_column', '*_wall_head','*_wall_skull', 'wool', 'end_portal', 'end_gateway']),
-  block: new Set(['air', '*_air', 'moving_piston', '*_wall_sign', '*_wall_hanging_sign', 'player_head', 'water', 'lava', 'barrier', 'bubble_column', '*_wall_head', '*_wall_skull', 'wool', 'end_portal', 'end_gateway'])
+  block: new Set(['air', '*_air', 'moving_piston', '*_wall_sign', '*_wall_hanging_sign', 'player_head', 'water', 'lava', 'barrier', 'bubble_column', '*_wall_head', '*_wall_skull', 'wool'])
 };
 
 function isRegistryExcluded(id: string, registry: keyof typeof registryExcludes): boolean {
@@ -117,6 +123,10 @@ if (process.env.NODE_ENV === 'development') {
   console.assert(
     expandStatefulBlocks(['light']).join(',') === Array.from({ length: 16 }, (_, index) => `light[level=${15 - index}]`).join(','),
     'Light block variant expansion failed.'
+  );
+  console.assert(
+    expandStatefulBlocks(['candle_cake']).join(',') === candleCakeVariants.join(','),
+    'Candle cake color expansion failed.'
   );
   console.assert(
     weatheringCopperNames('copper_chest', ['forEach'], name => !name.startsWith('waxed_oxidized_')).join(',') ===
@@ -442,6 +452,7 @@ function createWindow() {
     'assets/minecraft/textures/item/',
     'assets/minecraft/textures/particle/',
     'assets/minecraft/textures/block/',
+    'assets/minecraft/textures/environment/end_sky.png',
     'assets/minecraft/textures/font/',
     'assets/minecraft/font/',
     'assets/minecraft/textures/entity/'
@@ -457,7 +468,10 @@ function createWindow() {
     try {
       await fs.mkdir(CACHE_DIR, { recursive: true });
       const startTime = Date.now();
-      const [hasAssets, hasRegistry] = await Promise.all([pathExists(assetsPath), pathExists(registryPath)]);
+      const [hasAssets, hasRegistry] = await Promise.all([
+        pathExists(path.join(assetsPath, 'minecraft', 'textures', 'environment', 'end_sky.png')),
+        pathExists(registryPath)
+      ]);
       const [clientResponse, serverResponse] = await Promise.all([
         hasAssets ? null : axios<ArrayBuffer>({ url: clientUrl, method: 'GET', responseType: 'arraybuffer' }),
         hasRegistry ? null : axios<ArrayBuffer>({ url: serverUrl, method: 'GET', responseType: 'arraybuffer' })

@@ -864,6 +864,11 @@ function createGroup(): string | undefined {
 
 function ungroupGroup(groupId: string): void {
     _runWithoutVertexQueue(() => {
+        const pairs = getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs');
+        const partnerId = isMirrorModelingEnabled() ? pairs.get(groupId) : undefined;
+        if (partnerId) ungroupGroupCommand(loadedObjectGroup, partnerId, _getGizmoCommandCallbacks());
+        pairs.delete(groupId);
+        if (partnerId) pairs.delete(partnerId);
         ungroupGroupCommand(loadedObjectGroup, groupId, _getGizmoCommandCallbacks());
     });
 }
@@ -1383,6 +1388,7 @@ export function initGizmo({
     loadedObjectGroup.userData.duplicateSelected = duplicateSelected;
     loadedObjectGroup.userData.groupSelected = () => { createGroup(); };
     loadedObjectGroup.userData.ungroupSelected = (groupId: string) => { ungroupGroup(groupId); };
+    loadedObjectGroup.userData.getPivotMode = () => pivotMode;
     loadedObjectGroup.userData.replaceSelectionWithObjectsMap = (meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string }) => {
         _replaceSelectionWithObjectsMap(meshToIds, options);
     };
@@ -1608,31 +1614,42 @@ export function initGizmo({
         updateSelectionOverlay();
     });
     window.addEventListener('pde:replace-object-selection', event => {
-        const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } = (event as CustomEvent<{
+        const replacements = (event as CustomEvent<Array<{
             oldMesh: PdeMesh;
             oldInstanceId: number;
             oldLastInstanceId: number;
             mesh: PdeMesh;
             instanceId: number;
-        }>).detail;
+        }>>).detail;
         const objects = new Map(Array.from(currentSelection.objects, ([selectedMesh, ids]) => [selectedMesh, new Set(ids)]));
-        const oldIds = objects.get(oldMesh);
-        const replaced = oldIds?.delete(oldInstanceId) ?? false;
-        const moved = oldInstanceId < oldLastInstanceId && (oldIds?.delete(oldLastInstanceId) ?? false);
-        if (moved) oldIds!.add(oldInstanceId);
-        if (oldIds?.size === 0) objects.delete(oldMesh);
-        if (replaced) {
-            const replacementIds = objects.get(mesh) ?? new Set<number>();
-            replacementIds.add(instanceId);
-            objects.set(mesh, replacementIds);
-        }
-        if (!replaced && !moved) return;
-
         let primary = currentSelection.primary;
-        if (primary?.type === 'object' && primary.mesh === oldMesh) {
-            if (primary.instanceId === oldInstanceId) primary = { type: 'object', mesh, instanceId };
-            else if (moved && primary.instanceId === oldLastInstanceId) primary = { type: 'object', mesh: oldMesh, instanceId: oldInstanceId };
+        let primaryReplacement: { mesh: PdeMesh; instanceId: number } | null = null;
+        const replacedSelections: Array<{ mesh: PdeMesh; instanceId: number }> = [];
+        let changed = false;
+        for (const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } of replacements) {
+            const oldIds = objects.get(oldMesh);
+            const replaced = oldIds?.delete(oldInstanceId) ?? false;
+            const moved = oldInstanceId < oldLastInstanceId && (oldIds?.delete(oldLastInstanceId) ?? false);
+            if (moved) oldIds!.add(oldInstanceId);
+            if (oldIds?.size === 0) objects.delete(oldMesh);
+            if (replaced) replacedSelections.push({ mesh, instanceId });
+            changed ||= replaced || moved;
+
+            if (primary?.type === 'object' && primary.mesh === oldMesh) {
+                if (primary.instanceId === oldInstanceId) {
+                    primary = null;
+                    primaryReplacement = { mesh, instanceId };
+                }
+                else if (moved && primary.instanceId === oldLastInstanceId) primary = { type: 'object', mesh: oldMesh, instanceId: oldInstanceId };
+            }
         }
+        if (!changed) return;
+        for (const { mesh, instanceId } of replacedSelections) {
+            const ids = objects.get(mesh) ?? new Set<number>();
+            ids.add(instanceId);
+            objects.set(mesh, ids);
+        }
+        if (primaryReplacement) primary = { type: 'object', ...primaryReplacement };
         _replaceSelectionWithGroupsAndObjects(new Set(currentSelection.groups), objects, {
             preserveAnchors: true,
             explicitPrimary: primary

@@ -14,6 +14,7 @@ import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from '.
 import { removeShearFromSelection } from '../pivot/shear-remove';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
+import { applyLinkedMirrorDelta } from '../mirroring';
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();
@@ -319,7 +320,11 @@ export function processVertexScale(
                 }
             }
         }
-        if ((mesh as InstancedMesh).isInstancedMesh) (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
+        if ((mesh as InstancedMesh).isInstancedMesh) {
+            const instanceMatrix = (mesh as InstancedMesh).instanceMatrix;
+            ids.forEach(id => instanceMatrix.addUpdateRange(id * instanceMatrix.itemSize, instanceMatrix.itemSize));
+            instanceMatrix.needsUpdate = true;
+        }
     }
 
     for (const groupId of targets.groups) {
@@ -348,6 +353,13 @@ export function processVertexScale(
             }
         }
     }
+
+    applyLinkedMirrorDelta(
+        loadedObjectGroup,
+        transformMatrix,
+        Array.from(targets.instances, ([mesh, ids]) => [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))).flat(),
+        targets.groups
+    );
 
     if (transformedMultiAnchorWorld) {
         setMultiAnchorInitial(transformedMultiAnchorWorld);

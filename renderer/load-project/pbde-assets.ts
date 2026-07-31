@@ -71,17 +71,24 @@ const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPaylo
     }
 };
 
-async function getBlockPropertyOptions(name: string, current: Record<string, string>): Promise<Record<string, string[]>> {
+const blockstateCache = new Map<string, Promise<any>>();
+
+function readBlockstate(name: string): Promise<any> {
     const baseName = name.replace(/\[[^\]]*\]$/, '');
+    const cached = blockstateCache.get(baseName);
+    if (cached) return cached;
     const [namespace, ...pathParts] = baseName.includes(':') ? baseName.split(':') : ['minecraft', baseName];
     const path = pathParts.join(':');
-    let blockstate: any;
-    try {
-        blockstate = JSON.parse(String(await mainThreadAssetProvider.getAsset(`assets/${namespace}/blockstates/${path}.json`)));
-    } catch {
-        blockstate = JSON.parse(String(await mainThreadAssetProvider.getAsset(`hardcoded/blockstates/${path}.json`)));
-    }
+    const blockstate = mainThreadAssetProvider.getAsset(`assets/${namespace}/blockstates/${path}.json`)
+        .then(content => JSON.parse(String(content)))
+        .catch(() => mainThreadAssetProvider.getAsset(`hardcoded/blockstates/${path}.json`)
+            .then(content => JSON.parse(String(content))));
+    blockstateCache.set(baseName, blockstate);
+    return blockstate;
+}
 
+async function getBlockPropertyOptions(name: string, current: Record<string, string>): Promise<Record<string, string[]>> {
+    const blockstate = await readBlockstate(name);
     const options = Object.fromEntries(Object.entries(current).map(([key, value]) => [
         key,
         new Set(value === 'true' || value === 'false' ? ['true', 'false'] : [String(value)])
@@ -120,7 +127,43 @@ async function getBlockPropertyOptions(name: string, current: Record<string, str
     ]));
 }
 
+function collectBlockPropertyValues(blockstate: any): Record<string, Set<string>> {
+    const values: Record<string, Set<string>> = {};
+    const add = (key: string, value: unknown): void => {
+        const options = values[key] ??= new Set<string>();
+        String(value).split('|').forEach(candidate => {
+            options.add(candidate);
+            if (candidate === 'true') options.add('false');
+            else if (candidate === 'false') options.add('true');
+        });
+    };
+    if (blockstate.variants) {
+        Object.keys(blockstate.variants).forEach(variant =>
+            variant.split(',').filter(Boolean).forEach(part => {
+                const [key, value] = part.split('=', 2);
+                add(key, value);
+            }));
+    } else if (blockstate.multipart) {
+        const collect = (condition: unknown): void => {
+            if (!condition || typeof condition !== 'object') return;
+            Object.entries(condition).forEach(([key, value]) => {
+                if (key === 'OR' || key === 'AND') (Array.isArray(value) ? value : [value]).forEach(collect);
+                else add(key, value);
+            });
+        };
+        blockstate.multipart.forEach((part: any) => collect(part?.when));
+    }
+    return values;
+}
 
+async function getCompatibleBlockProperties(name: string, current: Record<string, string>): Promise<Record<string, string>> {
+    const values = collectBlockPropertyValues(await readBlockstate(name));
+    return Object.fromEntries(Object.entries(current).filter(([key, value]) => values[key]?.has(value)));
+}
 
+if (import.meta.env.DEV) {
+    const values = collectBlockPropertyValues({ variants: { 'axis=x': {}, 'axis=y': {} } });
+    console.assert(values.axis?.has('x') && values.axis.has('y') && !values.axis.has('z'), 'Block property compatibility failed.');
+}
 
-export { getBlockPropertyOptions, mainThreadAssetProvider, isNodeBufferLike, toUint8Array };
+export { getBlockPropertyOptions, getCompatibleBlockProperties, mainThreadAssetProvider, isNodeBufferLike, toUint8Array };

@@ -193,13 +193,32 @@ canvas {
 .block-item-search-window header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   padding: 8px 12px;
   border-bottom: 1px solid #3a3a3e;
   color: #aaa;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.08em;
+}
+
+.block-item-search-window header span {
+  flex: none;
+}
+
+.block-item-search-window input {
+  min-width: 0;
+  flex: 1;
+  padding: 6px 9px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  outline: none;
+  background: #1e1e21;
+  color: #f0f0f0;
+}
+
+.block-item-search-window input:focus {
+  border-color: #77777f;
 }
 
 .block-item-search-window button {
@@ -239,6 +258,7 @@ canvas {
   display: block;
   width: 100%;
   height: auto;
+  cursor: pointer;
   image-rendering: pixelated;
 }
 

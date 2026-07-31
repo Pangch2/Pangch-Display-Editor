@@ -1,4 +1,4 @@
-import { Matrix4, MeshBasicNodeMaterial, type Texture } from 'three/webgpu';
+import { FrontSide, Matrix4, MeshBasicNodeMaterial, type Texture } from 'three/webgpu';
 import {
   uniform,
   renderGroup,
@@ -19,7 +19,11 @@ import {
   mix,
   positionLocal,
   modelWorldMatrix,
-  modelWorldMatrixInverse
+  modelWorldMatrixInverse,
+  modelViewProjection,
+  vec2,
+  sRGBTransferEOTF,
+  sRGBTransferOETF
 } from 'three/tsl';
 
 export const dragSelectedAttributeName = 'dragSelected';
@@ -115,4 +119,43 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   material.alphaTest = 0.1;
 
   return { material, blockLightLevel, skyLightLevel };
+}
+
+const endPortalColors = [
+  [0.022087, 0.098399, 0.110818], [0.011892, 0.095924, 0.089485],
+  [0.027636, 0.101689, 0.100326], [0.046564, 0.109883, 0.114838],
+  [0.064901, 0.117696, 0.097189], [0.063761, 0.086895, 0.123646],
+  [0.084817, 0.111994, 0.166380], [0.097489, 0.154120, 0.091064],
+  [0.106152, 0.131144, 0.195191], [0.097721, 0.110188, 0.187229],
+  [0.133516, 0.138278, 0.148582], [0.070006, 0.243332, 0.235792],
+  [0.196766, 0.142899, 0.214696], [0.047281, 0.315338, 0.321970],
+  [0.204675, 0.390010, 0.302066], [0.080955, 0.314821, 0.661491]
+] as const;
+
+if (import.meta.env.DEV) console.assert(endPortalColors.length === 16, 'End portal palette must keep Minecraft\'s 16 colors.');
+
+export function createEndPortalMaterial(endSkyTexture: Texture, endPortalTexture: Texture, layerCount: 15 | 16): MeshBasicNodeMaterial {
+  const projectedUv = modelViewProjection.xy.div(modelViewProjection.w).mul(0.5).add(0.5);
+  let portalColor = sRGBTransferOETF(texture(endSkyTexture, projectedUv).rgb).mul(vec3(...endPortalColors[0]));
+
+  for (let layer = 1; layer <= layerCount; layer++) {
+    const angle = (layer * layer * 4321 + layer * 9) * 2 * Math.PI / 180;
+    const scale = (4.5 - layer / 4) * 2;
+    const rotatedUv = vec2(
+      projectedUv.x.mul(Math.cos(angle)).sub(projectedUv.y.mul(Math.sin(angle))),
+      projectedUv.x.mul(Math.sin(angle)).add(projectedUv.y.mul(Math.cos(angle)))
+    ).mul(scale);
+    const layerUv = rotatedUv.add(vec2(17 / layer, 0)).mul(0.5).add(0.25);
+    portalColor = portalColor.add(sRGBTransferOETF(texture(endPortalTexture, layerUv).rgb).mul(vec3(...endPortalColors[layer - 1])));
+  }
+
+  const material = new MeshBasicNodeMaterial();
+  material.positionNode = dragPreviewPositionNode;
+  material.colorNode = vec4(sRGBTransferEOTF(portalColor), 1);
+  material.side = FrontSide;
+  material.depthWrite = true;
+  material.transparent = false;
+  material.toneMapped = false;
+  material.fog = false;
+  return material;
 }

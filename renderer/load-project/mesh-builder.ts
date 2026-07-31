@@ -1,12 +1,13 @@
 import * as THREE from 'three/webgpu';
 import { compressSync, strToU8 } from 'fflate';
-import { createEntityMaterial, dragSelectedAttributeName } from '../entity-material';
+import { createEndPortalMaterial, createEntityMaterial, dragSelectedAttributeName } from '../entity-material';
 import { deleteSelectedItems } from '../controls/grouping/delete';
 import * as Overlay from '../controls/selection/overlay';
 import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject } from './scene-parser';
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
+import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../controls/mirroring';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
 
@@ -412,6 +413,22 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
     if (blockMaterialPromiseCache.has(promiseKey)) return blockMaterialPromiseCache.get(promiseKey)!;
 
     const p = (async () => {
+        const endPortalLayerCount = effectiveTint === 0xffffffff ? 16 : effectiveTint === 0xfeffffff ? 15 : 0;
+        if (endPortalLayerCount) {
+            const [endSkyTexture, endPortalTexture] = await Promise.all([
+                loadBlockTexture('assets/minecraft/textures/environment/end_sky.png', gen),
+                loadBlockTexture('assets/minecraft/textures/entity/end_portal/end_portal.png', gen)
+            ]);
+            for (const texture of [endSkyTexture, endPortalTexture]) {
+                texture.wrapS = THREE.RepeatWrapping;
+                texture.wrapT = THREE.RepeatWrapping;
+                texture.needsUpdate = true;
+            }
+            const material = createEndPortalMaterial(endSkyTexture, endPortalTexture, endPortalLayerCount);
+            blockMaterialCache.set(key, material);
+            return material;
+        }
+
         const tex = await loadBlockTexture(texPath, gen);
         const { material } = createEntityMaterial(tex, effectiveTint, false, instancedUvTransformCount > 0, instancedUvTransformCount, instancedUvTransformIndex);
         material.toneMapped = false;
@@ -796,7 +813,7 @@ function _clearSceneAndCaches(): void {
  * Newly added helper to perform selection on a set of meshes.
  * Extracted from _loadAndRenderPbde to allow batch selection control.
  */
-export function performSelection(newlyAddedSelectableMeshes: LoadedSelection) {
+export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, anchorMode = 'center') {
     const selectGroupsObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithGroupsAndObjects as
         | undefined
         | ((groupIds: Set<string>, meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
@@ -853,10 +870,10 @@ export function performSelection(newlyAddedSelectableMeshes: LoadedSelection) {
 
         // Group-priority selection: if an instance belongs to a group, select the (root) group instead.
         if (typeof selectGroupsObjectsFn === 'function') {
-            selectGroupsObjectsFn(groupIds, meshToIds, { anchorMode: 'center' });
+            selectGroupsObjectsFn(groupIds, meshToIds, { anchorMode });
         } else if (typeof selectObjectsFn === 'function') {
             // Fallback: select raw objects if gizmo API is not available.
-            selectObjectsFn(meshToIds, { anchorMode: 'center' });
+            selectObjectsFn(meshToIds, { anchorMode });
         }
     }
 }
@@ -1757,11 +1774,29 @@ export async function replaceDisplayObjects(requests: Array<{
     objectUuid: string;
     name: string;
     transformContext?: { pivotMode: string; pivotWorld?: THREE.Vector3 };
+    isItemDisplay?: boolean;
 }>): Promise<string[]> {
     if (requests.length === 0) return [];
+    const requestedCount = requests.length;
+    if (isMirrorModelingEnabled()) {
+        const requestedUuids = new Set(requests.map(request => request.objectUuid));
+        requests = requests.concat(requests.flatMap(request => {
+            const partnerUuid = getLinkedMirrorUuid(loadedObjectGroup, request.objectUuid);
+            if (!partnerUuid || requestedUuids.has(partnerUuid)) return [];
+            requestedUuids.add(partnerUuid);
+            return [{
+                ...request,
+                objectUuid: partnerUuid,
+                transformContext: request.transformContext && { pivotMode: request.transformContext.pivotMode }
+            }];
+        }));
+    }
     const ud = loadedObjectGroup.userData;
     const refs = ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }>;
-    const replacements = requests.map(({ objectUuid, name, transformContext }) => {
+    const sceneOrder = ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined;
+    const sceneIndexes = new Map(sceneOrder?.map((entry, index) => [entry.type === 'object' ? entry.id : '', index]) ?? []);
+    const groupIndexes = new Map<string, Map<string, number>>();
+    const replacements = requests.map(({ objectUuid, name, transformContext, isItemDisplay: requestedItemDisplay }) => {
         const oldRef = refs?.get(objectUuid);
         if (!oldRef?.mesh?.isInstancedMesh) throw new Error('교체할 오브젝트를 찾을 수 없습니다.');
 
@@ -1773,6 +1808,9 @@ export async function replaceDisplayObjects(requests: Array<{
         if (name.startsWith('player_head')) oldMatrix.multiply(getPlayerHeadRenderMatrix(oldDisplayType).invert());
         const groupId = (ud.objectToGroup as Map<string, string> | undefined)?.get(`${oldRef.mesh.uuid}_${oldRef.instanceId}`);
         const group = groupId ? (ud.groups as Map<string, GroupData> | undefined)?.get(groupId) : undefined;
+        if (groupId && group && !groupIndexes.has(groupId)) {
+            groupIndexes.set(groupId, new Map(group.children.map((child, index) => [child.type === 'object' ? child.id ?? '' : '', index])));
+        }
         const customPivot = (oldRef.mesh.userData.customPivots as Map<number, THREE.Vector3> | undefined)?.get(oldRef.instanceId)?.clone();
         const pivot = transformContext?.pivotMode === 'center'
             ? Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3())
@@ -1784,16 +1822,21 @@ export async function replaceDisplayObjects(requests: Array<{
             ?? pivot?.clone().applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
         const replacementUuid = THREE.MathUtils.generateUUID();
         const label = (ud.objectLabels as Map<string, string> | undefined)?.get(objectUuid);
-        const isItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
+        const wasItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
+        const isItemDisplay = requestedItemDisplay ?? wasItemDisplay;
+        const displayTypeChanged = wasItemDisplay !== isItemDisplay;
+        const displayTypeOffset = displayTypeChanged ? (wasItemDisplay ? -0.5 : 0.5) : 0;
         const texture = (ud.objectTextures as Map<string, string> | undefined)?.get(objectUuid);
         return {
-            objectUuid, replacementUuid, label, groupId, group,
-            groupIndex: group?.children.findIndex(child => child.type === 'object' && child.id === objectUuid) ?? -1,
-            sceneIndex: (ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined)
-                ?.findIndex(entry => entry.type === 'object' && entry.id === objectUuid) ?? -1,
+            objectUuid, replacementUuid, label, groupId, group, oldMesh: oldRef.mesh, oldInstanceId: oldRef.instanceId,
+            groupIndex: groupId ? groupIndexes.get(groupId)?.get(objectUuid) ?? -1 : -1,
+            sceneIndex: sceneIndexes.get(objectUuid) ?? -1,
             customPivot,
             customPivotWorld: customPivot?.clone().applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix)),
             pivotWorld,
+            displayedMatrix,
+            displayTypeChanged,
+            displayTypeOffset,
             transformContext,
             node: {
                 uuid: replacementUuid,
@@ -1819,33 +1862,62 @@ export async function replaceDisplayObjects(requests: Array<{
     raw.set(json, 18);
 
     await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
+    const deletionStates = new Map<THREE.InstancedMesh, typeof replacements>();
     for (const state of replacements) {
-        const oldRef = refs.get(state.objectUuid);
-        if (!oldRef) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
-        if (state.label !== undefined) (ud.objectLabels as Map<string, string>).set(state.replacementUuid, state.label);
-        const oldLastInstanceId = oldRef.mesh.count - 1;
+        const states = deletionStates.get(state.oldMesh) ?? [];
+        states.push(state);
+        deletionStates.set(state.oldMesh, states);
+    }
+    const selectionReplacements: Array<{
+        oldMesh: THREE.InstancedMesh;
+        oldInstanceId: number;
+        oldLastInstanceId: number;
+        mesh: THREE.InstancedMesh;
+        instanceId: number;
+    }> = [];
+    const deletionOrder = Array.from(deletionStates, ([mesh, states]) => {
+        let oldLastInstanceId = mesh.count - 1;
+        return states.sort((a, b) => b.oldInstanceId - a.oldInstanceId)
+            .map(state => ({ state, oldLastInstanceId: oldLastInstanceId-- }));
+    }).flat();
+    deleteSelectedItems(loadedObjectGroup, {
+        groups: new Set(),
+        objects: new Map(Array.from(deletionStates, ([mesh, states]) => [mesh, new Set(states.map(state => state.oldInstanceId))]))
+    }, { resetSelectionAndDeselect: () => {} });
 
-        deleteSelectedItems(loadedObjectGroup, {
-            groups: new Set(),
-            objects: new Map([[oldRef.mesh, new Set([oldRef.instanceId])]])
-        }, { resetSelectionAndDeselect: () => {} });
+    const replacementUuids = new Set(replacements.map(state => state.replacementUuid));
+    const nextSceneOrder = ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined;
+    if (nextSceneOrder) {
+        nextSceneOrder.splice(0, nextSceneOrder.length, ...nextSceneOrder.filter(entry => entry.type !== 'object' || !replacementUuids.has(entry.id)));
+        for (const state of [...replacements].sort((a, b) => a.sceneIndex - b.sceneIndex)) {
+            nextSceneOrder.splice(state.sceneIndex >= 0 ? state.sceneIndex : nextSceneOrder.length, 0, { type: 'object', id: state.replacementUuid });
+        }
+    }
+    for (const state of replacements.filter(state => state.groupId && state.group)
+        .sort((a, b) => a.groupId!.localeCompare(b.groupId!) || a.groupIndex - b.groupIndex)) {
+        const replacement = refs.get(state.replacementUuid);
+        if (!replacement) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
+        (ud.objectToGroup as Map<string, string>).set(`${replacement.mesh.uuid}_${replacement.instanceId}`, state.groupId!);
+        state.group!.children.splice(state.groupIndex >= 0 ? state.groupIndex : state.group!.children.length, 0, {
+            type: 'object', id: state.replacementUuid, mesh: replacement.mesh, instanceId: replacement.instanceId
+        });
+    }
+
+    for (const state of replacements) {
+        if (state.label !== undefined) (ud.objectLabels as Map<string, string>).set(state.replacementUuid, state.label);
 
         const replacement = refs.get(state.replacementUuid);
         if (!replacement) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
-        const replacementKey = `${replacement.mesh.uuid}_${replacement.instanceId}`;
-        if (state.groupId && state.group) {
-            (ud.objectToGroup as Map<string, string>).set(replacementKey, state.groupId);
-            const child = { type: 'object' as const, id: state.replacementUuid, mesh: replacement.mesh, instanceId: replacement.instanceId };
-            if (state.groupIndex >= 0) state.group.children.splice(state.groupIndex, 0, child);
-            else state.group.children.push(child);
-        }
-        const nextSceneOrder = ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined;
-        if (nextSceneOrder) {
-            const replacementIndex = nextSceneOrder.findIndex(entry => entry.type === 'object' && entry.id === state.replacementUuid);
-            if (replacementIndex >= 0) nextSceneOrder.splice(replacementIndex, 1);
-            nextSceneOrder.splice(state.sceneIndex >= 0 ? state.sceneIndex : nextSceneOrder.length, 0, { type: 'object', id: state.replacementUuid });
-        }
-        if (state.pivotWorld && (!state.customPivot || state.transformContext?.pivotMode === 'center')) {
+        if (state.displayTypeChanged) {
+            const replacementMatrix = state.displayedMatrix.clone();
+            replacementMatrix.elements[12] += state.displayTypeOffset;
+            replacementMatrix.elements[13] += state.displayTypeOffset;
+            replacementMatrix.elements[14] += state.displayTypeOffset;
+            replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
+            replacement.mesh.instanceMatrix.needsUpdate = true;
+            replacement.mesh.computeBoundingBox();
+            replacement.mesh.computeBoundingSphere();
+        } else if (state.pivotWorld && (!state.customPivot || state.transformContext?.pivotMode === 'center')) {
             const replacementMatrix = new THREE.Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
             const replacementDisplayType = Overlay.getDisplayType(replacement.mesh, replacement.instanceId);
@@ -1875,18 +1947,43 @@ export async function replaceDisplayObjects(requests: Array<{
             );
         }
 
-        window.dispatchEvent(new CustomEvent('pde:replace-object-selection', {
-            detail: {
-                oldMesh: oldRef.mesh,
-                oldInstanceId: oldRef.instanceId,
-                oldLastInstanceId,
-                mesh: replacement.mesh,
-                instanceId: replacement.instanceId
-            }
-        }));
     }
+    for (const state of replacements) replaceMirrorUuid(loadedObjectGroup, state.objectUuid, state.replacementUuid);
+    for (const { state, oldLastInstanceId } of deletionOrder) {
+        const replacement = refs.get(state.replacementUuid)!;
+        selectionReplacements.push({
+            oldMesh: state.oldMesh, oldInstanceId: state.oldInstanceId, oldLastInstanceId,
+            mesh: replacement.mesh, instanceId: replacement.instanceId
+        });
+    }
+    window.dispatchEvent(new CustomEvent('pde:replace-object-selection', { detail: selectionReplacements }));
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-    return replacements.map(({ replacementUuid }) => replacementUuid);
+    return replacements.slice(0, requestedCount).map(({ replacementUuid }) => replacementUuid);
+}
+
+export async function addDisplayObject(name: string, isItemDisplay: boolean): Promise<string> {
+    const uuid = THREE.MathUtils.generateUUID();
+    const json = strToU8(JSON.stringify([{ children: [{
+        uuid,
+        name,
+        nbt: '',
+        transforms: new THREE.Matrix4().toArray(),
+        isBlockDisplay: !isItemDisplay,
+        isItemDisplay
+    }] }]));
+    const raw = new Uint8Array(18 + json.length);
+    raw.set([80, 82, 74, 50], 0);
+    raw.set(strToU8('scene.json'), 4);
+    new DataView(raw.buffer).setUint32(14, json.length, true);
+    raw.set(json, 18);
+
+    const pivotMode = (loadedObjectGroup.userData.getPivotMode as (() => string) | undefined)?.();
+    performSelection(
+        await loadAndRenderPbde(new File([compressSync(raw)], 'object-add.pbde'), true),
+        pivotMode === 'center' ? 'center' : 'default'
+    );
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    return uuid;
 }
 
 export async function replaceDisplayObject(

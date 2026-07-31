@@ -19,12 +19,12 @@
     "cross-env": "^10.1.0",
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
-    "vite": "^8.1.5",
+    "vite": "^8.2.0",
     "nodemon": "^3.1.14",
     "three": "^0.185.1"
   },
   "dependencies": {
-    "axios": "^1.17.0",
+    "axios": "^1.19.0",
     "fflate": "^0.8.3",
     "p-limit": "^7.3.1"
   },

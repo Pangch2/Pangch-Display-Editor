@@ -19,6 +19,8 @@ import { toggleShading } from '../../entity-material';
 import type { SelectionState, SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
+import * as GroupUtils from '../grouping/group';
+import { getLinkedMirrorSelection } from '../mirroring';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
@@ -147,6 +149,9 @@ export interface HandleKeyParams {
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export function initHandleKey(p: HandleKeyParams): void {
+    const getDirectSelectedItems = (): SelectedItem[] => Array.from(p.currentSelection.objects, ([mesh, ids]) =>
+        [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))
+    ).flat();
 
     // ── Inner key handler ────────────────────────────────────────────────────
 
@@ -237,10 +242,28 @@ export function initHandleKey(p: HandleKeyParams): void {
             case 'q': {
                 const items = p.getSelectedItems();
                 if (items.length > 0) {
+                    const linked = getLinkedMirrorSelection(p.loadedObjectGroup, getDirectSelectedItems(), p.currentSelection.groups);
+                    const mirrorItems = new Map<string, SelectedItem>();
+                    linked.objects.forEach((ids, mesh) => ids.forEach(instanceId => mirrorItems.set(`${mesh.uuid}_${instanceId}`, { type: 'object', mesh, instanceId })));
+                    for (const groupId of linked.groups) {
+                        for (const child of GroupUtils.getAllGroupChildren(p.loadedObjectGroup, groupId)) {
+                            mirrorItems.set(`${child.mesh.uuid}_${child.instanceId}`, { type: 'object', mesh: child.mesh, instanceId: child.instanceId });
+                        }
+                    }
+                    const mirrorSelectionObjects = new Map<PdeMesh, Set<number>>(Array.from(p.currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+                    linked.objects.forEach((ids, mesh) => {
+                        const selectedIds = mirrorSelectionObjects.get(mesh) ?? new Set<number>();
+                        ids.forEach(id => selectedIds.add(id));
+                        mirrorSelectionObjects.set(mesh, selectedIds);
+                    });
                     removeShearFromSelection(
-                        items,
+                        [...items, ...mirrorItems.values()],
                         p.getSelectionHelper(),
-                        p.currentSelection,
+                        {
+                            ...p.currentSelection,
+                            groups: new Set([...p.currentSelection.groups, ...linked.groups]),
+                            objects: mirrorSelectionObjects
+                        },
                         p.loadedObjectGroup,
                         p.state.pivotMode,
                         p.state.isCustomPivot,
@@ -396,8 +419,20 @@ export function initHandleKey(p: HandleKeyParams): void {
                     selectionAnchorMode:          p.state.selectionAnchorMode,
                 };
 
+                const linked = getLinkedMirrorSelection(p.loadedObjectGroup, getDirectSelectedItems(), p.currentSelection.groups);
+                const resetSelection = {
+                    ...p.currentSelection,
+                    groups: new Set([...p.currentSelection.groups, ...linked.groups]),
+                    objects: new Map<PdeMesh, Set<number>>(Array.from(p.currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]))
+                };
+                linked.objects.forEach((ids, mesh) => {
+                    const selectedIds = resetSelection.objects.get(mesh) ?? new Set<number>();
+                    ids.forEach(id => selectedIds.add(id));
+                    resetSelection.objects.set(mesh, selectedIds);
+                });
+
                 resetCustomPivot(
-                    p.currentSelection,
+                    resetSelection,
                     p.pivotOffset,
                     p.multiSelectionOriginAnchorPosition,
                     p.gizmoAnchorPosition,

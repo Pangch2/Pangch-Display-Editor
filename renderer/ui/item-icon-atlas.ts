@@ -39,6 +39,7 @@ function cloneModels(models: ModelData[]): ModelData[] {
 }
 
 const blockPropertyDefaults: Record<string, string[]> = {
+    age: ['7'],
     attachment: ['floor'],
     axis: ['y'],
     distance: ['7'],
@@ -109,7 +110,7 @@ function parseIconName(name: string): { namespace: string; path: string; propert
     return { namespace, path, properties };
 }
 
-function getBlockIconName(name: string): Promise<string> {
+export function getBlockIconName(name: string): Promise<string> {
     let promise = blockIconNamePromises.get(name);
     if (!promise) {
         promise = (async () => {
@@ -130,6 +131,7 @@ function getBlockIconName(name: string): Promise<string> {
 function findDisplayModelId(value: any, properties: Record<string, string> = {}): string | null {
     if (typeof value === 'string') return value;
     if (!value || typeof value !== 'object') return null;
+    if (value.type === 'minecraft:condition') return findDisplayModelId(value.on_false, properties);
     if (value.block_state_property && Array.isArray(value.cases)) {
         const property = String(value.block_state_property).split(':').pop()!;
         const selected = value.cases.find((entry: any) => String(entry.when) === properties[property]);
@@ -156,7 +158,7 @@ function needsHardcodedItemGeometry(definition: any): boolean {
 }
 
 const iconModelOverrides = {
-    '2D': ['*_sign', '*_door', '*_stairs', '*_bars', '*_chain', 'light', 'tripwire'],
+    '2D': ['*_sign', '*_door', '*_stairs', '*_bars', '*_chain', 'light', 'tripwire', 'trident'],
     '3D': ['*_bed', '*_banner', '*_shulker_box', '*_chest']
 };
 
@@ -247,8 +249,17 @@ if (import.meta.env.DEV) {
         'Default block icon properties changed.'
     );
     console.assert(
+        defaultBlockProperties({ variants: { 'age=0': {}, 'age=7': {} } }).age === '7',
+        'Block icons must prefer the fully-grown age.'
+    );
+    console.assert(
         findDisplayModelId({ type: 'minecraft:select', fallback: { type: 'minecraft:special', base: 'minecraft:item/chest' } })
             === 'minecraft:item/chest'
+            && findDisplayModelId({
+                type: 'minecraft:condition',
+                on_false: { model: 'minecraft:item/default' },
+                on_true: { model: 'minecraft:item/alternate' }
+            }) === 'minecraft:item/default'
             && findDisplayModelId({
                 block_state_property: 'level',
                 cases: [{ when: '3', model: { model: 'minecraft:item/light_03' } }],
@@ -370,6 +381,7 @@ function createModelGroup(
             THREE.MathUtils.degToRad(rotation?.[2] ?? 0),
             'XYZ'
         );
+        if (matchesIconModelOverride(icon.name, ['*_bed'])) group.rotation.y += Math.PI;
         group.scale.set(scale?.[0] ?? 1, scale?.[1] ?? 1, scale?.[2] ?? 1);
     }
 

@@ -1,5 +1,5 @@
 import type { Object3D } from 'three/webgpu';
-import { loadedObjectGroup } from '../load-project/upload-pbde';
+import { loadedObjectGroup } from '../../load-project/upload-pbde';
 import type { ScenePanelRow, ScenePanelSelectionState, LoadedObjectUserData } from './scene-panel-types';
 import { scenePanelState } from './scene-panel-state';
 

@@ -13,6 +13,7 @@ import * as Overlay from '../selection/overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
+import { applyLinkedMirrorDelta } from '../mirroring';
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_INSTANCE_MATRIX = new Matrix4();
@@ -309,7 +310,11 @@ export function processVertexRotate(
                 _TMP_INSTANCE_MATRIX.premultiply(localTransform);
                 (mesh as InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
             }
-            if ((mesh as InstancedMesh).isInstancedMesh) (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
+            if ((mesh as InstancedMesh).isInstancedMesh) {
+                const instanceMatrix = (mesh as InstancedMesh).instanceMatrix;
+                ids.forEach(id => instanceMatrix.addUpdateRange(id * instanceMatrix.itemSize, instanceMatrix.itemSize));
+                instanceMatrix.needsUpdate = true;
+            }
         }
 
         // B. Update Group Metadata (Logic)
@@ -333,6 +338,13 @@ export function processVertexRotate(
                 group.matrix.decompose(group.position, group.quaternion, group.scale);
             }
         }
+
+        applyLinkedMirrorDelta(
+            loadedObjectGroup,
+            sourceTransformMat,
+            Array.from(targets.instances, ([mesh, ids]) => [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))).flat(),
+            targets.groups
+        );
 
         if (transformedMultiAnchorWorld) {
             setMultiAnchorInitial(transformedMultiAnchorWorld);

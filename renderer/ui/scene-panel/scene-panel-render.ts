@@ -1,6 +1,7 @@
-import { currentSelection } from '../controls/selection/select';
-import { isPbdeLogEnabled } from '../load-project/pbde-log';
-import { loadedObjectGroup } from '../load-project/upload-pbde';
+import { currentSelection } from '../../controls/selection/select';
+import { isPbdeLogEnabled } from '../../load-project/pbde-log';
+import { loadedObjectGroup } from '../../load-project/upload-pbde';
+import { getLinkedMirrorUuid, getMirrorPairs, isMirrorModelingEnabled } from '../../controls/mirroring';
 import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';
 import {
     handleSceneItemDragEnd,
@@ -188,8 +189,19 @@ export function beginScenePanelRename(): void {
         if (row.type === 'group') {
             const group = ud.groups?.get(row.id);
             if (group) group.name = value;
+            const partnerId = isMirrorModelingEnabled() ? getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').get(row.id) : undefined;
+            const partner = partnerId ? ud.groups?.get(partnerId) : undefined;
+            if (partner) {
+                partner.name = value;
+                window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key: `group:${partnerId}`, value } }));
+            }
         } else {
             (ud.objectLabels ??= new Map()).set(row.id, value);
+            const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, row.id) : undefined;
+            if (partnerUuid) {
+                ud.objectLabels.set(partnerUuid, value);
+                window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key: `object:${partnerUuid}`, value } }));
+            }
         }
         window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key: `${row.type}:${row.id}`, value } }));
     };

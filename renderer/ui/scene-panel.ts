@@ -1,13 +1,13 @@
 import { currentSelection } from '../controls/selection/select';
-import { scenePanelState } from './scene-panel-state';
-import type { ScenePanelSelectionState } from './scene-panel-types';
+import { scenePanelState } from './scene-panel/scene-panel-state';
+import type { ScenePanelSelectionState } from './scene-panel/scene-panel-types';
 import {
     handleScenePanelDragLeave,
     handleScenePanelDragOver,
     handleScenePanelDrop
-} from './scene-panel-dnd';
-import { beginScenePanelRename, refreshScenePanel, scheduleSceneExtraFit, scheduleScenePanelRender } from './scene-panel-render';
-import { syncScenePanelSelection } from './scene-panel-selection';
+} from './scene-panel/scene-panel-dnd';
+import { beginScenePanelRename, refreshScenePanel, scheduleSceneExtraFit, scheduleScenePanelRender } from './scene-panel/scene-panel-render';
+import { syncScenePanelSelection } from './scene-panel/scene-panel-selection';
 
 if (scenePanelState.scenePanelList) {
     scenePanelState.scenePanelList.addEventListener('scroll', scheduleScenePanelRender, { passive: true });
