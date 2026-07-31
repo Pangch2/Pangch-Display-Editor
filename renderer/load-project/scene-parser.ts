@@ -1385,7 +1385,7 @@ function parseItemName(raw) {
     let displayType = null;
     for (let i = 0; i < parts.length; i++) {
         if (parts[i].startsWith('display=')) {
-            displayType = parts[i].slice(8); // "display=".length === 8
+            displayType = parts[i].slice(8).trim(); // "display=".length === 8
             break;
         }
     }

@@ -26,6 +26,7 @@ const PLAYER_HEAD_PART_SIZE = 8;
 const PLAYER_HEAD_BLOCK_WIDTH = PLAYER_HEAD_PART_SIZE * 3;
 const PLAYER_HEAD_BLOCK_HEIGHT = PLAYER_HEAD_PART_SIZE * 4;
 const PLAYER_HEAD_BLOCKS_PER_ROW = Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH);
+const PLAYER_HEAD_LAYER_SCALE = 1.0625;
 const playerHeadFaceParts = {
     right: [16, 8], left: [0, 8], top: [8, 0], bottom: [16, 0], front: [24, 8], back: [8, 8],
     layer_right: [48, 8], layer_left: [32, 8], layer_top: [40, 0], layer_bottom: [48, 0], layer_front: [56, 8], layer_back: [40, 8]
@@ -560,7 +561,7 @@ function createHeadGeometries() {
     if (headGeometries) return; // 이미 생성되었다면 실행하지 않음
 
     const createGeometry = (isLayer: boolean): THREE.BoxGeometry => {
-        const scale = isLayer ? 1.0625 : 1.0;
+        const scale = isLayer ? PLAYER_HEAD_LAYER_SCALE : 1.0;
         const geometry = new THREE.BoxGeometry(scale, scale, scale);
         geometry.translate(0, -0.5, 0);
         
@@ -1803,40 +1804,44 @@ export async function replaceDisplayObjects(requests: Array<{
         const oldMatrix = new THREE.Matrix4();
         oldRef.mesh.getMatrixAt(oldRef.instanceId, oldMatrix);
         const displayedMatrix = oldMatrix.clone();
+        const oldName = (ud.objectNames as Map<string, string> | undefined)?.get(objectUuid) ?? '';
+        const wasPlayerHead = oldName.startsWith('player_head');
+        const isPlayerHead = name.startsWith('player_head');
         const oldDisplayType = (ud.objectDisplayTypes as Map<string, string> | undefined)?.get(objectUuid);
         const oldGeometryDisplayType = Overlay.getDisplayType(oldRef.mesh, oldRef.instanceId);
-        if (name.startsWith('player_head')) oldMatrix.multiply(getPlayerHeadRenderMatrix(oldDisplayType).invert());
+        const oldPlayerHeadScale = wasPlayerHead && Overlay.isItemDisplayHatEnabled(oldRef.mesh, oldRef.instanceId) ? PLAYER_HEAD_LAYER_SCALE : 1;
+        if (isPlayerHead) oldMatrix.multiply(getPlayerHeadRenderMatrix(oldDisplayType).invert());
         const groupId = (ud.objectToGroup as Map<string, string> | undefined)?.get(`${oldRef.mesh.uuid}_${oldRef.instanceId}`);
         const group = groupId ? (ud.groups as Map<string, GroupData> | undefined)?.get(groupId) : undefined;
         if (groupId && group && !groupIndexes.has(groupId)) {
             groupIndexes.set(groupId, new Map(group.children.map((child, index) => [child.type === 'object' ? child.id ?? '' : '', index])));
         }
-        const customPivot = (oldRef.mesh.userData.customPivots as Map<number, THREE.Vector3> | undefined)?.get(oldRef.instanceId)?.clone();
-        const pivot = transformContext?.pivotMode === 'center'
-            ? Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3())
-            : customPivot ?? (oldGeometryDisplayType === 'block_display'
-                ? Overlay.getInstanceLocalBoxMin(oldRef.mesh, oldRef.instanceId)
-                : Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3()));
-        if (oldGeometryDisplayType === 'item_display' && oldRef.mesh.userData.hasHat) pivot?.setY(Overlay.isItemDisplayHatEnabled(oldRef.mesh, oldRef.instanceId) ? 0.03125 : 0);
-        const pivotWorld = transformContext?.pivotWorld?.clone()
-            ?? pivot?.clone().applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix));
-        const replacementUuid = THREE.MathUtils.generateUUID();
-        const label = (ud.objectLabels as Map<string, string> | undefined)?.get(objectUuid);
         const wasItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
         const isItemDisplay = requestedItemDisplay ?? wasItemDisplay;
         const displayTypeChanged = wasItemDisplay !== isItemDisplay;
-        const displayTypeOffset = displayTypeChanged ? (wasItemDisplay ? -0.5 : 0.5) : 0;
+        const customPivot = (oldRef.mesh.userData.customPivots as Map<number, THREE.Vector3> | undefined)?.get(oldRef.instanceId)?.clone();
+        const pivot = transformContext?.pivotMode === 'center' || displayTypeChanged
+            ? Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3())
+            : customPivot ?? (oldGeometryDisplayType === 'block_display' && !wasPlayerHead && !isPlayerHead
+                ? Overlay.getInstanceLocalBoxMin(oldRef.mesh, oldRef.instanceId)
+                : Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3()));
+        const pivotParent = transformContext?.pivotWorld ? undefined : pivot?.clone().applyMatrix4(displayedMatrix);
+        const pivotWorld = transformContext?.pivotWorld?.clone()
+            ?? pivotParent?.clone().applyMatrix4(oldRef.mesh.matrixWorld);
+        const replacementUuid = THREE.MathUtils.generateUUID();
+        const label = (ud.objectLabels as Map<string, string> | undefined)?.get(objectUuid);
         const texture = (ud.objectTextures as Map<string, string> | undefined)?.get(objectUuid);
         return {
             objectUuid, replacementUuid, label, groupId, group, oldMesh: oldRef.mesh, oldInstanceId: oldRef.instanceId,
             groupIndex: groupId ? groupIndexes.get(groupId)?.get(objectUuid) ?? -1 : -1,
             sceneIndex: sceneIndexes.get(objectUuid) ?? -1,
             customPivot,
-            customPivotWorld: customPivot?.clone().applyMatrix4(oldRef.mesh.matrixWorld.clone().multiply(displayedMatrix)),
+            customPivotParent: customPivot?.clone().applyMatrix4(displayedMatrix),
+            pivotParent,
             pivotWorld,
             displayedMatrix,
+            oldPlayerHeadScale,
             displayTypeChanged,
-            displayTypeOffset,
             transformContext,
             node: {
                 uuid: replacementUuid,
@@ -1908,11 +1913,25 @@ export async function replaceDisplayObjects(requests: Array<{
 
         const replacement = refs.get(state.replacementUuid);
         if (!replacement) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
+        const playerHeadLayerScale = state.oldPlayerHeadScale / (
+            state.node.name.startsWith('player_head') && Overlay.isItemDisplayHatEnabled(replacement.mesh, replacement.instanceId)
+                ? PLAYER_HEAD_LAYER_SCALE : 1
+        );
         if (state.displayTypeChanged) {
             const replacementMatrix = state.displayedMatrix.clone();
-            replacementMatrix.elements[12] += state.displayTypeOffset;
-            replacementMatrix.elements[13] += state.displayTypeOffset;
-            replacementMatrix.elements[14] += state.displayTypeOffset;
+            replacementMatrix.scale(new THREE.Vector3().setScalar(playerHeadLayerScale));
+            const offset = new THREE.Vector3();
+            if (state.pivotWorld) {
+                const replacementPivot = Overlay.getInstanceLocalBox(replacement.mesh, replacement.instanceId)?.getCenter(new THREE.Vector3());
+                if (replacementPivot) {
+                    const target = state.pivotParent?.clone()
+                        ?? state.pivotWorld.clone().applyMatrix4(replacement.mesh.matrixWorld.clone().invert());
+                    offset.copy(target.sub(replacementPivot.applyMatrix4(replacementMatrix)));
+                }
+            }
+            replacementMatrix.elements[12] += offset.x;
+            replacementMatrix.elements[13] += offset.y;
+            replacementMatrix.elements[14] += offset.z;
             replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
             replacement.mesh.instanceMatrix.needsUpdate = true;
             replacement.mesh.computeBoundingBox();
@@ -1920,15 +1939,16 @@ export async function replaceDisplayObjects(requests: Array<{
         } else if (state.pivotWorld && (!state.customPivot || state.transformContext?.pivotMode === 'center')) {
             const replacementMatrix = new THREE.Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
+            replacementMatrix.scale(new THREE.Vector3().setScalar(playerHeadLayerScale));
             const replacementDisplayType = Overlay.getDisplayType(replacement.mesh, replacement.instanceId);
             const replacementPivot = state.transformContext?.pivotMode === 'center'
                 ? Overlay.getInstanceLocalBox(replacement.mesh, replacement.instanceId)?.getCenter(new THREE.Vector3())
                 : replacementDisplayType === 'block_display'
                 ? Overlay.getInstanceLocalBoxMin(replacement.mesh, replacement.instanceId)
                 : Overlay.getInstanceLocalBox(replacement.mesh, replacement.instanceId)?.getCenter(new THREE.Vector3());
-            if (replacementDisplayType === 'item_display' && replacement.mesh.userData.hasHat) replacementPivot?.setY(Overlay.isItemDisplayHatEnabled(replacement.mesh, replacement.instanceId) ? 0.03125 : 0);
             if (replacementPivot) {
-                const target = state.pivotWorld.applyMatrix4(replacement.mesh.matrixWorld.clone().invert());
+                const target = state.pivotParent?.clone()
+                    ?? state.pivotWorld.clone().applyMatrix4(replacement.mesh.matrixWorld.clone().invert());
                 const offset = target.sub(replacementPivot.applyMatrix4(replacementMatrix));
                 replacementMatrix.elements[12] += offset.x;
                 replacementMatrix.elements[13] += offset.y;
@@ -1936,14 +1956,20 @@ export async function replaceDisplayObjects(requests: Array<{
                 replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
                 replacement.mesh.instanceMatrix.needsUpdate = true;
             }
+        } else if (playerHeadLayerScale !== 1) {
+            const replacementMatrix = new THREE.Matrix4();
+            replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
+            replacementMatrix.scale(new THREE.Vector3().setScalar(playerHeadLayerScale));
+            replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
+            replacement.mesh.instanceMatrix.needsUpdate = true;
         }
-        if (state.customPivotWorld) {
+        if (state.customPivotParent) {
             if (!replacement.mesh.userData.customPivots) replacement.mesh.userData.customPivots = new Map<number, THREE.Vector3>();
             const replacementMatrix = new THREE.Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
             replacement.mesh.userData.customPivots.set(
                 replacement.instanceId,
-                state.customPivotWorld.applyMatrix4(replacement.mesh.matrixWorld.clone().multiply(replacementMatrix).invert())
+                state.customPivotParent.applyMatrix4(replacementMatrix.invert())
             );
         }
 

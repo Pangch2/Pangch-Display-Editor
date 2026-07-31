@@ -8,6 +8,10 @@
 			"from": [0, 6, 0],
 			"to": [16, 12, 16],
 			"faces": {
+				"north": {"texture": "#portal"},
+				"east": {"texture": "#portal"},
+				"south": {"texture": "#portal"},
+				"west": {"texture": "#portal"},
 				"up": {"texture": "#portal"},
 				"down": {"texture": "#portal"}
 			}

@@ -159,7 +159,7 @@ function needsHardcodedItemGeometry(definition: any): boolean {
 
 const iconModelOverrides = {
     '2D': ['*_sign', '*_door', '*_stairs', '*_bars', '*_chain', 'light', 'tripwire', 'trident'],
-    '3D': ['*_bed', '*_banner', '*_shulker_box', '*_chest']
+    '3D': ['*_bed', '*_banner', '*_shulker_box', '*_chest', 'end_portal', 'end_gateway']
 };
 
 function matchesIconModelOverride(name: string, overrides: string[]): boolean {
@@ -279,6 +279,8 @@ if (import.meta.env.DEV) {
             && usesBlockIconModel('white_bed')
             && usesBlockIconModel('white_banner')
             && usesBlockIconModel('white_shulker_box')
+            && usesBlockIconModel('end_portal')
+            && usesBlockIconModel('end_gateway')
             && usesBlockIconModel('test_block[mode=accept]'),
         'Hardcoded icon dimension rules failed.'
     );
