@@ -24,5 +24,4 @@
 ---
 
 ## Rules
-- The local CodeGraph executable is not in the PATH
 - Never use `npm run build`.

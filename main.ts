@@ -413,6 +413,10 @@ function createWindow() {
     }
   });
 
+  ipcMain.handle('get-pde-memory-usage', () =>
+    app.getAppMetrics().reduce((total, metric) => total + metric.memory.workingSetSize, 0) * 1024
+  );
+
   ipcMain.handle('save-icon-atlas', async (_event, name: string, data: Uint8Array) => {
     try {
       if (!['block-atlas.png', 'item-atlas.png'].includes(name)) throw new Error('Invalid atlas name.');

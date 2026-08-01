@@ -5,6 +5,7 @@
   <title>PDE</title>
   <link rel="stylesheet" href="./ui/main.css">
   <script type="module" src="./ui/block-item-search.ts"></script>
+  <script type="module" src="./ui/setting.ts"></script>
 </head>
 <body>
   <div id="loading-overlay">
@@ -14,8 +15,8 @@
 
   <div id="main-content">
     <canvas id="renderCanvas"></canvas>
-    <div id="scene-toolbar" aria-hidden="true">
-      <i>&#xE061;</i><i>&#xE5C6;</i><i class="player-head-icon"></i><i>&#xE198;</i><i>&#xE1D3;</i>
+    <div id="scene-toolbar">
+      <i>&#xE061;</i><i>&#xE5C6;</i><i class="player-head-icon"></i><i>&#xE198;</i><i>&#xE1D3;</i><button id="settings-button" class="menu-icon" type="button" aria-label="설정">≡</button>
     </div>
   </div>
 

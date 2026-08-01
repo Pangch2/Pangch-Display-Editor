@@ -1794,6 +1794,17 @@ export async function replaceDisplayObjects(requests: Array<{
     }
     const ud = loadedObjectGroup.userData;
     const refs = ud.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }>;
+    const preserveVisibleSize = localStorage.getItem('pdeObjectReplaceMode') === 'preserve-visible-size';
+    const getOverlaySize = (mesh: THREE.InstancedMesh, instanceId: number, instanceMatrix: THREE.Matrix4): THREE.Vector3 | null => {
+        const box = Overlay.getInstanceLocalBox(mesh, instanceId);
+        if (!box) return null;
+        const matrix = instanceMatrix.clone().scale(box.getSize(new THREE.Vector3())).premultiply(mesh.matrixWorld);
+        return new THREE.Vector3(
+            new THREE.Vector3().setFromMatrixColumn(matrix, 0).length(),
+            new THREE.Vector3().setFromMatrixColumn(matrix, 1).length(),
+            new THREE.Vector3().setFromMatrixColumn(matrix, 2).length()
+        );
+    };
     const sceneOrder = ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined;
     const sceneIndexes = new Map(sceneOrder?.map((entry, index) => [entry.type === 'object' ? entry.id : '', index]) ?? []);
     const groupIndexes = new Map<string, Map<string, number>>();
@@ -1804,6 +1815,7 @@ export async function replaceDisplayObjects(requests: Array<{
         const oldMatrix = new THREE.Matrix4();
         oldRef.mesh.getMatrixAt(oldRef.instanceId, oldMatrix);
         const displayedMatrix = oldMatrix.clone();
+        const oldOverlaySize = preserveVisibleSize ? getOverlaySize(oldRef.mesh, oldRef.instanceId, displayedMatrix) : null;
         const oldName = (ud.objectNames as Map<string, string> | undefined)?.get(objectUuid) ?? '';
         const wasPlayerHead = oldName.startsWith('player_head');
         const isPlayerHead = name.startsWith('player_head');
@@ -1840,6 +1852,7 @@ export async function replaceDisplayObjects(requests: Array<{
             pivotParent,
             pivotWorld,
             displayedMatrix,
+            oldOverlaySize,
             oldPlayerHeadScale,
             displayTypeChanged,
             transformContext,
@@ -1917,9 +1930,24 @@ export async function replaceDisplayObjects(requests: Array<{
             state.node.name.startsWith('player_head') && Overlay.isItemDisplayHatEnabled(replacement.mesh, replacement.instanceId)
                 ? PLAYER_HEAD_LAYER_SCALE : 1
         );
+        const scaleReplacementMatrix = (replacementMatrix: THREE.Matrix4): void => {
+            replacementMatrix.scale(new THREE.Vector3().setScalar(playerHeadLayerScale));
+            if (!state.oldOverlaySize) return;
+            const newOverlaySize = getOverlaySize(replacement.mesh, replacement.instanceId, replacementMatrix);
+            if (!newOverlaySize) return;
+            const ratio = new THREE.Vector3(
+                newOverlaySize.x > 1e-10 && state.oldOverlaySize.x > 1e-10 ? state.oldOverlaySize.x / newOverlaySize.x : 1,
+                newOverlaySize.y > 1e-10 && state.oldOverlaySize.y > 1e-10 ? state.oldOverlaySize.y / newOverlaySize.y : 1,
+                newOverlaySize.z > 1e-10 && state.oldOverlaySize.z > 1e-10 ? state.oldOverlaySize.z / newOverlaySize.z : 1
+            );
+            replacementMatrix.scale(ratio);
+            if (import.meta.env.DEV && Math.min(...state.oldOverlaySize.toArray(), ...newOverlaySize.toArray()) > 1e-10) {
+                console.assert(getOverlaySize(replacement.mesh, replacement.instanceId, replacementMatrix)!.distanceTo(state.oldOverlaySize) < 1e-6, 'Replacement overlay size changed.');
+            }
+        };
         if (state.displayTypeChanged) {
             const replacementMatrix = state.displayedMatrix.clone();
-            replacementMatrix.scale(new THREE.Vector3().setScalar(playerHeadLayerScale));
+            scaleReplacementMatrix(replacementMatrix);
             const offset = new THREE.Vector3();
             if (state.pivotWorld) {
                 const replacementPivot = Overlay.getInstanceLocalBox(replacement.mesh, replacement.instanceId)?.getCenter(new THREE.Vector3());
@@ -1939,7 +1967,7 @@ export async function replaceDisplayObjects(requests: Array<{
         } else if (state.pivotWorld && (!state.customPivot || state.transformContext?.pivotMode === 'center')) {
             const replacementMatrix = new THREE.Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
-            replacementMatrix.scale(new THREE.Vector3().setScalar(playerHeadLayerScale));
+            scaleReplacementMatrix(replacementMatrix);
             const replacementDisplayType = Overlay.getDisplayType(replacement.mesh, replacement.instanceId);
             const replacementPivot = state.transformContext?.pivotMode === 'center'
                 ? Overlay.getInstanceLocalBox(replacement.mesh, replacement.instanceId)?.getCenter(new THREE.Vector3())
@@ -1956,10 +1984,10 @@ export async function replaceDisplayObjects(requests: Array<{
                 replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
                 replacement.mesh.instanceMatrix.needsUpdate = true;
             }
-        } else if (playerHeadLayerScale !== 1) {
+        } else if (playerHeadLayerScale !== 1 || state.oldOverlaySize) {
             const replacementMatrix = new THREE.Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
-            replacementMatrix.scale(new THREE.Vector3().setScalar(playerHeadLayerScale));
+            scaleReplacementMatrix(replacementMatrix);
             replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
             replacement.mesh.instanceMatrix.needsUpdate = true;
         }

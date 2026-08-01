@@ -42,6 +42,7 @@ let zSymbol: Group;
 let viewHelperWasAnimating = false;
 let cameraTypeBeforeViewHelper: 'perspective' | 'orthographic' | null = null;
 let perspectiveDistanceBeforeOrthographic: number | null = null;
+let cameraFov = Math.min(120, Math.max(20, Number(localStorage.getItem('pdeCameraFov')) || 80));
 let gizmoModule: InitGizmoResult | null = null;
 type GpuQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike } } };
@@ -116,6 +117,17 @@ window.addEventListener('pde:get-camera-state', (event: Event) => {
         target: controls.target.toArray(),
         zoom: camera.zoom
     };
+});
+
+window.addEventListener('pde:camera-fov-changed', (event: Event) => {
+    cameraFov = Math.min(120, Math.max(20, Number((event as CustomEvent<number>).detail) || 80));
+    if (!camera?.isPerspectiveCamera) return;
+    camera.fov = cameraFov;
+    camera.updateProjectionMatrix();
+});
+
+window.addEventListener('pde:camera-type-changed', (event: Event) => {
+    setCameraType((event as CustomEvent<string>).detail === 'orthographic' ? 'orthographic' : 'perspective');
 });
 
 window.addEventListener('pde:set-camera-state', (event: Event) => {
@@ -483,7 +495,7 @@ async function initScene(): Promise<void> {
     if (!mainContent) return;
 
     camera = new PerspectiveCamera(
-        80,
+        cameraFov,
         mainContent.clientWidth / mainContent.clientHeight,
         0.05,
         1000
@@ -599,19 +611,20 @@ async function initScene(): Promise<void> {
         const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
         materials.forEach(m => { (m as any).depthWrite = false; });
     });
+    if (localStorage.getItem('pdeCameraType') === 'orthographic') setCameraType('orthographic');
 }
 
 function setCameraType(type: 'perspective' | 'orthographic'): void {
-    if ((type === 'perspective') === camera.isPerspectiveCamera) return;
+    if (type === 'perspective' ? camera.isPerspectiveCamera : camera.isOrthographicCamera) return;
 
     const mainContent = document.getElementById('main-content')!;
     const aspect = mainContent.clientWidth / mainContent.clientHeight;
     const position = camera.position.clone();
     const quaternion = camera.quaternion.clone();
     const distance = position.distanceTo(controls.target);
-    const halfHeight = Math.max(distance * Math.tan(40 * Math.PI / 180), 10.5);
+    const halfHeight = Math.max(distance * Math.tan(cameraFov / 2 * Math.PI / 180), 10.5);
     const nextCamera = type === 'perspective'
-        ? new PerspectiveCamera(80, aspect, 0.05, 1000)
+        ? new PerspectiveCamera(cameraFov, aspect, 0.05, 1000)
         : new OrthographicCamera(-halfHeight * aspect, halfHeight * aspect, halfHeight, -halfHeight, 0.05, 1000);
 
     if (type === 'orthographic') {
@@ -629,6 +642,8 @@ function setCameraType(type: 'perspective' | 'orthographic'): void {
     gizmoModule?.setCamera(camera);
     camera.updateProjectionMatrix();
     controls.update();
+    localStorage.setItem('pdeCameraType', type);
+    window.dispatchEvent(new CustomEvent('pde:camera-type-applied', { detail: type }));
 }
 
 //fps표시용1

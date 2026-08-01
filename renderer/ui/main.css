@@ -149,6 +149,12 @@ canvas {
   color: #ccc;
 }
 
+#scene-toolbar.toolbar-bottom {
+  top: auto;
+  bottom: 12px;
+  transform-origin: bottom center;
+}
+
 #scene-toolbar i {
   font: normal 400 18.75px/1 'lucide';
   cursor: pointer;
@@ -158,6 +164,257 @@ canvas {
   width: 20px;
   height: 20px;
   background: url('../../resources/player_head.svg') center / contain no-repeat;
+}
+
+#scene-toolbar .menu-icon {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 22px/1 sans-serif;
+  cursor: pointer;
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: #0009;
+}
+
+.settings-overlay[hidden] {
+  display: none;
+}
+
+.settings-window {
+  width: min(680px, calc(100vw - 80px));
+  height: min(440px, calc(100vh - 80px));
+  border: 1px solid #45454a;
+  border-radius: 8px;
+  background: #252528;
+  box-shadow: 0 18px 60px #0009;
+  color: #CCCCCC;
+  overflow: hidden;
+}
+
+.settings-window button,
+.settings-window input,
+.settings-window select {
+  color: inherit;
+}
+
+.settings-window > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid #3a3a3e;
+}
+
+.settings-window h2,
+.settings-window h3 {
+  margin: 0;
+}
+
+.settings-close {
+  border: 0;
+  background: transparent;
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.settings-body {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  height: calc(100% - 49px);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border-right: 1px solid #3a3a3e;
+}
+
+.settings-nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav button:hover,
+.settings-nav button.active {
+  background: #3b3b40;
+}
+
+.settings-nav .settings-reset {
+  margin-top: auto;
+  color: #ff5c67;
+}
+
+.settings-content {
+  padding: 20px;
+  overflow: auto;
+}
+
+.settings-page[hidden] {
+  display: none;
+}
+
+.settings-page h3 {
+  margin-bottom: 20px;
+}
+
+.settings-page fieldset {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 20px;
+  padding: 14px;
+  border: 1px solid #3a3a3e;
+  border-radius: 6px;
+}
+
+.settings-page legend {
+  padding: 0 6px;
+  font-size: 13px;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+#scene-object-types {
+  margin-top: 0.5em;
+}
+
+.settings-row select,
+.settings-row input[type='number'] {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e1e;
+}
+
+.settings-range output {
+  transform: translateX(-4px);
+}
+
+.settings-select {
+  position: relative;
+}
+
+.settings-select select {
+  appearance: none;
+  width: 100%;
+  padding-right: 28px;
+}
+
+.settings-select .lucide-icon {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.settings-drag-value {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 28px;
+  min-width: 0;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e1e;
+}
+
+.settings-drag-value > input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+}
+
+.settings-drag-value > button {
+  padding: 0;
+  border: 0;
+  border-left: 1px solid #45454a;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settings-drag-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: -1px;
+  z-index: 2;
+  display: grid;
+  width: calc(100% + 2px);
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  box-sizing: border-box;
+  background: #29292d;
+  box-shadow: 0 4px 12px #0008;
+}
+
+.settings-drag-menu[hidden] {
+  display: none;
+}
+
+.settings-drag-menu button {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-drag-menu button:hover {
+  background: #3b3b40;
+}
+
+.settings-range {
+  display: grid;
+  grid-template-columns: 1fr 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-range output {
+  text-align: right;
+}
+
+.settings-login {
+  justify-self: start;
+  padding: 7px 14px;
+  border: 1px solid #55555a;
+  border-radius: 4px;
+  background: #343438;
+  cursor: pointer;
 }
 
 .block-item-search {
@@ -811,20 +1068,27 @@ canvas {
   box-sizing: border-box;
 }
 
-#scene-object-list::-webkit-scrollbar,
-#project-details::-webkit-scrollbar {
-  width: 6px;
+* {
+  scrollbar-color: #444 transparent;
+  scrollbar-width: thin;
 }
 
-#scene-object-list::-webkit-scrollbar-track,
-#project-details::-webkit-scrollbar-track {
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
   background: transparent;
 }
 
-#scene-object-list::-webkit-scrollbar-thumb,
-#project-details::-webkit-scrollbar-thumb {
+*::-webkit-scrollbar-thumb {
   background: #444;
   border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #5a5a60;
 }
 
 .scene-object-item {

@@ -21,6 +21,7 @@ declare interface IpcApi {
   saveIconAtlas(name: 'block-atlas.png' | 'item-atlas.png', data: Uint8Array): Promise<{ success: boolean; error?: string }>;
   getHardcodedContent(path: string): Promise<HardcodedContentResult>;
   getLoadingIcon?: () => Promise<LoadingIconResult>;
+  getPdeMemoryUsage(): Promise<number>;
   on?: (channel: string, listener: (...args: unknown[]) => void) => void;
   removeAllListeners?: (channel: string) => void;
   send?: (channel: string, ...args: unknown[]) => void;

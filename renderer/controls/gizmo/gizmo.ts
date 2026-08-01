@@ -123,6 +123,7 @@ const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();
 const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
+const _TMP_QUAT_A = new Quaternion();
 
 //  Selection state 
 
@@ -223,6 +224,23 @@ let loadedObjectGroup: Group;
 let transformControls: TransformControls | null = null;
 let selectionHelper: Mesh | null = null;
 let previousHelperMatrix = new Matrix4();
+let positionDragValue: number | null = null;
+let scaleDragValue: number | null = null;
+
+function applyGizmoDragValues(): void {
+    const value = (key: string): number | null => {
+        const stored = Number(localStorage.getItem(key) ?? '0.0001');
+        return Number.isFinite(stored) && stored > 0 ? stored : null;
+    };
+    const rotation = value('pdeRotationDragValue');
+    positionDragValue = value('pdePositionDragValue');
+    scaleDragValue = value('pdeScaleDragValue');
+    transformControls?.setTranslationSnap(null);
+    transformControls?.setRotationSnap(rotation === null ? null : rotation * Math.PI / 180);
+    transformControls?.setScaleSnap(null);
+}
+
+window.addEventListener('pde:gizmo-drag-values-changed', applyGizmoDragValues);
 
 //  Selection state 
 
@@ -433,6 +451,35 @@ const _meshToInstanceRanges = new Map<Object3D, InstanceIdRange[]>();
 let selectionTransformDirty = false;
 let _dragPreviewActive = false;
 let _dragSelectedIdsByMesh = new Map<InstancedMesh, Set<number>>();
+
+function snapFromStart(current: number, start: number, step: number): number {
+    return start + Math.round((current - start) / step) * step;
+}
+
+function applyRelativeDragSnap(): void {
+    if (!selectionHelper || !transformControls) return;
+    if (transformControls.mode === 'translate' && positionDragValue !== null) {
+        const delta = _TMP_VEC3_A.copy(selectionHelper.position).sub(dragInitialPosition);
+        if (currentSpace === 'local') delta.applyQuaternion(_TMP_QUAT_A.copy(dragInitialQuaternion).invert());
+        delta.set(
+            Math.round(delta.x / positionDragValue) * positionDragValue,
+            Math.round(delta.y / positionDragValue) * positionDragValue,
+            Math.round(delta.z / positionDragValue) * positionDragValue
+        );
+        if (currentSpace === 'local') delta.applyQuaternion(dragInitialQuaternion);
+        selectionHelper.position.copy(dragInitialPosition).add(delta);
+    } else if (transformControls.mode === 'scale' && scaleDragValue !== null) {
+        selectionHelper.scale.set(
+            snapFromStart(selectionHelper.scale.x, dragInitialScale.x, scaleDragValue) || scaleDragValue,
+            snapFromStart(selectionHelper.scale.y, dragInitialScale.y, scaleDragValue) || scaleDragValue,
+            snapFromStart(selectionHelper.scale.z, dragInitialScale.z, scaleDragValue) || scaleDragValue
+        );
+    }
+}
+
+if (import.meta.env.DEV) {
+    console.assert(Math.abs(snapFromStart(0.63, 0.37, 0.5) - 0.87) < 1e-9, 'Relative gizmo snapping moved the drag start value.');
+}
 function getItemUuid({ mesh, instanceId }: Select.SelectedItem): string | undefined {
     return (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
         ?.get(GroupUtils.getGroupKey(mesh, instanceId));
@@ -1051,6 +1098,7 @@ export function initGizmo({
 
     const setupResult = setupGizmo(camera, renderer as Renderer, scene);
     transformControls = setupResult.transformControls;
+    applyGizmoDragValues();
     gizmoLines = setupResult.gizmoLines;
     gizmoPlanes = setupResult.gizmoPlanes;
 
@@ -1205,6 +1253,7 @@ export function initGizmo({
 
     transformControls.addEventListener('change', (_event: object) => {
         if (transformControls!.dragging && _hasAnySelection()) {
+            applyRelativeDragSnap();
 
             if (isPivotEditMode && transformControls!.mode === 'translate') {
                 const snapTarget = Overlay.findClosestVertexForSnapping(selectionHelper!.position, camera, renderer);

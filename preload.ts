@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('ipcApi', {
   },
   getLoadingIcon: () => ipcRenderer.invoke('get-loading-icon'),
   getRequiredPrefixes: () => ipcRenderer.invoke('get-required-prefixes'),
+  getPdeMemoryUsage: () => ipcRenderer.invoke('get-pde-memory-usage'),
   // 리스너 정리 (메모리 누수 방지)
   removeAllListeners: (channel: AssetEventChannel) => {
     const validChannels = ['assets-downloaded', 'assets-download-failed'];

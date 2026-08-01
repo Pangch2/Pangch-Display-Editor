@@ -90,7 +90,8 @@ function applyProjectTabDropMarker(row: HTMLElement, mode: 'before' | 'after'): 
 }
 
 function updateProjectDetails(): void {
-    const details = loadedObjectGroup.userData.projectDetails as Record<string, string> | undefined;
+    const details = (loadedObjectGroup.userData.projectDetails as Record<string, string> | undefined)
+        ?? (loadedObjectGroup.userData.projectDetails = {});
     const panel = document.getElementById('project-details');
     if (!panel) return;
 
@@ -101,12 +102,12 @@ function updateProjectDetails(): void {
         if (!input) continue;
         input.value = details?.[key] || '';
         input.oninput = () => {
-            if (!details) return;
             details[key] = input.value;
             if (key === 'name') {
                 document.title = input.value ? `PDE - ${input.value}` : 'PDE';
                 saveActiveProject();
                 renderProjectTabs();
+                window.dispatchEvent(new CustomEvent('pde:project-name-changed', { detail: input.value }));
             }
         };
     }
