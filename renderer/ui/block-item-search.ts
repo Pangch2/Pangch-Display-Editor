@@ -66,12 +66,11 @@ function nameWithProperties(name: string, properties: Record<string, string>): s
     : parseNameProperties(name).baseName;
 }
 
-async function applyIcon(name: string): Promise<void> {
+async function applyIcon(name: string, isItemDisplay = activeAtlasName === 'item-atlas.png'): Promise<void> {
   if (applying) return;
   applying = true;
   try {
     const before = captureSceneState(loadedObjectGroup);
-    const isItemDisplay = activeAtlasName === 'item-atlas.png';
     const targetName = isItemDisplay ? name : await getBlockIconName(name);
     const userData = loadedObjectGroup.userData;
     const keyToUuid = userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
@@ -199,6 +198,7 @@ if (import.meta.env.DEV) {
 const atlasButtons = document.querySelectorAll<HTMLElement>('#scene-toolbar i');
 atlasButtons[0]?.addEventListener('click', () => openSearch('block-atlas.png'));
 atlasButtons[1]?.addEventListener('click', () => openSearch('item-atlas.png'));
+atlasButtons[2]?.addEventListener('click', () => void applyIcon('player_head', true));
 searchInput.addEventListener('input', renderIcons);
 overlay.querySelector('button')!.addEventListener('click', closeSearch);
 overlay.addEventListener('click', event => {
