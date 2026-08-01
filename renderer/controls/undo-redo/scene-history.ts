@@ -8,7 +8,7 @@ import {
     Quaternion,
     Vector3
 } from 'three/webgpu';
-// @ts-expect-error Node's native TypeScript test runner requires the source extension.
+
 import { record } from './undo-redo.js';
 
 interface HistorySelection {
