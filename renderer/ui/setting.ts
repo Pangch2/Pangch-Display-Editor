@@ -23,17 +23,17 @@ overlay.innerHTML = `
           <h3>일반 설정</h3>
           <fieldset>
             <legend>인터페이스</legend>
-            <label class="settings-row"><span>도구 패널</span><span class="settings-select"><select id="toolbar-position"><option value="top">위</option><option value="bottom">아래</option></select><span class="lucide-icon">&#xE06F;</span></span></label>
-            <label class="settings-row"><span>카메라</span><span class="settings-select"><select id="camera-type"><option value="perspective">원근</option><option value="orthographic">직교</option></select><span class="lucide-icon">&#xE06F;</span></span></label>
+            <label class="settings-row"><span>도구 패널</span><span class="settings-select"><select id="toolbar-position"><option value="top">위</option><option value="bottom">아래</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
+            <label class="settings-row"><span>카메라</span><span class="settings-select"><select id="camera-type"><option value="perspective">원근</option><option value="orthographic">직교</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>카메라 FOV</span><span class="settings-range"><input id="camera-fov" type="range" min="20" max="120" value="80"><output>80°</output></span></label>
           </fieldset>
           <fieldset>
             <legend>조작</legend>
-            <label class="settings-row"><span>스케일 조작 모드</span><span class="settings-select"><select id="scale-mode"><option value="default">기본</option><option value="blockbench">블록벤치 스케일 모드</option></select><span class="lucide-icon">&#xE06F;</span></span></label>
-            <label class="settings-row"><span>오브젝트 교체 모드</span><span class="settings-select"><select id="object-replace-mode"><option value="default">기본</option><option value="preserve-visible-size">보이는 크기 유지</option></select><span class="lucide-icon">&#xE06F;</span></span></label>
-            <label class="settings-row"><span>위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdePositionDragValue"><button type="button" aria-label="위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06F;</span></button><span class="settings-drag-menu" hidden></span></span></label>
-            <label class="settings-row"><span>각도 드래그값</span><span class="settings-drag-value" data-values="0,180,90,45,30,15,10,5,2,1,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeRotationDragValue"><button type="button" aria-label="각도 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06F;</span></button><span class="settings-drag-menu" hidden></span></span></label>
-            <label class="settings-row"><span>스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeScaleDragValue"><button type="button" aria-label="스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06F;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+            <label class="settings-row"><span>스케일 조작 모드</span><span class="settings-select"><select id="scale-mode"><option value="default">기본</option><option value="blockbench">블록벤치 스케일 모드</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
+            <label class="settings-row"><span>오브젝트 교체 모드</span><span class="settings-select"><select id="object-replace-mode"><option value="default">기본</option><option value="preserve-visible-size">보이는 크기 유지</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
+            <label class="settings-row"><span>위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdePositionDragValue"><button type="button" aria-label="위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+            <label class="settings-row"><span>각도 드래그값</span><span class="settings-drag-value" data-values="0,180,90,45,30,15,10,5,2,1,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeRotationDragValue"><button type="button" aria-label="각도 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+            <label class="settings-row"><span>스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeScaleDragValue"><button type="button" aria-label="스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
           </fieldset>
           <fieldset>
             <legend>헤드 페인트 계정</legend>
@@ -171,7 +171,6 @@ function closeDragMenus(): void {
   dragControls.forEach(control => {
     control.querySelector<HTMLElement>('.settings-drag-menu')!.hidden = true;
     control.querySelector<HTMLButtonElement>('button')!.setAttribute('aria-expanded', 'false');
-    control.querySelector('.lucide-icon')!.innerHTML = '&#xE06F;';
   });
 }
 dragControls.forEach(control => {
@@ -212,7 +211,6 @@ dragControls.forEach(control => {
     closeDragMenus();
     menu.hidden = !open;
     menuButton.setAttribute('aria-expanded', String(open));
-    menuButton.querySelector('.lucide-icon')!.innerHTML = open ? '&#xE06D;' : '&#xE06F;';
   });
   menu.addEventListener('click', event => {
     const button = (event.target as Element).closest<HTMLButtonElement>('[data-value]');

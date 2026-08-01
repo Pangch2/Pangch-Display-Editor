@@ -33,6 +33,7 @@ import * as CustomPivot from '../pivot/custom-pivot';
 import { initDrag, applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState } from '../input/handle-key';
+import { captureSceneState, recordSceneChange, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
 import type { DragInterface } from '../selection/drag';
 import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
@@ -43,7 +44,7 @@ import type { SelectionState } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 import * as VertexQueue from '../vertex/vertex-queue';
-import { flipObjectUuids, reflectGroups, type FlipAxis } from '../flip';
+import { flipObjectUuids, reflectGroups, type FlipAxis } from '../transform/flip';
 import {
     applyLinkedMirrorDelta,
     getLinkedMirrorSelection,
@@ -53,7 +54,7 @@ import {
     mirrorModelingPivot,
     setMirrorModeling,
     syncLinkedMirrorGroupPivot
-} from '../mirroring';
+} from '../transform/mirroring';
 import {
     createGroupCommand,
     deleteSelectedItemsCommand,
@@ -449,6 +450,7 @@ const _identityMatrix = new Matrix4();
 const _pendingHelperMatrix = new Matrix4();
 const _meshToInstanceRanges = new Map<Object3D, InstanceIdRange[]>();
 let selectionTransformDirty = false;
+let dragHistoryBefore: SceneSnapshot | null = null;
 let _dragPreviewActive = false;
 let _dragSelectedIdsByMesh = new Map<InstancedMesh, Set<number>>();
 
@@ -865,6 +867,10 @@ function _handleSceneUpdated(event: Event): void {
     const detail = (event as CustomEvent<SceneUpdatedDetail>).detail;
     if (detail?.skipGizmoRefresh) return;
     if (detail?.pivotChanged) pivotMode = 'origin';
+    if (!_hasAnySelection()) {
+        transformControls?.detach();
+        _clearGizmoAnchor();
+    }
     invalidateSelectionCaches();
     _recomputePivotStateForSelection();
     updateHelperPosition();
@@ -896,7 +902,8 @@ function _getGizmoCommandCallbacks() {
 }
 
 function createGroup(): string | undefined {
-    return _runWithoutVertexQueue(() => {
+    const before = captureSceneState(loadedObjectGroup);
+    const groupId = _runWithoutVertexQueue(() => {
         const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
         const sourceGroupId = createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
         if (!sourceGroupId || (linked.objects.size === 0 && linked.groups.size === 0)) return sourceGroupId;
@@ -907,9 +914,13 @@ function createGroup(): string | undefined {
         applySelection(null, [], sourceGroupId);
         return sourceGroupId;
     });
+    if (groupId) recordSceneChange(loadedObjectGroup, before);
+    return groupId;
 }
 
 function ungroupGroup(groupId: string): void {
+    if (!getGroups().has(groupId)) return;
+    const before = captureSceneState(loadedObjectGroup);
     _runWithoutVertexQueue(() => {
         const pairs = getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs');
         const partnerId = isMirrorModelingEnabled() ? pairs.get(groupId) : undefined;
@@ -918,9 +929,12 @@ function ungroupGroup(groupId: string): void {
         if (partnerId) pairs.delete(partnerId);
         ungroupGroupCommand(loadedObjectGroup, groupId, _getGizmoCommandCallbacks());
     });
+    recordSceneChange(loadedObjectGroup, before);
 }
 
 function deleteSelectedItems(): void {
+    if (!_hasAnySelection()) return;
+    const before = captureSceneState(loadedObjectGroup);
     _runWithoutVertexQueue(() => {
         const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
         if (linked.objects.size > 0 || linked.groups.size > 0) {
@@ -934,9 +948,12 @@ function deleteSelectedItems(): void {
         }
         deleteSelectedItemsCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
     });
+    recordSceneChange(loadedObjectGroup, before);
 }
 
 function duplicateSelected(): void {
+    if (!_hasAnySelection()) return;
+    const before = captureSceneState(loadedObjectGroup);
     _runWithoutVertexQueue(() => {
         const sourceUuids = getSelectedItems().map(getItemUuid);
         const sourceGroupIds = [...currentSelection.groups];
@@ -958,7 +975,10 @@ function duplicateSelected(): void {
                 pivotOffset.copy(state.pivotOffset);
             }
         });
-        if (!isMirrorModelingEnabled()) return;
+        if (!isMirrorModelingEnabled()) {
+            recordSceneChange(loadedObjectGroup, before);
+            return;
+        }
 
         const mirroredUuids = getSelectedItems().map(getItemUuid);
         const mirroredGroupIds = [...currentSelection.groups];
@@ -985,12 +1005,14 @@ function duplicateSelected(): void {
             updateHelperPosition();
             updateSelectionOverlay();
             _emitSceneUpdated();
-        }).catch(error => console.error('미러링 복제에 실패했습니다.', error));
+        }).catch(error => console.error('미러링 복제에 실패했습니다.', error))
+            .finally(() => recordSceneChange(loadedObjectGroup, before));
     });
 }
 
 async function flipSelected(axis: FlipAxis): Promise<void> {
     if (!_hasAnySelection() || !selectionHelper) return;
+    const before = captureSceneState(loadedObjectGroup);
     const isMulti = _isMultiSelection();
     const activePivotMode = pivotMode;
     const preserveGroupBounds = currentSelection.groups.size > 0;
@@ -1037,6 +1059,7 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     updateHelperPosition();
     updateSelectionOverlay();
     _emitSceneUpdated();
+    recordSceneChange(loadedObjectGroup, before);
 }
 
 //  Main entry point 
@@ -1052,6 +1075,7 @@ export function initGizmo({
     scene = s; camera = cam; renderer = rend; controls = orbitControls; loadedObjectGroup = lg;
     Overlay.setLoadedObjectGroup(lg);
     Select.setLoadedObjectGroup(lg);
+    setHistorySelection(currentSelection);
 
     if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map();
     if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map();
@@ -1105,6 +1129,7 @@ export function initGizmo({
     transformControls.addEventListener('dragging-changed', (event: { value: boolean }) => {
         controls.enabled = !event.value;
         if (event.value) {
+            dragHistoryBefore = captureSceneState(loadedObjectGroup);
             Overlay.prepareMultiSelectionDrag(currentSelection);
             draggingMode = transformControls!.mode;
             selectionTransformDirty = false;
@@ -1174,6 +1199,10 @@ export function initGizmo({
             }
 
         } else {
+            const historyBefore = dragHistoryBefore;
+            dragHistoryBefore = null;
+            selectionHelper!.updateMatrixWorld();
+            const changed = !selectionHelper!.matrixWorld.equals(dragInitialMatrix);
             commitSelectionTransform();
 
             if (draggingMode === 'rotate' && _isMultiSelection() && !currentSelection.primary) {
@@ -1248,6 +1277,7 @@ export function initGizmo({
                     }
                 }));
             }
+            if (changed && historyBefore) recordSceneChange(loadedObjectGroup, historyBefore);
         }
     });
 

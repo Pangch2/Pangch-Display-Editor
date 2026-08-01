@@ -1,8 +1,8 @@
 import { Group, InstancedMesh, Matrix4, Mesh, Vector3 } from 'three/webgpu';
-import { applyDeltaToSelection } from './selection/drag';
-import { mergeInstanceIds } from './selection/instance-ranges';
-import * as GroupUtils from './grouping/group';
-import type { SelectedItem } from './selection/select';
+import { applyDeltaToSelection } from '../selection/drag';
+import { mergeInstanceIds } from '../selection/instance-ranges';
+import * as GroupUtils from '../grouping/group';
+import type { SelectedItem } from '../selection/select';
 
 type PdeMesh = InstancedMesh | Mesh;
 type MirrorPairKey = 'objectMirrorPairs' | 'groupMirrorPairs';

@@ -1,11 +1,11 @@
 import { BoxGeometry, Group, InstancedMesh, Matrix4, Mesh, Vector3 } from 'three/webgpu';
-import { applyDeltaToSelection } from './selection/drag';
-import { flipPlayerHeadTextures, getPlayerHeadRenderMatrix, replaceDisplayObjects } from '../load-project/mesh-builder';
-import { findMirroredBlockName } from '../load-project/scene-parser';
-import { mainThreadAssetProvider } from '../load-project/pbde-assets';
+import { applyDeltaToSelection } from '../selection/drag';
+import { flipPlayerHeadTextures, getPlayerHeadRenderMatrix, replaceDisplayObjects } from '../../load-project/mesh-builder';
+import { findMirroredBlockName } from '../../load-project/scene-parser';
+import { mainThreadAssetProvider } from '../../load-project/pbde-assets';
 import { replaceMirrorUuid } from './mirroring';
-import * as Overlay from './selection/overlay';
-import * as GroupUtils from './grouping/group';
+import * as Overlay from '../selection/overlay';
+import * as GroupUtils from '../grouping/group';
 
 type PdeMesh = InstancedMesh | Mesh;
 export type FlipAxis = 'x' | 'y' | 'z';

@@ -3,6 +3,7 @@ import { getBlockIconName, getItemIconAtlas, type ItemIconAtlas } from './item-i
 import { currentSelection } from '../controls/selection/select';
 import { addDisplayObject, loadedObjectGroup, replaceDisplayObjects } from '../load-project/mesh-builder';
 import { getCompatibleBlockProperties } from '../load-project/pbde-assets';
+import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history.js';
 
 type AtlasName = 'block-atlas.png' | 'item-atlas.png';
 
@@ -69,6 +70,7 @@ async function applyIcon(name: string): Promise<void> {
   if (applying) return;
   applying = true;
   try {
+    const before = captureSceneState(loadedObjectGroup);
     const isItemDisplay = activeAtlasName === 'item-atlas.png';
     const targetName = isItemDisplay ? name : await getBlockIconName(name);
     const userData = loadedObjectGroup.userData;
@@ -96,6 +98,7 @@ async function applyIcon(name: string): Promise<void> {
         return { objectUuid, name: replacementName, isItemDisplay };
       })));
     }
+    recordSceneChange(loadedObjectGroup, before);
     closeSearch();
   } catch (error) {
     console.error(error);

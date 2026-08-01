@@ -8,7 +8,7 @@ import {
 } from 'three/webgpu';
 // @ts-ignore
 import * as GroupUtils from '../grouping/group';
-import { syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../mirroring';
+import { syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../transform/mirroring';
 // @ts-ignore
 import * as Overlay from '../selection/overlay';
 

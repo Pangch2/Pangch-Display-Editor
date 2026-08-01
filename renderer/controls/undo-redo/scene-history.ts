@@ -1,0 +1,180 @@
+import {
+    BufferAttribute,
+    Group,
+    InstancedMesh,
+    Matrix4,
+    Mesh,
+    Object3D,
+    Quaternion,
+    Vector3
+} from 'three/webgpu';
+// @ts-expect-error Node's native TypeScript test runner requires the source extension.
+import { record } from './undo-redo.js';
+
+interface HistorySelection {
+    groups: Set<string>;
+    objects: Map<Mesh | InstancedMesh, Set<number>>;
+    primary: { type: 'group'; id: string } | { type: 'object'; mesh: Mesh | InstancedMesh; instanceId: number } | null;
+}
+
+let currentSelection: HistorySelection | null = null;
+
+type TypedArray = Exclude<BufferAttribute['array'], number[]>;
+
+interface AttributeSnapshot {
+    attribute: BufferAttribute;
+    array: TypedArray;
+}
+
+interface ObjectSnapshot {
+    object: Object3D;
+    children: Object3D[];
+    position: Vector3;
+    quaternion: Quaternion;
+    scale: Vector3;
+    matrix: Matrix4;
+    visible: boolean;
+    userData: Record<string, unknown>;
+    count?: number;
+    attributes: AttributeSnapshot[];
+}
+
+export interface SceneSnapshot {
+    children: Object3D[];
+    objects: ObjectSnapshot[];
+    userData: Record<string, unknown>;
+    selection: HistorySelection | null;
+}
+
+function captureSelection(): HistorySelection | null {
+    if (!currentSelection) return null;
+    return {
+        groups: new Set(currentSelection.groups),
+        objects: new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)])),
+        primary: currentSelection.primary ? { ...currentSelection.primary } : null
+    };
+}
+
+export function setHistorySelection(selection: HistorySelection): void {
+    currentSelection = selection;
+}
+
+function cloneValue<T>(value: T, seen = new Map<object, unknown>()): T {
+    if (!value || typeof value !== 'object') return value;
+    const object = value as object & {
+        isObject3D?: boolean;
+        isMaterial?: boolean;
+        isTexture?: boolean;
+        isBufferGeometry?: boolean;
+        clone?: () => unknown;
+    };
+    if (object.isObject3D || object.isMaterial || object.isTexture || object.isBufferGeometry) return value;
+    if (seen.has(object)) return seen.get(object) as T;
+    if (ArrayBuffer.isView(value)) return (value as TypedArray).slice() as T;
+    if (value instanceof ArrayBuffer) return value.slice(0) as T;
+    if (typeof object.clone === 'function') return object.clone() as T;
+
+    if (value instanceof Map) {
+        const copy = new Map();
+        seen.set(object, copy);
+        value.forEach((entry, key) => copy.set(cloneValue(key, seen), cloneValue(entry, seen)));
+        return copy as T;
+    }
+    if (value instanceof Set) {
+        const copy = new Set();
+        seen.set(object, copy);
+        value.forEach(entry => copy.add(cloneValue(entry, seen)));
+        return copy as T;
+    }
+    if (Array.isArray(value)) {
+        const copy: unknown[] = [];
+        seen.set(object, copy);
+        value.forEach(entry => copy.push(cloneValue(entry, seen)));
+        return copy as T;
+    }
+
+    const copy: Record<string, unknown> = {};
+    seen.set(object, copy);
+    Object.entries(value).forEach(([key, entry]) => { copy[key] = cloneValue(entry, seen); });
+    return copy as T;
+}
+
+function captureObject(object: Object3D): ObjectSnapshot {
+    const attributes: AttributeSnapshot[] = [];
+    if ((object as InstancedMesh).isInstancedMesh) {
+        const mesh = object as InstancedMesh;
+        attributes.push({ attribute: mesh.instanceMatrix, array: mesh.instanceMatrix.array.slice() as TypedArray });
+        if (mesh.instanceColor) attributes.push({ attribute: mesh.instanceColor, array: mesh.instanceColor.array.slice() as TypedArray });
+        (Object.values(mesh.geometry.attributes) as BufferAttribute[]).forEach(attribute => {
+            if ((attribute as BufferAttribute & { isInstancedBufferAttribute?: boolean }).isInstancedBufferAttribute
+                && attribute !== mesh.instanceMatrix && attribute !== mesh.instanceColor) {
+                attributes.push({ attribute, array: attribute.array.slice() as TypedArray });
+            }
+        });
+    }
+    return {
+        object,
+        children: [...object.children],
+        position: object.position.clone(),
+        quaternion: object.quaternion.clone(),
+        scale: object.scale.clone(),
+        matrix: object.matrix.clone(),
+        visible: object.visible,
+        userData: cloneValue(object.userData),
+        count: (object as InstancedMesh).isInstancedMesh ? (object as InstancedMesh).count : undefined,
+        attributes
+    };
+}
+
+export function captureSceneState(root: Group): SceneSnapshot {
+    const objects: ObjectSnapshot[] = [];
+    root.traverse(object => { if (object !== root) objects.push(captureObject(object)); });
+    return { children: [...root.children], objects, userData: cloneValue(root.userData), selection: captureSelection() };
+}
+
+export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
+    root.clear();
+    snapshot.objects.forEach(state => state.object.clear());
+    snapshot.objects.forEach(state => state.children.forEach(child => state.object.add(child)));
+    snapshot.children.forEach(child => root.add(child));
+
+    for (const state of snapshot.objects) {
+        const { object } = state;
+        object.position.copy(state.position);
+        object.quaternion.copy(state.quaternion);
+        object.scale.copy(state.scale);
+        object.matrix.copy(state.matrix);
+        object.visible = state.visible;
+        object.userData = cloneValue(state.userData);
+        if ((object as InstancedMesh).isInstancedMesh) (object as InstancedMesh).count = state.count ?? 0;
+        state.attributes.forEach(({ attribute, array }) => {
+            attribute.array.set(array);
+            attribute.needsUpdate = true;
+        });
+        if ((object as Mesh).isMesh) {
+            const mesh = object as Mesh;
+            mesh.computeBoundingBox();
+            mesh.computeBoundingSphere();
+        }
+    }
+    root.userData = cloneValue(snapshot.userData);
+    if (currentSelection && snapshot.selection) {
+        currentSelection.groups = new Set(snapshot.selection.groups);
+        currentSelection.objects = new Map(Array.from(snapshot.selection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+        currentSelection.primary = snapshot.selection.primary ? { ...snapshot.selection.primary } : null;
+    }
+    root.updateMatrixWorld(true);
+}
+
+export function recordSceneChange(root: Group, before: SceneSnapshot): void {
+    const after = captureSceneState(root);
+    const refresh = () => {
+        window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+        window.dispatchEvent(new CustomEvent('pde:history-restored'));
+    };
+    // ponytail: full-scene snapshots favor correctness; replace with UUID diffs if history memory becomes measurable.
+    record({
+        undo: () => { restoreSceneState(root, before); refresh(); },
+        redo: () => { restoreSceneState(root, after); refresh(); }
+    });
+}

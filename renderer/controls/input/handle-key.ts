@@ -20,7 +20,9 @@ import type { SelectionState, SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 import * as GroupUtils from '../grouping/group';
-import { getLinkedMirrorSelection } from '../mirroring';
+import { getLinkedMirrorSelection } from '../transform/mirroring';
+import { redo, undo } from '../undo-redo/undo-redo';
+import { captureSceneState, recordSceneChange } from '../undo-redo/scene-history';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
@@ -242,6 +244,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             case 'q': {
                 const items = p.getSelectedItems();
                 if (items.length > 0) {
+                    const before = captureSceneState(p.loadedObjectGroup);
                     const linked = getLinkedMirrorSelection(p.loadedObjectGroup, getDirectSelectedItems(), p.currentSelection.groups);
                     const mirrorItems = new Map<string, SelectedItem>();
                     linked.objects.forEach((ids, mesh) => ids.forEach(instanceId => mirrorItems.set(`${mesh.uuid}_${instanceId}`, { type: 'object', mesh, instanceId })));
@@ -274,6 +277,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                             updateSelectionOverlay: p.updateSelectionOverlay
                         }
                     );
+                    recordSceneChange(p.loadedObjectGroup, before);
                 }
                 break;
             }
@@ -306,6 +310,14 @@ export function initHandleKey(p: HandleKeyParams): void {
 
     window.addEventListener('keydown', (event: KeyboardEvent) => {
         if ((event.target as HTMLElement).tagName === 'INPUT' || (event.target as HTMLElement).tagName === 'TEXTAREA') return;
+
+        const shortcutKey = event.key.toLowerCase();
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && (shortcutKey === 'z' || shortcutKey === 'y')) {
+            event.preventDefault();
+            const action = shortcutKey === 'y' || event.shiftKey ? redo() : undo();
+            void action.catch(error => console.error('Undo/Redo failed.', error));
+            return;
+        }
 
         if (event.key.toLowerCase() === 'f') {
             event.preventDefault();
@@ -408,6 +420,7 @@ export function initHandleKey(p: HandleKeyParams): void {
         if (event.altKey && event.ctrlKey) {
             if (event.key === 'Alt' || event.key === 'Control') {
                 event.preventDefault();
+                const before = p.hasAnySelection() ? captureSceneState(p.loadedObjectGroup) : null;
 
                 const _pivotResetFlags: PivotResetFlags = {
                     isCustomPivot:               p.state.isCustomPivot,
@@ -468,6 +481,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                 p.updateSelectionOverlay();
 
                 console.log('Pivot reset to origin');
+                if (before) recordSceneChange(p.loadedObjectGroup, before);
             }
         }
 

@@ -13,7 +13,7 @@ import * as Overlay from '../selection/overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
-import { applyLinkedMirrorDelta } from '../mirroring';
+import { applyLinkedMirrorDelta } from '../transform/mirroring';
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();

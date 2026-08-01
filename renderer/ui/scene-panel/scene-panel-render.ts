@@ -1,7 +1,8 @@
 import { currentSelection } from '../../controls/selection/select';
 import { isPbdeLogEnabled } from '../../load-project/pbde-log';
 import { loadedObjectGroup } from '../../load-project/upload-pbde';
-import { getLinkedMirrorUuid, getMirrorPairs, isMirrorModelingEnabled } from '../../controls/mirroring';
+import { getLinkedMirrorUuid, getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
+import { captureSceneState, recordSceneChange } from '../../controls/undo-redo/scene-history';
 import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';
 import {
     handleSceneItemDragEnd,
@@ -182,6 +183,7 @@ export function beginScenePanelRename(): void {
         ? ud.groups?.get(row.id)?.name ?? ''
         : ud.objectLabels?.get(row.id) ?? cleanLabel(ud.objectNames?.get(row.id) ?? row.id.slice(0, 8));
     const input = document.createElement('input');
+    const before = captureSceneState(loadedObjectGroup);
     input.type = 'text';
     input.className = 'scene-name-input';
     input.value = current;
@@ -210,6 +212,7 @@ export function beginScenePanelRename(): void {
         if (finished) return;
         finished = true;
         if (!save) applyName(current);
+        else if (input.value !== current) recordSceneChange(loadedObjectGroup, before);
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     };
     input.addEventListener('input', () => applyName(input.value));

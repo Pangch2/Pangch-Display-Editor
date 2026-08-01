@@ -3,6 +3,8 @@ import * as THREE from 'three/webgpu';
 import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, performSelection, updateGlobalBrightness } from './mesh-builder';
 import type { GlobalBrightness, LoadedSelection } from './mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
+import { captureSceneState, recordSceneChange, type SceneSnapshot } from '../controls/undo-redo/scene-history.js';
+import { clear, deleteHistoryContext, setHistoryContext } from '../controls/undo-redo/undo-redo.js';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 type ScenePrecompileTrace = {
@@ -101,6 +103,12 @@ function updateProjectDetails(): void {
         const input = document.getElementById(`project-${key}`) as HTMLInputElement | null;
         if (!input) continue;
         input.value = details?.[key] || '';
+        let historyBefore: SceneSnapshot | null = null;
+        let historyInitialValue = '';
+        input.onfocus = () => {
+            historyBefore = captureSceneState(loadedObjectGroup);
+            historyInitialValue = input.value;
+        };
         input.oninput = () => {
             details[key] = input.value;
             if (key === 'name') {
@@ -109,6 +117,10 @@ function updateProjectDetails(): void {
                 renderProjectTabs();
                 window.dispatchEvent(new CustomEvent('pde:project-name-changed', { detail: input.value }));
             }
+        };
+        input.onblur = () => {
+            if (historyBefore && input.value !== historyInitialValue) recordSceneChange(loadedObjectGroup, historyBefore);
+            historyBefore = null;
         };
     }
 
@@ -123,10 +135,18 @@ function updateProjectDetails(): void {
     sky.value = String(brightness.sky);
     block.value = String(brightness.block);
     const applyBrightness = () => {
+        const before = captureSceneState(loadedObjectGroup);
         updateGlobalBrightness({ enabled: enabled.checked, sky: Number(sky.value), block: Number(block.value) });
+        recordSceneChange(loadedObjectGroup, before);
     };
     enabled.onchange = sky.onchange = block.onchange = applyBrightness;
 }
+
+window.addEventListener('pde:history-restored', () => {
+    updateProjectDetails();
+    saveActiveProject();
+    renderProjectTabs();
+});
 
 function saveActiveProject(): void {
     if (activeProject < 0) return;
@@ -148,6 +168,7 @@ function switchProject(index: number): void {
         if (typeof value !== 'function') delete loadedObjectGroup.userData[key];
     }
     activeProject = index;
+    setHistoryContext(projects[index].id);
     Object.assign(loadedObjectGroup.userData, projects[index].data);
     for (const child of projects[index].children) loadedObjectGroup.add(child);
     if (projects[index].camera) {
@@ -166,10 +187,12 @@ function addProject(): void {
 
 function deleteProject(index: number): void {
     if (index < 0 || index >= projects.length || projects.length === 1) return;
+    const deletedId = projects[index].id;
     if (index !== activeProject) {
         const activeId = projects[activeProject]?.id;
         projects.splice(index, 1);
         activeProject = projects.findIndex(project => project.id === activeId);
+        deleteHistoryContext(deletedId);
         renderProjectTabs();
         return;
     }
@@ -180,6 +203,7 @@ function deleteProject(index: number): void {
     }
     const nextIndex = Math.min(index, projects.length - 2);
     projects.splice(index, 1);
+    deleteHistoryContext(deletedId);
     activeProject = -1;
     if (projects.length) switchProject(nextIndex);
     else {
@@ -374,6 +398,7 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
     try {
         for (const file of fileList) {
             if (!reuseCurrentProject && (activeProject < 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails)) addProject();
+            clear();
             await loadAndRenderPbde(file, false, beginPbdeLoadGeneration());
             updateProjectDetails();
             saveActiveProject();
@@ -392,6 +417,8 @@ async function mergepbde(files: File | File[]): Promise<void> {
     if (fileList.length === 0) return;
 
     const perceivedLoadStartMs = performance.now();
+    const before = captureSceneState(loadedObjectGroup);
+    let merged = false;
 
     const batchGen = beginPbdeLoadGeneration();
     const allNewMeshes: LoadedSelection = new Map();
@@ -409,11 +436,13 @@ async function mergepbde(files: File | File[]): Promise<void> {
 
         // Requirement: Select all newly added objects after all files are loaded.
         performSelection(allNewMeshes);
+        merged = true;
 
     } catch (e) {
         console.error("Error merging project files:", e);
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    if (merged) recordSceneChange(loadedObjectGroup, before);
     await precompileLoadedScene('merge', fileList.length);
     await logFinalPbdeLoadTime(perceivedLoadStartMs, 'merge', fileList.length);
 }

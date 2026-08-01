@@ -16,7 +16,9 @@ import {
     isMirrorModelingEnabled,
     syncLinkedMirrorGroupPivot,
     syncLinkedMirrorPivot
-} from '../controls/mirroring';
+} from '../controls/transform/mirroring';
+import { captureSceneState, recordSceneChange, type SceneSnapshot } from '../controls/undo-redo/scene-history';
+import { record } from '../controls/undo-redo/undo-redo';
 
 const title = document.getElementById('details-title')!;
 const tabs = document.getElementById('project-tabs')!;
@@ -79,6 +81,19 @@ function format(value: number): string {
     return Number(value.toFixed(6)).toString();
 }
 
+function trackHistoryInput(input: HTMLInputElement): void {
+    let before: SceneSnapshot | null = null;
+    let initialValue = '';
+    input.addEventListener('focus', () => {
+        before = captureSceneState(loadedObjectGroup);
+        initialValue = input.value;
+    });
+    input.addEventListener('blur', () => {
+        if (before && input.value !== initialValue) recordSceneChange(loadedObjectGroup, before);
+        before = null;
+    });
+}
+
 function updateInputValue(input: HTMLInputElement, value: number, activeElement: Element | null): void {
     if (input === activeElement) return;
     const next = format(value);
@@ -94,6 +109,7 @@ function numberInput(value: number, onChange: (value: number) => void): HTMLInpu
         const next = input.valueAsNumber;
         if (Number.isFinite(next)) onChange(next);
     };
+    trackHistoryInput(input);
     return input;
 }
 
@@ -144,6 +160,7 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTM
     textRow.className = 'object-matrix-text';
     textRow.hidden = !compactMatrixInput;
     const text = document.createElement('input');
+    trackHistoryInput(text);
     text.setAttribute('aria-label', '행렬 한 줄 입력');
     const fixedText = document.createElement('span');
     fixedText.style.whiteSpace = 'pre';
@@ -211,9 +228,11 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
     [...new Set(optionValues)].forEach(optionValue => select.add(new Option(optionValue, optionValue)));
     select.value = value;
     select.onchange = async () => {
+        const before = captureSceneState(loadedObjectGroup);
         select.disabled = true;
         try {
             await onChange(select.value);
+            recordSceneChange(loadedObjectGroup, before);
         } catch (error) {
             console.error(error);
             select.value = value;
@@ -380,6 +399,7 @@ function nameHeading(index: number, value: string, key: string, onChange: (value
         onChange(next);
         window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key, value: next } }));
     };
+    trackHistoryInput(input);
     heading.append(input);
     return heading;
 }
@@ -702,6 +722,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
         if (partnerUuid) objectNbt?.set(partnerUuid, nbt.value);
     };
+    trackHistoryInput(nbt);
     section.append(propertySection('nbt', 'NBT', nbt));
     const isItemDisplay = (loadedObjectGroup.userData.objectIsItemDisplay as Set<string> | undefined)?.has(uuid) ?? false;
     const brightnessMap = loadedObjectGroup.userData.objectBrightness as Map<string, { sky?: number; block?: number }>;
@@ -721,10 +742,22 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             const input = document.createElement('input');
             input.value = texture ?? '';
             input.onchange = async () => {
+                const previous = texture ?? '';
                 input.value = textureUrl(input.value.trim());
-                await updatePlayerHeadTexture(uuid, input.value);
+                const next = input.value;
+                await updatePlayerHeadTexture(uuid, next);
                 const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
-                if (partnerUuid) await updatePlayerHeadTexture(partnerUuid, input.value);
+                const partnerPrevious = partnerUuid ? textures?.get(partnerUuid) ?? '' : '';
+                if (partnerUuid) await updatePlayerHeadTexture(partnerUuid, next);
+                const apply = async (value: string, partnerValue = value) => {
+                    await updatePlayerHeadTexture(uuid, value);
+                    if (partnerUuid) await updatePlayerHeadTexture(partnerUuid, partnerValue);
+                    window.dispatchEvent(new CustomEvent('pde:history-restored'));
+                };
+                record({
+                    undo: () => apply(previous, partnerPrevious),
+                    redo: () => apply(next)
+                });
             };
             metadataSection.append(metadataProperty('texture', '텍스쳐', input));
         }
@@ -848,6 +881,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
         const partner = partnerId ? GroupUtils.getGroups(loadedObjectGroup).get(partnerId) : undefined;
         if (partner) partner.nbt = nbt.value;
     };
+    trackHistoryInput(nbt);
     section.append(propertySection('nbt', 'NBT', nbt));
     sortPropertySections(section);
     return section;

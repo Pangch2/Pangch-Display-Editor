@@ -1,6 +1,7 @@
 import { loadedObjectGroup } from '../../load-project/upload-pbde';
 import { currentSelection } from '../../controls/selection/select';
-import { getMirrorPairs, isMirrorModelingEnabled } from '../../controls/mirroring';
+import { getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
+import { captureSceneState, recordSceneChange } from '../../controls/undo-redo/scene-history';
 import { scheduleSceneExtraFit } from './scene-panel-render';
 import { scenePanelState } from './scene-panel-state';
 import type {
@@ -466,6 +467,7 @@ export function handleScenePanelDrop(event: DragEvent): void {
 
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const hint = scenePanelState.sceneDropHint ?? computeSceneDropHint(event);
+    const before = captureSceneState(loadedObjectGroup);
 
     let moved = false;
     if (hint && isValidSceneDropHint(scenePanelState.sceneDragBundle, hint, ud)) {
@@ -499,6 +501,7 @@ export function handleScenePanelDrop(event: DragEvent): void {
     if (moved) {
         scenePanelState.suppressSceneItemClickUntil = Date.now() + 180;
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+        recordSceneChange(loadedObjectGroup, before);
     }
 }
 
