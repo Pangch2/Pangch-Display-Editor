@@ -1,0 +1,56 @@
+@font-face {
+  font-family: 'lucide';
+  src: url('../../../resources/lucide.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Noto Sans KR';
+  src: url('../../../resources/NotoSansKR-ExtraBold.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ----- 기본 설정 ----- */
+body {
+  margin: 0;
+  overflow: hidden;
+  background: #1e1e1e;
+  font-family: 'Noto Sans KR', sans-serif;
+  color: #f0f0f0;
+  user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+:focus,
+:focus-visible {
+  outline: none;
+}
+
+canvas {
+  display: block;
+}
+
+/* ----- 캔버스 영역 ----- */
+#main-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 240px;
+  bottom: 0;
+  overflow: hidden;
+}
+
+#renderCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+

@@ -1,0 +1,283 @@
+.scene-virtual-spacer {
+  width: 1px;
+  pointer-events: none;
+}
+
+.scene-virtual-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.scene-virtual-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+}
+
+* {
+  scrollbar-color: #444 transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #5a5a60;
+}
+
+.scene-object-item {
+  padding: 4px 12px;
+  height: 28px;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #ccc;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.scene-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.scene-name-text {
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.scene-name-input {
+  width: 100%;
+  min-width: 0;
+  margin-left: -5px;
+  padding: 1px 4px;
+  border: 1px solid #4ea6ff;
+  border-radius: 2px;
+  background: #202024;
+  color: #eee;
+  font: inherit;
+}
+
+.scene-name:has(.scene-name-input) {
+  flex: 1;
+}
+
+.scene-name:has(.scene-name-input) ~ .scene-extra {
+  display: none;
+}
+
+.scene-name-dots {
+  color: #828282;
+  display: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.scene-object-item.scene-extra-active .scene-name {
+  flex: 0 0 auto;
+}
+
+.scene-object-item.scene-extra-ellipsis .scene-name {
+  flex: 0 0 auto;
+}
+
+.scene-object-item.scene-extra-ellipsis .scene-extra {
+  margin-left: -10px;
+}
+
+.scene-object-item:hover {
+  background: #35353a;
+  color: #f0f0f0;
+}
+
+.scene-object-item .scene-icon {
+  font-family: 'lucide';
+  font-size: 15px;
+  flex-shrink: 0;
+  line-height: 1;
+  font-weight: 600;
+}
+
+.scene-object-item .scene-icon.icon-box {
+  transform: translateY(2px);
+}
+
+.scene-icon-right {
+  font-family: 'lucide';
+  font-size: 14px;
+  margin-left: auto;
+  flex-shrink: 0;
+  color: #CCCCCC;
+  font-weight: 600;
+}
+
+.scene-extra {
+  margin-left: 0px;
+  font-size: 13px;
+  color: #828282;
+  font-family: 'Noto Sans KR', sans-serif;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+/* Scene 패널 트리: 그룹 헤더 */
+.scene-tree-group {
+  padding: 4px 12px;
+  height: 28px;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #ccc;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.scene-object-item.scene-virtual-row,
+.scene-tree-group.scene-virtual-row {
+  position: absolute;
+}
+
+.scene-drag-preview {
+  position: fixed;
+  left: -10000px;
+  top: -10000px;
+  padding: 4px 0;
+  border: 1px solid rgba(132, 132, 142, 0.6);
+  border-radius: 6px;
+  background: rgba(36, 36, 42, 0.86);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.scene-drag-preview .scene-drag-preview-row {
+  pointer-events: none;
+}
+
+.scene-drag-preview .scene-object-item,
+.scene-drag-preview .scene-tree-group {
+  background: transparent;
+}
+
+.scene-drag-preview-more {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: #9ea4ad;
+}
+
+.scene-object-item.scene-drop-before,
+.scene-tree-group.scene-drop-before {
+  box-shadow: inset 0 2px 0 #4ea6ff;
+}
+
+.scene-object-item.scene-drop-after,
+.scene-tree-group.scene-drop-after {
+  box-shadow: inset 0 -2px 0 #4ea6ff;
+}
+
+.scene-tree-group.scene-drop-inside {
+  background: rgba(78, 166, 255, 0.16);
+  outline: 1px solid #4ea6ff;
+  outline-offset: -1px;
+}
+
+#scene-object-list.scene-drop-root-end::after {
+  content: '';
+  display: block;
+  border-top: 2px solid #4ea6ff;
+  margin: 2px 8px 2px 8px;
+}
+
+.scene-tree-group:hover {
+  background: #35353a;
+  color: #f0f0f0;
+}
+
+/* Selected state colors (속성값 .scene-extra 제외) */
+.scene-object-item.selected[data-display-type="item_display"] .scene-name-text,
+.scene-object-item.selected[data-display-type="item_display"] .scene-name-dots,
+.scene-object-item.selected[data-display-type="item_display"] .scene-icon {
+  color: #2E87EC;
+}
+
+.scene-object-item.selected[data-display-type="block_display"] .scene-name-text,
+.scene-object-item.selected[data-display-type="block_display"] .scene-name-dots,
+.scene-object-item.selected[data-display-type="block_display"] .scene-icon {
+  color: #FFD147;
+}
+
+.scene-tree-group.selected .scene-name,
+.scene-tree-group.selected .scene-toggle {
+  color: #3DFC70;
+}
+
+.scene-toggle {
+  font-family: 'lucide';
+  font-size: 15px;
+  flex-shrink: 0;
+  width: 14px;
+  display: inline-block;
+  line-height: 1;
+  font-weight: 600;
+}
+
+/* 접힌 상태 */
+.scene-tree-children.collapsed {
+  display: none;
+}
+
+/* Scene 패널 리사이저 */
+.scene-resizer {
+  position: absolute;
+  top: calc(50% - 24px);
+  left: -7px;
+  width: 7px;
+  height: 48px;
+  cursor: w-resize;
+  z-index: 11;
+  background: #3a3a3e;
+  border-radius: 3px 0 0 3px;
+}
+
+.panel-dock.dock-left .scene-resizer {
+  right: -7px;
+  left: auto;
+  cursor: e-resize;
+  border-radius: 0 3px 3px 0;
+}
+
+/* ----- 로딩 오버레이 ----- */
