@@ -38,6 +38,16 @@ contextBridge.exposeInMainWorld('ipcApi', {
   getLoadingIcon: () => ipcRenderer.invoke('get-loading-icon'),
   getRequiredPrefixes: () => ipcRenderer.invoke('get-required-prefixes'),
   getPdeMemoryUsage: () => ipcRenderer.invoke('get-pde-memory-usage'),
+  resetPdeData: (scope: 'cache' | 'assets') => {
+    if (!['cache', 'assets'].includes(scope)) return Promise.reject(new TypeError('Invalid reset scope.'));
+    return ipcRenderer.invoke('reset-pde-data', scope);
+  },
+  forceGarbageCollection: () => ipcRenderer.invoke('force-garbage-collection'),
+  listKeyMappingPresets: () => ipcRenderer.invoke('list-key-mapping-presets'),
+  reorderKeyMappingPresets: (names: string[]) => ipcRenderer.invoke('reorder-key-mapping-presets', names),
+  loadKeyMappingPreset: (name: string) => ipcRenderer.invoke('load-key-mapping-preset', name),
+  saveKeyMappingPreset: (name: string, mapping: Record<string, string[]>) => ipcRenderer.invoke('save-key-mapping-preset', name, mapping),
+  deleteKeyMappingPreset: (name: string) => ipcRenderer.invoke('delete-key-mapping-preset', name),
   // 리스너 정리 (메모리 누수 방지)
   removeAllListeners: (channel: AssetEventChannel) => {
     const validChannels = ['assets-downloaded', 'assets-download-failed'];

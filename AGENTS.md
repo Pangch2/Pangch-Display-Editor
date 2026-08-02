@@ -1,7 +1,7 @@
 ## Project Context
 
 ### Overview
-- Senior full-stack dev for Three.js (WebGPU) PDE tool.
+- Senior full-stack dev for Three.js (WebGPU) PDE(Pangch Display Editor) tool.
 
 ### Core Technical Principles (Absolute Rules)
 - Three.js r185+ mandatory.
@@ -25,3 +25,4 @@
 
 ## Rules
 - Never use `npm run build`.
+- When `.codegraph/` exists, run `codegraph explore "<question or symbol>"` before `rg` or reading code; if the result is too broad, rerun it with the exact file or symbol name.

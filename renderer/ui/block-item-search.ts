@@ -4,6 +4,7 @@ import { currentSelection } from '../controls/selection/select';
 import { addDisplayObject, loadedObjectGroup, replaceDisplayObjects } from '../load-project/mesh-builder';
 import { getCompatibleBlockProperties } from '../load-project/pbde-assets';
 import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history.js';
+import { matchesShortcut } from '../controls/input/shortcuts';
 
 type AtlasName = 'block-atlas.png' | 'item-atlas.png';
 
@@ -206,4 +207,12 @@ overlay.addEventListener('click', event => {
 });
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !overlay.hidden) closeSearch();
+  if (event.repeat || (event.target instanceof HTMLElement && event.target.matches('input, textarea'))) return;
+  if (matchesShortcut(event, 'openBlockSearch')) {
+    event.preventDefault();
+    void openSearch('block-atlas.png');
+  } else if (matchesShortcut(event, 'openItemSearch')) {
+    event.preventDefault();
+    void openSearch('item-atlas.png');
+  }
 });

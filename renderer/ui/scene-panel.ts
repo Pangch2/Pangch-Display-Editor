@@ -1,4 +1,5 @@
 import { currentSelection } from '../controls/selection/select';
+import { matchesShortcut } from '../controls/input/shortcuts';
 import { scenePanelState } from './scene-panel/scene-panel-state';
 import type { ScenePanelSelectionState } from './scene-panel/scene-panel-types';
 import {
@@ -32,7 +33,7 @@ window.addEventListener('pde:object-renamed', () => {
 });
 window.addEventListener('keydown', event => {
     const target = event.target as HTMLElement;
-    if (event.key !== 'F2' || target.matches('input, textarea') || target.isContentEditable) return;
+    if (!matchesShortcut(event, 'renameSceneItem') || target.matches('input, textarea') || target.isContentEditable) return;
     event.preventDefault();
     beginScenePanelRename();
 });

@@ -10,6 +10,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
+const KEY_MAPPING_DIR = path.join(CACHE_DIR, 'key-mapping');
+const KEY_MAPPING_ORDER_PATH = path.join(KEY_MAPPING_DIR, '.order');
 const clientUrl = 'https://piston-data.mojang.com/v1/objects/0cda4b16710f5b42e532b20ed9b8965c105e77a8/client.jar';
 const serverUrl = 'https://piston-data.mojang.com/v1/objects/bc881a3fc6e63c490e614ab3bf9c43adc0449ab2/server.jar';
 // When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
@@ -92,6 +94,18 @@ function isRegistryExcluded(id: string, registry: keyof typeof registryExcludes)
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function keyMappingPresetPath(name: string): string {
+  const normalized = name.trim();
+  if (!normalized || normalized.length > 100 || /[<>:"/\\|?*\u0000-\u001f]|[. ]$/u.test(normalized)
+    || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(normalized)) throw new Error('Invalid preset name.');
+  return path.join(KEY_MAPPING_DIR, `${normalized}.json`);
+}
+
+function isKeyMapping(value: unknown): value is Record<string, string[]> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.values(value).every(keys => Array.isArray(keys) && keys.every(key => typeof key === 'string'));
 }
 
 async function pathExists(filePath: string): Promise<boolean> {
@@ -417,6 +431,100 @@ function createWindow() {
     app.getAppMetrics().reduce((total, metric) => total + metric.memory.workingSetSize, 0) * 1024
   );
 
+  ipcMain.handle('reset-pde-data', async (_event, scope: 'cache' | 'assets') => {
+    try {
+      if (scope === 'assets') {
+        await fs.rm(CACHE_DIR, { recursive: true, force: true });
+      } else if (scope === 'cache') {
+        await Promise.all([
+          win.webContents.session.clearCache(),
+          win.webContents.session.clearStorageData(),
+          fs.rm(KEY_MAPPING_DIR, { recursive: true, force: true })
+        ]);
+      } else {
+        throw new Error('Invalid reset scope.');
+      }
+      setTimeout(() => {
+        app.relaunch();
+        app.exit(0);
+      }, 100);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('force-garbage-collection', async () => {
+    try {
+      await win.webContents.executeJavaScript(`
+        if (typeof globalThis.gc !== 'function') throw new Error('GC is not available.');
+        globalThis.gc();
+      `);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('list-key-mapping-presets', async () => {
+    try {
+      await fs.mkdir(KEY_MAPPING_DIR, { recursive: true });
+      const files = await fs.readdir(KEY_MAPPING_DIR);
+      const savedOrder: unknown = await fs.readFile(KEY_MAPPING_ORDER_PATH, 'utf8').then(JSON.parse, () => []);
+      const order = Array.isArray(savedOrder) ? savedOrder.filter((name): name is string => typeof name === 'string') : [];
+      const rank = new Map(order.map((name, index) => [name, index]));
+      const presets = files.filter(file => file.endsWith('.json')).map(file => file.slice(0, -5)).sort((a, b) =>
+        (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b));
+      return { success: true, presets };
+    } catch (error) {
+      return { success: false, presets: [], error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('reorder-key-mapping-presets', async (_event, names: unknown) => {
+    try {
+      if (!Array.isArray(names) || names.some(name => typeof name !== 'string') || new Set(names).size !== names.length) {
+        throw new Error('Invalid preset order.');
+      }
+      names.forEach(keyMappingPresetPath);
+      await fs.mkdir(KEY_MAPPING_DIR, { recursive: true });
+      await fs.writeFile(KEY_MAPPING_ORDER_PATH, JSON.stringify(names), 'utf8');
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('load-key-mapping-preset', async (_event, name: string) => {
+    try {
+      const mapping: unknown = JSON.parse(await fs.readFile(keyMappingPresetPath(name), 'utf8'));
+      if (!isKeyMapping(mapping)) throw new Error('Invalid key mapping preset.');
+      return { success: true, mapping };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('save-key-mapping-preset', async (_event, name: string, mapping: unknown) => {
+    try {
+      if (!isKeyMapping(mapping)) throw new Error('Invalid key mapping preset.');
+      await fs.mkdir(KEY_MAPPING_DIR, { recursive: true });
+      await fs.writeFile(keyMappingPresetPath(name), JSON.stringify(mapping, null, 2), 'utf8');
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('delete-key-mapping-preset', async (_event, name: string) => {
+    try {
+      await fs.unlink(keyMappingPresetPath(name));
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
   ipcMain.handle('save-icon-atlas', async (_event, name: string, data: Uint8Array) => {
     try {
       if (!['block-atlas.png', 'item-atlas.png'].includes(name)) throw new Error('Invalid atlas name.');
@@ -616,4 +724,5 @@ function createWindow() {
 }
 
 app.commandLine.appendSwitch('enable-features', 'WebGPU');
+app.commandLine.appendSwitch('js-flags', '--expose-gc');
 app.whenReady().then(createWindow);

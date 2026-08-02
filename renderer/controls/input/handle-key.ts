@@ -23,6 +23,7 @@ import * as GroupUtils from '../grouping/group';
 import { getLinkedMirrorSelection } from '../transform/mirroring';
 import { redo, undo } from '../undo-redo/undo-redo';
 import { captureSceneState, recordSceneChange } from '../undo-redo/scene-history';
+import { matchesShortcut, type ShortcutId } from './shortcuts';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
@@ -157,7 +158,7 @@ export function initHandleKey(p: HandleKeyParams): void {
 
     // ── Inner key handler ────────────────────────────────────────────────────
 
-    const handleKeyPress = (key: string): void => {
+    const handleKeyPress = (key: ShortcutId): void => {
         const resetHelperRotationForWorldSpace = () => {
             if (p.state.currentSpace !== 'world') return;
             const items = p.getSelectedItems();
@@ -169,7 +170,7 @@ export function initHandleKey(p: HandleKeyParams): void {
         };
 
         switch (key) {
-            case 'v':
+            case 'toggleVertex':
                 p.state.isVertexMode = !p.state.isVertexMode;
                 console.log(p.state.isVertexMode ? 'Vertex mode activated' : 'Vertex mode deactivated');
 
@@ -187,22 +188,22 @@ export function initHandleKey(p: HandleKeyParams): void {
                 p.updateSelectionOverlay();
                 break;
 
-            case 't':
+            case 'translate':
                 p.getTransformControls().setMode('translate');
                 resetHelperRotationForWorldSpace();
                 break;
-            case 'r':
+            case 'rotate':
                 p.getTransformControls().setMode('rotate');
                 resetHelperRotationForWorldSpace();
                 break;
-            case 's':
+            case 'scale':
                 p.getTransformControls().setMode('scale');
                 resetHelperRotationForWorldSpace();
                 break;
-            case 'd':
+            case 'duplicate':
                 p.duplicateSelected();
                 break;
-            case 'x': {
+            case 'toggleSpace': {
                 const newSpace = p.state.currentSpace === 'world' ? 'local' : 'world';
                 p.state.currentSpace = newSpace;
                 p.getTransformControls().setSpace(newSpace);
@@ -211,7 +212,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                 console.log('TransformControls Space:', newSpace);
                 break;
             }
-            case 'z': {
+            case 'togglePivot': {
                 const oldPos = p.getSelectionHelper().position.clone();
                 const oldKey = `CENTER_${oldPos.x.toFixed(4)}_${oldPos.y.toFixed(4)}_${oldPos.z.toFixed(4)}`;
                 const wasCenterSelected = p.selectedVertexKeys.has(oldKey);
@@ -241,7 +242,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                 console.log('Pivot Mode:', p.state.pivotMode);
                 break;
             }
-            case 'q': {
+            case 'removeShear': {
                 const items = p.getSelectedItems();
                 if (items.length > 0) {
                     const before = captureSceneState(p.loadedObjectGroup);
@@ -281,14 +282,14 @@ export function initHandleKey(p: HandleKeyParams): void {
                 }
                 break;
             }
-            case 'b': {
+            case 'toggleScaleMode': {
                 toggleBlockbenchScaleMode();
                 break;
             }
-            case 'l':
+            case 'toggleShading':
                 console.log(toggleShading() ? 'Shading on' : 'Shading off');
                 break;
-            case 'g': {
+            case 'group': {
                 const groupCount = p.currentSelection.groups ? p.currentSelection.groups.size : 0;
                 const hasObjects = p.currentSelection.objects && p.currentSelection.objects.size > 0;
 
@@ -311,15 +312,14 @@ export function initHandleKey(p: HandleKeyParams): void {
     window.addEventListener('keydown', (event: KeyboardEvent) => {
         if ((event.target as HTMLElement).tagName === 'INPUT' || (event.target as HTMLElement).tagName === 'TEXTAREA') return;
 
-        const shortcutKey = event.key.toLowerCase();
-        if ((event.ctrlKey || event.metaKey) && !event.altKey && (shortcutKey === 'z' || shortcutKey === 'y')) {
+        if (matchesShortcut(event, 'undo') || matchesShortcut(event, 'redo')) {
             event.preventDefault();
-            const action = shortcutKey === 'y' || event.shiftKey ? redo() : undo();
+            const action = matchesShortcut(event, 'redo') ? redo() : undo();
             void action.catch(error => console.error('Undo/Redo failed.', error));
             return;
         }
 
-        if (event.key.toLowerCase() === 'f') {
+        if (matchesShortcut(event, 'focusSelection')) {
             event.preventDefault();
             focusCameraOnSelection(
                 p.camera,
@@ -331,13 +331,13 @@ export function initHandleKey(p: HandleKeyParams): void {
             return;
         }
 
-        if (event.key === 'Delete' || event.key === 'Backspace') {
+        if (matchesShortcut(event, 'deleteSelection')) {
             event.preventDefault();
             p.deleteSelectedItems();
             return;
         }
 
-        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'a') {
+        if (matchesShortcut(event, 'selectAllObjects')) {
             event.preventDefault();
             const all = p.selectAllObjectsVisibleInScene();
 
@@ -349,7 +349,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             return;
         }
 
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+        if (matchesShortcut(event, 'selectAll')) {
             event.preventDefault();
             const groupIds = new Set<string>();
             const meshToIds = new Map<PdeMesh, Set<number>>();
@@ -395,7 +395,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             return;
         }
 
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') {
+        if (matchesShortcut(event, 'ungroup')) {
             event.preventDefault();
             const hasGroups = p.currentSelection.groups && p.currentSelection.groups.size > 0;
             if (hasGroups) {
@@ -407,7 +407,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             return;
         }
 
-        if (event.key === 'Alt') {
+        if (matchesShortcut(event, 'editPivot')) {
             event.preventDefault();
             if (!p.state.isPivotEditMode) {
                 p.state.isPivotEditMode = true;
@@ -417,9 +417,8 @@ export function initHandleKey(p: HandleKeyParams): void {
             }
         }
 
-        if (event.altKey && event.ctrlKey) {
-            if (event.key === 'Alt' || event.key === 'Control') {
-                event.preventDefault();
+        if (matchesShortcut(event, 'resetPivot')) {
+            event.preventDefault();
                 const before = p.hasAnySelection() ? captureSceneState(p.loadedObjectGroup) : null;
 
                 const _pivotResetFlags: PivotResetFlags = {
@@ -482,13 +481,12 @@ export function initHandleKey(p: HandleKeyParams): void {
 
                 console.log('Pivot reset to origin');
                 if (before) recordSceneChange(p.loadedObjectGroup, before);
-            }
         }
 
         if (p.state.isGizmoBusy) return;
-        const key = event.key.toLowerCase();
-        const keysToHandle = ['t', 'r', 's', 'x', 'z', 'q', 'b', 'g', 'd', 'v', 'l'];
-        if (p.getTransformControls().dragging && keysToHandle.includes(key)) {
+        const key = (['translate', 'rotate', 'scale', 'toggleSpace', 'togglePivot', 'removeShear', 'toggleScaleMode', 'group', 'duplicate', 'toggleVertex', 'toggleShading'] as ShortcutId[])
+            .find(id => matchesShortcut(event, id));
+        if (key && p.getTransformControls().dragging) {
             p.state.isGizmoBusy = true;
             const attachedObject = p.getTransformControls().object;
             p.getTransformControls().pointerUp({ button: 0 } as PointerEvent);
@@ -511,7 +509,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             }, 0);
             return;
         }
-        if (keysToHandle.includes(key)) {
+        if (key) {
             p.state.isGizmoBusy = true;
             handleKeyPress(key);
             setTimeout(() => { p.state.isGizmoBusy = false; }, 50);
@@ -521,7 +519,7 @@ export function initHandleKey(p: HandleKeyParams): void {
     // ── keyup ────────────────────────────────────────────────────────────────
 
     window.addEventListener('keyup', (event: KeyboardEvent) => {
-        if (event.key === 'Alt') {
+        if (matchesShortcut(event, 'editPivot')) {
             if (p.state.isPivotEditMode) {
                 if (p.getTransformControls().dragging) {
                     p.getSelectionHelper().updateMatrixWorld();

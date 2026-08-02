@@ -279,6 +279,141 @@ canvas {
   margin-bottom: 20px;
 }
 
+.settings-shortcut-header,
+.settings-shortcut-row {
+  display: grid;
+  grid-template-columns: 1fr 160px repeat(3, 28px);
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 13px;
+}
+
+.settings-shortcut-header {
+  color: #999;
+}
+
+.settings-shortcut-category {
+  margin: 18px 0 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #3a3a3e;
+  font-size: 13px;
+}
+
+.settings-shortcut-category:first-child {
+  margin-top: 8px;
+}
+
+.settings-shortcut-row > button {
+  padding: 6px 8px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e1e;
+  cursor: pointer;
+}
+
+.settings-shortcut-row > .settings-shortcut-conflict {
+  border-color: #ff5c67;
+  background: #ff5c6720;
+  color: #ff5c67;
+}
+
+.settings-shortcut-row > .settings-shortcut-add,
+.settings-shortcut-row > .settings-shortcut-clear,
+.settings-shortcut-row > .settings-shortcut-reset {
+  padding-inline: 0;
+}
+
+.settings-shortcut-presets {
+  display: grid;
+  margin-top: 20px;
+}
+
+#shortcut-preset-toggle,
+#shortcut-preset-menu button {
+  padding: 8px 10px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e1e;
+  text-align: left;
+  cursor: pointer;
+}
+
+#shortcut-preset-toggle {
+  display: flex;
+  justify-content: space-between;
+}
+
+#shortcut-preset-menu {
+  display: grid;
+  gap: 4px;
+  padding-top: 4px;
+}
+
+#shortcut-preset-menu[hidden] {
+  display: none;
+}
+
+#shortcut-preset-menu > button:last-child {
+  text-align: center;
+}
+
+#shortcut-preset-menu > div {
+  display: grid;
+  position: relative;
+  grid-template-columns: 1fr 34px;
+}
+
+#shortcut-preset-menu > div.settings-preset-drop-before::before,
+#shortcut-preset-menu > div.settings-preset-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #70c7ff;
+  pointer-events: none;
+  z-index: 1;
+}
+
+#shortcut-preset-menu > div.settings-preset-drop-before::before {
+  top: 0;
+}
+
+#shortcut-preset-menu > div.settings-preset-drop-after::after {
+  bottom: 0;
+}
+
+#shortcut-preset-menu > div.settings-preset-dragging > button:first-child {
+  border-color: #70c7ff;
+  background: #70c7ff20;
+}
+
+#shortcut-preset-menu > div > button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+#shortcut-preset-menu button.settings-preset-active {
+  border-color: #70c7ff;
+  background: #70c7ff20;
+  color: #70c7ff;
+}
+
+#shortcut-preset-menu .settings-preset-delete {
+  padding-inline: 0;
+  border-left: 0;
+  border-radius: 0 4px 4px 0;
+  font-family: 'lucide';
+  text-align: center;
+}
+
+#shortcut-preset-menu input {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e1e;
+}
+
 .settings-page fieldset {
   display: grid;
   gap: 12px;
@@ -291,6 +426,31 @@ canvas {
 .settings-page legend {
   padding: 0 6px;
   font-size: 13px;
+}
+
+.settings-danger-page p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-danger-page .settings-danger-text,
+.settings-danger-page button {
+  color: #ff5c67;
+}
+
+.settings-danger-page button {
+  justify-self: start;
+  padding: 7px 10px;
+  border: 1px solid #ff5c67;
+  border-radius: 4px;
+  background: #ff5c6714;
+  cursor: pointer;
+}
+
+.settings-danger-page button:disabled {
+  cursor: wait;
+  opacity: 0.5;
 }
 
 .settings-row {
