@@ -27,6 +27,7 @@ overlay.innerHTML = `
             <label class="settings-row"><span>도구 패널</span><span class="settings-select"><select id="toolbar-position"><option value="top">위</option><option value="bottom">아래</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>카메라</span><span class="settings-select"><select id="camera-type"><option value="perspective">원근</option><option value="orthographic">직교</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>카메라 FOV</span><span class="settings-range"><input id="camera-fov" type="range" min="20" max="120" value="80"><output>80°</output></span></label>
+            <label class="settings-row"><span>렌더 해상도</span><span class="settings-select"><select id="render-scale"><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
           </fieldset>
           <fieldset>
             <legend>조작</legend>
@@ -100,6 +101,7 @@ const toolbarPosition = overlay.querySelector<HTMLSelectElement>('#toolbar-posit
 const cameraType = overlay.querySelector<HTMLSelectElement>('#camera-type')!;
 const fovInput = overlay.querySelector<HTMLInputElement>('#camera-fov')!;
 const fovOutput = fovInput.nextElementSibling as HTMLOutputElement;
+const renderScale = overlay.querySelector<HTMLSelectElement>('#render-scale')!;
 const scaleMode = overlay.querySelector<HTMLSelectElement>('#scale-mode')!;
 const objectReplaceMode = overlay.querySelector<HTMLSelectElement>('#object-replace-mode')!;
 const shortcutList = overlay.querySelector<HTMLElement>('#settings-shortcut-list')!;
@@ -346,6 +348,8 @@ cameraType.value = localStorage.getItem('pdeCameraType') === 'orthographic' ? 'o
 toolbar.classList.toggle('toolbar-bottom', toolbarPosition.value === 'bottom');
 fovInput.value = localStorage.getItem('pdeCameraFov') ?? '80';
 fovOutput.value = `${fovInput.value}°`;
+renderScale.value = localStorage.getItem('pdeRenderScale') ?? '1';
+if (!renderScale.value) renderScale.value = '1';
 const savedScaleMode = localStorage.getItem('pdeScaleMode') === 'blockbench';
 if (savedScaleMode !== blockbenchScaleMode) toggleBlockbenchScaleMode();
 scaleMode.value = blockbenchScaleMode ? 'blockbench' : 'default';
@@ -400,6 +404,10 @@ fovInput.addEventListener('input', () => {
   fovOutput.value = `${fovInput.value}°`;
   localStorage.setItem('pdeCameraFov', fovInput.value);
   window.dispatchEvent(new CustomEvent('pde:camera-fov-changed', { detail: fovInput.valueAsNumber }));
+});
+renderScale.addEventListener('change', () => {
+  localStorage.setItem('pdeRenderScale', renderScale.value);
+  window.dispatchEvent(new CustomEvent('pde:render-scale-changed', { detail: Number(renderScale.value) }));
 });
 scaleMode.addEventListener('change', () => {
   if ((scaleMode.value === 'blockbench') !== blockbenchScaleMode) toggleBlockbenchScaleMode();

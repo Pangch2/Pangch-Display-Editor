@@ -126,6 +126,12 @@ window.addEventListener('pde:camera-fov-changed', (event: Event) => {
     camera.updateProjectionMatrix();
 });
 
+window.addEventListener('pde:render-scale-changed', (event: Event) => {
+    if (!renderer) return;
+    renderer.setPixelRatio(Number((event as CustomEvent<number>).detail) || 1);
+    onWindowResize();
+});
+
 window.addEventListener('pde:camera-type-changed', (event: Event) => {
     setCameraType((event as CustomEvent<string>).detail === 'orthographic' ? 'orthographic' : 'perspective');
 });
@@ -508,6 +514,7 @@ async function initScene(): Promise<void> {
         canvas: document.querySelector('#renderCanvas') as HTMLCanvasElement,
         logarithmicDepthBuffer: true
     });
+    renderer.setPixelRatio(Number(localStorage.getItem('pdeRenderScale')) || 1);
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
     await renderer.init();
     stabilizeInstancedMatrixBindingNames();

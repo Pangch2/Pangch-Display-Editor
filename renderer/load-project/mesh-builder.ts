@@ -7,6 +7,7 @@ import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
+import { createTextDisplayMesh } from './text-display';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../controls/transform/mirroring';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
@@ -1631,6 +1632,21 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     })();
 
                     try { await playerHeadPromise; } catch { /* ignore */ }
+                }
+
+                for (const item of otherItems) {
+                    if (item.type !== 'textDisplay') continue;
+                    const textMesh = await createTextDisplayMesh(item);
+                    textMesh.setMatrixAt(0, new THREE.Matrix4().fromArray(item.transform).transpose());
+                    textMesh.instanceMatrix.needsUpdate = true;
+                    textMesh.userData.displayType = 'text_display';
+                    textMesh.frustumCulled = false;
+                    textMesh.renderOrder = 1;
+                    textMesh.layers.enable(2);
+                    setInstanceSkyBrightness(textMesh, 0, item.brightness as Brightness | undefined);
+                    registerObject(textMesh, 0, item.uuid, item.groupId);
+                    addLoadedInstance(newlyAddedSelectableMeshes, textMesh, 0);
+                    loadedObjectGroup.add(textMesh);
                 }
                 const playerHeadElapsedMs = performance.now() - playerHeadStartMs;
 

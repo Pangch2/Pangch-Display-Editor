@@ -35,7 +35,7 @@ export interface ModelData {
 }
 
 interface RenderItem {
-    type: 'blockDisplay' | 'itemDisplay' | 'itemDisplayModel';
+    type: 'blockDisplay' | 'itemDisplay' | 'itemDisplayModel' | 'textDisplay';
     models?: ModelData[]; // For blockDisplay and itemDisplayModel
     uuid?: string;
     groupId?: string | null;
@@ -2074,7 +2074,22 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             }
         }
     } else if (node.isTextDisplay) {
-        // 텍스트 디스플레이는 향후 별도 로직으로 처리한다.
+        const textData: RenderItem = {
+            type: 'textDisplay',
+            name: typeof node.name === 'string' ? node.name : '',
+            transform: worldTransform,
+            nbt: node.nbt,
+            options: node.options,
+            brightness: node.brightness,
+            uuid: typeof node.uuid === 'string' ? node.uuid : generateUUID(),
+            groupId: currentGroupId
+        };
+        if (currentGroupId) {
+            groups.get(currentGroupId)?.children.push({ type: 'object', id: textData.uuid });
+        } else if ((node as any)._rootIndex !== undefined) {
+            sceneOrder.push({ rootIndex: (node as any)._rootIndex, type: 'object', id: textData.uuid! });
+        }
+        renderItems.push(textData);
     }
 
     if (node.children) {
