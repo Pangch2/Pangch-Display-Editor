@@ -491,6 +491,7 @@
 }
 
 .object-property input,
+.object-property textarea,
 .object-property select {
   appearance: none;
   width: 100%;
@@ -503,6 +504,50 @@
   color: #f0f0f0;
   font: inherit;
   user-select: text;
+}
+
+.object-property textarea {
+  resize: vertical;
+}
+
+.object-property input[type="checkbox"] {
+  appearance: auto;
+  width: auto;
+  justify-self: start;
+}
+
+.text-display-effects {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.object-property .text-display-effect {
+  display: grid;
+  height: 24px;
+  place-items: center;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  background: #1e1e21;
+  color: #aaa;
+  cursor: pointer;
+}
+
+.object-property .text-display-effect:has(input:checked) {
+  border-color: #69b7ff;
+  background: #69b7ff;
+  color: #111;
+}
+
+.object-property .text-display-effect input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.object-property .text-display-effect:has(input:focus-visible) {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
 }
 
 .object-property select {
@@ -520,11 +565,11 @@
   cursor: ns-resize;
 }
 
-.object-property input:disabled {
+.object-property input:disabled,
+.object-property textarea:disabled {
   background: #242427;
   color: #666;
   -webkit-text-fill-color: #666;
   opacity: 1;
   cursor: not-allowed;
 }
-

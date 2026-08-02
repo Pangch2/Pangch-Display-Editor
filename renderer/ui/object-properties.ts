@@ -1,7 +1,8 @@
 import { Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture } from '../load-project/mesh-builder';
+import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
+import type { TextDisplayOptions } from '../load-project/text-display';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel/scene-panel-types';
 import { cleanLabel } from './scene-panel/scene-panel-model';
@@ -35,6 +36,12 @@ const rotation = new Euler();
 const quaternion = new Quaternion();
 const scale = new Vector3();
 const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
+const textAlignValues = ['left', 'center', 'right'];
+const defaultTextDisplayOptions: Required<TextDisplayOptions> = {
+    color: '#FFFFFF', alpha: 1, backgroundColor: '#000000', backgroundAlpha: 1,
+    bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
+    lineLength: 200, align: 'center', font: 'minecraft:default'
+};
 const metadataOrderKey = 'pde-object-metadata-order';
 const matrixInputModeKey = 'pde-matrix-input-mode';
 const propertySectionOrderKey = 'pde-object-property-section-order';
@@ -242,6 +249,35 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
         }
     };
     return select;
+}
+
+function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
+    control: T,
+    onChange: (value: string) => void | Promise<void>
+): T {
+    const read = () => control instanceof HTMLInputElement && control.type === 'checkbox' ? String(control.checked) : control.value;
+    const write = (value: string) => {
+        if (control instanceof HTMLInputElement && control.type === 'checkbox') control.checked = value === 'true';
+        else control.value = value;
+    };
+    let committed = read();
+    control.onchange = async () => {
+        const before = captureSceneState(loadedObjectGroup);
+        const next = read();
+        control.disabled = true;
+        try {
+            await onChange(next);
+            committed = next;
+            recordSceneChange(loadedObjectGroup, before);
+        } catch (error) {
+            console.error(error);
+            write(committed);
+            window.alert(error instanceof Error ? error.message : '오브젝트 변경에 실패했습니다.');
+        } finally {
+            control.disabled = false;
+        }
+    };
+    return control;
 }
 
 function metadataProperty(key: string, labelText: string, control: HTMLElement): HTMLDivElement {
@@ -641,6 +677,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
 
     const pivotBase = new Vector3();
     const displayType = Overlay.getDisplayType(mesh, instanceId);
+    const isTextDisplay = displayType === 'text_display';
     if (displayType === 'block_display') Overlay.getInstanceLocalBoxMin(mesh, instanceId, pivotBase);
     else if (displayType === 'item_display' && mesh.userData.hasHat) pivotBase.y = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
     else if (displayType === 'item_display') Overlay.getInstanceLocalBox(mesh, instanceId)?.getCenter(pivotBase);
@@ -732,7 +769,103 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
         if (partnerUuid) updateObjectBrightness(partnerUuid, value);
     };
-    if (isItemDisplay) {
+    if (isTextDisplay) {
+        const metadataSection = propertySection('metadata', '개체 속성');
+        metadataSection.firstElementChild!.className = 'object-metadata-title';
+        section.append(metadataSection);
+        metadataSection.append(brightnessProperty(brightness, updateBrightness));
+
+        let text = name;
+        const options = {
+            ...defaultTextDisplayOptions,
+            ...(loadedObjectGroup.userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)?.get(uuid)
+        };
+        const update = async () => {
+            await updateTextDisplay(uuid, text, options);
+            const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
+            if (partnerUuid) await updateTextDisplay(partnerUuid, text, options);
+        };
+        const updateOptions = async (patch: Partial<TextDisplayOptions>) => {
+            const previous = { ...options };
+            Object.assign(options, patch);
+            try { await update(); } catch (error) {
+                Object.assign(options, previous);
+                throw error;
+            }
+        };
+
+        const textInput = document.createElement('textarea');
+        textInput.rows = 3;
+        textInput.value = text;
+        metadataSection.append(metadataProperty('text', '텍스트', propertyValueControl(textInput, async value => {
+            const previous = text;
+            text = value;
+            try { await update(); } catch (error) {
+                text = previous;
+                throw error;
+            }
+        })));
+
+        const lineLength = document.createElement('input');
+        lineLength.type = 'number';
+        lineLength.min = '1';
+        lineLength.max = '2045';
+        lineLength.step = '1';
+        lineLength.value = String(options.lineLength);
+        metadataSection.append(metadataProperty('lineLength', '줄바꿈 길이', propertyValueControl(lineLength, value =>
+            updateOptions({ lineLength: Math.min(2045, Math.max(1, Number(value) || 1)) }))));
+        metadataSection.append(metadataProperty('align', '조정', propertySelect(options.align, textAlignValues, value =>
+            updateOptions({ align: value as TextDisplayOptions['align'] }))));
+
+        const font = propertySelect(options.font, ['minecraft:default', 'minecraft:uniform'], value => updateOptions({ font: value }));
+        font.querySelector<HTMLOptionElement>('option[value="minecraft:default"]')!.textContent = '기본';
+        font.querySelector<HTMLOptionElement>('option[value="minecraft:uniform"]')!.textContent = 'Uniform';
+        metadataSection.append(metadataProperty('font', '폰트', font));
+
+        const addColor = (key: 'color' | 'backgroundColor', label: string) => {
+            const input = document.createElement('input');
+            input.type = 'color';
+            input.value = /^#[0-9a-f]{6}$/i.test(options[key]) ? options[key] : defaultTextDisplayOptions[key];
+            metadataSection.append(metadataProperty(key, label, propertyValueControl(input, value => updateOptions({ [key]: value }))));
+        };
+        const addAlpha = (key: 'alpha' | 'backgroundAlpha', label: string) => {
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.min = '0';
+            input.max = '1';
+            input.step = '0.01';
+            input.value = String(options[key]);
+            metadataSection.append(metadataProperty(key, label, propertyValueControl(input, value =>
+                updateOptions({ [key]: Math.min(1, Math.max(0, Number(value) || 0)) }))));
+        };
+        addColor('color', '글자 색');
+        addAlpha('alpha', '글자 투명도');
+        addColor('backgroundColor', '배경 색');
+        addAlpha('backgroundAlpha', '배경 투명도');
+
+        const effects: Array<[keyof Pick<TextDisplayOptions, 'bold' | 'italic' | 'underline' | 'strikeThrough' | 'obfuscated'>, string, string]> = [
+            ['bold', '굵게', '\uE05D'], ['italic', '기울임', '\uE0FB'], ['underline', '밑줄', '\uE19A'],
+            ['strikeThrough', '취소선', '\uE177'], ['obfuscated', '난독화', '*']
+        ];
+        const effectControls = document.createElement('div');
+        effectControls.className = 'text-display-effects';
+        effects.forEach(([key, title, icon]) => {
+            const label = document.createElement('label');
+            label.className = 'text-display-effect';
+            label.title = title;
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = options[key];
+            input.setAttribute('aria-label', title);
+            const symbol = document.createElement('span');
+            symbol.className = icon === '*' ? '' : 'lucide-icon';
+            symbol.textContent = icon;
+            label.append(propertyValueControl(input, value => updateOptions({ [key]: value === 'true' })), symbol);
+            effectControls.append(label);
+        });
+        metadataSection.append(metadataProperty('effects', '글자 이펙트', effectControls));
+        sortMetadataRows(metadataSection);
+    } else if (isItemDisplay) {
         const metadataSection = propertySection('metadata', '개체 속성');
         metadataSection.firstElementChild!.className = 'object-metadata-title';
         section.append(metadataSection);

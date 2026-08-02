@@ -38,6 +38,7 @@ function makeObjectRow(row: ScenePanelRow): HTMLElement {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const rawName = ud.objectLabels?.get(uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
     const isItemDisplay = ud.objectIsItemDisplay?.has(uuid) ?? false;
+    const isTextDisplay = ud.objectUuidToInstance?.get(uuid)?.mesh.userData.displayType === 'text_display';
 
     let extraInfo = '';
     if (isItemDisplay) {
@@ -54,13 +55,13 @@ function makeObjectRow(row: ScenePanelRow): HTMLElement {
     const el = document.createElement('div');
     el.className = 'scene-object-item scene-virtual-row';
     el.dataset.uuid = uuid;
-    el.dataset.displayType = isItemDisplay ? 'item_display' : 'block_display';
+    el.dataset.displayType = isTextDisplay ? 'text_display' : isItemDisplay ? 'item_display' : 'block_display';
     el.draggable = true;
     setRowPosition(el, row);
 
     const leftIcon = document.createElement('span');
-    leftIcon.className = `scene-icon ${isItemDisplay ? 'icon-item' : 'icon-box'}`;
-    leftIcon.innerHTML = isItemDisplay ? '&#xE5C6;' : '&#xE061;';
+    leftIcon.className = `scene-icon ${isTextDisplay ? 'icon-text' : isItemDisplay ? 'icon-item' : 'icon-box'}`;
+    leftIcon.innerHTML = isTextDisplay ? '&#xE198;' : isItemDisplay ? '&#xE5C6;' : '&#xE061;';
 
     const nameEl = document.createElement('span');
     nameEl.className = 'scene-name';

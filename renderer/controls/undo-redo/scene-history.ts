@@ -1,8 +1,10 @@
 import {
     BufferAttribute,
+    BufferGeometry,
     Group,
     InstancedMesh,
     Matrix4,
+    Material,
     Mesh,
     Object3D,
     Quaternion,
@@ -35,6 +37,8 @@ interface ObjectSnapshot {
     matrix: Matrix4;
     visible: boolean;
     userData: Record<string, unknown>;
+    geometry?: BufferGeometry;
+    material?: Material | Material[];
     count?: number;
     attributes: AttributeSnapshot[];
 }
@@ -121,6 +125,8 @@ function captureObject(object: Object3D): ObjectSnapshot {
         matrix: object.matrix.clone(),
         visible: object.visible,
         userData: cloneValue(object.userData),
+        geometry: (object as Mesh).isMesh ? (object as Mesh).geometry : undefined,
+        material: (object as Mesh).isMesh ? (object as Mesh).material : undefined,
         count: (object as InstancedMesh).isInstancedMesh ? (object as InstancedMesh).count : undefined,
         attributes
     };
@@ -146,6 +152,10 @@ export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
         object.matrix.copy(state.matrix);
         object.visible = state.visible;
         object.userData = cloneValue(state.userData);
+        if ((object as Mesh).isMesh) {
+            (object as Mesh).geometry = state.geometry!;
+            (object as Mesh).material = state.material!;
+        }
         if ((object as InstancedMesh).isInstancedMesh) (object as InstancedMesh).count = state.count ?? 0;
         state.attributes.forEach(({ attribute, array }) => {
             attribute.array.set(array);

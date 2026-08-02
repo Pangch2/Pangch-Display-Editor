@@ -217,6 +217,12 @@ export function getDisplayType(mesh: PdeMesh, instanceId: number): string | unde
     return mesh.userData?.displayType;
 }
 
+function getDisplayOverlayColor(displayType?: string): number {
+    if (displayType === 'item_display') return 0x2E87EC;
+    if (displayType === 'text_display') return 0xEF3751;
+    return 0xFFD147;
+}
+
 export function isItemDisplayHatEnabled(mesh: PdeMesh, instanceId: number): boolean {
     return !!(getDisplayType(mesh, instanceId) === 'item_display' && mesh?.userData?.hasHat && mesh.userData.hasHat[instanceId]);
 }
@@ -543,8 +549,7 @@ export function updateSelectionOverlay(
                 const objTempMat = new Matrix4();
                 getInstanceWorldMatrix(mesh, id, objTempMat);
                 const instanceMat = new Matrix4().makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(objTempMat);
-                const displayType = getDisplayType(mesh, id);
-                const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
+                const color = getDisplayOverlayColor(getDisplayType(mesh, id));
                 itemsToRender.push({ matrix: instanceMat, color: color, source: { type: 'object', mesh, instanceId: id, cachedLocalCenter: tempCenter.clone(), cachedLocalSize: tempSize.clone() } });
             }
         }
@@ -586,8 +591,7 @@ export function updateSelectionOverlay(
                 const instanceMat = new Matrix4().makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(worldMat);
                 let gPos = item.gizmoLocalPosition ? item.gizmoLocalPosition.clone().applyMatrix4(worldMat) : undefined;
                 let gQuat = item.gizmoLocalQuaternion && gPos ? getRotationFromMatrix(worldMat).multiply(item.gizmoLocalQuaternion) : undefined;
-                const displayType = getDisplayType(item.mesh, item.instanceId);
-                const color = displayType === 'item_display' ? 0x2E87EC : 0xFFD147;
+                const color = getDisplayOverlayColor(getDisplayType(item.mesh, item.instanceId));
                 queueItemsToRender.push({ matrix: instanceMat, color, source: { type: 'object', mesh: item.mesh, instanceId: item.instanceId }, gizmoPosition: gPos, gizmoQuaternion: gQuat, gizmoLocalPosition: item.gizmoLocalPosition });
             }
         }

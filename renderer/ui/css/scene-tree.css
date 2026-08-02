@@ -240,6 +240,12 @@
   color: #FFD147;
 }
 
+.scene-object-item.selected[data-display-type="text_display"] .scene-name-text,
+.scene-object-item.selected[data-display-type="text_display"] .scene-name-dots,
+.scene-object-item.selected[data-display-type="text_display"] .scene-icon {
+  color: #EF3751;
+}
+
 .scene-tree-group.selected .scene-name,
 .scene-tree-group.selected .scene-toggle {
   color: #3DFC70;

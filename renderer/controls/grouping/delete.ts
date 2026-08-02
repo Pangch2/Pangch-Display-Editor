@@ -21,6 +21,7 @@ interface DeleteUserData {
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, unknown>;
+    objectTextDisplayOptions?: Map<string, unknown>;
     sceneOrder?: SceneOrderEntry[];
 }
 
@@ -44,6 +45,7 @@ function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, inst
     ud.objectIsItemDisplay?.delete(objectUuid);
     ud.objectDisplayTypes?.delete(objectUuid);
     ud.objectBlockProps?.delete(objectUuid);
+    ud.objectTextDisplayOptions?.delete(objectUuid);
 
     return objectUuid;
 }

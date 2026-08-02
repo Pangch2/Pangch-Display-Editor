@@ -31,6 +31,7 @@ interface DuplicateUserData {
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, unknown>;
+    objectTextDisplayOptions?: Map<string, unknown>;
     objectNbt?: Map<string, string>;
     objectBrightness?: Map<string, unknown>;
     objectTextures?: Map<string, string>;
@@ -103,6 +104,7 @@ function ensureStores(loadedObjectGroup: Group) {
     if (!ud.objectIsItemDisplay) ud.objectIsItemDisplay = new Set<string>();
     if (!ud.objectDisplayTypes) ud.objectDisplayTypes = new Map<string, string>();
     if (!ud.objectBlockProps) ud.objectBlockProps = new Map<string, unknown>();
+    if (!ud.objectTextDisplayOptions) ud.objectTextDisplayOptions = new Map<string, unknown>();
     return ud;
 }
 
@@ -138,6 +140,9 @@ function registerClone(
 
     if (stores.objectBlockProps!.has(sourceUuid)) {
         stores.objectBlockProps!.set(targetUuid, cloneData(stores.objectBlockProps!.get(sourceUuid)));
+    }
+    if (stores.objectTextDisplayOptions!.has(sourceUuid)) {
+        stores.objectTextDisplayOptions!.set(targetUuid, cloneData(stores.objectTextDisplayOptions!.get(sourceUuid)));
     }
     if (stores.objectNbt?.has(sourceUuid)) stores.objectNbt.set(targetUuid, stores.objectNbt.get(sourceUuid)!);
     if (stores.objectBrightness?.has(sourceUuid)) {

@@ -7,7 +7,7 @@ import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
-import { createTextDisplayMesh } from './text-display';
+import { createTextDisplayMesh, type TextDisplayOptions } from './text-display';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../controls/transform/mirroring';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
@@ -1068,6 +1068,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     loadedObjectGroup.userData.objectIsItemDisplay = new Set<string>();
                     loadedObjectGroup.userData.objectDisplayTypes = new Map<string, string>();
                     loadedObjectGroup.userData.objectBlockProps = new Map<string, any>();
+                    loadedObjectGroup.userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>();
                     loadedObjectGroup.userData.objectBrightness = new Map<string, unknown>();
                     loadedObjectGroup.userData.objectTextures = new Map<string, string>();
                     loadedObjectGroup.userData.instanceKeyToObjectUuid = new Map<string, string>();
@@ -1086,6 +1087,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     (loadedObjectGroup.userData.objectDisplayTypes as Map<string, string>) ?? new Map<string, string>();
                 const objectBlockProps: Map<string, any> =
                     (loadedObjectGroup.userData.objectBlockProps as Map<string, any>) ?? new Map<string, any>();
+                const objectTextDisplayOptions: Map<string, TextDisplayOptions> =
+                    (loadedObjectGroup.userData.objectTextDisplayOptions as Map<string, TextDisplayOptions>) ?? new Map<string, TextDisplayOptions>();
                 const objectNbt: Map<string, string> =
                     (loadedObjectGroup.userData.objectNbt as Map<string, string>) ?? new Map<string, string>();
                 const objectBrightness: Map<string, unknown> =
@@ -1144,6 +1147,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             objectDisplayTypes.set(item.uuid, item.displayType);
                         }
                     }
+                    if (item.uuid && item.type === 'textDisplay') {
+                        objectTextDisplayOptions.set(item.uuid, { ...((item.options as TextDisplayOptions | undefined) ?? {}) });
+                    }
                     if (item.uuid) objectNbt.set(item.uuid, typeof item.nbt === 'string' ? item.nbt : '');
                     if (item.uuid && item.brightness) objectBrightness.set(item.uuid, item.brightness);
                     if (item.uuid && item.textureUrl) objectTextures.set(item.uuid, item.textureUrl);
@@ -1152,6 +1158,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 loadedObjectGroup.userData.objectIsItemDisplay = objectIsItemDisplay;
                 loadedObjectGroup.userData.objectDisplayTypes = objectDisplayTypes;
                 loadedObjectGroup.userData.objectBlockProps = objectBlockProps;
+                loadedObjectGroup.userData.objectTextDisplayOptions = objectTextDisplayOptions;
                 loadedObjectGroup.userData.objectNbt = objectNbt;
                 loadedObjectGroup.userData.objectBrightness = objectBrightness;
                 loadedObjectGroup.userData.objectTextures = objectTextures;
@@ -1784,6 +1791,25 @@ export async function updateDisplayObjectMatrix(objectUuid: string, name: string
     names.set(objectUuid, name);
     if (newDisplayType) displayTypes.set(objectUuid, newDisplayType);
     else displayTypes.delete(objectUuid);
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+}
+
+export async function updateTextDisplay(objectUuid: string, name: string, options: TextDisplayOptions): Promise<void> {
+    const userData = loadedObjectGroup.userData;
+    const ref = (userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    if (!ref || Overlay.getDisplayType(ref.mesh, ref.instanceId) !== 'text_display') {
+        throw new Error('변경할 텍스트 디스플레이를 찾을 수 없습니다.');
+    }
+
+    const replacement = await createTextDisplayMesh({ name, options });
+    ref.mesh.geometry = replacement.geometry;
+    ref.mesh.material = replacement.material;
+    ref.mesh.computeBoundingBox();
+    ref.mesh.computeBoundingSphere();
+    (userData.objectNames as Map<string, string>).set(objectUuid, name);
+    const optionMap = (userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)
+        ?? (userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>());
+    optionMap.set(objectUuid, { ...options });
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 

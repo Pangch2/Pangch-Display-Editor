@@ -88,6 +88,7 @@ export interface LoadedObjectUserData {
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, any>;
+    objectTextDisplayOptions?: Map<string, unknown>;
     groups?: Map<string, GroupData>;
     objectToGroup?: Map<string, string>;
     sceneOrder?: SceneOrderEntry[];
