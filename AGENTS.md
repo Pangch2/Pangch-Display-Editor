@@ -25,4 +25,3 @@
 
 ## Rules
 - Never use `npm run build`.
-- When `.codegraph/` exists, run `codegraph explore "<question or symbol>"` before `rg` or reading code; if the result is too broad, rerun it with the exact file or symbol name.

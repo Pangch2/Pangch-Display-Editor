@@ -38,9 +38,9 @@ const scale = new Vector3();
 const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
 const textAlignValues = ['left', 'center', 'right'];
 const defaultTextDisplayOptions: Required<TextDisplayOptions> = {
-    color: '#FFFFFF', alpha: 1, backgroundColor: '#000000', backgroundAlpha: 1,
+    color: '#FFFFFF', alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
     bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
-    lineLength: 200, align: 'center', font: 'minecraft:default'
+    lineLength: 50, align: 'center', font: 'minecraft:default'
 };
 const metadataOrderKey = 'pde-object-metadata-order';
 const matrixInputModeKey = 'pde-matrix-input-mode';
@@ -809,11 +809,10 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const lineLength = document.createElement('input');
         lineLength.type = 'number';
         lineLength.min = '1';
-        lineLength.max = '2045';
         lineLength.step = '1';
         lineLength.value = String(options.lineLength);
         metadataSection.append(metadataProperty('lineLength', '줄바꿈 길이', propertyValueControl(lineLength, value =>
-            updateOptions({ lineLength: Math.min(2045, Math.max(1, Number(value) || 1)) }))));
+            updateOptions({ lineLength: Math.max(1, Math.trunc(Number(value) || 1)) }))));
         metadataSection.append(metadataProperty('align', '조정', propertySelect(options.align, textAlignValues, value =>
             updateOptions({ align: value as TextDisplayOptions['align'] }))));
 

@@ -1802,6 +1802,7 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
     }
 
     const replacement = await createTextDisplayMesh({ name, options });
+    replacement.geometry.setAttribute(dragSelectedAttributeName, ref.mesh.geometry.getAttribute(dragSelectedAttributeName));
     ref.mesh.geometry = replacement.geometry;
     ref.mesh.material = replacement.material;
     ref.mesh.computeBoundingBox();

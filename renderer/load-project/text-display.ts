@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
+import { strFromU8, unzipSync } from 'fflate';
+import { getAssetBytes } from '../asset-manager';
 import { dragPreviewPositionNode, dragSelectedAttributeName } from '../entity-material';
-import defaultFont from './client/assets/minecraft/font/include/default.json';
 
 export type TextDisplayOptions = {
     color?: string;
@@ -23,7 +24,7 @@ export type TextDisplayItem = {
 };
 
 type BitmapGlyph = {
-    image: HTMLImageElement;
+    image: CanvasImageSource;
     sourceX: number;
     sourceY: number;
     sourceWidth: number;
@@ -31,6 +32,7 @@ type BitmapGlyph = {
     scale: number;
     advance: number;
     ascent: number;
+    boldOffset: number;
 };
 
 type BitmapProvider = {
@@ -40,18 +42,30 @@ type BitmapProvider = {
     chars: string[];
 };
 
+type UnihexProvider = {
+    type: string;
+    filter?: unknown;
+    size_overrides?: Array<{ from: string; to: string; left: number; right: number }>;
+};
+
+type UnihexFontSource = {
+    glyphs: Map<number, string>;
+    sizeOverrides: Array<{ from: number; to: number; left: number; right: number }>;
+};
+
 const textPixelSize = 0.025;
+const textBackgroundOffset = -0.01 * textPixelSize;
 const lineHeight = 10;
 const textureScale = 2;
 const fontSize = 8;
+const horizontalGlyphOverflow = 1;
+const topGlyphOverflow = 2;
 const unifontFamily = 'PDE Unifont';
-const bitmapFontUrls: Record<string, string> = {
-    'minecraft:font/nonlatin_european.png': new URL('./client/assets/minecraft/textures/font/nonlatin_european.png', import.meta.url).href,
-    'minecraft:font/accented.png': new URL('./client/assets/minecraft/textures/font/accented.png', import.meta.url).href,
-    'minecraft:font/ascii.png': new URL('./client/assets/minecraft/textures/font/ascii.png', import.meta.url).href
-};
 let unifontPromise: Promise<void> | undefined;
 let bitmapFontPromise: Promise<Map<string, BitmapGlyph>> | undefined;
+let unihexFontPromise: Promise<UnihexFontSource> | undefined;
+
+const minecraftItalicOffset = (canvasY: number): number => 1.25 - canvasY * 0.25;
 
 function loadUnifont(): Promise<void> {
     return unifontPromise ??= new FontFace(
@@ -62,24 +76,26 @@ function loadUnifont(): Promise<void> {
     });
 }
 
-function loadImage(url: string): Promise<HTMLImageElement> {
-    const image = new Image();
-    image.src = url;
-    return image.decode().then(() => image);
+async function loadImage(assetPath: string): Promise<ImageBitmap> {
+    const bytes = await getAssetBytes(assetPath);
+    return createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
 }
 
 function loadBitmapFont(): Promise<Map<string, BitmapGlyph>> {
     return bitmapFontPromise ??= (async () => {
         const glyphs = new Map<string, BitmapGlyph>();
-        for (const provider of defaultFont.providers as BitmapProvider[]) {
-            const image = await loadImage(bitmapFontUrls[provider.file]);
+        const definition = JSON.parse(strFromU8(
+            await getAssetBytes('assets/minecraft/font/include/default.json')
+        )) as { providers: BitmapProvider[] };
+        for (const provider of definition.providers) {
+            const image = await loadImage(`assets/${provider.file.replace(':', '/textures/')}`);
             const rows = provider.chars.map(row => Array.from(row));
-            const sourceWidth = image.naturalWidth / rows[0].length;
-            const sourceHeight = image.naturalHeight / rows.length;
+            const sourceWidth = image.width / rows[0].length;
+            const sourceHeight = image.height / rows.length;
             const scale = (provider.height ?? 8) / sourceHeight;
             const canvas = document.createElement('canvas');
-            canvas.width = image.naturalWidth;
-            canvas.height = image.naturalHeight;
+            canvas.width = image.width;
+            canvas.height = image.height;
             const context = canvas.getContext('2d', { willReadFrequently: true })!;
             context.drawImage(image, 0, 0);
             const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -104,12 +120,112 @@ function loadBitmapFont(): Promise<Map<string, BitmapGlyph>> {
                     sourceHeight,
                     scale,
                     advance: Math.floor(actualWidth * scale + 0.5) + 1,
-                    ascent: provider.ascent
+                    ascent: provider.ascent,
+                    boldOffset: 1
                 });
             }));
         }
+        if (import.meta.env.DEV) {
+            console.assert(glyphs.has('A') && glyphs.has('0'), 'Minecraft bitmap font failed to load.');
+        }
         return glyphs;
     })();
+}
+
+function loadUnihexFont(): Promise<UnihexFontSource> {
+    return unihexFontPromise ??= Promise.all([
+        getAssetBytes('assets/minecraft/font/include/unifont.json'),
+        getAssetBytes('assets/minecraft/font/unifont.zip')
+    ]).then(([definitionBytes, archiveBytes]) => {
+            const definition = JSON.parse(strFromU8(definitionBytes)) as { providers: UnihexProvider[] };
+            const sizeOverrides = (definition.providers
+                .find(provider => provider.type === 'unihex' && !provider.filter)?.size_overrides ?? [])
+                .map(override => ({
+                    ...override,
+                    from: override.from.codePointAt(0)!,
+                    to: override.to.codePointAt(0)!
+                }));
+            const files = unzipSync(archiveBytes, {
+                filter: file => file.name.endsWith('.hex')
+            });
+            const hexFile = Object.entries(files).find(([name]) => name.endsWith('.hex'))?.[1];
+            if (!hexFile) throw new Error('Minecraft Unihex font has no .hex file.');
+            const glyphs = new Map<number, string>();
+            for (const line of strFromU8(hexFile).split(/\r?\n/u)) {
+                const separator = line.indexOf(':');
+                if (separator > 0) glyphs.set(Number.parseInt(line.slice(0, separator), 16), line.slice(separator + 1));
+            }
+            if (import.meta.env.DEV) {
+                const codepoint = '텍'.codePointAt(0)!;
+                const hex = glyphs.get(codepoint)!;
+                const bounds = unihexBounds(codepoint, hex, sizeOverrides);
+                console.assert(bounds.right - bounds.left + 1 === 15, 'Minecraft Unihex font failed to load.');
+            }
+            return { glyphs, sizeOverrides };
+        });
+}
+
+function unihexBounds(codepoint: number, hex: string, sizeOverrides: UnihexFontSource['sizeOverrides']): { left: number; right: number } {
+    const override = sizeOverrides.find(range => codepoint >= range.from && codepoint <= range.to);
+    if (override) return override;
+    const digitsPerRow = hex.length / 16;
+    const bitWidth = digitsPerRow * 4;
+    let left = bitWidth;
+    let right = -1;
+    for (let row = 0; row < 16; row++) {
+        for (let x = 0; x < bitWidth; x++) {
+            const digit = Number.parseInt(hex[row * digitsPerRow + Math.floor(x / 4)], 16);
+            if (digit & (8 >> (x % 4))) {
+                left = Math.min(left, x);
+                right = Math.max(right, x);
+            }
+        }
+    }
+    return right >= 0 ? { left, right } : { left: 0, right: bitWidth };
+}
+
+function createUnihexFont(text: string, source: UnihexFontSource): Map<string, BitmapGlyph> {
+    const entries: Array<{ character: string; hex: string; left: number; right: number }> = [];
+    for (const character of new Set(Array.from(text))) {
+        const codepoint = character.codePointAt(0)!;
+        const hex = source.glyphs.get(codepoint);
+        if (!hex) continue;
+        entries.push({ character, hex, ...unihexBounds(codepoint, hex, source.sizeOverrides) });
+    }
+    const glyphs = new Map<string, BitmapGlyph>();
+    if (!entries.length) return glyphs;
+
+    const columns = Math.min(entries.length, 128);
+    const atlas = document.createElement('canvas');
+    atlas.width = columns * 32;
+    atlas.height = Math.ceil(entries.length / columns) * 16;
+    const context = atlas.getContext('2d')!;
+    context.fillStyle = '#ffffff';
+
+    entries.forEach((entry, index) => {
+        const sourceX = (index % columns) * 32;
+        const sourceY = Math.floor(index / columns) * 16;
+        const digitsPerRow = entry.hex.length / 16;
+        for (let row = 0; row < 16; row++) {
+            for (let x = entry.left; x <= entry.right; x++) {
+                const digit = Number.parseInt(entry.hex[row * digitsPerRow + Math.floor(x / 4)], 16);
+                if (digit & (8 >> (x % 4))) context.fillRect(sourceX + x - entry.left, sourceY + row, 1, 1);
+            }
+        }
+        const sourceWidth = entry.right - entry.left + 1;
+        glyphs.set(entry.character, {
+            image: atlas,
+            sourceX,
+            sourceY,
+            sourceWidth,
+            sourceHeight: 16,
+            scale: 0.5,
+            advance: Math.floor(sourceWidth / 2) + 1,
+            ascent: 7,
+            boldOffset: 0.5
+        });
+    });
+    return glyphs;
 }
 
 function clampAlpha(value: unknown, fallback: number): number {
@@ -120,25 +236,29 @@ function clampAlpha(value: unknown, fallback: number): number {
 
 function wrapText(text: string, maxWidth: number, measure: (value: string) => number): string[] {
     const lines: string[] = [];
-    for (const paragraph of text.split('\n')) {
-        let line = '';
-        for (const token of paragraph.match(/\s+|\S+/gu) ?? ['']) {
-            if (line && measure(line + token) > maxWidth) {
-                lines.push(line.trimEnd());
-                line = token.trimStart();
-            } else {
-                line += token;
+    const characters = Array.from(text);
+    let start = 0;
+    while (start < characters.length) {
+        let width = 0;
+        let lastSpace = -1;
+        let hadNonZeroWidthCharacter = false;
+        let end = start;
+        for (; end < characters.length; end++) {
+            const character = characters[end];
+            if (character === '\n') break;
+            if (character === ' ') lastSpace = end;
+            const characterWidth = measure(character);
+            width += characterWidth;
+            if (hadNonZeroWidthCharacter && width > maxWidth) {
+                end = lastSpace >= start ? lastSpace : end;
+                break;
             }
-            while (line && measure(line) > maxWidth) {
-                const characters = Array.from(line);
-                let end = 1;
-                while (end < characters.length && measure(characters.slice(0, end + 1).join('')) <= maxWidth) end++;
-                lines.push(characters.slice(0, end).join(''));
-                line = characters.slice(end).join('');
-            }
+            hadNonZeroWidthCharacter ||= characterWidth !== 0;
         }
-        lines.push(line);
+        lines.push(characters.slice(start, end).join(''));
+        start = end + (characters[end] === ' ' || characters[end] === '\n' ? 1 : 0);
     }
+    if (text.endsWith('\n')) lines.push('');
     return lines.length ? lines : [''];
 }
 
@@ -146,28 +266,47 @@ function validColor(value: unknown, fallback: string): string {
     return typeof value === 'string' && CSS.supports('color', value) ? value : fallback;
 }
 
-function obfuscate(text: string): string {
-    const glyphs = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    return Array.from(text, character => /\s/u.test(character)
-        ? character
-        : glyphs[Math.floor(Math.random() * glyphs.length)]).join('');
-}
-
 function glyphAdvance(
     character: string,
-    context: CanvasRenderingContext2D,
+    _context: CanvasRenderingContext2D,
     bitmapFont: Map<string, BitmapGlyph>,
     bold: boolean
 ): number {
     if (character === '\u200c') return 0;
     if (character === ' ') return 4;
     const bitmapGlyph = bitmapFont.get(character);
-    if (bitmapGlyph) return bitmapGlyph.advance + (bold ? 1 : 0);
-    return Math.max(1, Math.round(context.measureText(character).width)) + 1;
+    if (bitmapGlyph) return bitmapGlyph.advance + (bold ? bitmapGlyph.boldOffset : 0);
+    return 6 + (bold ? 1 : 0);
 }
 
 function measureText(text: string, context: CanvasRenderingContext2D, bitmapFont: Map<string, BitmapGlyph>, bold: boolean): number {
     return Array.from(text).reduce((width, character) => width + glyphAdvance(character, context, bitmapFont, bold), 0);
+}
+
+function obfuscationGlyphs(context: CanvasRenderingContext2D, bitmapFont: Map<string, BitmapGlyph>): Map<number, string[]> {
+    const byAdvance = new Map<number, string[]>();
+    const candidates = bitmapFont.size ? bitmapFont.keys() : 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    for (const character of candidates) {
+        if (/\s/u.test(character)) continue;
+        const advance = glyphAdvance(character, context, bitmapFont, false);
+        const glyphs = byAdvance.get(advance) ?? [];
+        glyphs.push(character);
+        byAdvance.set(advance, glyphs);
+    }
+    return byAdvance;
+}
+
+function obfuscate(
+    text: string,
+    context: CanvasRenderingContext2D,
+    bitmapFont: Map<string, BitmapGlyph>,
+    glyphsByAdvance: Map<number, string[]>
+): string {
+    return Array.from(text, character => {
+        if (character === ' ') return character;
+        const glyphs = glyphsByAdvance.get(glyphAdvance(character, context, bitmapFont, false));
+        return glyphs?.[Math.floor(Math.random() * glyphs.length)] ?? character;
+    }).join('');
 }
 
 function drawText(
@@ -180,9 +319,8 @@ function drawText(
 ): void {
     for (const character of text) {
         const glyph = bitmapFont.get(character);
+        context.save();
         if (glyph) {
-            context.save();
-            if (options.italic) context.transform(1, 0, -0.25, 1, baseline * 0.25, 0);
             const draw = (offset: number) => context.drawImage(
                 glyph.image,
                 glyph.sourceX,
@@ -195,11 +333,12 @@ function drawText(
                 glyph.sourceHeight * glyph.scale
             );
             draw(0);
-            if (options.bold) draw(1);
-            context.restore();
+            if (options.bold) draw(glyph.boldOffset);
         } else {
             context.fillText(character, x, baseline);
+            if (options.bold) context.fillText(character, x + 1, baseline);
         }
+        context.restore();
         x += glyphAdvance(character, context, bitmapFont, !!options.bold);
     }
 }
@@ -212,29 +351,39 @@ function snapTextAlpha(data: Uint8ClampedArray, alpha: number): void {
 }
 
 export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THREE.InstancedMesh> {
-    const [, bitmapFont] = await Promise.all([loadUnifont(), loadBitmapFont()]);
     const options = item.options ?? {};
-    const activeBitmapFont = !options.font || options.font === 'minecraft:default' ? bitmapFont : new Map<string, BitmapGlyph>();
-    const fontStyle = `${options.italic ? 'italic ' : ''}${options.bold ? 'bold ' : ''}${fontSize}px "${unifontFamily}"`;
+    const text = (item.name ?? '').slice(0, 16384);
+    const [, bitmapFont, unihexSource] = await Promise.all([loadUnifont(), loadBitmapFont(), loadUnihexFont()]);
+    const unihexFont = createUnihexFont(text, unihexSource);
+    const activeBitmapFont = !options.font || options.font === 'minecraft:default'
+        ? new Map<string, BitmapGlyph>([...unihexFont, ...bitmapFont])
+        : options.font === 'minecraft:uniform' ? unihexFont : new Map<string, BitmapGlyph>();
+    const fontStyle = `${fontSize}px "${unifontFamily}"`;
     const measureCanvas = document.createElement('canvas');
     const measureContext = measureCanvas.getContext('2d')!;
-    measureContext.font = fontStyle;
+    measureContext.font = `${options.italic ? 'italic ' : ''}${options.bold ? 'bold ' : ''}${fontStyle}`;
+    const obfuscatedGlyphs = options.obfuscated ? obfuscationGlyphs(measureContext, activeBitmapFont) : undefined;
 
-    const maxWidth = THREE.MathUtils.clamp(Number(options.lineLength) || 200, 1, 2045);
+    const maxWidth = Math.max(Math.trunc(Number(options.lineLength) || 50), 1) * 4;
     const lines = wrapText(
-        (item.name ?? '').slice(0, 16384),
+        text,
         maxWidth,
         value => measureText(value, measureContext, activeBitmapFont, !!options.bold)
     ).slice(0, 200);
-    const widths = lines.map(line => measureText(line, measureContext, activeBitmapFont, !!options.bold));
-    const logicalWidth = Math.max(1, Math.ceil(Math.max(...widths))) + 2;
-    const logicalHeight = lines.length * lineHeight + 1;
+    const widths = lines.map(line => Math.ceil(measureText(line, measureContext, activeBitmapFont, !!options.bold)));
+    const contentWidth = Math.ceil(Math.max(...widths));
+    const logicalWidth = contentWidth + 1;
+    const logicalHeight = lines.length * lineHeight;
+    const renderWidth = logicalWidth + horizontalGlyphOverflow * 2;
+    const renderHeight = logicalHeight + topGlyphOverflow;
+    const renderScale = textureScale;
     const canvas = document.createElement('canvas');
-    canvas.width = logicalWidth * textureScale;
-    canvas.height = logicalHeight * textureScale;
+    canvas.width = renderWidth * renderScale;
+    canvas.height = renderHeight * renderScale;
 
     const context = canvas.getContext('2d')!;
-    context.scale(textureScale, textureScale);
+    context.imageSmoothingEnabled = false;
+    context.scale(renderScale, renderScale);
     context.font = fontStyle;
     context.textBaseline = 'alphabetic';
     context.fillStyle = '#ffffff';
@@ -243,27 +392,37 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
 
     const align = options.align ?? 'center';
     lines.forEach((line, index) => {
-        const renderedLine = options.obfuscated ? obfuscate(line) : line;
+        const renderedLine = obfuscatedGlyphs ? obfuscate(line, measureContext, activeBitmapFont, obfuscatedGlyphs) : line;
         const width = widths[index];
-        const x = align === 'left' ? 1 : align === 'right' ? logicalWidth - width - 1 : (logicalWidth - width) / 2;
-        const baseline = index * lineHeight + 8;
+        const x = Math.round((horizontalGlyphOverflow + 1 + (align === 'left' ? 0 : align === 'right' ? contentWidth - width : (contentWidth - width) / 2)) * renderScale) / renderScale;
+        const baseline = topGlyphOverflow + index * lineHeight + 8;
         drawText(context, renderedLine, x, baseline, activeBitmapFont, options);
-        if (options.underline) context.fillRect(x, baseline + 1, width, 1);
-        if (options.strikeThrough) context.fillRect(x, baseline - 3, width, 1);
+        if (options.underline && !options.italic) context.fillRect(x - 1, baseline + 1, width + 1, 1);
+        if (options.strikeThrough && !options.italic) context.fillRect(x - 1, baseline - 3.5, width + 1, 1);
     });
 
     context.globalCompositeOperation = 'source-in';
     context.globalAlpha = 1;
     context.fillStyle = validColor(options.color, '#ffffff');
-    context.fillRect(0, 0, logicalWidth, logicalHeight);
+    context.fillRect(0, 0, renderWidth, renderHeight);
     context.globalCompositeOperation = 'source-over';
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
     snapTextAlpha(imageData.data, textAlpha);
     context.putImageData(imageData, 0, 0);
-    context.globalCompositeOperation = 'destination-over';
-    context.fillStyle = validColor(options.backgroundColor, '#000000');
-    context.globalAlpha = clampAlpha(options.backgroundAlpha, 0.25);
-    context.fillRect(0, 0, logicalWidth, logicalHeight);
+    const backgroundAlpha = clampAlpha(options.backgroundAlpha, 0.25);
+    if (options.italic) {
+        context.globalAlpha = textAlpha / 255;
+        context.fillStyle = validColor(options.color, '#ffffff');
+        context.fillRect(0, 0, 1 / renderScale, 1 / renderScale);
+        context.globalAlpha = backgroundAlpha;
+        context.fillStyle = validColor(options.backgroundColor, '#000000');
+        context.fillRect(1 / renderScale, 0, 1 / renderScale, 1 / renderScale);
+    } else {
+        context.globalCompositeOperation = 'destination-over';
+        context.fillStyle = validColor(options.backgroundColor, '#000000');
+        context.globalAlpha = backgroundAlpha;
+        context.fillRect(horizontalGlyphOverflow, topGlyphOverflow, logicalWidth, logicalHeight);
+    }
     context.globalCompositeOperation = 'source-over';
 
     const texture = new THREE.CanvasTexture(canvas);
@@ -272,15 +431,85 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     texture.minFilter = THREE.NearestFilter;
     texture.generateMipmaps = false;
 
-    const geometry = new THREE.PlaneGeometry(logicalWidth * textPixelSize, logicalHeight * textPixelSize);
-    geometry.translate(0, logicalHeight * textPixelSize / 2, 0);
+    let geometry: THREE.BufferGeometry;
+    if (options.italic) {
+        const positions: number[] = [];
+        const uvs: number[] = [];
+        const indices: number[] = [];
+        const addQuad = (
+            leftTop: number, rightTop: number, leftBottom: number, rightBottom: number,
+            top: number, bottom: number, u0: number, u1: number, vTop: number, vBottom: number,
+            z = 0
+        ): void => {
+            const offset = positions.length / 3;
+            positions.push(leftTop, top, z, leftBottom, bottom, z, rightTop, top, z, rightBottom, bottom, z);
+            uvs.push(u0, vTop, u0, vBottom, u1, vTop, u1, vBottom);
+            indices.push(offset, offset + 1, offset + 2, offset + 1, offset + 3, offset + 2);
+        };
+        const left = (0.5 - renderWidth / 2) * textPixelSize;
+        const backgroundLeft = (0.5 - logicalWidth / 2) * textPixelSize;
+        const backgroundRight = (0.5 + logicalWidth / 2) * textPixelSize;
+        const swatchV = 1 - 0.5 / canvas.height;
+        const textSwatchU = 0.5 / canvas.width;
+        const backgroundSwatchU = 1.5 / canvas.width;
+
+        addQuad(
+            backgroundLeft, backgroundRight, backgroundLeft, backgroundRight,
+            logicalHeight * textPixelSize, 0,
+            backgroundSwatchU, backgroundSwatchU, swatchV, swatchV,
+            textBackgroundOffset
+        );
+
+        lines.forEach((_line, index) => {
+            const canvasTop = topGlyphOverflow + index * lineHeight;
+            const canvasBottom = canvasTop + lineHeight;
+            const top = (logicalHeight - index * lineHeight) * textPixelSize;
+            const bottom = top - lineHeight * textPixelSize;
+            const topOffset = minecraftItalicOffset(0) * textPixelSize;
+            const bottomOffset = minecraftItalicOffset(lineHeight) * textPixelSize;
+            const right = left + renderWidth * textPixelSize;
+            addQuad(
+                left + topOffset, right + topOffset, left + bottomOffset, right + bottomOffset,
+                top, bottom, 0, 1,
+                1 - canvasTop / renderHeight, 1 - canvasBottom / renderHeight
+            );
+
+            const width = widths[index];
+            const x = Math.round((horizontalGlyphOverflow + 1 + (align === 'left' ? 0 : align === 'right' ? contentWidth - width : (contentWidth - width) / 2)) * renderScale) / renderScale;
+            const addEffect = (canvasY: number): void => {
+                const effectLeft = left + (x - 1) * textPixelSize;
+                const effectRight = effectLeft + (width + 1) * textPixelSize;
+                const effectTop = (renderHeight - canvasY) * textPixelSize;
+                const effectBottom = effectTop - textPixelSize;
+                addQuad(
+                    effectLeft, effectRight, effectLeft, effectRight, effectTop, effectBottom,
+                    textSwatchU, textSwatchU, swatchV, swatchV
+                );
+            };
+            if (options.underline) addEffect(canvasTop + 9);
+            if (options.strikeThrough) addEffect(canvasTop + 4.5);
+        });
+
+        geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        geometry.setIndex(indices);
+    } else {
+        geometry = new THREE.PlaneGeometry(renderWidth * textPixelSize, renderHeight * textPixelSize);
+        geometry.translate(textPixelSize / 2, renderHeight * textPixelSize / 2, 0);
+    }
+    geometry.boundingBox = new THREE.Box3(
+        new THREE.Vector3((0.5 - logicalWidth / 2) * textPixelSize, 0, 0),
+        new THREE.Vector3((0.5 + logicalWidth / 2) * textPixelSize, logicalHeight * textPixelSize, 0)
+    );
     geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(1), 1));
 
     const material = new THREE.MeshBasicNodeMaterial({
         map: texture,
         transparent: true,
-        depthWrite: false,
-        side: THREE.DoubleSide,
+        depthWrite: backgroundAlpha === 1,
+        alphaTest: backgroundAlpha === 1 ? 0.001 : 0,
+        side: THREE.FrontSide,
         toneMapped: false,
         fog: false
     });
@@ -292,10 +521,14 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
 
 if (import.meta.env.DEV) {
     console.assert(wrapText('ab cd', 3, value => value.length).join('|') === 'ab|cd', 'Text display wrapping changed.');
+    console.assert(wrapText('ab  cd', 3, value => value.length).join('|') === 'ab |cd', 'Text display spaces changed.');
+    console.assert(wrapText('ab\n', 3, value => value.length).join('|') === 'ab|', 'Text display trailing newline changed.');
+    console.assert(wrapText('텍스트', 5 * 4, () => 9).join('|') === '텍스|트', 'PDE line length conversion changed.');
     const context = document.createElement('canvas').getContext('2d')!;
     console.assert(measureText(' \u200c ', context, new Map(), false) === 8, 'Minecraft text advances changed.');
+    console.assert(measureText('?', context, new Map(), false) === 6, 'Minecraft missing glyph advance changed.');
+    console.assert(minecraftItalicOffset(1) === 1 && minecraftItalicOffset(9) === -1, 'Minecraft italic offsets changed.');
     const alpha = new Uint8ClampedArray([0, 0, 0, 63, 0, 0, 0, 64]);
     snapTextAlpha(alpha, 128);
     console.assert(alpha[3] === 0 && alpha[7] === 128, 'Minecraft text alpha changed.');
-    void loadBitmapFont().then(font => console.assert(font.has('A') && font.has('0'), 'Minecraft bitmap font failed to load.'));
 }

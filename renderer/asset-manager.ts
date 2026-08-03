@@ -44,23 +44,26 @@ function initAssets(): Promise<void> {
  * @returns {Promise<string>} 에셋에 접근할 수 있는 Blob URL
  */
 async function getAssetUrl(assetPath: string): Promise<string> {
+  const content = await getAssetBytes(assetPath);
+  return URL.createObjectURL(new Blob([new Uint8Array(content)]));
+}
+
+async function getAssetBytes(assetPath: string): Promise<Uint8Array> {
   // initAssets가 완료될 때까지 기다림
   if (!assetsReadyPromise) {
-    throw new Error('initAssets() must be called before getting an asset URL.');
+    throw new Error('initAssets() must be called before getting an asset.');
   }
   await assetsReadyPromise;
 
   // IPC를 통해 메인 프로세스에서 파일 내용 요청
   const result = await window.ipcApi.getAssetContent(assetPath);
   if (result.success) {
-    // Buffer/Uint8Array를 Blob으로 변환
     if (!(result.content instanceof Uint8Array)) throw new TypeError('Asset content must be a Uint8Array.');
-    const blob = new Blob([new Uint8Array(result.content)]);
-    return URL.createObjectURL(blob);
+    return result.content;
   } else {
     console.error(`Failed to get asset from file system cache: ${assetPath}`, result.error);
     throw new Error(result.error);
   }
 }
 
-export { initAssets, getAssetUrl };
+export { initAssets, getAssetUrl, getAssetBytes };
