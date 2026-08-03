@@ -88,7 +88,7 @@ function format(value: number): string {
     return Number(value.toFixed(6)).toString();
 }
 
-function trackHistoryInput(input: HTMLInputElement): void {
+function trackHistoryInput(input: HTMLInputElement | HTMLTextAreaElement): void {
     let before: SceneSnapshot | null = null;
     let initialValue = '';
     input.addEventListener('focus', () => {
@@ -253,7 +253,8 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
 
 function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
     control: T,
-    onChange: (value: string) => void | Promise<void>
+    onChange: (value: string) => void | Promise<void>,
+    live = false
 ): T {
     const read = () => control instanceof HTMLInputElement && control.type === 'checkbox' ? String(control.checked) : control.value;
     const write = (value: string) => {
@@ -261,6 +262,34 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
         else control.value = value;
     };
     let committed = read();
+    if (live) {
+        let queuedValue: string | null = null;
+        let updating = false;
+        const updateLive = () => {
+            queuedValue = read();
+            if (updating) return;
+            updating = true;
+            void (async () => {
+                while (queuedValue !== null) {
+                    const next = queuedValue;
+                    queuedValue = null;
+                    if (next === committed) continue;
+                    try {
+                        await onChange(next);
+                        committed = next;
+                    } catch (error) {
+                        console.error(error);
+                        write(committed);
+                        queuedValue = null;
+                    }
+                }
+                updating = false;
+            })();
+        };
+        control.oninput = control.onchange = updateLive;
+        trackHistoryInput(control);
+        return control;
+    }
     control.onchange = async () => {
         const before = captureSceneState(loadedObjectGroup);
         const next = read();
@@ -804,7 +833,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 text = previous;
                 throw error;
             }
-        })));
+        }, true)));
 
         const lineLength = document.createElement('input');
         lineLength.type = 'number';
@@ -812,7 +841,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         lineLength.step = '1';
         lineLength.value = String(options.lineLength);
         metadataSection.append(metadataProperty('lineLength', '줄바꿈 길이', propertyValueControl(lineLength, value =>
-            updateOptions({ lineLength: Math.max(1, Math.trunc(Number(value) || 1)) }))));
+            updateOptions({ lineLength: Math.max(1, Math.trunc(Number(value) || 1)) }), true)));
         metadataSection.append(metadataProperty('align', '조정', propertySelect(options.align, textAlignValues, value =>
             updateOptions({ align: value as TextDisplayOptions['align'] }))));
 
@@ -825,17 +854,30 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             const input = document.createElement('input');
             input.type = 'color';
             input.value = /^#[0-9a-f]{6}$/i.test(options[key]) ? options[key] : defaultTextDisplayOptions[key];
-            metadataSection.append(metadataProperty(key, label, propertyValueControl(input, value => updateOptions({ [key]: value }))));
+            metadataSection.append(metadataProperty(key, label, propertyValueControl(input, value => updateOptions({ [key]: value }), true)));
         };
         const addAlpha = (key: 'alpha' | 'backgroundAlpha', label: string) => {
-            const input = document.createElement('input');
-            input.type = 'number';
-            input.min = '0';
-            input.max = '1';
-            input.step = '0.01';
-            input.value = String(options[key]);
-            metadataSection.append(metadataProperty(key, label, propertyValueControl(input, value =>
-                updateOptions({ [key]: Math.min(1, Math.max(0, Number(value) || 0)) }))));
+            const controls = document.createElement('span');
+            controls.className = 'text-display-alpha';
+            const number = document.createElement('input');
+            number.type = 'number';
+            number.min = '0';
+            number.max = '1';
+            number.step = '0.01';
+            number.value = String(options[key]);
+            const range = document.createElement('input');
+            range.type = 'range';
+            range.min = number.min;
+            range.max = number.max;
+            range.step = number.step;
+            range.value = number.value;
+            const updateAlpha = (value: string) => {
+                const alpha = Math.min(1, Math.max(0, Number(value) || 0));
+                number.value = range.value = String(alpha);
+                return updateOptions({ [key]: alpha });
+            };
+            controls.append(propertyValueControl(number, updateAlpha, true), propertyValueControl(range, updateAlpha, true));
+            metadataSection.append(metadataProperty(key, label, controls));
         };
         addColor('color', '글자 색');
         addAlpha('alpha', '글자 투명도');
@@ -859,7 +901,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             const symbol = document.createElement('span');
             symbol.className = icon === '*' ? '' : 'lucide-icon';
             symbol.textContent = icon;
-            label.append(propertyValueControl(input, value => updateOptions({ [key]: value === 'true' })), symbol);
+            label.append(propertyValueControl(input, value => updateOptions({ [key]: value === 'true' }), true), symbol);
             effectControls.append(label);
         });
         metadataSection.append(metadataProperty('effects', '글자 이펙트', effectControls));

@@ -410,19 +410,12 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     snapTextAlpha(imageData.data, textAlpha);
     context.putImageData(imageData, 0, 0);
     const backgroundAlpha = clampAlpha(options.backgroundAlpha, 0.25);
-    if (options.italic) {
-        context.globalAlpha = textAlpha / 255;
-        context.fillStyle = validColor(options.color, '#ffffff');
-        context.fillRect(0, 0, 1 / renderScale, 1 / renderScale);
-        context.globalAlpha = backgroundAlpha;
-        context.fillStyle = validColor(options.backgroundColor, '#000000');
-        context.fillRect(1 / renderScale, 0, 1 / renderScale, 1 / renderScale);
-    } else {
-        context.globalCompositeOperation = 'destination-over';
-        context.fillStyle = validColor(options.backgroundColor, '#000000');
-        context.globalAlpha = backgroundAlpha;
-        context.fillRect(horizontalGlyphOverflow, topGlyphOverflow, logicalWidth, logicalHeight);
-    }
+    context.globalAlpha = textAlpha / 255;
+    context.fillStyle = validColor(options.color, '#ffffff');
+    context.fillRect(0, 0, 1 / renderScale, 1 / renderScale);
+    context.globalAlpha = backgroundAlpha;
+    context.fillStyle = validColor(options.backgroundColor, '#000000');
+    context.fillRect(1 / renderScale, 0, 1 / renderScale, 1 / renderScale);
     context.globalCompositeOperation = 'source-over';
 
     const texture = new THREE.CanvasTexture(canvas);
@@ -431,35 +424,34 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     texture.minFilter = THREE.NearestFilter;
     texture.generateMipmaps = false;
 
-    let geometry: THREE.BufferGeometry;
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+    const addQuad = (
+        leftTop: number, rightTop: number, leftBottom: number, rightBottom: number,
+        top: number, bottom: number, u0: number, u1: number, vTop: number, vBottom: number,
+        z = 0
+    ): void => {
+        const offset = positions.length / 3;
+        positions.push(leftTop, top, z, leftBottom, bottom, z, rightTop, top, z, rightBottom, bottom, z);
+        uvs.push(u0, vTop, u0, vBottom, u1, vTop, u1, vBottom);
+        indices.push(offset, offset + 1, offset + 2, offset + 1, offset + 3, offset + 2);
+    };
+    const left = (0.5 - renderWidth / 2) * textPixelSize;
+    const right = left + renderWidth * textPixelSize;
+    const swatchV = 1 - 0.5 / canvas.height;
+    const textSwatchU = 0.5 / canvas.width;
+    const backgroundSwatchU = 1.5 / canvas.width;
+
+    addQuad(
+        (0.5 - logicalWidth / 2) * textPixelSize, (0.5 + logicalWidth / 2) * textPixelSize,
+        (0.5 - logicalWidth / 2) * textPixelSize, (0.5 + logicalWidth / 2) * textPixelSize,
+        logicalHeight * textPixelSize, 0,
+        backgroundSwatchU, backgroundSwatchU, swatchV, swatchV,
+        textBackgroundOffset
+    );
+
     if (options.italic) {
-        const positions: number[] = [];
-        const uvs: number[] = [];
-        const indices: number[] = [];
-        const addQuad = (
-            leftTop: number, rightTop: number, leftBottom: number, rightBottom: number,
-            top: number, bottom: number, u0: number, u1: number, vTop: number, vBottom: number,
-            z = 0
-        ): void => {
-            const offset = positions.length / 3;
-            positions.push(leftTop, top, z, leftBottom, bottom, z, rightTop, top, z, rightBottom, bottom, z);
-            uvs.push(u0, vTop, u0, vBottom, u1, vTop, u1, vBottom);
-            indices.push(offset, offset + 1, offset + 2, offset + 1, offset + 3, offset + 2);
-        };
-        const left = (0.5 - renderWidth / 2) * textPixelSize;
-        const backgroundLeft = (0.5 - logicalWidth / 2) * textPixelSize;
-        const backgroundRight = (0.5 + logicalWidth / 2) * textPixelSize;
-        const swatchV = 1 - 0.5 / canvas.height;
-        const textSwatchU = 0.5 / canvas.width;
-        const backgroundSwatchU = 1.5 / canvas.width;
-
-        addQuad(
-            backgroundLeft, backgroundRight, backgroundLeft, backgroundRight,
-            logicalHeight * textPixelSize, 0,
-            backgroundSwatchU, backgroundSwatchU, swatchV, swatchV,
-            textBackgroundOffset
-        );
-
         lines.forEach((_line, index) => {
             const canvasTop = topGlyphOverflow + index * lineHeight;
             const canvasBottom = canvasTop + lineHeight;
@@ -467,7 +459,6 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
             const bottom = top - lineHeight * textPixelSize;
             const topOffset = minecraftItalicOffset(0) * textPixelSize;
             const bottomOffset = minecraftItalicOffset(lineHeight) * textPixelSize;
-            const right = left + renderWidth * textPixelSize;
             addQuad(
                 left + topOffset, right + topOffset, left + bottomOffset, right + bottomOffset,
                 top, bottom, 0, 1,
@@ -489,19 +480,21 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
             if (options.underline) addEffect(canvasTop + 9);
             if (options.strikeThrough) addEffect(canvasTop + 4.5);
         });
-
-        geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-        geometry.setIndex(indices);
     } else {
-        geometry = new THREE.PlaneGeometry(renderWidth * textPixelSize, renderHeight * textPixelSize);
-        geometry.translate(textPixelSize / 2, renderHeight * textPixelSize / 2, 0);
+        addQuad(left, right, left, right, renderHeight * textPixelSize, 0, 0, 1, 1, 0);
     }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
     geometry.boundingBox = new THREE.Box3(
-        new THREE.Vector3((0.5 - logicalWidth / 2) * textPixelSize, 0, 0),
+        new THREE.Vector3((0.5 - logicalWidth / 2) * textPixelSize, 0, textBackgroundOffset),
         new THREE.Vector3((0.5 + logicalWidth / 2) * textPixelSize, logicalHeight * textPixelSize, 0)
     );
+    if (import.meta.env.DEV) {
+        console.assert(positions[2] === textBackgroundOffset && positions.some((_, index) => index % 3 === 2 && positions[index] === 0), 'Text display layers must stay separated.');
+    }
     geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(1), 1));
 
     const material = new THREE.MeshBasicNodeMaterial({

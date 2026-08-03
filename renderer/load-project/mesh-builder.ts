@@ -1065,6 +1065,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 // uuid → 표시 이름 맵 구성
                 if (!isMerge) {
                     loadedObjectGroup.userData.objectNames = new Map<string, string>();
+                    loadedObjectGroup.userData.objectLabels = new Map<string, string>();
                     loadedObjectGroup.userData.objectIsItemDisplay = new Set<string>();
                     loadedObjectGroup.userData.objectDisplayTypes = new Map<string, string>();
                     loadedObjectGroup.userData.objectBlockProps = new Map<string, any>();
@@ -1081,6 +1082,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 }
                 const objectNamesMap: Map<string, string> =
                     (loadedObjectGroup.userData.objectNames as Map<string, string>) ?? new Map<string, string>();
+                const objectLabels: Map<string, string> =
+                    (loadedObjectGroup.userData.objectLabels as Map<string, string>) ?? new Map<string, string>();
                 const objectIsItemDisplay: Set<string> =
                     (loadedObjectGroup.userData.objectIsItemDisplay as Set<string>) ?? new Set<string>();
                 const objectDisplayTypes: Map<string, string> =
@@ -1138,8 +1141,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     }
                 }
                 for (const item of otherItems) {
-                    if (item.uuid && !objectNamesMap.has(item.uuid) && (item as any).name) {
-                        objectNamesMap.set(item.uuid, (item as any).name);
+                    if (item.uuid && !objectNamesMap.has(item.uuid) && (item.type === 'textDisplay' || (item as any).name)) {
+                        objectNamesMap.set(item.uuid, (item as any).name ?? '');
                     }
                     if (item.uuid && item.type === 'itemDisplay') {
                         objectIsItemDisplay.add(item.uuid);
@@ -1148,6 +1151,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         }
                     }
                     if (item.uuid && item.type === 'textDisplay') {
+                        if (!objectLabels.has(item.uuid)) objectLabels.set(item.uuid, 'text_display');
                         objectTextDisplayOptions.set(item.uuid, { ...((item.options as TextDisplayOptions | undefined) ?? {}) });
                     }
                     if (item.uuid) objectNbt.set(item.uuid, typeof item.nbt === 'string' ? item.nbt : '');
@@ -1155,6 +1159,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     if (item.uuid && item.textureUrl) objectTextures.set(item.uuid, item.textureUrl);
                 }
                 loadedObjectGroup.userData.objectNames = objectNamesMap;
+                loadedObjectGroup.userData.objectLabels = objectLabels;
                 loadedObjectGroup.userData.objectIsItemDisplay = objectIsItemDisplay;
                 loadedObjectGroup.userData.objectDisplayTypes = objectDisplayTypes;
                 loadedObjectGroup.userData.objectBlockProps = objectBlockProps;
@@ -2069,11 +2074,18 @@ export async function replaceDisplayObjects(requests: Array<{
 
 export async function addDisplayObject(name: string, isItemDisplay: boolean): Promise<string> {
     const uuid = THREE.MathUtils.generateUUID();
+    const transforms = name === 'player_head'
+        ? new THREE.Matrix4().compose(
+            new THREE.Vector3(0, 0.5, 0),
+            new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI, 0, -Math.PI)),
+            new THREE.Vector3(1, 1, 1)
+        ).transpose().toArray()
+        : new THREE.Matrix4().toArray();
     const json = strToU8(JSON.stringify([{ children: [{
         uuid,
         name,
         nbt: '',
-        transforms: new THREE.Matrix4().toArray(),
+        transforms,
         isBlockDisplay: !isItemDisplay,
         isItemDisplay
     }] }]));
@@ -2086,6 +2098,35 @@ export async function addDisplayObject(name: string, isItemDisplay: boolean): Pr
     const pivotMode = (loadedObjectGroup.userData.getPivotMode as (() => string) | undefined)?.();
     performSelection(
         await loadAndRenderPbde(new File([compressSync(raw)], 'object-add.pbde'), true),
+        pivotMode === 'center' ? 'center' : 'default'
+    );
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    return uuid;
+}
+
+export async function addTextDisplay(): Promise<string> {
+    const uuid = THREE.MathUtils.generateUUID();
+    const json = strToU8(JSON.stringify([{ children: [{
+        uuid,
+        name: '텍스트 입력',
+        nbt: '',
+        transforms: new THREE.Matrix4().toArray(),
+        isTextDisplay: true,
+        options: {
+            color: '#FFFFFF', alpha: 1, backgroundColor: '#000000', backgroundAlpha: 1,
+            bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
+            lineLength: 50, align: 'center', font: 'minecraft:default'
+        }
+    }] }]));
+    const raw = new Uint8Array(18 + json.length);
+    raw.set([80, 82, 74, 50], 0);
+    raw.set(strToU8('scene.json'), 4);
+    new DataView(raw.buffer).setUint32(14, json.length, true);
+    raw.set(json, 18);
+
+    const pivotMode = (loadedObjectGroup.userData.getPivotMode as (() => string) | undefined)?.();
+    performSelection(
+        await loadAndRenderPbde(new File([compressSync(raw)], 'text-display-add.pbde'), true),
         pivotMode === 'center' ? 'center' : 'default'
     );
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));

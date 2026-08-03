@@ -64,6 +64,7 @@ overlay.innerHTML = `
             <div class="settings-row"><span>그룹</span><output id="scene-group-count">0</output></div>
             <div class="settings-row"><span>블록</span><output id="scene-block-count">0</output></div>
             <div class="settings-row"><span>아이템</span><output id="scene-item-count">0</output></div>
+            <div class="settings-row"><span>텍스트</span><output id="scene-text-count">0</output></div>
             <div class="settings-row"><span>오브젝트 종류</span><output id="scene-object-type-count">0</output></div>
             <ul id="scene-object-types"></ul>
           </fieldset>
@@ -320,12 +321,15 @@ presetToggle.addEventListener('click', async () => {
 
 async function refreshSceneStatus(): Promise<void> {
   const data = loadedObjectGroup.userData;
-  const objects = data.objectUuidToInstance as Map<string, unknown> | undefined;
+  const objects = data.objectUuidToInstance as Map<string, { mesh: { userData: { displayType?: string } } }> | undefined;
   const items = data.objectIsItemDisplay as Set<string> | undefined;
   const names = data.objectNames as Map<string, string> | undefined;
+  const textIds = new Set([...objects ?? []]
+    .filter(([, object]) => object.mesh.userData.displayType === 'text_display')
+    .map(([uuid]) => uuid));
   const objectTypes = new Map<string, number>();
-  for (const name of names?.values() ?? []) {
-    const type = cleanLabel(name);
+  for (const [uuid, name] of names ?? []) {
+    const type = cleanLabel(textIds.has(uuid) ? 'text_display' : name);
     if (type) objectTypes.set(type, (objectTypes.get(type) ?? 0) + 1);
   }
   const meshCount = loadedObjectGroup.children.filter(object => 'isMesh' in object && object.isMesh).length;
@@ -334,7 +338,8 @@ async function refreshSceneStatus(): Promise<void> {
   overlay.querySelector<HTMLOutputElement>('#scene-mesh-count')!.value = String(meshCount);
   overlay.querySelector<HTMLOutputElement>('#scene-group-count')!.value = String(data.groups?.size ?? 0);
   overlay.querySelector<HTMLOutputElement>('#scene-item-count')!.value = String(items?.size ?? 0);
-  overlay.querySelector<HTMLOutputElement>('#scene-block-count')!.value = String((objects?.size ?? 0) - (items?.size ?? 0));
+  overlay.querySelector<HTMLOutputElement>('#scene-text-count')!.value = String(textIds.size);
+  overlay.querySelector<HTMLOutputElement>('#scene-block-count')!.value = String((objects?.size ?? 0) - (items?.size ?? 0) - textIds.size);
   overlay.querySelector<HTMLOutputElement>('#scene-object-type-count')!.value = String(objectTypes.size);
   overlay.querySelector<HTMLUListElement>('#scene-object-types')!.replaceChildren(...[...objectTypes]
     .sort(([a], [b]) => a.localeCompare(b))

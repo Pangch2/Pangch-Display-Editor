@@ -1,7 +1,7 @@
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { getBlockIconName, getItemIconAtlas, type ItemIconAtlas } from './item-icon-atlas';
 import { currentSelection } from '../controls/selection/select';
-import { addDisplayObject, loadedObjectGroup, replaceDisplayObjects } from '../load-project/mesh-builder';
+import { addDisplayObject, addTextDisplay, loadedObjectGroup, replaceDisplayObjects } from '../load-project/mesh-builder';
 import { getCompatibleBlockProperties } from '../load-project/pbde-assets';
 import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history.js';
 import { matchesShortcut } from '../controls/input/shortcuts';
@@ -200,6 +200,11 @@ const atlasButtons = document.querySelectorAll<HTMLElement>('#scene-toolbar i');
 atlasButtons[0]?.addEventListener('click', () => openSearch('block-atlas.png'));
 atlasButtons[1]?.addEventListener('click', () => openSearch('item-atlas.png'));
 atlasButtons[2]?.addEventListener('click', () => void applyIcon('player_head', true));
+atlasButtons[3]?.addEventListener('click', async () => {
+  const before = captureSceneState(loadedObjectGroup);
+  await addTextDisplay();
+  recordSceneChange(loadedObjectGroup, before);
+});
 searchInput.addEventListener('input', renderIcons);
 overlay.querySelector('button')!.addEventListener('click', closeSearch);
 overlay.addEventListener('click', event => {
