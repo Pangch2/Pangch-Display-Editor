@@ -108,7 +108,7 @@ export interface HandleKeyParams {
     resetSelectionAndDeselect(): void;
     deleteSelectedItems(): void;
     createGroup(): string | undefined;
-    ungroupGroup(id: string): void;
+    ungroupGroup(ids: string | readonly string[], deselect?: boolean): void;
     promoteVertexQueueBundleOnExit(): boolean;
     pushToVertexQueue(): void;
     replaceSelectionWithObjectsMap(
@@ -295,8 +295,7 @@ export function initHandleKey(p: HandleKeyParams): void {
 
                 if (groupCount === 1 && !hasObjects) {
                     const gid = Array.from(p.currentSelection.groups)[0];
-                    if (gid) p.ungroupGroup(gid);
-                    p.resetSelectionAndDeselect();
+                    if (gid) p.ungroupGroup(gid, true);
                     break;
                 }
 
@@ -401,8 +400,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             if (hasGroups) {
                 const ids = Array.from(p.currentSelection.groups);
                 ids.sort((a, b) => p.getGroupChain(a).length - p.getGroupChain(b).length).reverse();
-                ids.forEach(id => p.ungroupGroup(id));
-                p.resetSelectionAndDeselect();
+                p.ungroupGroup(ids, true);
             }
             return;
         }

@@ -1,7 +1,7 @@
 import { Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
+import { isolateTextDisplay, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
 import type { TextDisplayOptions } from '../load-project/text-display';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel/scene-panel-types';
@@ -254,7 +254,7 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
 function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
     control: T,
     onChange: (value: string) => void | Promise<void>,
-    live = false
+    live: boolean | number = false
 ): T {
     const read = () => control instanceof HTMLInputElement && control.type === 'checkbox' ? String(control.checked) : control.value;
     const write = (value: string) => {
@@ -265,8 +265,8 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
     if (live) {
         let queuedValue: string | null = null;
         let updating = false;
-        const updateLive = () => {
-            queuedValue = read();
+        let debounceTimer = 0;
+        const flushLive = () => {
             if (updating) return;
             updating = true;
             void (async () => {
@@ -285,6 +285,12 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
                 }
                 updating = false;
             })();
+        };
+        const updateLive = () => {
+            queuedValue = read();
+            window.clearTimeout(debounceTimer);
+            if (typeof live === 'number') debounceTimer = window.setTimeout(flushLive, live);
+            else flushLive();
         };
         control.oninput = control.onchange = updateLive;
         trackHistoryInput(control);
@@ -707,6 +713,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const pivotBase = new Vector3();
     const displayType = Overlay.getDisplayType(mesh, instanceId);
     const isTextDisplay = displayType === 'text_display';
+    if (isTextDisplay && mesh.count > 1) queueMicrotask(() => isolateTextDisplay(uuid));
     if (displayType === 'block_display') Overlay.getInstanceLocalBoxMin(mesh, instanceId, pivotBase);
     else if (displayType === 'item_display' && mesh.userData.hasHat) pivotBase.y = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
     else if (displayType === 'item_display') Overlay.getInstanceLocalBox(mesh, instanceId)?.getCenter(pivotBase);
@@ -841,7 +848,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         lineLength.step = '1';
         lineLength.value = String(options.lineLength);
         metadataSection.append(metadataProperty('lineLength', '줄바꿈 길이', propertyValueControl(lineLength, value =>
-            updateOptions({ lineLength: Math.max(1, Math.trunc(Number(value) || 1)) }), true)));
+            updateOptions({ lineLength: Math.max(1, Math.trunc(Number(value) || 1)) }), 120)));
         metadataSection.append(metadataProperty('align', '조정', propertySelect(options.align, textAlignValues, value =>
             updateOptions({ align: value as TextDisplayOptions['align'] }))));
 
@@ -854,7 +861,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             const input = document.createElement('input');
             input.type = 'color';
             input.value = /^#[0-9a-f]{6}$/i.test(options[key]) ? options[key] : defaultTextDisplayOptions[key];
-            metadataSection.append(metadataProperty(key, label, propertyValueControl(input, value => updateOptions({ [key]: value }), true)));
+            metadataSection.append(metadataProperty(key, label, propertyValueControl(input, value => updateOptions({ [key]: value }), 80)));
         };
         const addAlpha = (key: 'alpha' | 'backgroundAlpha', label: string) => {
             const controls = document.createElement('span');
@@ -876,7 +883,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 number.value = range.value = String(alpha);
                 return updateOptions({ [key]: alpha });
             };
-            controls.append(propertyValueControl(number, updateAlpha, true), propertyValueControl(range, updateAlpha, true));
+            controls.append(propertyValueControl(number, updateAlpha, 80), propertyValueControl(range, updateAlpha, 80));
             metadataSection.append(metadataProperty(key, label, controls));
         };
         addColor('color', '글자 색');

@@ -73,16 +73,27 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
         _TMP_MAT4_A.fromArray(instanceMatrix.array as number[], srcIdx * 16);
         _TMP_MAT4_A.toArray(instanceMatrix.array as number[], dstIdx * 16);
 
-        // UV 오프셋 복사
-        if (uvAttr) {
-            const u = uvAttr.getX(srcIdx);
-            const v = uvAttr.getY(srcIdx);
-            uvAttr.setXY(dstIdx, u, v);
+        for (const attribute of Object.values(mesh.geometry.attributes)) {
+            const instanced = attribute as BufferAttribute & { isInstancedBufferAttribute?: boolean };
+            if (!instanced.isInstancedBufferAttribute) continue;
+            const source = srcIdx * instanced.itemSize;
+            instanced.array.copyWithin(dstIdx * instanced.itemSize, source, source + instanced.itemSize);
+            instanced.needsUpdate = true;
+        }
+        if (mesh.instanceColor) {
+            const source = srcIdx * mesh.instanceColor.itemSize;
+            mesh.instanceColor.array.copyWithin(dstIdx * mesh.instanceColor.itemSize, source, source + mesh.instanceColor.itemSize);
         }
 
         // Hat 여부 복사
         if (Array.isArray(hasHatArray)) {
             hasHatArray[dstIdx] = hasHatArray[srcIdx];
+        }
+        for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
+            const values = mesh.userData[key] as Map<number, unknown> | undefined;
+            if (values?.has(srcIdx)) values.set(dstIdx, values.get(srcIdx));
+            else values?.delete(dstIdx);
+            values?.delete(srcIdx);
         }
     };
 
@@ -99,6 +110,7 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
     }
 
     mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     if (uvAttr) uvAttr.needsUpdate = true;
     if (mesh.count === 0 && mesh.userData.pdeDuplicateChunk) {
         mesh.removeFromParent();

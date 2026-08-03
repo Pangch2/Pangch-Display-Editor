@@ -48,7 +48,7 @@ async function getAssetUrl(assetPath: string): Promise<string> {
   return URL.createObjectURL(new Blob([new Uint8Array(content)]));
 }
 
-async function getAssetBytes(assetPath: string): Promise<Uint8Array> {
+async function getAssetBytes(assetPath: string, reportError = true): Promise<Uint8Array> {
   // initAssets가 완료될 때까지 기다림
   if (!assetsReadyPromise) {
     throw new Error('initAssets() must be called before getting an asset.');
@@ -61,7 +61,7 @@ async function getAssetBytes(assetPath: string): Promise<Uint8Array> {
     if (!(result.content instanceof Uint8Array)) throw new TypeError('Asset content must be a Uint8Array.');
     return result.content;
   } else {
-    console.error(`Failed to get asset from file system cache: ${assetPath}`, result.error);
+    if (reportError) console.error(`Failed to get asset from file system cache: ${assetPath}`, result.error);
     throw new Error(result.error);
   }
 }

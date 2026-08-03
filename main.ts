@@ -10,6 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
+const ASSET_CACHE_READY_PATH = path.join(CACHE_DIR, '.assets-complete');
 const KEY_MAPPING_DIR = path.join(CACHE_DIR, 'key-mapping');
 const KEY_MAPPING_ORDER_PATH = path.join(KEY_MAPPING_DIR, '.order');
 const clientUrl = 'https://piston-data.mojang.com/v1/objects/0cda4b16710f5b42e532b20ed9b8965c105e77a8/client.jar';
@@ -406,11 +407,8 @@ function createWindow() {
   Menu.setApplicationMenu(null);
 
   // ✅ 생성된 디렉토리 캐싱 (중복 mkdir 방지)
-  const createdDirs = new Set<string>();
   async function ensureDir(dirPath: string): Promise<void> {
-    if (createdDirs.has(dirPath)) return;
     await fs.mkdir(dirPath, { recursive: true });
-    createdDirs.add(dirPath);
   }
 
   ipcMain.handle('get-asset-content', async (_event, assetPath: string) => {
@@ -581,7 +579,7 @@ function createWindow() {
       await fs.mkdir(CACHE_DIR, { recursive: true });
       const startTime = Date.now();
       const [hasAssets, hasRegistry] = await Promise.all([
-        pathExists(path.join(assetsPath, 'minecraft', 'textures', 'environment', 'end_sky.png')),
+        pathExists(ASSET_CACHE_READY_PATH),
         pathExists(registryPath)
       ]);
       const [clientResponse, serverResponse] = await Promise.all([
@@ -637,6 +635,7 @@ function createWindow() {
         ));
 
         console.log(`File writing complete in ${Date.now() - writeStart}ms`);
+        await fs.writeFile(ASSET_CACHE_READY_PATH, clientUrl);
         }
 
         if (serverResponse) {

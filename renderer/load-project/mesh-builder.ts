@@ -2,12 +2,13 @@ import * as THREE from 'three/webgpu';
 import { compressSync, strToU8 } from 'fflate';
 import { createEndPortalMaterial, createEntityMaterial, dragSelectedAttributeName } from '../entity-material';
 import { deleteSelectedItems } from '../controls/grouping/delete';
+import * as GroupUtils from '../controls/grouping/group';
 import * as Overlay from '../controls/selection/overlay';
 import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject } from './scene-parser';
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
-import { createTextDisplayMesh, type TextDisplayOptions } from './text-display';
+import { createTextDisplayMesh, createTextDisplayTemplates, getTextDisplayTemplateKey, type TextDisplayOptions } from './text-display';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../controls/transform/mirroring';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
@@ -784,19 +785,27 @@ function _clearSceneAndCaches(): void {
     sharedPlaceholderMaterial = null;
 
     // 1-2. 씬에 있는 객체의 지오메트리 및 재질 해제
+    const disposedGeometries = new Set<THREE.BufferGeometry>();
+    const disposedMaterials = new Set<THREE.Material>();
+    const disposedTextures = new Set<THREE.Texture>();
     loadedObjectGroup.traverse(object => {
         if (object.isMesh) {
             // 최적화: 재사용되는 지오메트리는 dispose하지 않도록 예외 처리
-            if (object.geometry && object.geometry !== headGeometries?.base && object.geometry !== headGeometries?.layer && object.geometry !== headGeometries?.merged) {
+            if (object.geometry && !disposedGeometries.has(object.geometry) && object.geometry !== headGeometries?.base && object.geometry !== headGeometries?.layer && object.geometry !== headGeometries?.merged) {
                 object.geometry.dispose();
+                disposedGeometries.add(object.geometry);
             }
             if (object.material) {
                 const materials = Array.isArray(object.material) ? object.material : [object.material];
                 materials.forEach(material => {
-                    if (material.map) {
+                    if (material.map && !disposedTextures.has(material.map)) {
                         material.map.dispose();
+                        disposedTextures.add(material.map);
                     }
-                    material.dispose();
+                    if (!disposedMaterials.has(material)) {
+                        material.dispose();
+                        disposedMaterials.add(material);
+                    }
                 });
             }
         }
@@ -1646,19 +1655,40 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     try { await playerHeadPromise; } catch { /* ignore */ }
                 }
 
-                for (const item of otherItems) {
-                    if (item.type !== 'textDisplay') continue;
-                    const textMesh = await createTextDisplayMesh(item);
-                    textMesh.setMatrixAt(0, new THREE.Matrix4().fromArray(item.transform).transpose());
-                    textMesh.instanceMatrix.needsUpdate = true;
-                    textMesh.userData.displayType = 'text_display';
-                    textMesh.frustumCulled = false;
-                    textMesh.renderOrder = 1;
-                    textMesh.layers.enable(2);
-                    setInstanceSkyBrightness(textMesh, 0, item.brightness as Brightness | undefined);
-                    registerObject(textMesh, 0, item.uuid, item.groupId);
-                    addLoadedInstance(newlyAddedSelectableMeshes, textMesh, 0);
-                    loadedObjectGroup.add(textMesh);
+                const textItems = otherItems.filter(item => item.type === 'textDisplay');
+                const textDisplayTemplates = await createTextDisplayTemplates(textItems);
+                const textDisplayGroups = new Map<string, typeof textItems>();
+                for (const item of textItems) {
+                    const key = getTextDisplayTemplateKey(item);
+                    const group = textDisplayGroups.get(key) ?? [];
+                    group.push(item);
+                    textDisplayGroups.set(key, group);
+                }
+                for (const [templateKey, items] of textDisplayGroups) {
+                    const template = textDisplayTemplates.get(templateKey)!;
+                    for (let start = 0; start < items.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
+                        const chunk = items.slice(start, start + MAX_INSTANCES_PER_INSTANCED_MESH);
+                        const geometry = start === 0 ? template.geometry : template.geometry.clone();
+                        geometry.setAttribute(
+                            dragSelectedAttributeName,
+                            new THREE.InstancedBufferAttribute(new Float32Array(chunk.length), 1)
+                        );
+                        const textMesh = new THREE.InstancedMesh(geometry, template.material, chunk.length);
+                        textMesh.userData.displayType = 'text_display';
+                        textMesh.frustumCulled = false;
+                        textMesh.renderOrder = 1;
+                        textMesh.layers.enable(2);
+                        chunk.forEach((item, instanceId) => {
+                            textMesh.setMatrixAt(instanceId, new THREE.Matrix4().fromArray(item.transform).transpose());
+                            setInstanceSkyBrightness(textMesh, instanceId, item.brightness as Brightness | undefined);
+                            registerObject(textMesh, instanceId, item.uuid, item.groupId);
+                            addLoadedInstance(newlyAddedSelectableMeshes, textMesh, instanceId);
+                        });
+                        textMesh.instanceMatrix.needsUpdate = true;
+                        if (textMesh.instanceColor) textMesh.instanceColor.needsUpdate = true;
+                        textMesh.computeBoundingSphere();
+                        loadedObjectGroup.add(textMesh);
+                    }
                 }
                 const playerHeadElapsedMs = performance.now() - playerHeadStartMs;
 
@@ -1799,7 +1829,124 @@ export async function updateDisplayObjectMatrix(objectUuid: string, name: string
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
+function disposeUnusedTextDisplayResources(geometry: THREE.BufferGeometry, material: THREE.Material): void {
+    let geometryUsed = false;
+    let materialUsed = false;
+    let textureUsed = false;
+    const texture = (material as THREE.Material & { map?: THREE.Texture | null }).map;
+    loadedObjectGroup.traverse(object => {
+        if (!(object as THREE.Mesh).isMesh) return;
+        const mesh = object as THREE.Mesh;
+        geometryUsed ||= mesh.geometry === geometry;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        materialUsed ||= materials.includes(material);
+        textureUsed ||= !!texture && materials.some(candidate => (
+            candidate as THREE.Material & { map?: THREE.Texture | null }
+        ).map === texture);
+    });
+    if (!geometryUsed) geometry.dispose();
+    if (!materialUsed) material.dispose();
+    if (texture && !textureUsed) texture.dispose();
+}
+
+export function isolateTextDisplay(objectUuid: string): void {
+    const userData = loadedObjectGroup.userData;
+    const refs = userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
+    const ref = refs?.get(objectUuid);
+    if (!ref || ref.mesh.count <= 1 || Overlay.getDisplayType(ref.mesh, ref.instanceId) !== 'text_display') return;
+
+    const oldMesh = ref.mesh;
+    const oldInstanceId = ref.instanceId;
+    const oldLastInstanceId = oldMesh.count - 1;
+    const geometry = oldMesh.geometry.clone();
+    geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(1), 1));
+    const mesh = new THREE.InstancedMesh(geometry, oldMesh.material, 1);
+    const matrix = new THREE.Matrix4();
+    oldMesh.getMatrixAt(oldInstanceId, matrix);
+    mesh.setMatrixAt(0, matrix);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.userData.displayType = 'text_display';
+    mesh.frustumCulled = oldMesh.frustumCulled;
+    mesh.renderOrder = oldMesh.renderOrder;
+    mesh.visible = oldMesh.visible;
+    mesh.layers.mask = oldMesh.layers.mask;
+
+    const brightness = (userData.objectBrightness as Map<string, Brightness> | undefined)?.get(objectUuid);
+    setInstanceSkyBrightness(mesh, 0, brightness);
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
+        const values = oldMesh.userData[key] as Map<number, unknown> | undefined;
+        const value = values?.get(oldInstanceId);
+        if (value !== undefined) mesh.userData[key] = new Map([[0, value]]);
+    }
+
+    const oldKey = GroupUtils.getGroupKey(oldMesh, oldInstanceId);
+    const newKey = GroupUtils.getGroupKey(mesh, 0);
+    const keyToUuid = userData.instanceKeyToObjectUuid as Map<string, string>;
+    keyToUuid.delete(oldKey);
+    keyToUuid.set(newKey, objectUuid);
+    refs!.set(objectUuid, { mesh, instanceId: 0 });
+    const objectToGroup = userData.objectToGroup as Map<string, string> | undefined;
+    const groupId = objectToGroup?.get(oldKey);
+    objectToGroup?.delete(oldKey);
+    if (groupId) {
+        objectToGroup!.set(newKey, groupId);
+        const group = (userData.groups as Map<string, GroupData> | undefined)?.get(groupId);
+        const child = group?.children.find(candidate => candidate.type === 'object' && candidate.id === objectUuid);
+        if (child?.type === 'object') {
+            child.mesh = mesh;
+            child.instanceId = 0;
+        }
+    }
+
+    if (oldInstanceId < oldLastInstanceId) {
+        oldMesh.getMatrixAt(oldLastInstanceId, matrix);
+        oldMesh.setMatrixAt(oldInstanceId, matrix);
+        if (oldMesh.instanceColor) {
+            const color = new THREE.Color();
+            oldMesh.getColorAt(oldLastInstanceId, color);
+            oldMesh.setColorAt(oldInstanceId, color);
+        }
+        for (const attribute of Object.values(oldMesh.geometry.attributes)) {
+            const instanced = attribute as THREE.InstancedBufferAttribute;
+            if (!instanced.isInstancedBufferAttribute) continue;
+            const source = oldLastInstanceId * instanced.itemSize;
+            const target = oldInstanceId * instanced.itemSize;
+            instanced.array.copyWithin(target, source, source + instanced.itemSize);
+            instanced.needsUpdate = true;
+        }
+        for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
+            const values = oldMesh.userData[key] as Map<number, unknown> | undefined;
+            values?.delete(oldInstanceId);
+            if (values?.has(oldLastInstanceId)) values.set(oldInstanceId, values.get(oldLastInstanceId));
+            values?.delete(oldLastInstanceId);
+        }
+        GroupUtils.updateGroupReferenceForMovedInstance(loadedObjectGroup, oldMesh, oldLastInstanceId, oldInstanceId);
+    } else {
+        for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
+            (oldMesh.userData[key] as Map<number, unknown> | undefined)?.delete(oldInstanceId);
+        }
+    }
+    oldMesh.count--;
+    oldMesh.instanceMatrix.needsUpdate = true;
+    if (oldMesh.instanceColor) oldMesh.instanceColor.needsUpdate = true;
+    oldMesh.computeBoundingBox();
+    oldMesh.computeBoundingSphere();
+    mesh.computeBoundingBox();
+    mesh.computeBoundingSphere();
+    loadedObjectGroup.add(mesh);
+
+    window.dispatchEvent(new CustomEvent('pde:replace-object-selection', { detail: [{
+        oldMesh,
+        oldInstanceId,
+        oldLastInstanceId,
+        mesh,
+        instanceId: 0
+    }] }));
+}
+
 export async function updateTextDisplay(objectUuid: string, name: string, options: TextDisplayOptions): Promise<void> {
+    isolateTextDisplay(objectUuid);
     const userData = loadedObjectGroup.userData;
     const ref = (userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref || Overlay.getDisplayType(ref.mesh, ref.instanceId) !== 'text_display') {
@@ -1807,6 +1954,8 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
     }
 
     const replacement = await createTextDisplayMesh({ name, options });
+    const oldGeometry = ref.mesh.geometry;
+    const oldMaterial = ref.mesh.material as THREE.Material;
     replacement.geometry.setAttribute(dragSelectedAttributeName, ref.mesh.geometry.getAttribute(dragSelectedAttributeName));
     ref.mesh.geometry = replacement.geometry;
     ref.mesh.material = replacement.material;
@@ -1816,6 +1965,7 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
     const optionMap = (userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)
         ?? (userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>());
     optionMap.set(objectUuid, { ...options });
+    disposeUnusedTextDisplayResources(oldGeometry, oldMaterial);
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
@@ -1824,6 +1974,8 @@ export async function replaceDisplayObjects(requests: Array<{
     name: string;
     transformContext?: { pivotMode: string; pivotWorld?: THREE.Vector3 };
     isItemDisplay?: boolean;
+    isTextDisplay?: boolean;
+    options?: TextDisplayOptions;
 }>): Promise<string[]> {
     if (requests.length === 0) return [];
     const requestedCount = requests.length;
@@ -1856,7 +2008,7 @@ export async function replaceDisplayObjects(requests: Array<{
     const previousSceneOrder = (ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined)?.slice();
     const sceneIndexes = new Map(previousSceneOrder?.map((entry, index) => [entry.type === 'object' ? entry.id : '', index]) ?? []);
     const previousGroupChildren = new Map<string, GroupData['children']>();
-    const replacements = requests.map(({ objectUuid, name, transformContext, isItemDisplay: requestedItemDisplay }) => {
+    const replacements = requests.map(({ objectUuid, name, transformContext, isItemDisplay: requestedItemDisplay, isTextDisplay = false, options }) => {
         const oldRef = refs?.get(objectUuid);
         if (!oldRef?.mesh?.isInstancedMesh) throw new Error('교체할 오브젝트를 찾을 수 없습니다.');
 
@@ -1875,8 +2027,8 @@ export async function replaceDisplayObjects(requests: Array<{
         const group = groupId ? (ud.groups as Map<string, GroupData> | undefined)?.get(groupId) : undefined;
         if (groupId && group && !previousGroupChildren.has(groupId)) previousGroupChildren.set(groupId, [...group.children]);
         const wasItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
-        const isItemDisplay = requestedItemDisplay ?? wasItemDisplay;
-        const displayTypeChanged = wasItemDisplay !== isItemDisplay;
+        const isItemDisplay = !isTextDisplay && (requestedItemDisplay ?? wasItemDisplay);
+        const displayTypeChanged = oldGeometryDisplayType !== (isTextDisplay ? 'text_display' : isItemDisplay ? 'item_display' : 'block_display');
         const customPivot = (oldRef.mesh.userData.customPivots as Map<number, THREE.Vector3> | undefined)?.get(oldRef.instanceId)?.clone();
         const pivot = transformContext?.pivotMode === 'center' || displayTypeChanged
             ? Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new THREE.Vector3())
@@ -1908,8 +2060,10 @@ export async function replaceDisplayObjects(requests: Array<{
                 transforms: oldMatrix.clone().transpose().toArray(),
                 brightness: (ud.objectBrightness as Map<string, unknown> | undefined)?.get(objectUuid),
                 tagHead: texture ? { Value: btoa(JSON.stringify({ textures: { SKIN: { url: texture } } })) } : undefined,
-                isBlockDisplay: !isItemDisplay,
-                isItemDisplay
+                isBlockDisplay: !isTextDisplay && !isItemDisplay,
+                isItemDisplay,
+                isTextDisplay,
+                options: isTextDisplay ? options : undefined
             }
         };
     });
@@ -2104,7 +2258,17 @@ export async function addDisplayObject(name: string, isItemDisplay: boolean): Pr
     return uuid;
 }
 
-export async function addTextDisplay(): Promise<string> {
+export async function addTextDisplay(objectUuids: string[] = []): Promise<string> {
+    const options: TextDisplayOptions = {
+        color: '#FFFFFF', alpha: 1, backgroundColor: '#000000', backgroundAlpha: 1,
+        bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
+        lineLength: 50, align: 'center', font: 'minecraft:default'
+    };
+    if (objectUuids.length) {
+        return (await replaceDisplayObjects(objectUuids.map(objectUuid => ({
+            objectUuid, name: '텍스트 입력', isTextDisplay: true, options
+        }))))[0];
+    }
     const uuid = THREE.MathUtils.generateUUID();
     const json = strToU8(JSON.stringify([{ children: [{
         uuid,
@@ -2112,11 +2276,7 @@ export async function addTextDisplay(): Promise<string> {
         nbt: '',
         transforms: new THREE.Matrix4().toArray(),
         isTextDisplay: true,
-        options: {
-            color: '#FFFFFF', alpha: 1, backgroundColor: '#000000', backgroundAlpha: 1,
-            bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
-            lineLength: 50, align: 'center', font: 'minecraft:default'
-        }
+        options
     }] }]));
     const raw = new Uint8Array(18 + json.length);
     raw.set([80, 82, 74, 50], 0);

@@ -93,26 +93,33 @@ export function createGroupCommand(
     return newGroupId;
 }
 
-export function ungroupGroupCommand(
+export function ungroupGroupsCommand(
     loadedObjectGroup: Group,
-    groupId: string,
-    callbacks: GizmoCommandCallbacks
-): void {
-    if (!groupId) return;
-
-    const result = GroupUtils.ungroupGroupStructure(loadedObjectGroup, groupId);
-    if (!result) return;
+    groupIds: readonly string[],
+    callbacks: GizmoCommandCallbacks,
+    selectParent = true
+): boolean {
+    let result: ReturnType<typeof GroupUtils.ungroupGroupStructure> = null;
+    let removedCount = 0;
+    for (const groupId of groupIds) {
+        const nextResult = GroupUtils.ungroupGroupStructure(loadedObjectGroup, groupId);
+        if (!nextResult) continue;
+        result = nextResult;
+        removedCount++;
+    }
+    if (!result) return false;
 
     callbacks.invalidateSelectionCaches();
 
-    if (result.parentId && callbacks.getGroups().has(result.parentId)) {
+    if (selectParent && result.parentId && callbacks.getGroups().has(result.parentId)) {
         callbacks.applySelection(null, [], result.parentId);
     } else {
         callbacks.resetSelectionAndDeselect();
     }
 
     callbacks.emitSceneUpdated();
-    console.log(`Group removed: ${groupId}`);
+    console.log(`Groups removed: ${removedCount}`);
+    return true;
 }
 
 export function deleteSelectedItemsCommand(

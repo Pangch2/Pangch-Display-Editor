@@ -21,6 +21,25 @@ interface HistorySelection {
 
 let currentSelection: HistorySelection | null = null;
 
+export interface HistoryGizmoState {
+    isCustomPivot: boolean;
+    pivotOffset: Vector3;
+    gizmoAnchorValid: boolean;
+    gizmoAnchorPosition: Vector3;
+    multiSelectionOriginAnchorValid: boolean;
+    multiSelectionOriginAnchorPosition: Vector3;
+    multiSelectionOriginAnchorInitialValid: boolean;
+    multiSelectionOriginAnchorInitialPosition: Vector3;
+    multiSelectionOriginAnchorInitialLocalValid: boolean;
+    multiSelectionOriginAnchorInitialLocal: Vector3;
+    multiSelectionExplicitPivot: boolean;
+    multiSelectionAccumulatedRotation: Quaternion;
+    selectionAnchorMode: 'default' | 'center';
+}
+
+let captureGizmoState: (() => HistoryGizmoState) | null = null;
+let restoreGizmoState: ((state: HistoryGizmoState) => void) | null = null;
+
 type TypedArray = Exclude<BufferAttribute['array'], number[]>;
 
 interface AttributeSnapshot {
@@ -48,6 +67,8 @@ export interface SceneSnapshot {
     objects: ObjectSnapshot[];
     userData: Record<string, unknown>;
     selection: HistorySelection | null;
+    gizmo: HistoryGizmoState | null;
+    metadataOnly: boolean;
 }
 
 function captureSelection(): HistorySelection | null {
@@ -61,6 +82,14 @@ function captureSelection(): HistorySelection | null {
 
 export function setHistorySelection(selection: HistorySelection): void {
     currentSelection = selection;
+}
+
+export function setHistoryGizmoState(
+    capture: () => HistoryGizmoState,
+    restore: (state: HistoryGizmoState) => void
+): void {
+    captureGizmoState = capture;
+    restoreGizmoState = restore;
 }
 
 function cloneValue<T>(value: T, seen = new Map<object, unknown>()): T {
@@ -132,39 +161,48 @@ function captureObject(object: Object3D): ObjectSnapshot {
     };
 }
 
-export function captureSceneState(root: Group): SceneSnapshot {
+export function captureSceneState(root: Group, metadataOnly = false): SceneSnapshot {
     const objects: ObjectSnapshot[] = [];
-    root.traverse(object => { if (object !== root) objects.push(captureObject(object)); });
-    return { children: [...root.children], objects, userData: cloneValue(root.userData), selection: captureSelection() };
+    if (!metadataOnly) root.traverse(object => { if (object !== root) objects.push(captureObject(object)); });
+    return {
+        children: metadataOnly ? [] : [...root.children],
+        objects,
+        userData: cloneValue(root.userData),
+        selection: captureSelection(),
+        gizmo: captureGizmoState ? cloneValue(captureGizmoState()) : null,
+        metadataOnly
+    };
 }
 
 export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
-    root.clear();
-    snapshot.objects.forEach(state => state.object.clear());
-    snapshot.objects.forEach(state => state.children.forEach(child => state.object.add(child)));
-    snapshot.children.forEach(child => root.add(child));
+    if (!snapshot.metadataOnly) {
+        root.clear();
+        snapshot.objects.forEach(state => state.object.clear());
+        snapshot.objects.forEach(state => state.children.forEach(child => state.object.add(child)));
+        snapshot.children.forEach(child => root.add(child));
 
-    for (const state of snapshot.objects) {
-        const { object } = state;
-        object.position.copy(state.position);
-        object.quaternion.copy(state.quaternion);
-        object.scale.copy(state.scale);
-        object.matrix.copy(state.matrix);
-        object.visible = state.visible;
-        object.userData = cloneValue(state.userData);
-        if ((object as Mesh).isMesh) {
-            (object as Mesh).geometry = state.geometry!;
-            (object as Mesh).material = state.material!;
-        }
-        if ((object as InstancedMesh).isInstancedMesh) (object as InstancedMesh).count = state.count ?? 0;
-        state.attributes.forEach(({ attribute, array }) => {
-            attribute.array.set(array);
-            attribute.needsUpdate = true;
-        });
-        if ((object as Mesh).isMesh) {
-            const mesh = object as Mesh;
-            mesh.computeBoundingBox();
-            mesh.computeBoundingSphere();
+        for (const state of snapshot.objects) {
+            const { object } = state;
+            object.position.copy(state.position);
+            object.quaternion.copy(state.quaternion);
+            object.scale.copy(state.scale);
+            object.matrix.copy(state.matrix);
+            object.visible = state.visible;
+            object.userData = cloneValue(state.userData);
+            if ((object as Mesh).isMesh) {
+                (object as Mesh).geometry = state.geometry!;
+                (object as Mesh).material = state.material!;
+            }
+            if ((object as InstancedMesh).isInstancedMesh) (object as InstancedMesh).count = state.count ?? 0;
+            state.attributes.forEach(({ attribute, array }) => {
+                attribute.array.set(array);
+                attribute.needsUpdate = true;
+            });
+            if ((object as Mesh).isMesh) {
+                const mesh = object as Mesh;
+                mesh.computeBoundingBox();
+                mesh.computeBoundingSphere();
+            }
         }
     }
     root.userData = cloneValue(snapshot.userData);
@@ -173,11 +211,16 @@ export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
         currentSelection.objects = new Map(Array.from(snapshot.selection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
         currentSelection.primary = snapshot.selection.primary ? { ...snapshot.selection.primary } : null;
     }
+    if (restoreGizmoState && snapshot.gizmo) restoreGizmoState(cloneValue(snapshot.gizmo));
     root.updateMatrixWorld(true);
 }
 
 export function recordSceneChange(root: Group, before: SceneSnapshot): void {
-    const after = captureSceneState(root);
+    const after = captureSceneState(root, before.metadataOnly);
+    if (import.meta.env.DEV && before.metadataOnly) console.assert(
+        before.objects.length === 0 && after.objects.length === 0,
+        'Metadata-only history must not copy scene objects.'
+    );
     const refresh = () => {
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
         window.dispatchEvent(new CustomEvent('pde:history-restored'));

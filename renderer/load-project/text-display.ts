@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { strFromU8, unzipSync } from 'fflate';
+import { strFromU8 } from 'fflate';
 import { getAssetBytes } from '../asset-manager';
 import { dragPreviewPositionNode, dragSelectedAttributeName } from '../entity-material';
 
@@ -23,6 +23,10 @@ export type TextDisplayItem = {
     options?: TextDisplayOptions;
 };
 
+export function getTextDisplayTemplateKey(item: TextDisplayItem): string {
+    return JSON.stringify([item.name ?? '', item.options ?? {}]);
+}
+
 type BitmapGlyph = {
     image: CanvasImageSource;
     sourceX: number;
@@ -42,16 +46,8 @@ type BitmapProvider = {
     chars: string[];
 };
 
-type UnihexProvider = {
-    type: string;
-    filter?: unknown;
-    size_overrides?: Array<{ from: string; to: string; left: number; right: number }>;
-};
-
-type UnihexFontSource = {
-    glyphs: Map<number, string>;
-    sizeOverrides: Array<{ from: number; to: number; left: number; right: number }>;
-};
+type UnihexFontSource = Map<number, string>;
+type UnihexSizeOverride = [from: number, to: number, left: number, right: number];
 
 const textPixelSize = 0.025;
 const textBackgroundOffset = -0.01 * textPixelSize;
@@ -60,21 +56,22 @@ const textureScale = 2;
 const fontSize = 8;
 const horizontalGlyphOverflow = 1;
 const topGlyphOverflow = 2;
-const unifontFamily = 'PDE Unifont';
-let unifontPromise: Promise<void> | undefined;
+const maxTextAtlasSize = 4096;
 let bitmapFontPromise: Promise<Map<string, BitmapGlyph>> | undefined;
 let unihexFontPromise: Promise<UnihexFontSource> | undefined;
+const unihexSizeOverrides: UnihexSizeOverride[] = [
+    [0x3001, 0x30ff, 0, 15],
+    [0x3200, 0x9fff, 0, 15],
+    [0x1100, 0x11ff, 0, 15],
+    [0x3130, 0x318f, 0, 15],
+    [0xa960, 0xa97f, 0, 15],
+    [0xd7b0, 0xd7ff, 0, 15],
+    [0xac00, 0xd7af, 1, 15],
+    [0xf900, 0xfaff, 0, 15],
+    [0xff01, 0xff5e, 0, 15]
+];
 
 const minecraftItalicOffset = (canvasY: number): number => 1.25 - canvasY * 0.25;
-
-function loadUnifont(): Promise<void> {
-    return unifontPromise ??= new FontFace(
-        unifontFamily,
-        `url(${new URL('../../resources/unifont-17.0.01.ttf', import.meta.url).href})`
-    ).load().then(font => {
-        document.fonts.add(font);
-    });
-}
 
 async function loadImage(assetPath: string): Promise<ImageBitmap> {
     const bytes = await getAssetBytes(assetPath);
@@ -133,41 +130,20 @@ function loadBitmapFont(): Promise<Map<string, BitmapGlyph>> {
 }
 
 function loadUnihexFont(): Promise<UnihexFontSource> {
-    return unihexFontPromise ??= Promise.all([
-        getAssetBytes('assets/minecraft/font/include/unifont.json'),
-        getAssetBytes('assets/minecraft/font/unifont.zip')
-    ]).then(([definitionBytes, archiveBytes]) => {
-            const definition = JSON.parse(strFromU8(definitionBytes)) as { providers: UnihexProvider[] };
-            const sizeOverrides = (definition.providers
-                .find(provider => provider.type === 'unihex' && !provider.filter)?.size_overrides ?? [])
-                .map(override => ({
-                    ...override,
-                    from: override.from.codePointAt(0)!,
-                    to: override.to.codePointAt(0)!
-                }));
-            const files = unzipSync(archiveBytes, {
-                filter: file => file.name.endsWith('.hex')
-            });
-            const hexFile = Object.entries(files).find(([name]) => name.endsWith('.hex'))?.[1];
-            if (!hexFile) throw new Error('Minecraft Unihex font has no .hex file.');
-            const glyphs = new Map<number, string>();
-            for (const line of strFromU8(hexFile).split(/\r?\n/u)) {
-                const separator = line.indexOf(':');
-                if (separator > 0) glyphs.set(Number.parseInt(line.slice(0, separator), 16), line.slice(separator + 1));
-            }
-            if (import.meta.env.DEV) {
-                const codepoint = '텍'.codePointAt(0)!;
-                const hex = glyphs.get(codepoint)!;
-                const bounds = unihexBounds(codepoint, hex, sizeOverrides);
-                console.assert(bounds.right - bounds.left + 1 === 15, 'Minecraft Unihex font failed to load.');
-            }
-            return { glyphs, sizeOverrides };
-        });
+    return unihexFontPromise ??= fetch(new URL('../../resources/unifont-17.0.01.hex', import.meta.url)).then(async response => {
+        if (!response.ok) throw new Error(`Unifont HEX failed to load: ${response.status}`);
+        const glyphs = new Map<number, string>();
+        for (const line of (await response.text()).split(/\r?\n/u)) {
+            const separator = line.indexOf(':');
+            if (separator > 0) glyphs.set(Number.parseInt(line.slice(0, separator), 16), line.slice(separator + 1));
+        }
+        return glyphs;
+    });
 }
 
-function unihexBounds(codepoint: number, hex: string, sizeOverrides: UnihexFontSource['sizeOverrides']): { left: number; right: number } {
-    const override = sizeOverrides.find(range => codepoint >= range.from && codepoint <= range.to);
-    if (override) return override;
+function unihexBounds(codepoint: number, hex: string): { left: number; right: number } {
+    const override = unihexSizeOverrides.find(([from, to]) => codepoint >= from && codepoint <= to);
+    if (override) return { left: override[2], right: override[3] };
     const digitsPerRow = hex.length / 16;
     const bitWidth = digitsPerRow * 4;
     let left = bitWidth;
@@ -188,9 +164,8 @@ function createUnihexFont(text: string, source: UnihexFontSource): Map<string, B
     const entries: Array<{ character: string; hex: string; left: number; right: number }> = [];
     for (const character of new Set(Array.from(text))) {
         const codepoint = character.codePointAt(0)!;
-        const hex = source.glyphs.get(codepoint);
-        if (!hex) continue;
-        entries.push({ character, hex, ...unihexBounds(codepoint, hex, source.sizeOverrides) });
+        const hex = source.get(codepoint);
+        if (hex) entries.push({ character, hex, ...unihexBounds(codepoint, hex) });
     }
     const glyphs = new Map<string, BitmapGlyph>();
     if (!entries.length) return glyphs;
@@ -350,15 +325,29 @@ function snapTextAlpha(data: Uint8ClampedArray, alpha: number): void {
     }
 }
 
+function createTextDisplayMaterial(texture: THREE.Texture, opaqueBackground: boolean): THREE.MeshBasicNodeMaterial {
+    const material = new THREE.MeshBasicNodeMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: opaqueBackground,
+        alphaTest: opaqueBackground ? 0.001 : 0,
+        side: THREE.FrontSide,
+        toneMapped: false,
+        fog: false
+    });
+    material.positionNode = dragPreviewPositionNode;
+    return material;
+}
+
 export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THREE.InstancedMesh> {
     const options = item.options ?? {};
     const text = (item.name ?? '').slice(0, 16384);
-    const [, bitmapFont, unihexSource] = await Promise.all([loadUnifont(), loadBitmapFont(), loadUnihexFont()]);
+    const [bitmapFont, unihexSource] = await Promise.all([loadBitmapFont(), loadUnihexFont()]);
     const unihexFont = createUnihexFont(text, unihexSource);
     const activeBitmapFont = !options.font || options.font === 'minecraft:default'
         ? new Map<string, BitmapGlyph>([...unihexFont, ...bitmapFont])
         : options.font === 'minecraft:uniform' ? unihexFont : new Map<string, BitmapGlyph>();
-    const fontStyle = `${fontSize}px "${unifontFamily}"`;
+    const fontStyle = `${fontSize}px sans-serif`;
     const measureCanvas = document.createElement('canvas');
     const measureContext = measureCanvas.getContext('2d')!;
     measureContext.font = `${options.italic ? 'italic ' : ''}${options.bold ? 'bold ' : ''}${fontStyle}`;
@@ -481,7 +470,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
             if (options.strikeThrough) addEffect(canvasTop + 4.5);
         });
     } else {
-        addQuad(left, right, left, right, renderHeight * textPixelSize, 0, 0, 1, 1, 0);
+        addQuad(left, right, left, right, logicalHeight * textPixelSize, 0, 0, 1, 1 - topGlyphOverflow / renderHeight, 0);
     }
 
     const geometry = new THREE.BufferGeometry();
@@ -497,19 +486,100 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     }
     geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(1), 1));
 
-    const material = new THREE.MeshBasicNodeMaterial({
-        map: texture,
-        transparent: true,
-        depthWrite: backgroundAlpha === 1,
-        alphaTest: backgroundAlpha === 1 ? 0.001 : 0,
-        side: THREE.FrontSide,
-        toneMapped: false,
-        fog: false
-    });
-    material.positionNode = dragPreviewPositionNode;
+    const material = createTextDisplayMaterial(texture, backgroundAlpha === 1);
 
-    // ponytail: one texture per display; switch to an atlas only if text-heavy scenes prove this is a bottleneck.
+    // ponytail: live edits stay standalone; static project text is packed by createTextDisplayTemplates.
     return new THREE.InstancedMesh(geometry, material, 1);
+}
+
+export async function createTextDisplayTemplates(items: TextDisplayItem[]): Promise<Map<string, THREE.InstancedMesh>> {
+    const uniqueItems = new Map(items.map(item => [getTextDisplayTemplateKey(item), item]));
+    const templates = new Map(await Promise.all(Array.from(uniqueItems, async ([key, item]) => [
+        key,
+        await createTextDisplayMesh(item)
+    ] as const)));
+    const entries = Array.from(templates, ([key, mesh]) => {
+        const material = mesh.material as THREE.MeshBasicNodeMaterial;
+        const canvas = material.map?.image as HTMLCanvasElement | undefined;
+        return canvas ? { key, mesh, material, canvas, x: 0, y: 0 } : null;
+    }).filter(entry => entry !== null && entry.canvas.width <= maxTextAtlasSize && entry.canvas.height <= maxTextAtlasSize);
+    if (entries.length < 2) return templates;
+
+    const atlasWidth = Math.min(maxTextAtlasSize, Math.max(
+        ...entries.map(entry => entry.canvas.width),
+        Math.ceil(Math.sqrt(entries.reduce((area, entry) => area + entry.canvas.width * entry.canvas.height, 0)))
+    ));
+    const pages: Array<{ entries: typeof entries; x: number; y: number; rowHeight: number; width: number; height: number }> = [];
+    for (const entry of entries.sort((a, b) => b.canvas.height - a.canvas.height)) {
+        let page = pages[pages.length - 1];
+        if (!page) pages.push(page = { entries: [], x: 0, y: 0, rowHeight: 0, width: 0, height: 0 });
+        if (page.x + entry.canvas.width > atlasWidth) {
+            page.x = 0;
+            page.y += page.rowHeight;
+            page.rowHeight = 0;
+        }
+        if (page.y + entry.canvas.height > maxTextAtlasSize) {
+            pages.push(page = { entries: [], x: 0, y: 0, rowHeight: 0, width: 0, height: 0 });
+        }
+        entry.x = page.x;
+        entry.y = page.y;
+        page.entries.push(entry);
+        page.x += entry.canvas.width;
+        page.rowHeight = Math.max(page.rowHeight, entry.canvas.height);
+        page.width = Math.max(page.width, page.x);
+        page.height = Math.max(page.height, page.y + page.rowHeight);
+    }
+
+    for (const page of pages) {
+        const canvas = document.createElement('canvas');
+        canvas.width = page.width;
+        canvas.height = page.height;
+        const context = canvas.getContext('2d')!;
+        context.imageSmoothingEnabled = false;
+        for (const entry of page.entries) context.drawImage(entry.canvas, entry.x, entry.y);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.NearestFilter;
+        texture.generateMipmaps = false;
+        const materials = new Map<boolean, THREE.MeshBasicNodeMaterial>();
+        for (const entry of page.entries) {
+            const uv = entry.mesh.geometry.getAttribute('uv');
+            const scaleX = entry.canvas.width / canvas.width;
+            const scaleY = entry.canvas.height / canvas.height;
+            const offsetX = entry.x / canvas.width;
+            const offsetY = (canvas.height - entry.y - entry.canvas.height) / canvas.height;
+            for (let index = 0; index < uv.count; index++) {
+                uv.setXY(index, uv.getX(index) * scaleX + offsetX, uv.getY(index) * scaleY + offsetY);
+            }
+            uv.needsUpdate = true;
+            const opaqueBackground = entry.material.depthWrite;
+            let material = materials.get(opaqueBackground);
+            if (!material) {
+                material = createTextDisplayMaterial(texture, opaqueBackground);
+                materials.set(opaqueBackground, material);
+            }
+            entry.mesh.material = material;
+            entry.material.map?.dispose();
+            entry.material.dispose();
+        }
+    }
+
+    if (import.meta.env.DEV) console.assert(
+        pages.every(page => page.width <= maxTextAtlasSize && page.height <= maxTextAtlasSize && page.entries.every((entry, index) => (
+            entry.x + entry.canvas.width <= page.width
+            && entry.y + entry.canvas.height <= page.height
+            && page.entries.slice(index + 1).every(other => (
+                entry.x + entry.canvas.width <= other.x
+                || other.x + other.canvas.width <= entry.x
+                || entry.y + entry.canvas.height <= other.y
+                || other.y + other.canvas.height <= entry.y
+            ))
+        ))),
+        'Text display atlas layout is invalid.'
+    );
+    return templates;
 }
 
 if (import.meta.env.DEV) {
@@ -520,6 +590,7 @@ if (import.meta.env.DEV) {
     const context = document.createElement('canvas').getContext('2d')!;
     console.assert(measureText(' \u200c ', context, new Map(), false) === 8, 'Minecraft text advances changed.');
     console.assert(measureText('?', context, new Map(), false) === 6, 'Minecraft missing glyph advance changed.');
+    console.assert(unihexBounds('텍'.codePointAt(0)!, '').right - unihexBounds('텍'.codePointAt(0)!, '').left + 1 === 15, 'Minecraft Hangul width override changed.');
     console.assert(minecraftItalicOffset(1) === 1 && minecraftItalicOffset(9) === -1, 'Minecraft italic offsets changed.');
     const alpha = new Uint8ClampedArray([0, 0, 0, 63, 0, 0, 0, 64]);
     snapTextAlpha(alpha, 128);

@@ -41,6 +41,14 @@ let activeAtlasName: AtlasName = 'block-atlas.png';
 let applying = false;
 let loadId = 0;
 
+function getSelectedUuids(): string[] {
+  const keyToUuid = loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
+  return Array.from(currentSelection.objects, ([mesh, instanceIds]) =>
+    [...instanceIds].map(instanceId => keyToUuid?.get(`${mesh.uuid}_${instanceId}`)))
+    .flat()
+    .filter((uuid): uuid is string => !!uuid);
+}
+
 function getHoveredName(names: string[], x: number, y: number): string {
   const cellSize = tileSize + gap;
   if (x % cellSize >= tileSize || y % cellSize >= tileSize) return '';
@@ -74,11 +82,7 @@ async function applyIcon(name: string, isItemDisplay = activeAtlasName === 'item
     const before = captureSceneState(loadedObjectGroup);
     const targetName = isItemDisplay ? name : await getBlockIconName(name);
     const userData = loadedObjectGroup.userData;
-    const keyToUuid = userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
-    const selectedUuids = Array.from(currentSelection.objects, ([mesh, instanceIds]) =>
-      [...instanceIds].map(instanceId => keyToUuid?.get(`${mesh.uuid}_${instanceId}`)))
-      .flat()
-      .filter((uuid): uuid is string => !!uuid);
+    const selectedUuids = getSelectedUuids();
 
     if (!selectedUuids.length) {
       await addDisplayObject(targetName, isItemDisplay);
@@ -202,7 +206,7 @@ atlasButtons[1]?.addEventListener('click', () => openSearch('item-atlas.png'));
 atlasButtons[2]?.addEventListener('click', () => void applyIcon('player_head', true));
 atlasButtons[3]?.addEventListener('click', async () => {
   const before = captureSceneState(loadedObjectGroup);
-  await addTextDisplay();
+  await addTextDisplay(getSelectedUuids());
   recordSceneChange(loadedObjectGroup, before);
 });
 searchInput.addEventListener('input', renderIcons);

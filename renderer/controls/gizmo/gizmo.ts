@@ -33,7 +33,7 @@ import * as CustomPivot from '../pivot/custom-pivot';
 import { initDrag, applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState } from '../input/handle-key';
-import { captureSceneState, recordSceneChange, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
+import { captureSceneState, recordSceneChange, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
 import type { DragInterface } from '../selection/drag';
 import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
@@ -59,7 +59,7 @@ import {
     createGroupCommand,
     deleteSelectedItemsCommand,
     duplicateSelectedCommand,
-    ungroupGroupCommand
+    ungroupGroupsCommand
 } from './gizmo-commands';
 
 // Interfaces 
@@ -918,18 +918,30 @@ function createGroup(): string | undefined {
     return groupId;
 }
 
-function ungroupGroup(groupId: string): void {
-    if (!getGroups().has(groupId)) return;
-    const before = captureSceneState(loadedObjectGroup);
+function ungroupGroup(groupIds: string | readonly string[], deselect = false): void {
+    const groups = getGroups();
+    const requestedIds = [...new Set(typeof groupIds === 'string' ? [groupIds] : groupIds)].filter(id => groups.has(id));
+    if (requestedIds.length === 0) return;
+    const before = captureSceneState(loadedObjectGroup, true);
+    let changed = false;
     _runWithoutVertexQueue(() => {
         const pairs = getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs');
-        const partnerId = isMirrorModelingEnabled() ? pairs.get(groupId) : undefined;
-        if (partnerId) ungroupGroupCommand(loadedObjectGroup, partnerId, _getGizmoCommandCallbacks());
-        pairs.delete(groupId);
-        if (partnerId) pairs.delete(partnerId);
-        ungroupGroupCommand(loadedObjectGroup, groupId, _getGizmoCommandCallbacks());
+        const targets: string[] = [];
+        const seen = new Set<string>();
+        for (const groupId of requestedIds) {
+            const partnerId = isMirrorModelingEnabled() ? pairs.get(groupId) : undefined;
+            for (const id of [partnerId, groupId]) {
+                if (id && !seen.has(id)) {
+                    seen.add(id);
+                    targets.push(id);
+                }
+            }
+            pairs.delete(groupId);
+            if (partnerId) pairs.delete(partnerId);
+        }
+        changed = ungroupGroupsCommand(loadedObjectGroup, targets, _getGizmoCommandCallbacks(), !deselect);
     });
-    recordSceneChange(loadedObjectGroup, before);
+    if (changed) recordSceneChange(loadedObjectGroup, before);
 }
 
 function deleteSelectedItems(): void {
@@ -1076,6 +1088,38 @@ export function initGizmo({
     Overlay.setLoadedObjectGroup(lg);
     Select.setLoadedObjectGroup(lg);
     setHistorySelection(currentSelection);
+    setHistoryGizmoState(
+        () => ({
+            isCustomPivot,
+            pivotOffset: pivotOffset.clone(),
+            gizmoAnchorValid: _gizmoAnchorValid,
+            gizmoAnchorPosition: _gizmoAnchorPosition.clone(),
+            multiSelectionOriginAnchorValid: _multiSelectionOriginAnchorValid,
+            multiSelectionOriginAnchorPosition: _multiSelectionOriginAnchorPosition.clone(),
+            multiSelectionOriginAnchorInitialValid: _multiSelectionOriginAnchorInitialValid,
+            multiSelectionOriginAnchorInitialPosition: _multiSelectionOriginAnchorInitialPosition.clone(),
+            multiSelectionOriginAnchorInitialLocalValid: _multiSelectionOriginAnchorInitialLocalValid,
+            multiSelectionOriginAnchorInitialLocal: _multiSelectionOriginAnchorInitialLocal.clone(),
+            multiSelectionExplicitPivot: _multiSelectionExplicitPivot,
+            multiSelectionAccumulatedRotation: _multiSelectionAccumulatedRotation.clone(),
+            selectionAnchorMode: _selectionAnchorMode
+        }),
+        state => {
+            isCustomPivot = state.isCustomPivot;
+            pivotOffset.copy(state.pivotOffset);
+            _gizmoAnchorValid = state.gizmoAnchorValid;
+            _gizmoAnchorPosition.copy(state.gizmoAnchorPosition);
+            _multiSelectionOriginAnchorValid = state.multiSelectionOriginAnchorValid;
+            _multiSelectionOriginAnchorPosition.copy(state.multiSelectionOriginAnchorPosition);
+            _multiSelectionOriginAnchorInitialValid = state.multiSelectionOriginAnchorInitialValid;
+            _multiSelectionOriginAnchorInitialPosition.copy(state.multiSelectionOriginAnchorInitialPosition);
+            _multiSelectionOriginAnchorInitialLocalValid = state.multiSelectionOriginAnchorInitialLocalValid;
+            _multiSelectionOriginAnchorInitialLocal.copy(state.multiSelectionOriginAnchorInitialLocal);
+            _multiSelectionExplicitPivot = state.multiSelectionExplicitPivot;
+            _multiSelectionAccumulatedRotation.copy(state.multiSelectionAccumulatedRotation);
+            _selectionAnchorMode = state.selectionAnchorMode;
+        }
+    );
 
     if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map();
     if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map();
@@ -1700,6 +1744,15 @@ export function initGizmo({
             mesh: PdeMesh;
             instanceId: number;
         }>>).detail;
+        const preservedAnchor = _isMultiSelection() && _multiSelectionOriginAnchorValid
+            ? _multiSelectionOriginAnchorPosition.clone()
+            : null;
+        const preservedPivotState = preservedAnchor ? {
+            isCustomPivot,
+            pivotOffset: pivotOffset.clone(),
+            explicitPivot: _multiSelectionExplicitPivot,
+            anchorMode: _selectionAnchorMode
+        } : null;
         const objects = new Map(Array.from(currentSelection.objects, ([selectedMesh, ids]) => [selectedMesh, new Set(ids)]));
         let primary = currentSelection.primary;
         let primaryReplacement: { mesh: PdeMesh; instanceId: number } | null = null;
@@ -1729,10 +1782,32 @@ export function initGizmo({
             objects.set(mesh, ids);
         }
         if (primaryReplacement) primary = { type: 'object', ...primaryReplacement };
+        if (preservedAnchor) _multiSelectionOriginAnchorInitialLocalValid = false;
         _replaceSelectionWithGroupsAndObjects(new Set(currentSelection.groups), objects, {
             preserveAnchors: true,
             explicitPrimary: primary
         });
+        if (preservedAnchor && preservedPivotState) {
+            isCustomPivot = preservedPivotState.isCustomPivot;
+            pivotOffset.copy(preservedPivotState.pivotOffset);
+            _multiSelectionExplicitPivot = preservedPivotState.explicitPivot;
+            _selectionAnchorMode = preservedPivotState.anchorMode;
+            _multiSelectionOriginAnchorPosition.copy(preservedAnchor);
+            _multiSelectionOriginAnchorValid = true;
+            const lockPreservedAnchor = pivotMode === 'origin'
+                && (_selectionAnchorMode !== 'center' || _multiSelectionExplicitPivot || isCustomPivot);
+            if (lockPreservedAnchor) _setMultiAnchorInitial(preservedAnchor);
+            updateHelperPosition();
+            if (!lockPreservedAnchor) _setMultiAnchorInitial(_multiSelectionOriginAnchorPosition);
+            updateSelectionOverlay();
+            if (import.meta.env.DEV) {
+                const resolvedAnchor = _resolveMultiAnchorInitialWorld(new Vector3());
+                console.assert(
+                    !!resolvedAnchor && resolvedAnchor.distanceTo(_multiSelectionOriginAnchorPosition) < 1e-6,
+                    'Display replacement changed the multi-selection anchor.'
+                );
+            }
+        }
     });
 
     return {
