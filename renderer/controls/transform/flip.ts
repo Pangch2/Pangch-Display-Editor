@@ -132,7 +132,9 @@ export async function flipObjectUuids(
         ref.mesh.getMatrixAt(ref.instanceId, matrix);
         const previousMatrix = matrix.clone();
         const previousCustomPivot = (ref.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(ref.instanceId)?.clone();
-        const objectPivotWorld = isItemDisplay?.has(uuid) ? centeredPivotWorld ?? pivotWorld : pivotWorld;
+        const objectPivotWorld = isItemDisplay?.has(uuid) || Overlay.getDisplayType(ref.mesh, ref.instanceId) === 'text_display'
+            ? centeredPivotWorld ?? pivotWorld
+            : pivotWorld;
         reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, objectPivotWorld, activePivotMode === 'center');
         reflectCustomPivot(ref.mesh, ref.instanceId, axis, objectPivotWorld, previousMatrix, matrix);
         ref.mesh.setMatrixAt(ref.instanceId, matrix);
@@ -198,6 +200,15 @@ if (import.meta.env.DEV) {
         const itemMatrix = new Matrix4();
         item.getMatrixAt(0, itemMatrix);
         console.assert(Math.abs(itemMatrix.elements[12]) < 1e-9, 'Centered item display reflection added a block-size gap.');
+    });
+    const text = new InstancedMesh(new BoxGeometry(1, 1, 1), undefined!, 1);
+    text.userData.displayType = 'text_display';
+    text.setMatrixAt(0, new Matrix4());
+    itemGroup.userData.objectUuidToInstance.set('text', { mesh: text, instanceId: 0 });
+    void flipObjectUuids(itemGroup, ['text'], 'x', new Vector3(-0.5, 0, 0), 'center', undefined, new Vector3()).then(() => {
+        const textMatrix = new Matrix4();
+        text.getMatrixAt(0, textMatrix);
+        console.assert(Math.abs(textMatrix.elements[12]) < 1e-9, 'Mirrored text display added a block-size gap.');
     });
     const fence = new Mesh(new BoxGeometry(0.25, 1, 0.25).translate(0.5, 0.5, 0.5));
     fence.userData.displayType = 'block_display';

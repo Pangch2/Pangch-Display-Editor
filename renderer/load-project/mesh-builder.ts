@@ -2249,10 +2249,9 @@ export async function addDisplayObject(name: string, isItemDisplay: boolean): Pr
     new DataView(raw.buffer).setUint32(14, json.length, true);
     raw.set(json, 18);
 
-    const pivotMode = (loadedObjectGroup.userData.getPivotMode as (() => string) | undefined)?.();
     performSelection(
         await loadAndRenderPbde(new File([compressSync(raw)], 'object-add.pbde'), true),
-        pivotMode === 'center' ? 'center' : 'default'
+        'default'
     );
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     return uuid;

@@ -2,12 +2,14 @@ import { Group, InstancedMesh, Matrix4, Mesh, Vector3 } from 'three/webgpu';
 import { applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import * as GroupUtils from '../grouping/group';
+import * as Overlay from '../selection/overlay';
 import type { SelectedItem } from '../selection/select';
 
 type PdeMesh = InstancedMesh | Mesh;
 type MirrorPairKey = 'objectMirrorPairs' | 'groupMirrorPairs';
 
 const worldXReflection = new Matrix4().makeScale(-1, 1, 1).setPosition(-1, 0, 0);
+const centeredXReflection = new Matrix4().makeScale(-1, 1, 1);
 let mirrorModeling = false;
 
 export const mirrorModelingPivot = new Vector3(-0.5, 0.5, 0.5);
@@ -47,6 +49,13 @@ export function getLinkedMirrorUuid(loadedObjectGroup: Group, uuid: string): str
     return getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs').get(uuid);
 }
 
+function getObjectReflection(mesh: PdeMesh, instanceId: number): Matrix4 {
+    const displayType = Overlay.getDisplayType(mesh, instanceId);
+    return (displayType === 'block_display' || displayType === 'item_display' || displayType === 'text_display')
+        ? centeredXReflection
+        : worldXReflection;
+}
+
 export function syncLinkedMirrorPivot(loadedObjectGroup: Group, uuid: string, localPivot: Vector3): void {
     if (!mirrorModeling) return;
     const partnerUuid = getLinkedMirrorUuid(loadedObjectGroup, uuid);
@@ -63,7 +72,7 @@ export function syncLinkedMirrorPivot(loadedObjectGroup: Group, uuid: string, lo
         : partner.mesh.matrix;
     const mirroredPivot = localPivot.clone()
         .applyMatrix4(source.mesh.matrixWorld.clone().multiply(sourceMatrix))
-        .applyMatrix4(worldXReflection)
+        .applyMatrix4(getObjectReflection(source.mesh, source.instanceId))
         .applyMatrix4(partner.mesh.matrixWorld.clone().multiply(partnerMatrix).invert());
     const pivots = (partner.mesh.userData.customPivots ??= new Map<number, Vector3>()) as Map<number, Vector3>;
     pivots.set(partner.instanceId, mirroredPivot);
@@ -144,6 +153,21 @@ if (import.meta.env.DEV) {
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(1, 2, 3));
     syncLinkedMirrorGroupPivot(testGroup, 'sourceGroup', new Vector3(1, 2, 3));
     console.assert(partner.userData.customPivots.get(0).equals(new Vector3(-1, 2, 3)), 'Object custom pivot X was not mirrored.');
+    source.userData.displayType = 'block_display';
+    syncLinkedMirrorPivot(testGroup, 'source', new Vector3(1.046789, 0, 0));
+    console.assert(Math.abs(partner.userData.customPivots.get(0).x + 0.046789) < 1e-9, 'Block display pivot did not mirror around X=0.5.');
+    syncLinkedMirrorPivot(testGroup, 'source', new Vector3(0, 0, 0));
+    console.assert(Math.abs(partner.userData.customPivots.get(0).x - 1) < 1e-9, 'Block display origin pivot did not mirror to X=1.');
+    source.userData.displayType = 'item_display';
+    source.userData.hasHat = [true];
+    partner.userData.displayType = 'item_display';
+    partner.matrix.identity();
+    syncLinkedMirrorPivot(testGroup, 'source', new Vector3(0.279198, 0, 0));
+    console.assert(Math.abs(partner.userData.customPivots.get(0).x + 0.279198) < 1e-9, 'Centered item pivot used the block reflection plane.');
+    const centeredRotation = getObjectReflection(source, 0).clone().multiply(new Matrix4().makeRotationZ(Math.PI / 2)).multiply(getObjectReflection(source, 0));
+    console.assert(Math.abs(centeredRotation.elements[13]) < 1e-9, 'Player head rotation added a Y offset.');
+    delete source.userData.displayType;
+    delete partner.userData.displayType;
     const partnerGroup = testGroup.userData.groups.get('partnerGroup');
     console.assert(partnerGroup.pivot.equals(new Vector3(-1, 2, 3)), 'Group world pivot X was not sign-negated.');
     testGroup.userData.groups.get('partnerGroup').matrix.makeTranslation(-1, 0, 0);
@@ -174,19 +198,41 @@ export function applyLinkedMirrorDelta(
     const linked = getLinkedMirrorSelection(loadedObjectGroup, items, groupIds);
     if (linked.objects.size === 0 && linked.groups.size === 0) return;
 
+    const groupedObjects = new Map<PdeMesh, Set<number>>();
     for (const groupId of linked.groups) {
         for (const child of GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId)) {
             const ids = linked.objects.get(child.mesh) ?? new Set<number>();
             ids.add(child.instanceId);
             linked.objects.set(child.mesh, ids);
+            const groupedIds = groupedObjects.get(child.mesh) ?? new Set<number>();
+            groupedIds.add(child.instanceId);
+            groupedObjects.set(child.mesh, groupedIds);
         }
     }
 
-    const mirroredDelta = worldXReflection.clone().multiply(deltaMatrix).multiply(worldXReflection);
-    applyDeltaToSelection({
-        deltaMatrix: mirroredDelta,
-        meshToInstanceRanges: new Map(Array.from(linked.objects, ([mesh, ids]) => [mesh, mergeInstanceIds([...ids])])),
-        selectedGroupIds: linked.groups,
-        loadedObjectGroup
-    });
+    for (const [mesh, ids] of linked.objects) {
+        const byReflection = new Map<Matrix4, number[]>();
+        for (const instanceId of ids) {
+            const reflection = groupedObjects.get(mesh)?.has(instanceId)
+                ? worldXReflection
+                : getObjectReflection(mesh, instanceId);
+            const reflectionIds = byReflection.get(reflection) ?? [];
+            reflectionIds.push(instanceId);
+            byReflection.set(reflection, reflectionIds);
+        }
+        for (const [reflection, instanceIds] of byReflection) {
+            applyDeltaToSelection({
+                deltaMatrix: reflection.clone().multiply(deltaMatrix).multiply(reflection),
+                meshToInstanceRanges: new Map([[mesh, mergeInstanceIds(instanceIds)]]),
+                loadedObjectGroup
+            });
+        }
+    }
+    if (linked.groups.size > 0) {
+        applyDeltaToSelection({
+            deltaMatrix: worldXReflection.clone().multiply(deltaMatrix).multiply(worldXReflection),
+            selectedGroupIds: linked.groups,
+            loadedObjectGroup
+        });
+    }
 }

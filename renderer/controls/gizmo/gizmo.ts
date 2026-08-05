@@ -967,11 +967,16 @@ function duplicateSelected(): void {
     if (!_hasAnySelection()) return;
     const before = captureSceneState(loadedObjectGroup);
     _runWithoutVertexQueue(() => {
-        const sourceUuids = getSelectedItems().map(getItemUuid);
-        const sourceGroupIds = [...currentSelection.groups];
-        const sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
-        const sourcePrimary = currentSelection.primary;
-        duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, {
+        let sourceUuids = getSelectedItems().map(getItemUuid);
+        let sourceGroupIds = [...currentSelection.groups];
+        let sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+        let sourcePrimary = currentSelection.primary;
+        const mirrorModeling = isMirrorModelingEnabled();
+        const hasMirrorPair = mirrorModeling && (
+            sourceUuids.some(uuid => uuid && getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs').has(uuid))
+            || sourceGroupIds.some(id => getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').has(id))
+        );
+        const duplicateCallbacks = {
             hasAnySelection: _hasAnySelection,
             isMultiSelection: _isMultiSelection,
             beginSelectionReplace: _beginSelectionReplace,
@@ -986,12 +991,20 @@ function duplicateSelected(): void {
                 isCustomPivot = true;
                 pivotOffset.copy(state.pivotOffset);
             }
-        });
-        if (!isMirrorModelingEnabled()) {
+        };
+        duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
+        if (!mirrorModeling) {
             recordSceneChange(loadedObjectGroup, before);
             return;
         }
 
+        if (hasMirrorPair) {
+            sourceUuids = getSelectedItems().map(getItemUuid);
+            sourceGroupIds = [...currentSelection.groups];
+            sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+            sourcePrimary = currentSelection.primary;
+            duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
+        }
         const mirroredUuids = getSelectedItems().map(getItemUuid);
         const mirroredGroupIds = [...currentSelection.groups];
         _replaceSelectionWithGroupsAndObjects(new Set(sourceGroupIds), sourceObjects, {

@@ -362,7 +362,7 @@ function createTextDisplayMaterial(texture: THREE.Texture, opaqueBackground: boo
         transparent: true,
         depthWrite: opaqueBackground,
         alphaTest: opaqueBackground ? 0.001 : 0,
-        side: THREE.FrontSide,
+        side: THREE.DoubleSide,
         toneMapped: false,
         fog: false
     });
