@@ -209,6 +209,33 @@ atlasButtons[3]?.addEventListener('click', async () => {
   await addTextDisplay(getSelectedUuids());
   recordSceneChange(loadedObjectGroup, before);
 });
+const dimensionControl = document.querySelector<HTMLElement>('.toolbar-dimensions')!;
+const dimensionToggle = dimensionControl.querySelector<HTMLButtonElement>('button')!;
+const dimensionMenu = dimensionControl.querySelector<HTMLElement>('.toolbar-dimensions-menu')!;
+dimensionControl.querySelectorAll<HTMLInputElement>('input').forEach(input => {
+  const key = `pdeToolbar${input.name[0].toUpperCase()}${input.name.slice(1)}`;
+  input.value = localStorage.getItem(key) ?? '';
+  input.addEventListener('input', () => {
+    input.value = input.value.replace(/\D/g, '');
+    localStorage.setItem(key, input.value);
+  });
+});
+dimensionToggle.addEventListener('click', () => {
+  dimensionMenu.hidden = !dimensionMenu.hidden;
+  dimensionToggle.setAttribute('aria-expanded', String(!dimensionMenu.hidden));
+});
+document.addEventListener('pointerdown', event => {
+  if (!dimensionControl.contains(event.target as Node)) {
+    dimensionMenu.hidden = true;
+    dimensionToggle.setAttribute('aria-expanded', 'false');
+  }
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    dimensionMenu.hidden = true;
+    dimensionToggle.setAttribute('aria-expanded', 'false');
+  }
+});
 searchInput.addEventListener('input', renderIcons);
 overlay.querySelector('button')!.addEventListener('click', closeSearch);
 overlay.addEventListener('click', event => {

@@ -12,6 +12,7 @@ import {
 } from 'three/webgpu';
 
 import { record } from './undo-redo.js';
+import type { QueueItem } from '../vertex/vertex-swap';
 
 interface HistorySelection {
     groups: Set<string>;
@@ -22,6 +23,9 @@ interface HistorySelection {
 let currentSelection: HistorySelection | null = null;
 
 export interface HistoryGizmoState {
+    isVertexMode: boolean;
+    vertexQueue: QueueItem[];
+    selectedVertexKeys: Set<string>;
     isCustomPivot: boolean;
     pivotOffset: Vector3;
     gizmoAnchorValid: boolean;

@@ -121,3 +121,50 @@
   cursor: pointer;
 }
 
+#scene-toolbar .toolbar-dimensions {
+  position: relative;
+  order: 1;
+}
+
+#scene-toolbar .menu-icon {
+  order: 2;
+}
+
+#scene-toolbar .toolbar-dimensions-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: normal 400 18.75px/1 'lucide';
+  cursor: pointer;
+}
+
+#scene-toolbar .toolbar-dimensions-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  display: grid;
+  gap: 6px;
+  width: 130px;
+  padding: 8px;
+  transform: translateX(-50%);
+  border: 1px solid #45454a;
+  border-radius: 6px;
+  background: #252528;
+}
+
+#scene-toolbar .toolbar-dimensions-menu[hidden] {
+  display: none;
+}
+
+#scene-toolbar .toolbar-dimensions-menu label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+#scene-toolbar .toolbar-dimensions-menu input {
+  width: 65px;
+}

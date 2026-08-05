@@ -5,6 +5,12 @@ import { dragPreviewPositionNode, dragSelectedAttributeName } from '../entity-ma
 
 export type TextDisplayOptions = {
     color?: string;
+    pageColors?: string[];
+    pageAlphas?: number[];
+    pageEffects?: TextDisplayEffects[];
+    pageAligns?: Array<'left' | 'center' | 'right'>;
+    pages?: string[];
+    pageIndex?: number;
     alpha?: number;
     backgroundColor?: string;
     backgroundAlpha?: number;
@@ -17,6 +23,8 @@ export type TextDisplayOptions = {
     align?: 'left' | 'center' | 'right';
     font?: string;
 };
+
+export type TextDisplayEffects = Pick<TextDisplayOptions, 'bold' | 'italic' | 'underline' | 'strikeThrough' | 'obfuscated'>;
 
 export type TextDisplayItem = {
     name?: string;
@@ -59,6 +67,7 @@ const topGlyphOverflow = 2;
 const maxTextAtlasSize = 4096;
 let bitmapFontPromise: Promise<Map<string, BitmapGlyph>> | undefined;
 let unihexFontPromise: Promise<UnihexFontSource> | undefined;
+const minecraftItalicOffset = (canvasY: number): number => 1.25 - canvasY * 0.25;
 const unihexSizeOverrides: UnihexSizeOverride[] = [
     [0x3001, 0x30ff, 0, 15],
     [0x3200, 0x9fff, 0, 15],
@@ -70,8 +79,6 @@ const unihexSizeOverrides: UnihexSizeOverride[] = [
     [0xf900, 0xfaff, 0, 15],
     [0xff01, 0xff5e, 0, 15]
 ];
-
-const minecraftItalicOffset = (canvasY: number): number => 1.25 - canvasY * 0.25;
 
 async function loadImage(assetPath: string): Promise<ImageBitmap> {
     const bytes = await getAssetBytes(assetPath);
@@ -209,8 +216,8 @@ function clampAlpha(value: unknown, fallback: number): number {
         : fallback;
 }
 
-function wrapText(text: string, maxWidth: number, measure: (value: string) => number): string[] {
-    const lines: string[] = [];
+function wrapText(text: string, maxWidth: number, measure: (value: string, index: number) => number): Array<{ text: string; start: number }> {
+    const lines: Array<{ text: string; start: number }> = [];
     const characters = Array.from(text);
     let start = 0;
     while (start < characters.length) {
@@ -222,7 +229,7 @@ function wrapText(text: string, maxWidth: number, measure: (value: string) => nu
             const character = characters[end];
             if (character === '\n') break;
             if (character === ' ') lastSpace = end;
-            const characterWidth = measure(character);
+            const characterWidth = measure(character, end);
             width += characterWidth;
             if (hadNonZeroWidthCharacter && width > maxWidth) {
                 end = lastSpace >= start ? lastSpace : end;
@@ -230,11 +237,11 @@ function wrapText(text: string, maxWidth: number, measure: (value: string) => nu
             }
             hadNonZeroWidthCharacter ||= characterWidth !== 0;
         }
-        lines.push(characters.slice(start, end).join(''));
+        lines.push({ text: characters.slice(start, end).join(''), start });
         start = end + (characters[end] === ' ' || characters[end] === '\n' ? 1 : 0);
     }
-    if (text.endsWith('\n')) lines.push('');
-    return lines.length ? lines : [''];
+    if (text.endsWith('\n')) lines.push({ text: '', start: characters.length });
+    return lines.length ? lines : [{ text: '', start: 0 }];
 }
 
 function validColor(value: unknown, fallback: string): string {
@@ -271,30 +278,31 @@ function obfuscationGlyphs(context: CanvasRenderingContext2D, bitmapFont: Map<st
     return byAdvance;
 }
 
-function obfuscate(
-    text: string,
-    context: CanvasRenderingContext2D,
-    bitmapFont: Map<string, BitmapGlyph>,
-    glyphsByAdvance: Map<number, string[]>
-): string {
-    return Array.from(text, character => {
-        if (character === ' ') return character;
-        const glyphs = glyphsByAdvance.get(glyphAdvance(character, context, bitmapFont, false));
-        return glyphs?.[Math.floor(Math.random() * glyphs.length)] ?? character;
-    }).join('');
-}
-
 function drawText(
     context: CanvasRenderingContext2D,
     text: string,
     x: number,
     baseline: number,
     bitmapFont: Map<string, BitmapGlyph>,
-    options: TextDisplayOptions
+    start: number,
+    effect: (index: number, key: keyof TextDisplayEffects) => boolean,
+    obfuscatedGlyphs?: Map<number, string[]>
 ): void {
-    for (const character of text) {
+    Array.from(text).forEach((sourceCharacter, offset) => {
+        const bold = effect(start + offset, 'bold');
+        const italic = effect(start + offset, 'italic');
+        const glyphs = effect(start + offset, 'obfuscated') && sourceCharacter !== ' '
+            ? obfuscatedGlyphs?.get(glyphAdvance(sourceCharacter, context, bitmapFont, false))
+            : undefined;
+        const character = glyphs?.[Math.floor(Math.random() * glyphs.length)] ?? sourceCharacter;
         const glyph = bitmapFont.get(character);
         context.save();
+        if (italic) {
+            context.translate(x, baseline);
+            context.transform(1, 0, -0.25, 1, 0, 0);
+        }
+        const drawX = italic ? 0 : x;
+        const drawBaseline = italic ? 0 : baseline;
         if (glyph) {
             const draw = (offset: number) => context.drawImage(
                 glyph.image,
@@ -302,20 +310,20 @@ function drawText(
                 glyph.sourceY,
                 glyph.sourceWidth,
                 glyph.sourceHeight,
-                x + offset,
-                baseline - glyph.ascent,
+                drawX + offset,
+                drawBaseline - glyph.ascent,
                 glyph.sourceWidth * glyph.scale,
                 glyph.sourceHeight * glyph.scale
             );
             draw(0);
-            if (options.bold) draw(glyph.boldOffset);
+            if (bold) draw(glyph.boldOffset);
         } else {
-            context.fillText(character, x, baseline);
-            if (options.bold) context.fillText(character, x + 1, baseline);
+            context.fillText(character, drawX, drawBaseline);
+            if (bold) context.fillText(character, drawX + 1, drawBaseline);
         }
         context.restore();
-        x += glyphAdvance(character, context, bitmapFont, !!options.bold);
-    }
+        x += glyphAdvance(character, context, bitmapFont, bold);
+    });
 }
 
 function snapTextAlpha(data: Uint8ClampedArray, alpha: number): void {
@@ -323,6 +331,29 @@ function snapTextAlpha(data: Uint8ClampedArray, alpha: number): void {
     for (let index = 3; index < data.length; index += 4) {
         data[index] = data[index] >= threshold ? alpha : 0;
     }
+}
+
+type TextAlphaSegment = { x: number; y: number; width: number; alpha: number };
+
+function applyTextAlphaSegments(data: Uint8ClampedArray, canvasWidth: number, scale: number, segments: TextAlphaSegment[]): void {
+    const canvasHeight = data.length / 4 / canvasWidth;
+    for (const segment of segments) {
+        const left = Math.max(0, Math.floor(segment.x * scale));
+        const right = Math.min(canvasWidth, Math.ceil((segment.x + segment.width) * scale));
+        const top = Math.max(0, Math.floor(segment.y * scale));
+        const bottom = Math.min(canvasHeight, Math.ceil((segment.y + lineHeight) * scale));
+        const alpha = Math.round(segment.alpha * 255);
+        for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
+            const index = (y * canvasWidth + x) * 4 + 3;
+            if (data[index]) data[index] = alpha;
+        }
+    }
+}
+
+if (import.meta.env.DEV) {
+    const alphaCheck = new Uint8ClampedArray([0, 0, 0, 255, 0, 0, 0, 255]);
+    applyTextAlphaSegments(alphaCheck, 2, 1, [{ x: 0, y: 0, width: 1, alpha: 0.5 }]);
+    console.assert(alphaCheck[3] === 128 && alphaCheck[7] === 255, 'Page alpha must not erase adjacent text.');
 }
 
 function createTextDisplayMaterial(texture: THREE.Texture, opaqueBackground: boolean): THREE.MeshBasicNodeMaterial {
@@ -342,6 +373,12 @@ function createTextDisplayMaterial(texture: THREE.Texture, opaqueBackground: boo
 export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THREE.InstancedMesh> {
     const options = item.options ?? {};
     const text = (item.name ?? '').slice(0, 16384);
+    const pageEnds = (options.pages?.length ? options.pages : [text]).reduce<number[]>((ends, page) => {
+        ends.push((ends[ends.length - 1] ?? 0) + Array.from(page).length);
+        return ends;
+    }, []);
+    const pageIndexForCharacter = (characterIndex: number) => Math.max(0, pageEnds.findIndex(end => characterIndex < end));
+    const pageEffect = (characterIndex: number, key: keyof TextDisplayEffects) => options.pageEffects?.[pageIndexForCharacter(characterIndex)]?.[key] ?? options[key] ?? false;
     const [bitmapFont, unihexSource] = await Promise.all([loadBitmapFont(), loadUnihexFont()]);
     const unihexFont = createUnihexFont(text, unihexSource);
     const activeBitmapFont = !options.font || options.font === 'minecraft:default'
@@ -350,16 +387,18 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     const fontStyle = `${fontSize}px sans-serif`;
     const measureCanvas = document.createElement('canvas');
     const measureContext = measureCanvas.getContext('2d')!;
-    measureContext.font = `${options.italic ? 'italic ' : ''}${options.bold ? 'bold ' : ''}${fontStyle}`;
-    const obfuscatedGlyphs = options.obfuscated ? obfuscationGlyphs(measureContext, activeBitmapFont) : undefined;
+    measureContext.font = fontStyle;
+    const obfuscatedGlyphs = options.obfuscated || options.pageEffects?.some(effect => effect.obfuscated) ? obfuscationGlyphs(measureContext, activeBitmapFont) : undefined;
+    const measureRange = (value: string, start: number) => Array.from(value).reduce((width, character, offset) =>
+        width + glyphAdvance(character, measureContext, activeBitmapFont, pageEffect(start + offset, 'bold')), 0);
 
     const maxWidth = Math.max(Math.trunc(Number(options.lineLength) || 50), 1) * 4;
     const lines = wrapText(
         text,
         maxWidth,
-        value => measureText(value, measureContext, activeBitmapFont, !!options.bold)
+        (value, index) => measureRange(value, index)
     ).slice(0, 200);
-    const widths = lines.map(line => Math.ceil(measureText(line, measureContext, activeBitmapFont, !!options.bold)));
+    const widths = lines.map(line => Math.ceil(measureRange(line.text, line.start)));
     const contentWidth = Math.ceil(Math.max(...widths));
     const logicalWidth = contentWidth + 1;
     const logicalHeight = lines.length * lineHeight;
@@ -377,26 +416,53 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     context.textBaseline = 'alphabetic';
     context.fillStyle = '#ffffff';
     const textAlpha = Math.round(clampAlpha(options.alpha, 1) * 255);
-    context.globalAlpha = textAlpha / 255;
+    context.globalAlpha = 1;
 
-    const align = options.align ?? 'center';
     lines.forEach((line, index) => {
-        const renderedLine = obfuscatedGlyphs ? obfuscate(line, measureContext, activeBitmapFont, obfuscatedGlyphs) : line;
+        const align = options.pageAligns?.[pageIndexForCharacter(line.start)] ?? options.align ?? 'center';
         const width = widths[index];
         const x = Math.round((horizontalGlyphOverflow + 1 + (align === 'left' ? 0 : align === 'right' ? contentWidth - width : (contentWidth - width) / 2)) * renderScale) / renderScale;
         const baseline = topGlyphOverflow + index * lineHeight + 8;
-        drawText(context, renderedLine, x, baseline, activeBitmapFont, options);
-        if (options.underline && !options.italic) context.fillRect(x - 1, baseline + 1, width + 1, 1);
-        if (options.strikeThrough && !options.italic) context.fillRect(x - 1, baseline - 3.5, width + 1, 1);
+        drawText(context, line.text, x, baseline, activeBitmapFont, line.start, pageEffect, obfuscatedGlyphs);
+        Array.from(line.text).forEach((character, offset) => {
+            const characterX = x + measureRange(Array.from(line.text).slice(0, offset).join(''), line.start);
+            const characterWidth = glyphAdvance(character, measureContext, activeBitmapFont, pageEffect(line.start + offset, 'bold'));
+            if (pageEffect(line.start + offset, 'underline')) context.fillRect(characterX, baseline + 1, characterWidth, 1);
+            if (pageEffect(line.start + offset, 'strikeThrough')) context.fillRect(characterX, baseline - 3.5, characterWidth, 1);
+        });
     });
-
-    context.globalCompositeOperation = 'source-in';
+    const pageColor = (characterIndex: number) => validColor(options.pageColors?.[pageIndexForCharacter(characterIndex)] ?? options.color, '#ffffff');
+    const pageAlpha = (characterIndex: number) => clampAlpha(options.pageAlphas?.[pageIndexForCharacter(characterIndex)] ?? options.alpha, 1);
+    const samePageStyle = (left: number, right: number) => pageColor(left) === pageColor(right) && pageAlpha(left) === pageAlpha(right);
+    if (import.meta.env.DEV && pageEnds.length > 1) {
+        console.assert(pageColor(pageEnds[0]) === validColor(options.pageColors?.[1] ?? options.color, '#ffffff'), 'Text page colors must remain independent.');
+    }
+    context.globalCompositeOperation = 'source-atop';
     context.globalAlpha = 1;
-    context.fillStyle = validColor(options.color, '#ffffff');
-    context.fillRect(0, 0, renderWidth, renderHeight);
+    const pageSegments: TextAlphaSegment[] = [];
+    lines.forEach((line, index) => {
+        const align = options.pageAligns?.[pageIndexForCharacter(line.start)] ?? options.align ?? 'center';
+        const width = widths[index];
+        const x = Math.round((horizontalGlyphOverflow + 1 + (align === 'left' ? 0 : align === 'right' ? contentWidth - width : (contentWidth - width) / 2)) * renderScale) / renderScale;
+        const characters = Array.from(line.text);
+        let offset = 0;
+        while (offset < characters.length) {
+            const color = pageColor(line.start + offset);
+            const alpha = pageAlpha(line.start + offset);
+            let end = offset + 1;
+            while (end < characters.length && samePageStyle(line.start + offset, line.start + end)) end++;
+            context.fillStyle = color;
+            const segmentX = x + measureRange(characters.slice(0, offset).join(''), line.start);
+            const segmentWidth = measureRange(characters.slice(offset, end).join(''), line.start + offset);
+            context.fillRect(segmentX, topGlyphOverflow + index * lineHeight, segmentWidth, lineHeight);
+            pageSegments.push({ x: segmentX, y: topGlyphOverflow + index * lineHeight, width: segmentWidth, alpha });
+            offset = end;
+        }
+    });
     context.globalCompositeOperation = 'source-over';
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    snapTextAlpha(imageData.data, textAlpha);
+    snapTextAlpha(imageData.data, 255);
+    applyTextAlphaSegments(imageData.data, canvas.width, renderScale, pageSegments);
     context.putImageData(imageData, 0, 0);
     const backgroundAlpha = clampAlpha(options.backgroundAlpha, 0.25);
     context.globalAlpha = textAlpha / 255;
@@ -429,7 +495,6 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     const left = (0.5 - renderWidth / 2) * textPixelSize;
     const right = left + renderWidth * textPixelSize;
     const swatchV = 1 - 0.5 / canvas.height;
-    const textSwatchU = 0.5 / canvas.width;
     const backgroundSwatchU = 1.5 / canvas.width;
 
     addQuad(
@@ -440,38 +505,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
         textBackgroundOffset
     );
 
-    if (options.italic) {
-        lines.forEach((_line, index) => {
-            const canvasTop = topGlyphOverflow + index * lineHeight;
-            const canvasBottom = canvasTop + lineHeight;
-            const top = (logicalHeight - index * lineHeight) * textPixelSize;
-            const bottom = top - lineHeight * textPixelSize;
-            const topOffset = minecraftItalicOffset(0) * textPixelSize;
-            const bottomOffset = minecraftItalicOffset(lineHeight) * textPixelSize;
-            addQuad(
-                left + topOffset, right + topOffset, left + bottomOffset, right + bottomOffset,
-                top, bottom, 0, 1,
-                1 - canvasTop / renderHeight, 1 - canvasBottom / renderHeight
-            );
-
-            const width = widths[index];
-            const x = Math.round((horizontalGlyphOverflow + 1 + (align === 'left' ? 0 : align === 'right' ? contentWidth - width : (contentWidth - width) / 2)) * renderScale) / renderScale;
-            const addEffect = (canvasY: number): void => {
-                const effectLeft = left + (x - 1) * textPixelSize;
-                const effectRight = effectLeft + (width + 1) * textPixelSize;
-                const effectTop = (renderHeight - canvasY) * textPixelSize;
-                const effectBottom = effectTop - textPixelSize;
-                addQuad(
-                    effectLeft, effectRight, effectLeft, effectRight, effectTop, effectBottom,
-                    textSwatchU, textSwatchU, swatchV, swatchV
-                );
-            };
-            if (options.underline) addEffect(canvasTop + 9);
-            if (options.strikeThrough) addEffect(canvasTop + 4.5);
-        });
-    } else {
-        addQuad(left, right, left, right, logicalHeight * textPixelSize, 0, 0, 1, 1 - topGlyphOverflow / renderHeight, 0);
-    }
+    addQuad(left, right, left, right, logicalHeight * textPixelSize, 0, 0, 1, 1 - topGlyphOverflow / renderHeight, 0);
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -487,6 +521,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(1), 1));
 
     const material = createTextDisplayMaterial(texture, backgroundAlpha === 1);
+    material.visible = text.length > 0;
 
     // ponytail: live edits stay standalone; static project text is packed by createTextDisplayTemplates.
     return new THREE.InstancedMesh(geometry, material, 1);
@@ -583,10 +618,10 @@ export async function createTextDisplayTemplates(items: TextDisplayItem[]): Prom
 }
 
 if (import.meta.env.DEV) {
-    console.assert(wrapText('ab cd', 3, value => value.length).join('|') === 'ab|cd', 'Text display wrapping changed.');
-    console.assert(wrapText('ab  cd', 3, value => value.length).join('|') === 'ab |cd', 'Text display spaces changed.');
-    console.assert(wrapText('ab\n', 3, value => value.length).join('|') === 'ab|', 'Text display trailing newline changed.');
-    console.assert(wrapText('텍스트', 5 * 4, () => 9).join('|') === '텍스|트', 'PDE line length conversion changed.');
+    console.assert(wrapText('ab cd', 3, value => value.length).map(line => line.text).join('|') === 'ab|cd', 'Text display wrapping changed.');
+    console.assert(wrapText('ab  cd', 3, value => value.length).map(line => line.text).join('|') === 'ab |cd', 'Text display spaces changed.');
+    console.assert(wrapText('ab\n', 3, value => value.length).map(line => line.text).join('|') === 'ab|', 'Text display trailing newline changed.');
+    console.assert(wrapText('텍스트', 5 * 4, () => 9).map(line => line.text).join('|') === '텍스|트', 'PDE line length conversion changed.');
     const context = document.createElement('canvas').getContext('2d')!;
     console.assert(measureText(' \u200c ', context, new Map(), false) === 8, 'Minecraft text advances changed.');
     console.assert(measureText('?', context, new Map(), false) === 6, 'Minecraft missing glyph advance changed.');

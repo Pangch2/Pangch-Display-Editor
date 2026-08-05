@@ -510,6 +510,34 @@
   resize: vertical;
 }
 
+.text-display-pages {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.text-display-text {
+  display: grid;
+  gap: 4px;
+}
+
+.text-display-pages button {
+  padding: 3px 4px;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  background: #1e1e21;
+  color: #f0f0f0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.text-display-pages button:disabled {
+  border-color: #303034;
+  background: #18181a;
+  color: #5f5f66;
+  cursor: not-allowed;
+}
+
 .object-property input[type="checkbox"] {
   appearance: auto;
   width: auto;
@@ -534,6 +562,56 @@
 
 .object-property .text-display-alpha input[type="number"]::-webkit-inner-spin-button {
   display: none;
+}
+
+.object-property .text-display-color {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 4px;
+}
+
+.object-property .text-display-color-picker {
+  display: grid;
+  gap: 2px;
+}
+
+.object-property .text-display-color-picker label {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.object-property .text-display-color-picker input[type="range"] {
+  width: 100%;
+  height: 12px;
+}
+
+.object-property .text-display-color-range {
+  position: relative;
+  min-width: 0;
+}
+
+.object-property .text-display-color-range output {
+  position: absolute;
+  left: var(--value-position);
+  bottom: calc(100% + 2px);
+  z-index: 1;
+  padding: 1px 3px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: #111;
+  color: #fff;
+  font-size: 10px;
+  line-height: 12px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.object-property .text-display-color-picker label:focus-within output,
+.object-property .text-display-color-picker label:active output {
+  opacity: 1;
 }
 
 .object-property .text-display-effect {

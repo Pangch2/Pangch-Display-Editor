@@ -1090,6 +1090,9 @@ export function initGizmo({
     setHistorySelection(currentSelection);
     setHistoryGizmoState(
         () => ({
+            isVertexMode,
+            vertexQueue,
+            selectedVertexKeys,
             isCustomPivot,
             pivotOffset: pivotOffset.clone(),
             gizmoAnchorValid: _gizmoAnchorValid,
@@ -1105,6 +1108,10 @@ export function initGizmo({
             selectionAnchorMode: _selectionAnchorMode
         }),
         state => {
+            isVertexMode = state.isVertexMode;
+            vertexQueue.splice(0, vertexQueue.length, ...state.vertexQueue);
+            selectedVertexKeys.clear();
+            state.selectedVertexKeys.forEach(key => selectedVertexKeys.add(key));
             isCustomPivot = state.isCustomPivot;
             pivotOffset.copy(state.pivotOffset);
             _gizmoAnchorValid = state.gizmoAnchorValid;
@@ -1578,6 +1585,9 @@ export function initGizmo({
             const v = Overlay.getHoveredVertex(m, camera, renderer);
             if (v && v.userData && v.userData.key) {
                 const key = v.userData.key as string;
+                const vertexHistoryBefore = !selectedVertexKeys.has(key) && selectedVertexKeys.size === 1
+                    ? captureSceneState(loadedObjectGroup)
+                    : null;
 
                 if (selectedVertexKeys.has(key)) {
                     selectedVertexKeys.delete(key);
@@ -1607,7 +1617,7 @@ export function initGizmo({
                             if (updates._multiSelectionExplicitPivot !== undefined) _multiSelectionExplicitPivot = updates._multiSelectionExplicitPivot;
                         };
 
-                        const handled = processVertexSnap(selectedVertexKeys, {
+                        let handled = processVertexSnap(selectedVertexKeys, {
                             isVertexMode,
                             gizmoMode: transformControls!.mode,
                             currentSelection, loadedObjectGroup, selectionHelper: selectionHelper!,
@@ -1620,7 +1630,7 @@ export function initGizmo({
                         });
 
                         if (!handled && transformControls!.mode === 'rotate') {
-                            processVertexRotate(selectedVertexKeys, {
+                            handled = processVertexRotate(selectedVertexKeys, {
                                 isVertexMode,
                                 gizmoMode: transformControls!.mode,
                                 currentSelection, loadedObjectGroup, selectionHelper: selectionHelper!,
@@ -1634,7 +1644,7 @@ export function initGizmo({
                         }
 
                         if (!handled && transformControls!.mode === 'scale') {
-                            processVertexScale(selectedVertexKeys, {
+                            handled = processVertexScale(selectedVertexKeys, {
                                 isVertexMode,
                                 gizmoMode: transformControls!.mode,
                                 isCtrlDown: event.ctrlKey || event.metaKey,
@@ -1648,6 +1658,8 @@ export function initGizmo({
                                 getSelectedItems
                             });
                         }
+
+                        if (handled && vertexHistoryBefore) recordSceneChange(loadedObjectGroup, vertexHistoryBefore);
                     }
                 }
 

@@ -13,8 +13,8 @@ const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
 const ASSET_CACHE_READY_PATH = path.join(CACHE_DIR, '.assets-complete');
 const KEY_MAPPING_DIR = path.join(CACHE_DIR, 'key-mapping');
 const KEY_MAPPING_ORDER_PATH = path.join(KEY_MAPPING_DIR, '.order');
-const clientUrl = 'https://piston-data.mojang.com/v1/objects/0cda4b16710f5b42e532b20ed9b8965c105e77a8/client.jar';
-const serverUrl = 'https://piston-data.mojang.com/v1/objects/bc881a3fc6e63c490e614ab3bf9c43adc0449ab2/server.jar';
+const clientUrl = 'https://piston-data.mojang.com/v1/objects/16169fc68cc553b82f495bb2896bde6170aa51a7/client.jar';
+const serverUrl = 'https://piston-data.mojang.com/v1/objects/06157fedd67ff4dd6e0e6fa4a9dd0af296f0dd61/server.jar';
 // When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
 // For reading hardcoded JSON at runtime, prefer resolved path within the asar; when unpacked dev, use __dirname.
 const APP_ROOT = path.dirname(__dirname);
@@ -432,7 +432,13 @@ function createWindow() {
   ipcMain.handle('reset-pde-data', async (_event, scope: 'cache' | 'assets') => {
     try {
       if (scope === 'assets') {
-        await fs.rm(CACHE_DIR, { recursive: true, force: true });
+        await Promise.all([
+          fs.rm(path.join(CACHE_DIR, 'assets'), { recursive: true, force: true }),
+          fs.rm(ASSET_CACHE_READY_PATH, { force: true }),
+          fs.rm(path.join(CACHE_DIR, 'item-block-list.json'), { force: true }),
+          fs.rm(path.join(CACHE_DIR, 'block-atlas.png'), { force: true }),
+          fs.rm(path.join(CACHE_DIR, 'item-atlas.png'), { force: true })
+        ]);
       } else if (scope === 'cache') {
         await Promise.all([
           win.webContents.session.clearCache(),
@@ -563,8 +569,7 @@ function createWindow() {
     'assets/minecraft/textures/particle/',
     'assets/minecraft/textures/block/',
     'assets/minecraft/textures/environment/end_sky.png',
-    'assets/minecraft/textures/font/',
-    'assets/minecraft/font/',
+
     'assets/minecraft/textures/entity/'
   ];
 

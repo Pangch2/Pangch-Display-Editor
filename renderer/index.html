@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <title>PDE</title>
   <link rel="stylesheet" href="./ui/main.css">
-  <script type="module" src="./ui/block-item-search.ts"></script>
+  <script type="module" src="./ui/tool-bar.ts"></script>
   <script type="module" src="./ui/setting.ts"></script>
 </head>
 <body>
@@ -16,6 +16,7 @@
   <div id="main-content">
     <canvas id="renderCanvas"></canvas>
     <div id="scene-toolbar">
+      <div class="toolbar-dimensions"><button type="button" class="toolbar-dimensions-toggle lucide-icon" aria-label="크기 설정" aria-expanded="false">&#xE2F0;</button><div class="toolbar-dimensions-menu" hidden><label>가로 <input name="width" inputmode="numeric" pattern="[0-9]*"></label><label>세로 <input name="height" inputmode="numeric" pattern="[0-9]*"></label></div></div>
       <i>&#xE061;</i><i>&#xE5C6;</i><i class="player-head-icon"></i><i>&#xE198;</i><i>&#xE1D3;</i><button id="settings-button" class="menu-icon" type="button" aria-label="설정">≡</button>
     </div>
   </div>

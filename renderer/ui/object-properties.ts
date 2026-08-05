@@ -38,13 +38,14 @@ const scale = new Vector3();
 const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
 const textAlignValues = ['left', 'center', 'right'];
 const defaultTextDisplayOptions: Required<TextDisplayOptions> = {
-    color: '#FFFFFF', alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
+    color: '#FFFFFF', pageColors: [], pageAlphas: [], pageEffects: [], pageAligns: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
     bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
     lineLength: 50, align: 'center', font: 'minecraft:default'
 };
 const metadataOrderKey = 'pde-object-metadata-order';
 const matrixInputModeKey = 'pde-matrix-input-mode';
 const propertySectionOrderKey = 'pde-object-property-section-order';
+const textDisplayColorModeKey = 'pde-text-display-color-mode';
 let metadataOrder: string[] = JSON.parse(localStorage.getItem(metadataOrderKey) ?? '["texture","brightness","display"]');
 let compactMatrixInput = localStorage.getItem(matrixInputModeKey) === 'text';
 let propertySectionOrder: string[] = JSON.parse(localStorage.getItem(propertySectionOrderKey) ?? '["transform","matrix","nbt","metadata"]');
@@ -88,7 +89,36 @@ function format(value: number): string {
     return Number(value.toFixed(6)).toString();
 }
 
-function trackHistoryInput(input: HTMLInputElement | HTMLTextAreaElement): void {
+function hexToOklch(hex: string): [number, number, number] {
+    const value = Number.parseInt(hex.slice(1), 16);
+    const rgb = [value >> 16, (value >> 8) & 255, value & 255].map(channel => {
+        const linear = channel / 255;
+        return linear <= 0.04045 ? linear / 12.92 : ((linear + 0.055) / 1.055) ** 2.4;
+    });
+    const l = Math.cbrt(0.4122214708 * rgb[0] + 0.5363325363 * rgb[1] + 0.0514459929 * rgb[2]);
+    const m = Math.cbrt(0.2119034982 * rgb[0] + 0.6806995451 * rgb[1] + 0.1073969566 * rgb[2]);
+    const s = Math.cbrt(0.0883024619 * rgb[0] + 0.2817188376 * rgb[1] + 0.6299787005 * rgb[2]);
+    const lightness = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+    const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+    const b = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+    return [lightness, Math.hypot(a, b), (Math.atan2(b, a) * 180 / Math.PI + 360) % 360];
+}
+
+function oklchToHex(lightness: number, chroma: number, hue: number): string {
+    const a = chroma * Math.cos(hue * Math.PI / 180);
+    const b = chroma * Math.sin(hue * Math.PI / 180);
+    const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+    const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+    const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
+    return `#${[4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s]
+        .map(channel => Math.round(255 * Math.max(0, Math.min(1, channel <= 0.0031308 ? 12.92 * channel : 1.055 * channel ** (1 / 2.4) - 0.055))).toString(16).padStart(2, '0')).join('')}`;
+}
+
+if (import.meta.env.DEV) {
+    console.assert(oklchToHex(...hexToOklch('#ff0000')) === '#ff0000', 'OKLCH color conversion changed.');
+}
+
+function trackHistoryInput(input: HTMLInputElement | HTMLTextAreaElement, settle?: () => Promise<void>): void {
     let before: SceneSnapshot | null = null;
     let initialValue = '';
     input.addEventListener('focus', () => {
@@ -96,8 +126,12 @@ function trackHistoryInput(input: HTMLInputElement | HTMLTextAreaElement): void 
         initialValue = input.value;
     });
     input.addEventListener('blur', () => {
-        if (before && input.value !== initialValue) recordSceneChange(loadedObjectGroup, before);
+        const changeBefore = before;
+        const changeInitialValue = initialValue;
         before = null;
+        void (settle?.() ?? Promise.resolve()).then(() => {
+            if (changeBefore && input.value !== changeInitialValue) recordSceneChange(loadedObjectGroup, changeBefore);
+        });
     });
 }
 
@@ -266,10 +300,11 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
         let queuedValue: string | null = null;
         let updating = false;
         let debounceTimer = 0;
+        let flushPromise: Promise<void> | null = null;
         const flushLive = () => {
-            if (updating) return;
+            if (updating) return flushPromise!;
             updating = true;
-            void (async () => {
+            flushPromise = (async () => {
                 while (queuedValue !== null) {
                     const next = queuedValue;
                     queuedValue = null;
@@ -285,15 +320,19 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
                 }
                 updating = false;
             })();
+            return flushPromise;
         };
         const updateLive = () => {
             queuedValue = read();
             window.clearTimeout(debounceTimer);
             if (typeof live === 'number') debounceTimer = window.setTimeout(flushLive, live);
-            else flushLive();
+            else void flushLive();
         };
         control.oninput = control.onchange = updateLive;
-        trackHistoryInput(control);
+        trackHistoryInput(control, () => {
+            window.clearTimeout(debounceTimer);
+            return flushLive();
+        });
         return control;
     }
     control.onchange = async () => {
@@ -811,15 +850,33 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         section.append(metadataSection);
         metadataSection.append(brightnessProperty(brightness, updateBrightness));
 
-        let text = name;
-        const options = {
+        const options: TextDisplayOptions = {
             ...defaultTextDisplayOptions,
             ...(loadedObjectGroup.userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)?.get(uuid)
         };
+        const pages = options.pages?.length ? [...options.pages] : [name];
+        const pageColors = pages.map((_, index) => options.pageColors?.[index] ?? options.color ?? defaultTextDisplayOptions.color);
+        const pageAlphas = pages.map((_, index) => options.pageAlphas?.[index] ?? options.alpha ?? defaultTextDisplayOptions.alpha);
+        const effectKeys = ['bold', 'italic', 'underline', 'strikeThrough', 'obfuscated'] as const;
+        const pageEffects = pages.map((_, index) => Object.fromEntries(effectKeys.map(key => [key, options.pageEffects?.[index]?.[key] ?? options[key] ?? false])) as Record<typeof effectKeys[number], boolean>);
+        const pageAligns = pages.map((_, index) => options.pageAligns?.[index] ?? options.align ?? defaultTextDisplayOptions.align);
+        let pageIndex = Math.min(Math.max(options.pageIndex ?? 0, 0), pages.length - 1);
+        options.color = pageColors[pageIndex];
+        options.alpha = pageAlphas[pageIndex];
+        Object.assign(options, pageEffects[pageIndex]);
+        options.align = pageAligns[pageIndex];
+        let text = pages[pageIndex];
         const update = async () => {
-            await updateTextDisplay(uuid, text, options);
+            options.pages = pages;
+            options.pageColors = pageColors;
+            options.pageAlphas = pageAlphas;
+            options.pageEffects = pageEffects;
+            options.pageAligns = pageAligns;
+            options.pageIndex = pageIndex;
+            const sceneText = pages.join('');
+            await updateTextDisplay(uuid, sceneText, options);
             const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
-            if (partnerUuid) await updateTextDisplay(partnerUuid, text, options);
+            if (partnerUuid) await updateTextDisplay(partnerUuid, sceneText, options);
         };
         const updateOptions = async (patch: Partial<TextDisplayOptions>) => {
             const previous = { ...options };
@@ -833,14 +890,64 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const textInput = document.createElement('textarea');
         textInput.rows = 3;
         textInput.value = text;
-        metadataSection.append(metadataProperty('text', '텍스트', propertyValueControl(textInput, async value => {
+        const pageControls = document.createElement('div');
+        pageControls.className = 'text-display-pages';
+        const changePage = async (nextPageIndex: number, force = false, updateScene = true) => {
+            if (!force && nextPageIndex === pageIndex) return;
+            pageIndex = nextPageIndex;
+            text = pages[pageIndex];
+            options.color = pageColors[pageIndex];
+            options.alpha = pageAlphas[pageIndex];
+            Object.assign(options, pageEffects[pageIndex]);
+            options.align = pageAligns[pageIndex];
+            textInput.value = text;
+            if (updateScene) await update();
+            clearRenderedPropertySections();
+            schedulePropertySectionRender();
+        };
+        const pageButton = (label: string, title: string, onClick: () => Promise<void>, disabled = false) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.disabled = disabled;
+            button.textContent = label;
+            button.title = button.ariaLabel = title;
+            button.onclick = () => void onClick();
+            return button;
+        };
+        pageControls.append(
+            pageButton('<', '이전 페이지', () => changePage(Math.max(0, pageIndex - 1)), pageIndex === 0),
+            pageButton('>', '다음 페이지', () => changePage(Math.min(pages.length - 1, pageIndex + 1)), pageIndex === pages.length - 1),
+            pageButton('+', '새 페이지', () => {
+                pages.splice(pageIndex + 1, 0, '');
+                pageColors.splice(pageIndex + 1, 0, options.color ?? defaultTextDisplayOptions.color);
+                pageAlphas.splice(pageIndex + 1, 0, options.alpha ?? defaultTextDisplayOptions.alpha);
+                pageEffects.splice(pageIndex + 1, 0, { ...pageEffects[pageIndex] });
+                pageAligns.splice(pageIndex + 1, 0, options.align ?? defaultTextDisplayOptions.align);
+                return changePage(pageIndex + 1, false);
+            }),
+            pageButton('-', '현재 페이지 삭제', async () => {
+                if (pages.length === 1) return;
+                pages.splice(pageIndex, 1);
+                pageColors.splice(pageIndex, 1);
+                pageAlphas.splice(pageIndex, 1);
+                pageEffects.splice(pageIndex, 1);
+                pageAligns.splice(pageIndex, 1);
+                return changePage(Math.min(pageIndex, pages.length - 1), true);
+            }, pages.length === 1)
+        );
+        const textControls = document.createElement('div');
+        textControls.className = 'text-display-text';
+        textControls.append(pageControls, propertyValueControl(textInput, async value => {
             const previous = text;
             text = value;
+            pages[pageIndex] = value;
             try { await update(); } catch (error) {
                 text = previous;
+                pages[pageIndex] = previous;
                 throw error;
             }
-        }, true)));
+        }, true));
+        metadataSection.append(metadataProperty('text', '텍스트', textControls));
 
         const lineLength = document.createElement('input');
         lineLength.type = 'number';
@@ -849,8 +956,15 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         lineLength.value = String(options.lineLength);
         metadataSection.append(metadataProperty('lineLength', '줄바꿈 길이', propertyValueControl(lineLength, value =>
             updateOptions({ lineLength: Math.max(1, Math.trunc(Number(value) || 1)) }), 120)));
-        metadataSection.append(metadataProperty('align', '조정', propertySelect(options.align, textAlignValues, value =>
-            updateOptions({ align: value as TextDisplayOptions['align'] }))));
+        metadataSection.append(metadataProperty('align', '조정', propertySelect(options.align, textAlignValues, value => {
+            const align = value as NonNullable<TextDisplayOptions['align']>;
+            const previous = pageAligns[pageIndex];
+            pageAligns[pageIndex] = align;
+            return updateOptions({ align }).catch(error => {
+                pageAligns[pageIndex] = previous;
+                throw error;
+            });
+        })));
 
         const font = propertySelect(options.font, ['minecraft:default', 'minecraft:uniform'], value => updateOptions({ font: value }));
         font.querySelector<HTMLOptionElement>('option[value="minecraft:default"]')!.textContent = '기본';
@@ -858,10 +972,79 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         metadataSection.append(metadataProperty('font', '폰트', font));
 
         const addColor = (key: 'color' | 'backgroundColor', label: string) => {
-            const input = document.createElement('input');
-            input.type = 'color';
-            input.value = /^#[0-9a-f]{6}$/i.test(options[key]) ? options[key] : defaultTextDisplayOptions[key];
-            metadataSection.append(metadataProperty(key, label, propertyValueControl(input, value => updateOptions({ [key]: value }), 80)));
+            let value = /^#[0-9a-f]{6}$/i.test(options[key]) ? options[key] : defaultTextDisplayOptions[key];
+            const updateColor = (next: string) => {
+                if (key !== 'color') return updateOptions({ [key]: next });
+                const previous = pageColors[pageIndex];
+                pageColors[pageIndex] = next;
+                return updateOptions({ color: next }).catch(error => {
+                    pageColors[pageIndex] = previous;
+                    throw error;
+                });
+            };
+            const colorModeKey = `${textDisplayColorModeKey}-${key}`;
+            const controls = document.createElement('span');
+            controls.className = 'text-display-color';
+            const mode = document.createElement('select');
+            mode.add(new Option('일반', 'hex'));
+            mode.add(new Option('OKLCH', 'oklch'));
+            mode.value = localStorage.getItem(colorModeKey) === 'oklch' ? 'oklch' : 'hex';
+            const picker = document.createElement('span');
+            picker.className = 'text-display-color-picker';
+            const renderPicker = () => {
+                picker.replaceChildren();
+                if (mode.value === 'hex') {
+                    const input = document.createElement('input');
+                    input.type = 'color';
+                    input.value = value;
+                    picker.append(propertyValueControl(input, next => {
+                        value = next;
+                        return updateColor(next);
+                    }, true));
+                    return;
+                }
+                const [lightness, chroma, hue] = hexToOklch(value);
+                const channels: Array<[string, number, number, number, number]> = [
+                    ['L', lightness, 0, 1, 0.01], ['C', chroma, 0, 0.4, 0.005], ['H', hue, 0, 360, 1]
+                ];
+                const inputs = channels.map(([name, channelValue, min, max, step]) => {
+                    const input = document.createElement('input');
+                    input.type = 'range';
+                    input.min = String(min);
+                    input.max = String(max);
+                    input.step = String(step);
+                    input.value = String(channelValue);
+                    input.setAttribute('aria-label', `${label} ${name}`);
+                    return input;
+                });
+                const update = () => {
+                    value = oklchToHex(...inputs.map(input => Number(input.value)) as [number, number, number]);
+                    return updateColor(value);
+                };
+                inputs.forEach((input, index) => {
+                    const channel = document.createElement('label');
+                    const range = document.createElement('span');
+                    range.className = 'text-display-color-range';
+                    const output = document.createElement('output');
+                    const updateOutput = () => {
+                        output.value = output.textContent = input.value;
+                        range.style.setProperty('--value-position', `${(Number(input.value) - Number(input.min)) / (Number(input.max) - Number(input.min)) * 100}%`);
+                    };
+                    input.addEventListener('input', updateOutput);
+                    updateOutput();
+                    channel.textContent = channels[index][0];
+                    range.append(propertyValueControl(input, update, true), output);
+                    channel.append(range);
+                    picker.append(channel);
+                });
+            };
+            mode.onchange = () => {
+                localStorage.setItem(colorModeKey, mode.value);
+                renderPicker();
+            };
+            controls.append(mode, picker);
+            renderPicker();
+            metadataSection.append(metadataProperty(key, label, controls));
         };
         const addAlpha = (key: 'alpha' | 'backgroundAlpha', label: string) => {
             const controls = document.createElement('span');
@@ -881,9 +1064,15 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             const updateAlpha = (value: string) => {
                 const alpha = Math.min(1, Math.max(0, Number(value) || 0));
                 number.value = range.value = String(alpha);
-                return updateOptions({ [key]: alpha });
+                if (key !== 'alpha') return updateOptions({ [key]: alpha });
+                const previous = pageAlphas[pageIndex];
+                pageAlphas[pageIndex] = alpha;
+                return updateOptions({ alpha }).catch(error => {
+                    pageAlphas[pageIndex] = previous;
+                    throw error;
+                });
             };
-            controls.append(propertyValueControl(number, updateAlpha, 80), propertyValueControl(range, updateAlpha, 80));
+            controls.append(propertyValueControl(number, updateAlpha, 80), propertyValueControl(range, updateAlpha, true));
             metadataSection.append(metadataProperty(key, label, controls));
         };
         addColor('color', '글자 색');
@@ -891,7 +1080,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         addColor('backgroundColor', '배경 색');
         addAlpha('backgroundAlpha', '배경 투명도');
 
-        const effects: Array<[keyof Pick<TextDisplayOptions, 'bold' | 'italic' | 'underline' | 'strikeThrough' | 'obfuscated'>, string, string]> = [
+        const effects: Array<[typeof effectKeys[number], string, string]> = [
             ['bold', '굵게', '\uE05D'], ['italic', '기울임', '\uE0FB'], ['underline', '밑줄', '\uE19A'],
             ['strikeThrough', '취소선', '\uE177'], ['obfuscated', '난독화', '*']
         ];
@@ -908,7 +1097,15 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             const symbol = document.createElement('span');
             symbol.className = icon === '*' ? '' : 'lucide-icon';
             symbol.textContent = icon;
-            label.append(propertyValueControl(input, value => updateOptions({ [key]: value === 'true' }), true), symbol);
+            label.append(propertyValueControl(input, value => {
+                const enabled = value === 'true';
+            const previous = pageEffects[pageIndex][key];
+            pageEffects[pageIndex][key] = enabled;
+            return updateOptions({ [key]: enabled }).catch(error => {
+                pageEffects[pageIndex][key] = previous;
+                throw error;
+            });
+            }, true), symbol);
             effectControls.append(label);
         });
         metadataSection.append(metadataProperty('effects', '글자 이펙트', effectControls));
@@ -1424,6 +1621,10 @@ window.addEventListener('pde:replace-object-selection', event => {
     schedulePropertySectionRender();
 });
 window.addEventListener('pde:selection-changed', event => renderSelection((event as CustomEvent<SelectionState>).detail));
+window.addEventListener('pde:history-restored', () => {
+    clearRenderedPropertySections();
+    schedulePropertySectionRender();
+});
 window.addEventListener('pde:object-renamed', event => {
     const { key, value } = (event as CustomEvent<{ key: string; value: string }>).detail;
     document.querySelectorAll<HTMLInputElement>('.object-name-heading input').forEach(input => {

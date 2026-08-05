@@ -309,6 +309,15 @@ export function initHandleKey(p: HandleKeyParams): void {
     // ── keydown ──────────────────────────────────────────────────────────────
 
     window.addEventListener('keydown', (event: KeyboardEvent) => {
+        if (event.key === 'F11' && !event.repeat) {
+            event.preventDefault();
+            const fullscreen = document.fullscreenElement
+                ? document.exitFullscreen()
+                : document.documentElement.requestFullscreen();
+            void fullscreen.catch(error => console.warn('Fullscreen toggle failed.', error));
+            return;
+        }
+
         if ((event.target as HTMLElement).tagName === 'INPUT' || (event.target as HTMLElement).tagName === 'TEXTAREA') return;
 
         if (matchesShortcut(event, 'undo') || matchesShortcut(event, 'redo')) {
