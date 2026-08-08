@@ -260,12 +260,14 @@ export function replaceSelectionWithGroupsAndObjects(
         anchorMode = 'default',
         primaryIsRangeStart = false,
         preserveAnchors = false,
-        explicitPrimary = null
+        explicitPrimary = null,
+        detachTransform = true
     }: {
         anchorMode?: string;
         primaryIsRangeStart?: boolean;
         preserveAnchors?: boolean;
         explicitPrimary?: PrimarySelection | null;
+        detachTransform?: boolean;
     } = {}
 ): void {
     const hasGroups = groupIds && groupIds.size > 0;
@@ -275,7 +277,7 @@ export function replaceSelectionWithGroupsAndObjects(
         return;
     }
 
-    beginSelectionReplace(callbacks, { anchorMode, detachTransform: true, preserveAnchors });
+    beginSelectionReplace(callbacks, { anchorMode, detachTransform, preserveAnchors });
 
     let firstGroupId: string | null = null;
     let firstObjectMesh: Mesh | InstancedMesh | null = null;

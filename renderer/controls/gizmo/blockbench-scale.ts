@@ -68,18 +68,11 @@ interface AxisSelection {
     z: boolean;
 }
 
-interface DetectedKeys {
-    x: boolean | null;
-    y: boolean | null;
-    z: boolean | null;
-}
-
 export function detectBlockbenchScaleAxes(
     camera: Camera, 
     mouseInput: Vector2, 
     selectionHelper: Object3D, 
-    currentSpace: 'world' | 'local', 
-    defaultDetectedKeys: DetectedKeys
+    currentSpace: 'world' | 'local'
 ): AxisSelection {
     const checkAxis = (x: number, y: number, z: number): boolean => {
         const axisVec = new Vector3(x, y, z);
@@ -100,9 +93,9 @@ export function detectBlockbenchScaleAxes(
     };
 
     return {
-        x: defaultDetectedKeys.x !== null ? defaultDetectedKeys.x : checkAxis(1, 0, 0),
-        y: defaultDetectedKeys.y !== null ? defaultDetectedKeys.y : checkAxis(0, 1, 0),
-        z: defaultDetectedKeys.z !== null ? defaultDetectedKeys.z : checkAxis(0, 0, 1)
+        x: checkAxis(1, 0, 0),
+        y: checkAxis(0, 1, 0),
+        z: checkAxis(0, 0, 1)
     };
 }
 

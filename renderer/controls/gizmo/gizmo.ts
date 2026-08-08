@@ -59,8 +59,19 @@ import {
     createGroupCommand,
     deleteSelectedItemsCommand,
     duplicateSelectedCommand,
-    ungroupGroupsCommand
+    ungroupGroupsCommand,
+    type DuplicateCommandCallbacks
 } from './gizmo-commands';
+import {
+    beginSmartScaleDrag,
+    endSmartScaleDrag,
+    getSmartScaleVisualPivot,
+    isSmartScaleEnabled,
+    normalizeSmartScaleDrag,
+    resetSmartScaleSession,
+    toggleSmartScale,
+    updateSmartScaleDuringDrag
+} from './smart-scale';
 
 // Interfaces 
 
@@ -607,6 +618,7 @@ function commitSelectionTransform(): void {
 }
 
 function resetSelectionAndDeselect(): void {
+    resetSmartScaleSession();
     if (_hasAnySelection() || vertexQueue.length > 0) {
         _revertEphemeralPivotUndoIfAny();
         transformControls!.detach();
@@ -963,6 +975,25 @@ function deleteSelectedItems(): void {
     recordSceneChange(loadedObjectGroup, before);
 }
 
+function getDuplicateCommandCallbacks(): DuplicateCommandCallbacks {
+    return {
+        hasAnySelection: _hasAnySelection,
+        isMultiSelection: _isMultiSelection,
+        beginSelectionReplace: _beginSelectionReplace,
+        setPrimaryToFirstAvailable: _setPrimaryToFirstAvailable,
+        invalidateSelectionCaches,
+        recomputePivotStateForSelection: _recomputePivotStateForSelection,
+        updateHelperPosition,
+        updateSelectionOverlay,
+        emitSceneUpdated: _emitSceneUpdated,
+        getCustomPivotState: () => ({ isCustomPivot, pivotOffset: pivotOffset.clone() }),
+        restoreCustomPivotState: state => {
+            isCustomPivot = true;
+            pivotOffset.copy(state.pivotOffset);
+        }
+    };
+}
+
 function duplicateSelected(): void {
     if (!_hasAnySelection()) return;
     const before = captureSceneState(loadedObjectGroup);
@@ -976,22 +1007,7 @@ function duplicateSelected(): void {
             sourceUuids.some(uuid => uuid && getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs').has(uuid))
             || sourceGroupIds.some(id => getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').has(id))
         );
-        const duplicateCallbacks = {
-            hasAnySelection: _hasAnySelection,
-            isMultiSelection: _isMultiSelection,
-            beginSelectionReplace: _beginSelectionReplace,
-            setPrimaryToFirstAvailable: _setPrimaryToFirstAvailable,
-            invalidateSelectionCaches,
-            recomputePivotStateForSelection: _recomputePivotStateForSelection,
-            updateHelperPosition,
-            updateSelectionOverlay,
-            emitSceneUpdated: _emitSceneUpdated,
-            getCustomPivotState: () => ({ isCustomPivot, pivotOffset: pivotOffset.clone() }),
-            restoreCustomPivotState: (state) => {
-                isCustomPivot = true;
-                pivotOffset.copy(state.pivotOffset);
-            }
-        };
+        const duplicateCallbacks = getDuplicateCommandCallbacks();
         duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
         if (!mirrorModeling) {
             recordSceneChange(loadedObjectGroup, before);
@@ -1151,41 +1167,24 @@ export function initGizmo({
     scene.add(selectionHelper);
 
     const mouseInput = new Vector2();
-    let detectedAnchorDirections: { x: boolean | null; y: boolean | null; z: boolean | null } = { x: null, y: null, z: null };
 
     renderer.domElement.addEventListener('pointerdown', (event: PointerEvent) => {
         const rect = renderer.domElement.getBoundingClientRect();
         mouseInput.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         mouseInput.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-        detectedAnchorDirections = { x: null, y: null, z: null };
-
-        if (!transformControls!.dragging) {
-            raycaster.setFromCamera(mouseInput, camera);
-            const gizmo = transformControls!.getHelper();
-            const intersects = raycaster.intersectObject(gizmo, true);
-
-            if (intersects.length > 0) {
-                const object = intersects[0].object;
-                if (object.name === 'XYZ') {
-                    isUniformScale = true;
-                } else {
-                    isUniformScale = false;
-                    const check = (axis: string): boolean | null => {
-                        if (gizmoLines[axis as keyof GizmoLines].negative.includes(object as Mesh)) return false;
-                        if (gizmoLines[axis as keyof GizmoLines].original.includes(object as Mesh)) return true;
-                        return null;
-                    };
-                    detectedAnchorDirections.x = check('X');
-                    detectedAnchorDirections.y = check('Y');
-                    detectedAnchorDirections.z = check('Z');
-                }
-            }
-        }
     }, true);
 
     const setupResult = setupGizmo(camera, renderer as Renderer, scene);
     transformControls = setupResult.transformControls;
+    const gizmoContainer = transformControls.getHelper().children[0];
+    const updateGizmoMatrixWorld = gizmoContainer.updateMatrixWorld.bind(gizmoContainer);
+    gizmoContainer.updateMatrixWorld = (force?: boolean): void => {
+        const dragStartPivot = transformControls!.worldPositionStart.clone();
+        const smartScaleVisualPivot = getSmartScaleVisualPivot();
+        if (smartScaleVisualPivot) transformControls!.worldPositionStart.copy(smartScaleVisualPivot);
+        updateGizmoMatrixWorld(force);
+        transformControls!.worldPositionStart.copy(dragStartPivot);
+    };
     applyGizmoDragValues();
     gizmoLines = setupResult.gizmoLines;
     gizmoPlanes = setupResult.gizmoPlanes;
@@ -1232,7 +1231,21 @@ export function initGizmo({
                 CustomPivot.setPivotEditUndoCapture(null);
             }
 
-            if (blockbenchScaleMode && draggingMode === 'scale' && !isUniformScale) {
+            if ((blockbenchScaleMode || isSmartScaleEnabled()) && draggingMode === 'scale' && !isUniformScale) {
+                dragAnchorDirections = detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper!, currentSpace);
+            }
+
+            beginSmartScaleDrag(
+                draggingMode,
+                transformControls!.axis,
+                dragAnchorDirections,
+                items,
+                dragInitialMatrix,
+                dragInitialScale,
+                dragInitialPosition
+            );
+
+            if ((blockbenchScaleMode || isSmartScaleEnabled()) && draggingMode === 'scale' && !isUniformScale) {
                 dragInitialBoundingBox.makeEmpty();
 
                 selectionHelper!.updateMatrixWorld();
@@ -1258,8 +1271,6 @@ export function initGizmo({
                         });
                     }
                 }
-
-                dragAnchorDirections = detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper!, currentSpace, detectedAnchorDirections);
             }
 
         } else {
@@ -1267,6 +1278,7 @@ export function initGizmo({
             dragHistoryBefore = null;
             selectionHelper!.updateMatrixWorld();
             const changed = !selectionHelper!.matrixWorld.equals(dragInitialMatrix);
+            const smartScaleExtruded = endSmartScaleDrag();
             commitSelectionTransform();
 
             if (draggingMode === 'rotate' && _isMultiSelection() && !currentSelection.primary) {
@@ -1322,6 +1334,8 @@ export function initGizmo({
                 }
             }
 
+            if (smartScaleExtruded) updateHelperPosition();
+
             if (currentSelection.objects && currentSelection.objects.size > 0) {
                 for (const [mesh] of currentSelection.objects) {
                     if (mesh) (mesh as Mesh).boundingSphere = null;
@@ -1344,6 +1358,100 @@ export function initGizmo({
             if (changed && historyBefore) recordSceneChange(loadedObjectGroup, historyBefore);
         }
     });
+
+    const smartScaleCallbacks = {
+        cancelPreview: () => {
+            if (_dragPreviewActive) {
+                applyLinkedMirrorDelta(
+                    loadedObjectGroup,
+                    _dragTotalDeltaMatrix.clone().invert(),
+                    getDirectSelectedItems(),
+                    currentSelection.groups
+                );
+            }
+            dragDeltaMatrix.identity();
+            _dragPreviewActive = false;
+            selectionTransformDirty = false;
+        },
+        duplicateSelected: () => {
+            const duplicateCallbacks = {
+                ...getDuplicateCommandCallbacks(),
+                updateHelperPosition: () => {}
+            };
+            duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
+            const sourceItems = getSelectedItems();
+            if (!isMirrorModelingEnabled()) return sourceItems;
+
+            const sourceUuids = sourceItems.map(getItemUuid);
+            const sourceGroupIds = [...currentSelection.groups];
+            const sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+            const sourcePrimary = currentSelection.primary;
+            duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
+            const mirroredUuids = getSelectedItems().map(getItemUuid);
+            const mirroredGroupIds = [...currentSelection.groups];
+            Select.replaceSelectionWithGroupsAndObjects(
+                new Set(sourceGroupIds),
+                sourceObjects,
+                { ...getSelectionCallbacks(), updateHelperPosition: undefined },
+                { preserveAnchors: true, explicitPrimary: sourcePrimary, detachTransform: false }
+            );
+            reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot, mirrorModelingPivot.clone().setX(0));
+            sourceGroupIds.forEach((id, index) => linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), id, mirroredGroupIds[index]));
+            void flipObjectUuids(
+                loadedObjectGroup,
+                mirroredUuids,
+                'x',
+                mirrorModelingPivot,
+                mirroredGroupIds.length > 0 ? 'center' : pivotMode,
+                () => sourceUuids.forEach((uuid, index) => linkMirrorPair(
+                    getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs'), uuid, mirroredUuids[index]
+                )),
+                mirrorModelingPivot.clone().setX(0),
+                true
+            ).catch(error => console.error('스마트 스케일 미러링 복제에 실패했습니다.', error));
+            return getSelectedItems();
+        },
+        deleteSelectedAndRestore: (selection: Select.SelectionState) => {
+            const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
+            linked.groups.forEach(groupId => currentSelection.groups.add(groupId));
+            linked.objects.forEach((ids, mesh) => {
+                const selectedIds = currentSelection.objects.get(mesh) ?? new Set<number>();
+                ids.forEach(id => selectedIds.add(id));
+                currentSelection.objects.set(mesh, selectedIds);
+            });
+            deleteSelectedItemsCommand(loadedObjectGroup, currentSelection, {
+                ..._getGizmoCommandCallbacks(),
+                resetSelectionAndDeselect: _clearSelectionState,
+                emitSceneUpdated: () => {}
+            });
+            currentSelection.groups = new Set(selection.groups);
+            currentSelection.objects = new Map(Array.from(selection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+            currentSelection.primary = selection.primary;
+            invalidateSelectionCaches();
+            _recomputePivotStateForSelection();
+            updateSelectionOverlay();
+            _emitSceneUpdated();
+        },
+        applyMirrorDelta: (deltaMatrix: Matrix4) => applyLinkedMirrorDelta(
+            loadedObjectGroup,
+            deltaMatrix,
+            getDirectSelectedItems(),
+            currentSelection.groups
+        ),
+        commitSelectionOverlay: (deltaMatrix: Matrix4) => {
+            Overlay.syncSelectionOverlay(deltaMatrix);
+            Overlay.commitSelectionOverlay(deltaMatrix, currentSelection);
+            window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
+                detail: {
+                    selection: currentSelection,
+                    pivotWorld: selectionHelper!.position.clone(),
+                    pivotMode,
+                    multiCustomPivotLocal: _getMultiSelectionPivotLocal(),
+                    dragging: true
+                }
+            }));
+        }
+    };
 
     transformControls.addEventListener('change', (_event: object) => {
         if (transformControls!.dragging && _hasAnySelection()) {
@@ -1376,8 +1484,9 @@ export function initGizmo({
                 return;
             }
 
-            if (blockbenchScaleMode && transformControls!.mode === 'scale' && !isUniformScale) {
-                const shiftWorld = computeBlockbenchScaleShift(selectionHelper!, dragInitialScale, dragInitialPosition, dragInitialBoundingBox, dragAnchorDirections, currentSpace);
+            const scaleDirections = normalizeSmartScaleDrag(selectionHelper!, dragAnchorDirections);
+            if ((blockbenchScaleMode || isSmartScaleEnabled()) && transformControls!.mode === 'scale' && !isUniformScale) {
+                const shiftWorld = computeBlockbenchScaleShift(selectionHelper!, dragInitialScale, dragInitialPosition, dragInitialBoundingBox, scaleDirections, currentSpace);
                 if (shiftWorld) {
                     selectionHelper!.position.copy(dragInitialPosition).add(shiftWorld);
                     selectionHelper!.updateMatrixWorld();
@@ -1385,6 +1494,13 @@ export function initGizmo({
             }
 
             selectionHelper!.updateMatrixWorld();
+            if (isSmartScaleEnabled() && updateSmartScaleDuringDrag(
+                selectionHelper!, scaleDirections, currentSelection, loadedObjectGroup, smartScaleCallbacks
+            )) {
+                selectionTransformDirty = false;
+                dragDeltaMatrix.identity();
+                return;
+            }
             _pendingHelperMatrix.copy(selectionHelper!.matrixWorld);
             selectionTransformDirty = true;
         }
@@ -1456,6 +1572,7 @@ export function initGizmo({
         revertEphemeralPivotUndoIfAny:            _revertEphemeralPivotUndoIfAny,
 
         duplicateSelected,
+        toggleSmartScale,
         resetSelectionAndDeselect,
         deleteSelectedItems,
         createGroup,

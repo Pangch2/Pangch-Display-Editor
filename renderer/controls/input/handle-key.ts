@@ -105,6 +105,7 @@ export interface HandleKeyParams {
 
     // -- Selection manipulation callbacks --
     duplicateSelected(): void;
+    toggleSmartScale(): void;
     resetSelectionAndDeselect(): void;
     deleteSelectedItems(): void;
     createGroup(): string | undefined;
@@ -286,6 +287,9 @@ export function initHandleKey(p: HandleKeyParams): void {
                 toggleBlockbenchScaleMode();
                 break;
             }
+            case 'toggleSmartScale':
+                p.toggleSmartScale();
+                break;
             case 'toggleShading':
                 console.log(toggleShading() ? 'Shading on' : 'Shading off');
                 break;
@@ -491,7 +495,7 @@ export function initHandleKey(p: HandleKeyParams): void {
         }
 
         if (p.state.isGizmoBusy) return;
-        const key = (['translate', 'rotate', 'scale', 'toggleSpace', 'togglePivot', 'removeShear', 'toggleScaleMode', 'group', 'duplicate', 'toggleVertex', 'toggleShading'] as ShortcutId[])
+        const key = (['translate', 'rotate', 'scale', 'toggleSpace', 'togglePivot', 'removeShear', 'toggleScaleMode', 'toggleSmartScale', 'group', 'duplicate', 'toggleVertex', 'toggleShading'] as ShortcutId[])
             .find(id => matchesShortcut(event, id));
         if (key && p.getTransformControls().dragging) {
             p.state.isGizmoBusy = true;

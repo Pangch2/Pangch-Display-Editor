@@ -9,6 +9,7 @@ export const shortcutDefinitions = [
   { id: 'toggleVertex', category: '일반', label: '버텍스 모드 전환', defaults: ['V'] },
   { id: 'removeShear', category: '일반', label: 'Shear 제거', defaults: ['Q'] },
   { id: 'toggleScaleMode', category: '일반', label: '스케일 모드 전환', defaults: ['B'] },
+  { id: 'toggleSmartScale', category: '일반', label: '스마트 스케일', defaults: ['J'] },
   { id: 'undo', category: '기록', label: '실행 취소', defaults: ['Ctrl+Z'] },
   { id: 'redo', category: '기록', label: '다시 실행', defaults: ['Ctrl+Shift+Z', 'Ctrl+Y'] },
   { id: 'focusSelection', category: '선택', label: '선택 항목에 초점', defaults: ['F'] },

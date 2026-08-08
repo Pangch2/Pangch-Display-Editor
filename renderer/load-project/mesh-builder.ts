@@ -923,7 +923,7 @@ export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, an
 
         // Group-priority selection: if an instance belongs to a group, select the (root) group instead.
         if (typeof selectGroupsObjectsFn === 'function') {
-            selectGroupsObjectsFn(groupIds, meshToIds, { anchorMode });
+            selectGroupsObjectsFn(groupIds, meshToIds, { anchorMode, primaryIsRangeStart: true });
         } else if (typeof selectObjectsFn === 'function') {
             // Fallback: select raw objects if gizmo API is not available.
             selectObjectsFn(meshToIds, { anchorMode });
@@ -2005,10 +2005,10 @@ export async function replaceDisplayObjects(requests: Array<{
     isItemDisplay?: boolean;
     isTextDisplay?: boolean;
     options?: TextDisplayOptions;
-}>): Promise<string[]> {
+}>, syncMirror = true): Promise<string[]> {
     if (requests.length === 0) return [];
     const requestedCount = requests.length;
-    if (isMirrorModelingEnabled()) {
+    if (syncMirror && isMirrorModelingEnabled()) {
         const requestedUuids = new Set(requests.map(request => request.objectUuid));
         requests = requests.concat(requests.flatMap(request => {
             const partnerUuid = getLinkedMirrorUuid(loadedObjectGroup, request.objectUuid);

@@ -82,7 +82,8 @@ export async function flipObjectUuids(
     pivotWorld?: Vector3,
     activePivotMode = 'origin',
     onPreviewApplied?: () => void,
-    centeredPivotWorld?: Vector3
+    centeredPivotWorld?: Vector3,
+    previewSynchronously = false
 ): Promise<Array<string | undefined>> {
     const userData = loadedObjectGroup.userData;
     const isItemDisplay = userData.objectIsItemDisplay as Set<string> | undefined;
@@ -97,7 +98,6 @@ export async function flipObjectUuids(
     const playerHeadTextures = flipPlayerHeadTextures(uuids.filter((uuid): uuid is string =>
         !!uuid && (names?.get(uuid) ?? '').startsWith('player_head')
     ));
-    await playerHeadTextures;
     const reflected: Array<{
         index: number;
         uuid: string;
@@ -105,44 +105,49 @@ export async function flipObjectUuids(
         previousMatrix: Matrix4;
         previousCustomPivot?: Vector3;
     }> = [];
-    for (let index = 0; index < uuids.length; index++) {
-        const uuid = uuids[index];
-        if (!uuid) continue;
-        const name = names?.get(uuid) ?? '';
-        if (name.startsWith('player_head')) {
+    const applyPreview = (): void => {
+        for (let index = 0; index < uuids.length; index++) {
+            const uuid = uuids[index];
+            if (!uuid) continue;
+            const name = names?.get(uuid) ?? '';
+            if (name.startsWith('player_head')) {
+                const ref = refs?.get(uuid);
+                if (!ref) continue;
+                const matrix = new Matrix4();
+                ref.mesh.getMatrixAt(ref.instanceId, matrix);
+                const previousMatrix = matrix.clone();
+                const renderMatrix = getPlayerHeadRenderMatrix((userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid));
+                matrix.multiply(renderMatrix.clone().invert());
+                const headPivotWorld = centeredPivotWorld ?? pivotWorld;
+                reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, headPivotWorld, !centeredPivotWorld && activePivotMode === 'center');
+                matrix.multiply(renderMatrix);
+                reflectCustomPivot(ref.mesh, ref.instanceId, axis, headPivotWorld, previousMatrix, matrix);
+                ref.mesh.setMatrixAt(ref.instanceId, matrix);
+                ref.mesh.instanceMatrix.needsUpdate = true;
+                continue;
+            }
+
             const ref = refs?.get(uuid);
             if (!ref) continue;
             const matrix = new Matrix4();
             ref.mesh.getMatrixAt(ref.instanceId, matrix);
             const previousMatrix = matrix.clone();
-            const renderMatrix = getPlayerHeadRenderMatrix((userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid));
-            matrix.multiply(renderMatrix.clone().invert());
-            const headPivotWorld = centeredPivotWorld ?? pivotWorld;
-            reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, headPivotWorld, !centeredPivotWorld && activePivotMode === 'center');
-            matrix.multiply(renderMatrix);
-            reflectCustomPivot(ref.mesh, ref.instanceId, axis, headPivotWorld, previousMatrix, matrix);
+            const previousCustomPivot = (ref.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(ref.instanceId)?.clone();
+            const objectPivotWorld = isItemDisplay?.has(uuid) || Overlay.getDisplayType(ref.mesh, ref.instanceId) === 'text_display'
+                ? centeredPivotWorld ?? pivotWorld
+                : pivotWorld;
+            reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, objectPivotWorld, activePivotMode === 'center');
+            reflectCustomPivot(ref.mesh, ref.instanceId, axis, objectPivotWorld, previousMatrix, matrix);
             ref.mesh.setMatrixAt(ref.instanceId, matrix);
             ref.mesh.instanceMatrix.needsUpdate = true;
-            continue;
+
+            reflected.push({ index, uuid, ref, previousMatrix, previousCustomPivot });
         }
-
-        const ref = refs?.get(uuid);
-        if (!ref) continue;
-        const matrix = new Matrix4();
-        ref.mesh.getMatrixAt(ref.instanceId, matrix);
-        const previousMatrix = matrix.clone();
-        const previousCustomPivot = (ref.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(ref.instanceId)?.clone();
-        const objectPivotWorld = isItemDisplay?.has(uuid) || Overlay.getDisplayType(ref.mesh, ref.instanceId) === 'text_display'
-            ? centeredPivotWorld ?? pivotWorld
-            : pivotWorld;
-        reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, objectPivotWorld, activePivotMode === 'center');
-        reflectCustomPivot(ref.mesh, ref.instanceId, axis, objectPivotWorld, previousMatrix, matrix);
-        ref.mesh.setMatrixAt(ref.instanceId, matrix);
-        ref.mesh.instanceMatrix.needsUpdate = true;
-
-        reflected.push({ index, uuid, ref, previousMatrix, previousCustomPivot });
-    }
-    onPreviewApplied?.();
+        onPreviewApplied?.();
+    };
+    if (previewSynchronously) applyPreview();
+    await playerHeadTextures;
+    if (!previewSynchronously) applyPreview();
     const nextNames = await nextNamesPromise;
 
     const pending = reflected.flatMap(entry => {
@@ -154,15 +159,17 @@ export async function flipObjectUuids(
             objectUuid: uuid,
             name: nextName,
             transformContext: { pivotMode: activePivotMode }
-        })));
+        })), false);
         let newUuids: string[];
         try {
             newUuids = await replacement;
         } catch (error) {
-            for (const { ref, previousMatrix, previousCustomPivot } of pending) {
-                ref.mesh.setMatrixAt(ref.instanceId, previousMatrix);
-                if (previousCustomPivot) (ref.mesh.userData.customPivots as Map<number, Vector3>).set(ref.instanceId, previousCustomPivot);
-                ref.mesh.instanceMatrix.needsUpdate = true;
+            if (!previewSynchronously) {
+                for (const { ref, previousMatrix, previousCustomPivot } of pending) {
+                    ref.mesh.setMatrixAt(ref.instanceId, previousMatrix);
+                    if (previousCustomPivot) (ref.mesh.userData.customPivots as Map<number, Vector3>).set(ref.instanceId, previousCustomPivot);
+                    ref.mesh.instanceMatrix.needsUpdate = true;
+                }
             }
             throw error;
         }
@@ -201,6 +208,19 @@ if (import.meta.env.DEV) {
         item.getMatrixAt(0, itemMatrix);
         console.assert(Math.abs(itemMatrix.elements[12]) < 1e-9, 'Centered item display reflection added a block-size gap.');
     });
+    const synchronousItem = new InstancedMesh(new BoxGeometry(1, 1, 1), undefined!, 1);
+    synchronousItem.setMatrixAt(0, new Matrix4().makeTranslation(0.25, 0, 0));
+    const synchronousGroup = new Group();
+    synchronousGroup.userData.objectIsItemDisplay = new Set(['synchronous-item']);
+    synchronousGroup.userData.objectNames = new Map([['synchronous-item', 'stone']]);
+    synchronousGroup.userData.objectUuidToInstance = new Map([['synchronous-item', { mesh: synchronousItem, instanceId: 0 }]]);
+    let synchronousPreviewApplied = false;
+    void flipObjectUuids(synchronousGroup, ['synchronous-item'], 'x', new Vector3(), 'center', () => {
+        synchronousPreviewApplied = true;
+    }, new Vector3(), true);
+    const synchronousMatrix = new Matrix4();
+    synchronousItem.getMatrixAt(0, synchronousMatrix);
+    console.assert(synchronousPreviewApplied && Math.abs(synchronousMatrix.elements[12] + 0.25) < 1e-9, 'Synchronous mirror preview was not ready for smart scale.');
     const text = new InstancedMesh(new BoxGeometry(1, 1, 1), undefined!, 1);
     text.userData.displayType = 'text_display';
     text.setMatrixAt(0, new Matrix4());
