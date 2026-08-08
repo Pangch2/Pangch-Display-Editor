@@ -1,7 +1,7 @@
 import { Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { isolateTextDisplay, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
+import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
 import type { TextDisplayOptions } from '../load-project/text-display';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel/scene-panel-types';
@@ -63,6 +63,8 @@ const propertySectionHeights = new Map<string, number>();
 let propertySectionOffsets = [0];
 let renderedSelectionKeys: string[] = [];
 let propertySectionRenderFrame = 0;
+let propertyDetailsScrolling = false;
+let propertySectionOffsetsDirty = false;
 const sectionInputs = new WeakMap<Element, {
     transform: HTMLInputElement[];
     matrix: HTMLInputElement[];
@@ -83,7 +85,17 @@ propertySectionContent.className = 'object-properties-content';
 objectProperties.replaceChildren(propertySectionSpacer, propertySectionContent);
 propertySectionResizeObserver.observe(propertyDetails);
 propertySectionResizeObserver.observe(multiSelectionPivot);
-propertyDetails.addEventListener('scroll', schedulePropertySectionRender, { passive: true });
+propertyDetails.addEventListener('scroll', () => {
+    propertyDetailsScrolling = true;
+    schedulePropertySectionRender();
+}, { passive: true });
+propertyDetails.addEventListener('scrollend', () => {
+    propertyDetailsScrolling = false;
+    if (!propertySectionOffsetsDirty) return;
+    propertySectionOffsetsDirty = false;
+    syncPropertySectionOffsets(getPropertyViewportAnchorIndex());
+    schedulePropertySectionRender();
+}, { passive: true });
 
 function format(value: number): string {
     return Number(value.toFixed(6)).toString();
@@ -752,7 +764,6 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const pivotBase = new Vector3();
     const displayType = Overlay.getDisplayType(mesh, instanceId);
     const isTextDisplay = displayType === 'text_display';
-    if (isTextDisplay && mesh.count > 1) queueMicrotask(() => isolateTextDisplay(uuid));
     if (displayType === 'block_display') Overlay.getInstanceLocalBoxMin(mesh, instanceId, pivotBase);
     else if (displayType === 'item_display' && mesh.userData.hasHat) pivotBase.y = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
     else if (displayType === 'item_display') Overlay.getInstanceLocalBox(mesh, instanceId)?.getCenter(pivotBase);
@@ -1475,7 +1486,8 @@ function handlePropertySectionResize(entries: ResizeObserverEntry[]): void {
         propertySectionHeights.set(item.key, height);
         heightChanged = true;
     }
-    if (heightChanged) syncPropertySectionOffsets(anchorIndex);
+    if (heightChanged && propertyDetailsScrolling) propertySectionOffsetsDirty = true;
+    else if (heightChanged) syncPropertySectionOffsets(anchorIndex);
     if (heightChanged || viewportChanged) schedulePropertySectionRender();
 }
 
@@ -1490,7 +1502,7 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
             ? Array.from(ids, instanceId => ({ key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId }))
             : [])
     ];
-    if (!selection?.primary && current.length > 1) {
+    if (current.length > 1) {
         const sceneOrder = new Map<string, number>();
         const addObject = (uuid: string): void => {
             const key = `object:${uuid}`;
@@ -1521,23 +1533,7 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
     }
     if (renderMulti) renderMultiSelectionProperties(selection, pivotWorld, current.length > 1 ? multiCustomPivotLocal ?? new Vector3() : undefined);
     const propertyPivotWorld = current.length === 1 ? pivotWorld : undefined;
-    const currentByKey = new Map(current.map(item => [item.key, item]));
-    selectionOrder = selection?.primary
-        ? selectionOrder.filter(item => currentByKey.has(item.key)).map(item => currentByKey.get(item.key)!)
-        : [];
-    const known = new Set(selectionOrder.map(item => item.key));
-    const primaryKey = selection?.primary?.type === 'group'
-        ? `group:${selection.primary.id}`
-        : selection?.primary?.type === 'object'
-            ? `object:${selection.primary.mesh.uuid}:${selection.primary.instanceId}`
-            : null;
-    if (selectionOrder.length === 0 && primaryKey && currentByKey.has(primaryKey)) {
-        selectionOrder.push(currentByKey.get(primaryKey)!);
-        known.add(primaryKey);
-    }
-    current.forEach(item => {
-        if (!known.has(item.key)) selectionOrder.push(item);
-    });
+    selectionOrder = current;
     const selected = selectionOrder.length > 0;
     currentPivotWorld = propertyPivotWorld;
     title.textContent = selected ? '오브젝트 속성' : '프로젝트 세부 정보';
@@ -1609,10 +1605,18 @@ window.addEventListener('pde:replace-object-selection', event => {
         if (!changedIndexes.has(index) || !('mesh' in item)) return;
         const section = renderedSections.get(index);
         if (!section) return;
-        const replacement = renderObject(item.mesh, item.instanceId, index, index === 0 && selectionOrder.length === 1 ? currentPivotWorld : undefined);
-        section.replaceChildren(...replacement.childNodes);
         section.dataset.key = item.key;
-        sectionInputs.delete(section);
+        const rerender = () => {
+            const current = selectionOrder[index];
+            if (!section.isConnected || !current || !('mesh' in current)) return;
+            const replacement = renderObject(current.mesh, current.instanceId, index, index === 0 && selectionOrder.length === 1 ? currentPivotWorld : undefined);
+            section.replaceChildren(...replacement.childNodes);
+            section.dataset.key = current.key;
+            sectionInputs.delete(section);
+        };
+        const activeElement = document.activeElement;
+        if (activeElement && section.contains(activeElement)) activeElement.addEventListener('blur', rerender, { once: true });
+        else rerender();
     });
     propertySectionHeights.clear();
     nextHeights.forEach((height, key) => propertySectionHeights.set(key, height));

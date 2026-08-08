@@ -236,10 +236,15 @@ function scheduleSceneAutoExpand(hint: SceneDropHint): void {
     }, 420);
 }
 
-function computeSceneDropHint(event: DragEvent): SceneDropHint | null {
-    if (!scenePanelState.scenePanelList) return null;
+function computeSceneDropHint(clientX: number, clientY: number): SceneDropHint | null {
+    const list = scenePanelState.scenePanelList;
+    if (!list) return null;
 
-    const target = (event.target as HTMLElement | null)?.closest('.scene-tree-group, .scene-object-item') as HTMLElement | null;
+    const listRect = list.getBoundingClientRect();
+    if (clientX < listRect.left || clientX > listRect.right || clientY < listRect.top || clientY > listRect.bottom) return null;
+
+    const target = (document.elementFromPoint(clientX, clientY) as HTMLElement | null)
+        ?.closest('.scene-tree-group, .scene-object-item') as HTMLElement | null;
     if (!target || !scenePanelState.scenePanelList.contains(target)) {
         return {
             mode: 'root-end',
@@ -252,7 +257,7 @@ function computeSceneDropHint(event: DragEvent): SceneDropHint | null {
 
     const parentGroupId = getParentGroupIdFromElement(target);
     const rect = target.getBoundingClientRect();
-    const relativeY = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
+    const relativeY = rect.height > 0 ? (clientY - rect.top) / rect.height : 0.5;
 
     if (target.classList.contains('scene-tree-group')) {
         const groupId = target.dataset.groupId || null;
@@ -326,23 +331,16 @@ function isValidSceneDropHint(bundle: SceneDragBundle, hint: SceneDropHint, ud: 
     return true;
 }
 
-export function handleSceneItemDragStart(event: DragEvent, source: SceneDragSource, el: HTMLElement): void {
+function beginSceneItemDrag(source: SceneDragSource, el: HTMLElement): boolean {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     if (source.type === 'group') {
-        if (!ud.groups?.has(source.id)) {
-            event.preventDefault();
-            return;
-        }
+        if (!ud.groups?.has(source.id)) return false;
     } else if (!ud.objectUuidToInstance?.has(source.id)) {
-        event.preventDefault();
-        return;
+        return false;
     }
 
     const bundle = buildSceneDragBundle(source, ud);
-    if (!bundle.items || bundle.items.length === 0) {
-        event.preventDefault();
-        return;
-    }
+    if (!bundle.items || bundle.items.length === 0) return false;
 
     scenePanelState.sceneDragBundle = bundle;
     scenePanelState.sceneDropHint = null;
@@ -353,23 +351,8 @@ export function handleSceneItemDragStart(event: DragEvent, source: SceneDragSour
         getSceneDragItemElement(item)?.classList.add('scene-drag-source');
     }
     el.classList.add('scene-drag-source');
-
-    if (event.dataTransfer) {
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', `${source.type}:${source.id}`);
-        event.dataTransfer.setData('text/pde-scene-drag-count', String(bundle.items.length));
-
-        const dragPreview = createSceneDragPreview(bundle);
-        if (dragPreview) {
-            const leadEl = getSceneDragItemElement(bundle.lead) ?? el;
-            const rect = leadEl.getBoundingClientRect();
-            const rawOffsetX = event.clientX - rect.left;
-            const rawOffsetY = event.clientY - rect.top;
-            const clampedOffsetX = Math.max(8, Math.min(rawOffsetX || 16, Math.max(8, rect.width - 8)));
-            const clampedOffsetY = Math.max(8, Math.min(rawOffsetY || 12, Math.max(8, rect.height - 8)));
-            event.dataTransfer.setDragImage(dragPreview, clampedOffsetX, clampedOffsetY);
-        }
-    }
+    createSceneDragPreview(bundle);
+    return true;
 }
 
 function createSceneDragPreview(bundle: SceneDragBundle): HTMLElement | null {
@@ -401,6 +384,8 @@ function createSceneDragPreview(bundle: SceneDragBundle): HTMLElement | null {
         }
 
         row.removeAttribute('draggable');
+        row.classList.remove('scene-virtual-row');
+        row.style.removeProperty('top');
         row.classList.remove('scene-drag-source');
         row.classList.remove('scene-drop-before');
         row.classList.remove('scene-drop-after');
@@ -425,7 +410,7 @@ function createSceneDragPreview(bundle: SceneDragBundle): HTMLElement | null {
     return preview;
 }
 
-export function handleSceneItemDragEnd(): void {
+function handleSceneItemDragEnd(): void {
     if (scenePanelState.scenePanelList) {
         scenePanelState.scenePanelList.querySelectorAll('.scene-drag-source').forEach((node) => {
             node.classList.remove('scene-drag-source');
@@ -438,11 +423,11 @@ export function handleSceneItemDragEnd(): void {
     scenePanelState.sceneDragBundle = null;
 }
 
-export function handleScenePanelDragOver(event: DragEvent): void {
+function updateScenePanelDragOver(clientX: number, clientY: number): void {
     if (!scenePanelState.sceneDragBundle) return;
 
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const hint = computeSceneDropHint(event);
+    const hint = computeSceneDropHint(clientX, clientY);
 
     if (!hint || !isValidSceneDropHint(scenePanelState.sceneDragBundle, hint, ud)) {
         scenePanelState.sceneDropHint = null;
@@ -451,22 +436,16 @@ export function handleScenePanelDragOver(event: DragEvent): void {
         return;
     }
 
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-
     scenePanelState.sceneDropHint = hint;
     applySceneDropMarker(hint);
     scheduleSceneAutoExpand(hint);
 }
 
-export function handleScenePanelDrop(event: DragEvent): void {
+function dropSceneItems(clientX: number, clientY: number): void {
     if (!scenePanelState.sceneDragBundle) return;
 
-    event.preventDefault();
-    event.stopPropagation();
-
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const hint = scenePanelState.sceneDropHint ?? computeSceneDropHint(event);
+    const hint = scenePanelState.sceneDropHint ?? computeSceneDropHint(clientX, clientY);
     const before = captureSceneState(loadedObjectGroup);
 
     let moved = false;
@@ -505,13 +484,124 @@ export function handleScenePanelDrop(event: DragEvent): void {
     }
 }
 
-export function handleScenePanelDragLeave(event: DragEvent): void {
-    if (!scenePanelState.sceneDragBundle || !scenePanelState.scenePanelList) return;
+export function handleSceneItemPointerDown(event: PointerEvent, source: SceneDragSource, el: HTMLElement): void {
+    const list = scenePanelState.scenePanelList;
+    if (!list || !event.isPrimary || event.button !== 0 || scenePanelState.sceneDragBundle
+        || (event.target as HTMLElement).closest('.scene-toggle, input')) return;
 
-    const next = event.relatedTarget as Node | null;
-    if (next && scenePanelState.scenePanelList.contains(next)) return;
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let clientX = startX;
+    let clientY = startY;
+    let dragging = false;
+    let dropHintRaf = 0;
+    let autoScrollRaf = 0;
+    let autoScrollStep = 0;
 
-    scenePanelState.sceneDropHint = null;
-    clearSceneDropMarker();
-    clearSceneAutoExpandTimer();
+    const updateDropHint = () => {
+        dropHintRaf = 0;
+        if (dragging) updateScenePanelDragOver(clientX, clientY);
+    };
+    const handleScroll = () => {
+        if (!dropHintRaf) dropHintRaf = requestAnimationFrame(updateDropHint);
+    };
+    const stopAutoScroll = () => {
+        if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
+        autoScrollRaf = 0;
+        autoScrollStep = 0;
+    };
+    const updateAutoScroll = () => {
+        const rect = list.getBoundingClientRect();
+        const edge = Math.min(48, rect.height / 3);
+        autoScrollStep = clientX < rect.left || clientX > rect.right
+            ? 0
+            : clientY < rect.top + edge
+                ? -Math.min(12, Math.ceil((rect.top + edge - clientY) / 4))
+                : clientY > rect.bottom - edge
+                    ? Math.min(12, Math.ceil((clientY - rect.bottom + edge) / 4))
+                    : 0;
+        if (!autoScrollStep) {
+            stopAutoScroll();
+            return;
+        }
+        if (autoScrollRaf) return;
+
+        const scroll = () => {
+            autoScrollRaf = 0;
+            const previousScrollTop = list.scrollTop;
+            list.scrollTop += autoScrollStep;
+            if (list.scrollTop !== previousScrollTop && autoScrollStep) autoScrollRaf = requestAnimationFrame(scroll);
+        };
+        autoScrollRaf = requestAnimationFrame(scroll);
+    };
+    const cleanup = () => {
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', handlePointerUp);
+        window.removeEventListener('pointercancel', handlePointerCancel);
+        window.removeEventListener('keydown', handleKeyDown);
+        window.removeEventListener('pde:scene-updated', handleScroll);
+        list.removeEventListener('scroll', handleScroll);
+        if (dropHintRaf) cancelAnimationFrame(dropHintRaf);
+        stopAutoScroll();
+        if (list.hasPointerCapture(pointerId)) list.releasePointerCapture(pointerId);
+    };
+    const cancelDrag = () => {
+        cleanup();
+        if (!dragging) return;
+        scenePanelState.suppressSceneItemClickUntil = Date.now() + 180;
+        handleSceneItemDragEnd();
+    };
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        clientX = moveEvent.clientX;
+        clientY = moveEvent.clientY;
+
+        if (!dragging) {
+            if (Math.hypot(clientX - startX, clientY - startY) < 4) return;
+            if (!beginSceneItemDrag(source, el)) {
+                cleanup();
+                return;
+            }
+            dragging = true;
+            list.setPointerCapture(pointerId);
+            list.addEventListener('scroll', handleScroll, { passive: true });
+            window.addEventListener('pde:scene-updated', handleScroll);
+        }
+
+        moveEvent.preventDefault();
+        const preview = scenePanelState.sceneDragPreviewEl;
+        if (preview) {
+            preview.style.left = `${clientX + 12}px`;
+            preview.style.top = `${clientY + 12}px`;
+        }
+        updateScenePanelDragOver(clientX, clientY);
+        updateAutoScroll();
+    };
+    const handlePointerUp = (upEvent: PointerEvent) => {
+        if (upEvent.pointerId !== pointerId) return;
+        clientX = upEvent.clientX;
+        clientY = upEvent.clientY;
+        cleanup();
+        if (!dragging) return;
+
+        upEvent.preventDefault();
+        upEvent.stopPropagation();
+        scenePanelState.suppressSceneItemClickUntil = Date.now() + 180;
+        updateScenePanelDragOver(clientX, clientY);
+        dropSceneItems(clientX, clientY);
+    };
+    const handlePointerCancel = (cancelEvent: PointerEvent) => {
+        if (cancelEvent.pointerId === pointerId) cancelDrag();
+    };
+    const handleKeyDown = (keyEvent: KeyboardEvent) => {
+        if (keyEvent.key !== 'Escape') return;
+        keyEvent.preventDefault();
+        cancelDrag();
+    };
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false });
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerCancel);
+    window.addEventListener('keydown', handleKeyDown);
 }

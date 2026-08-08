@@ -565,7 +565,9 @@ function createWindow() {
     'assets/minecraft/items/',
     'assets/minecraft/blockstates/',
     'assets/minecraft/models/',
+    'assets/minecraft/font/',
     'assets/minecraft/textures/item/',
+    'assets/minecraft/textures/font/',
     'assets/minecraft/textures/particle/',
     'assets/minecraft/textures/block/',
     'assets/minecraft/textures/environment/end_sky.png',
@@ -583,10 +585,12 @@ function createWindow() {
     try {
       await fs.mkdir(CACHE_DIR, { recursive: true });
       const startTime = Date.now();
-      const [hasAssets, hasRegistry] = await Promise.all([
+      const [hasAssetsMarker, hasFontAssets, hasRegistry] = await Promise.all([
         pathExists(ASSET_CACHE_READY_PATH),
+        pathExists(path.join(CACHE_DIR, 'assets/minecraft/font/include/default.json')),
         pathExists(registryPath)
       ]);
+      const hasAssets = hasAssetsMarker && hasFontAssets;
       const [clientResponse, serverResponse] = await Promise.all([
         hasAssets ? null : axios<ArrayBuffer>({ url: clientUrl, method: 'GET', responseType: 'arraybuffer' }),
         hasRegistry ? null : axios<ArrayBuffer>({ url: serverUrl, method: 'GET', responseType: 'arraybuffer' })

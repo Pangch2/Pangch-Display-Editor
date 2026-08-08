@@ -480,6 +480,30 @@ let selectionPointsOverlay: Group | null = null;
 let multiSelectionOverlay: Group | null = null;
 let hoveredVertex: Sprite | null = null;
 
+export function updateSelectionOverlayObject(mesh: PdeMesh, instanceId: number): void {
+    const index = (selectionOverlay?.userData['objectIndexes'] as Map<string, number> | undefined)
+        ?.get(`${mesh.uuid}:${instanceId}`);
+    if (index === undefined || !selectionOverlay) return;
+    const box = getInstanceLocalBox(mesh, instanceId);
+    if (!box) return;
+
+    box.getCenter(_TMP_VEC3_A);
+    box.getSize(_TMP_VEC3_B);
+    getInstanceWorldMatrix(mesh, instanceId, _TMP_MAT4_A);
+    _TMP_MAT4_C.makeTranslation(_TMP_VEC3_A.x, _TMP_VEC3_A.y, _TMP_VEC3_A.z)
+        .scale(_TMP_VEC3_B)
+        .premultiply(_TMP_MAT4_A);
+    selectionOverlay.setMatrixAt(index, _TMP_MAT4_C);
+    selectionOverlay.instanceMatrix.addUpdateRange(index * 16, 16);
+    selectionOverlay.instanceMatrix.needsUpdate = true;
+
+    const item = (selectionOverlay.userData['items'] as OverlayItem[])[index];
+    item.matrix.copy(_TMP_MAT4_C);
+    item.source.cachedLocalCenter?.copy(_TMP_VEC3_A);
+    item.source.cachedLocalSize?.copy(_TMP_VEC3_B);
+    // ponytail: the aggregate box catches up on the next full selection refresh; per-key rebuilds must stay O(1).
+}
+
 function setBoxLineTransform(line: LineSegments, box: Box3): void {
     box.getCenter(line.position);
     box.getSize(line.scale);
@@ -611,6 +635,11 @@ export function updateSelectionOverlay(
         selectionOverlay.frustumCulled = false;
         selectionOverlay.userData['items'] = allOverlayItems;
         selectionOverlay.userData['selectedCount'] = itemsToRender.length;
+        selectionOverlay.userData['objectIndexes'] = new Map(allOverlayItems.flatMap((item, index) =>
+            item.source.type === 'object' && item.source.mesh && item.source.instanceId !== undefined
+                ? [[`${item.source.mesh.uuid}:${item.source.instanceId}`, index] as const]
+                : []
+        ));
         const colorObj = new Color();
         allOverlayItems.forEach((item, index) => {
             selectionOverlay!.setMatrixAt(index, item.matrix);

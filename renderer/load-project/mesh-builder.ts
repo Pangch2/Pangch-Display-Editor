@@ -96,6 +96,48 @@ function addLoadedInstance(selection: LoadedSelection, mesh: THREE.Object3D, ins
     ids.add(instanceId);
 }
 
+async function addTextDisplayItems(
+    items: OtherItem[],
+    registerObject: (mesh: THREE.InstancedMesh, instanceId: number, uuid: string, groupId: string | null) => void,
+    selection?: LoadedSelection
+): Promise<void> {
+    const templates = await createTextDisplayTemplates(items);
+    const groups = new Map<string, OtherItem[]>();
+    for (const item of items) {
+        const key = getTextDisplayTemplateKey(item);
+        const group = groups.get(key) ?? [];
+        group.push(item);
+        groups.set(key, group);
+    }
+    for (const [templateKey, group] of groups) {
+        const template = templates.get(templateKey)!;
+        for (let start = 0; start < group.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
+            const chunk = group.slice(start, start + MAX_INSTANCES_PER_INSTANCED_MESH);
+            const geometry = start === 0 ? template.geometry : template.geometry.clone();
+            geometry.setAttribute(
+                dragSelectedAttributeName,
+                new THREE.InstancedBufferAttribute(new Float32Array(chunk.length), 1)
+            );
+            const textMesh = new THREE.InstancedMesh(geometry, template.material, chunk.length);
+            textMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(chunk.length, 16);
+            textMesh.userData.displayType = 'text_display';
+            textMesh.frustumCulled = false;
+            textMesh.renderOrder = 1;
+            textMesh.layers.enable(2);
+            chunk.forEach((item, instanceId) => {
+                textMesh.setMatrixAt(instanceId, new THREE.Matrix4().fromArray(item.transform).transpose());
+                setInstanceSkyBrightness(textMesh, instanceId, item.brightness as Brightness | undefined);
+                registerObject(textMesh, instanceId, item.uuid, item.groupId);
+                if (selection) addLoadedInstance(selection, textMesh, instanceId);
+            });
+            textMesh.instanceMatrix.needsUpdate = true;
+            if (textMesh.instanceColor) textMesh.instanceColor.needsUpdate = true;
+            textMesh.computeBoundingSphere();
+            loadedObjectGroup.add(textMesh);
+        }
+    }
+}
+
 function getInstancedCapacity(mesh: THREE.InstancedMesh): number {
     let capacity = mesh.instanceMatrix.count;
     if (mesh.instanceColor) capacity = Math.min(capacity, mesh.instanceColor.count);
@@ -1656,40 +1698,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 }
 
                 const textItems = otherItems.filter(item => item.type === 'textDisplay');
-                const textDisplayTemplates = await createTextDisplayTemplates(textItems);
-                const textDisplayGroups = new Map<string, typeof textItems>();
-                for (const item of textItems) {
-                    const key = getTextDisplayTemplateKey(item);
-                    const group = textDisplayGroups.get(key) ?? [];
-                    group.push(item);
-                    textDisplayGroups.set(key, group);
-                }
-                for (const [templateKey, items] of textDisplayGroups) {
-                    const template = textDisplayTemplates.get(templateKey)!;
-                    for (let start = 0; start < items.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
-                        const chunk = items.slice(start, start + MAX_INSTANCES_PER_INSTANCED_MESH);
-                        const geometry = start === 0 ? template.geometry : template.geometry.clone();
-                        geometry.setAttribute(
-                            dragSelectedAttributeName,
-                            new THREE.InstancedBufferAttribute(new Float32Array(chunk.length), 1)
-                        );
-                        const textMesh = new THREE.InstancedMesh(geometry, template.material, chunk.length);
-                        textMesh.userData.displayType = 'text_display';
-                        textMesh.frustumCulled = false;
-                        textMesh.renderOrder = 1;
-                        textMesh.layers.enable(2);
-                        chunk.forEach((item, instanceId) => {
-                            textMesh.setMatrixAt(instanceId, new THREE.Matrix4().fromArray(item.transform).transpose());
-                            setInstanceSkyBrightness(textMesh, instanceId, item.brightness as Brightness | undefined);
-                            registerObject(textMesh, instanceId, item.uuid, item.groupId);
-                            addLoadedInstance(newlyAddedSelectableMeshes, textMesh, instanceId);
-                        });
-                        textMesh.instanceMatrix.needsUpdate = true;
-                        if (textMesh.instanceColor) textMesh.instanceColor.needsUpdate = true;
-                        textMesh.computeBoundingSphere();
-                        loadedObjectGroup.add(textMesh);
-                    }
-                }
+                await addTextDisplayItems(textItems, registerObject, newlyAddedSelectableMeshes);
                 const playerHeadElapsedMs = performance.now() - playerHeadStartMs;
 
                 const meshUploadElapsedMs = performance.now() - meshUploadStartMs;
@@ -1861,6 +1870,7 @@ export function isolateTextDisplay(objectUuid: string): void {
     const geometry = oldMesh.geometry.clone();
     geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(1), 1));
     const mesh = new THREE.InstancedMesh(geometry, oldMesh.material, 1);
+    mesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(1, 16);
     const matrix = new THREE.Matrix4();
     oldMesh.getMatrixAt(oldInstanceId, matrix);
     mesh.setMatrixAt(0, matrix);
@@ -1956,17 +1966,36 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
     const replacement = await createTextDisplayMesh({ name, options });
     const oldGeometry = ref.mesh.geometry;
     const oldMaterial = ref.mesh.material as THREE.Material;
-    replacement.geometry.setAttribute(dragSelectedAttributeName, ref.mesh.geometry.getAttribute(dragSelectedAttributeName));
-    ref.mesh.geometry = replacement.geometry;
-    ref.mesh.material = replacement.material;
-    ref.mesh.computeBoundingBox();
-    ref.mesh.computeBoundingSphere();
+    const oldBounds = oldGeometry.boundingBox?.clone();
+    const replacementMaterial = replacement.material as THREE.MeshBasicNodeMaterial;
+    const currentMaterial = oldMaterial as THREE.MeshBasicNodeMaterial;
+    const boundsUnchanged = !!oldBounds?.equals(replacement.geometry.boundingBox!);
+    if (boundsUnchanged && ref.mesh.userData.textDisplayMaterialOwned && currentMaterial.map && replacementMaterial.map) {
+        const pipelineChanged = currentMaterial.depthWrite !== replacementMaterial.depthWrite
+            || currentMaterial.alphaTest !== replacementMaterial.alphaTest;
+        currentMaterial.map.image = replacementMaterial.map.image;
+        currentMaterial.map.needsUpdate = true;
+        currentMaterial.depthWrite = replacementMaterial.depthWrite;
+        currentMaterial.alphaTest = replacementMaterial.alphaTest;
+        currentMaterial.visible = replacementMaterial.visible;
+        if (pipelineChanged) currentMaterial.needsUpdate = true;
+        replacement.geometry.dispose();
+        replacementMaterial.map.dispose();
+        replacementMaterial.dispose();
+    } else {
+        replacement.geometry.setAttribute(dragSelectedAttributeName, ref.mesh.geometry.getAttribute(dragSelectedAttributeName));
+        ref.mesh.geometry = replacement.geometry;
+        ref.mesh.material = replacementMaterial;
+        ref.mesh.userData.textDisplayMaterialOwned = true;
+        ref.mesh.computeBoundingBox();
+        ref.mesh.computeBoundingSphere();
+        disposeUnusedTextDisplayResources(oldGeometry, oldMaterial);
+    }
     (userData.objectNames as Map<string, string>).set(objectUuid, name);
     const optionMap = (userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)
         ?? (userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>());
     optionMap.set(objectUuid, { ...options });
-    disposeUnusedTextDisplayResources(oldGeometry, oldMaterial);
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    Overlay.updateSelectionOverlayObject(ref.mesh, ref.instanceId);
 }
 
 export async function replaceDisplayObjects(requests: Array<{
@@ -2071,14 +2100,49 @@ export async function replaceDisplayObjects(requests: Array<{
         replacements.every((replacement, index) => replacement.objectUuid === requests[index].objectUuid),
         'Display replacement batch order changed.'
     );
-    const json = strToU8(JSON.stringify([{ children: replacements.map(({ node }) => node) }]));
-    const raw = new Uint8Array(18 + json.length);
-    raw.set([80, 82, 74, 50], 0);
-    raw.set(strToU8('scene.json'), 4);
-    new DataView(raw.buffer).setUint32(14, json.length, true);
-    raw.set(json, 18);
-
-    await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
+    const directTextItems: OtherItem[] | null = replacements.every(state => state.node.isTextDisplay && state.displayTypeChanged)
+        ? replacements.map(({ node }) => ({
+            type: 'textDisplay',
+            uuid: node.uuid,
+            groupId: null,
+            transform: node.transforms,
+            name: node.name,
+            nbt: node.nbt,
+            brightness: node.brightness,
+            options: node.options
+        }))
+        : null;
+    if (directTextItems) {
+        const keyToUuid = ud.instanceKeyToObjectUuid as Map<string, string>;
+        await addTextDisplayItems(directTextItems, (mesh, instanceId, uuid) => {
+            keyToUuid.set(GroupUtils.getGroupKey(mesh, instanceId), uuid);
+            refs.set(uuid, { mesh, instanceId });
+        });
+        const names = ud.objectNames as Map<string, string>;
+        const labels = ud.objectLabels as Map<string, string>;
+        const textOptions = ud.objectTextDisplayOptions as Map<string, TextDisplayOptions>;
+        const objectNbt = ud.objectNbt as Map<string, string>;
+        const brightness = ud.objectBrightness as Map<string, unknown>;
+        for (const item of directTextItems) {
+            names.set(item.uuid, item.name ?? '');
+            labels.set(item.uuid, 'text_display');
+            textOptions.set(item.uuid, { ...((item.options as TextDisplayOptions | undefined) ?? {}) });
+            objectNbt.set(item.uuid, typeof item.nbt === 'string' ? item.nbt : '');
+            if (item.brightness) brightness.set(item.uuid, item.brightness);
+        }
+        if (import.meta.env.DEV) console.assert(
+            directTextItems.every(item => refs.has(item.uuid)),
+            'Direct text display replacement did not register every object.'
+        );
+    } else {
+        const json = strToU8(JSON.stringify([{ children: replacements.map(({ node }) => node) }]));
+        const raw = new Uint8Array(18 + json.length);
+        raw.set([80, 82, 74, 50], 0);
+        raw.set(strToU8('scene.json'), 4);
+        new DataView(raw.buffer).setUint32(14, json.length, true);
+        raw.set(json, 18);
+        await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
+    }
     const deletionStates = new Map<THREE.InstancedMesh, typeof replacements>();
     const boundsDirtyMeshes = new Set<THREE.InstancedMesh>();
     for (const state of replacements) {

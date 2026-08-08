@@ -4,10 +4,7 @@ import { loadedObjectGroup } from '../../load-project/upload-pbde';
 import { getLinkedMirrorUuid, getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
 import { captureSceneState, recordSceneChange } from '../../controls/undo-redo/scene-history';
 import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';
-import {
-    handleSceneItemDragEnd,
-    handleSceneItemDragStart
-} from './scene-panel-dnd';
+import { handleSceneItemPointerDown } from './scene-panel-dnd';
 import { ELLIPSIS, scenePanelState } from './scene-panel-state';
 import type {
     LoadedObjectUserData,
@@ -56,7 +53,6 @@ function makeObjectRow(row: ScenePanelRow): HTMLElement {
     el.className = 'scene-object-item scene-virtual-row';
     el.dataset.uuid = uuid;
     el.dataset.displayType = isTextDisplay ? 'text_display' : isItemDisplay ? 'item_display' : 'block_display';
-    el.draggable = true;
     setRowPosition(el, row);
 
     const leftIcon = document.createElement('span');
@@ -97,8 +93,7 @@ function makeObjectRow(row: ScenePanelRow): HTMLElement {
     el.appendChild(rightIcon);
 
     el.addEventListener('click', (e) => handleSceneItemClick(e, el));
-    el.addEventListener('dragstart', (e) => handleSceneItemDragStart(e, { type: 'object', id: uuid }, el));
-    el.addEventListener('dragend', handleSceneItemDragEnd);
+    el.addEventListener('pointerdown', (e) => handleSceneItemPointerDown(e, { type: 'object', id: uuid }, el));
 
     return el;
 }
@@ -112,7 +107,6 @@ function makeGroupRow(row: ScenePanelRow): HTMLElement {
     header.className = `scene-tree-group scene-virtual-row${isExpanded ? ' expanded' : ''}`;
     header.dataset.groupId = row.id;
     header.dataset.displayType = 'group';
-    header.draggable = true;
     setRowPosition(header, row);
 
     const toggleEl = document.createElement('span');
@@ -159,8 +153,7 @@ function makeGroupRow(row: ScenePanelRow): HTMLElement {
     });
 
     header.addEventListener('click', (e) => handleSceneItemClick(e, header));
-    header.addEventListener('dragstart', (e) => handleSceneItemDragStart(e, { type: 'group', id: row.id }, header));
-    header.addEventListener('dragend', handleSceneItemDragEnd);
+    header.addEventListener('pointerdown', (e) => handleSceneItemPointerDown(e, { type: 'group', id: row.id }, header));
 
     return header;
 }
@@ -471,7 +464,6 @@ export function renderVisibleSceneRows(): void {
 
     content.appendChild(fragment);
     syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
-    scheduleSceneExtraFit();
 
     const elapsed = performance.now() - renderStartMs;
     if (elapsed > 8 && isPbdeLogEnabled('Scene panel viewport render')) {
@@ -508,6 +500,7 @@ export function refreshScenePanel(): void {
 
     const domStartMs = performance.now();
     renderVisibleSceneRows();
+    scheduleSceneExtraFit();
     const domElapsedMs = performance.now() - domStartMs;
     const totalElapsedMs = performance.now() - totalStartMs;
 
