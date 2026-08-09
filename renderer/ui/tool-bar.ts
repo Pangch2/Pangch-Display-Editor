@@ -5,6 +5,7 @@ import { addDisplayObject, addTextDisplay, loadedObjectGroup, replaceDisplayObje
 import { getCompatibleBlockProperties } from '../load-project/pbde-assets';
 import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history.js';
 import { matchesShortcut } from '../controls/input/shortcuts';
+import { setHeadPainterEnabled, toggleHeadPainter } from './head-painter';
 
 type AtlasName = 'block-atlas.png' | 'item-atlas.png';
 
@@ -150,6 +151,7 @@ function closeSearch(): void {
 }
 
 async function openSearch(name: AtlasName): Promise<void> {
+  setHeadPainterEnabled(false);
   const currentLoadId = ++loadId;
   activeAtlasName = name;
   overlay.hidden = false;
@@ -201,14 +203,27 @@ if (import.meta.env.DEV) {
 }
 
 const atlasButtons = document.querySelectorAll<HTMLElement>('#scene-toolbar i');
-atlasButtons[0]?.addEventListener('click', () => openSearch('block-atlas.png'));
-atlasButtons[1]?.addEventListener('click', () => openSearch('item-atlas.png'));
-atlasButtons[2]?.addEventListener('click', () => void applyIcon('player_head', true));
+atlasButtons[0]?.addEventListener('click', () => { setHeadPainterEnabled(false); void openSearch('block-atlas.png'); });
+atlasButtons[1]?.addEventListener('click', () => { setHeadPainterEnabled(false); void openSearch('item-atlas.png'); });
+atlasButtons[2]?.addEventListener('click', () => { setHeadPainterEnabled(false); void applyIcon('player_head', true); });
 atlasButtons[3]?.addEventListener('click', async () => {
+  setHeadPainterEnabled(false);
   const before = captureSceneState(loadedObjectGroup);
   await addTextDisplay(getSelectedUuids());
   recordSceneChange(loadedObjectGroup, before);
 });
+atlasButtons[4]?.addEventListener('click', toggleHeadPainter);
+document.getElementById('settings-button')?.addEventListener('click', () => setHeadPainterEnabled(false));
+if (atlasButtons[4]) {
+  atlasButtons[4].tabIndex = 0;
+  atlasButtons[4].role = 'button';
+  atlasButtons[4].ariaLabel = 'Head Painter';
+  atlasButtons[4].addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggleHeadPainter();
+  });
+}
 const dimensionControl = document.querySelector<HTMLElement>('.toolbar-dimensions')!;
 const dimensionToggle = dimensionControl.querySelector<HTMLButtonElement>('button')!;
 const dimensionMenu = dimensionControl.querySelector<HTMLElement>('.toolbar-dimensions-menu')!;
@@ -221,6 +236,7 @@ dimensionControl.querySelectorAll<HTMLInputElement>('input').forEach(input => {
   });
 });
 dimensionToggle.addEventListener('click', () => {
+  setHeadPainterEnabled(false);
   dimensionMenu.hidden = !dimensionMenu.hidden;
   dimensionToggle.setAttribute('aria-expanded', String(!dimensionMenu.hidden));
 });

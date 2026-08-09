@@ -13,6 +13,7 @@ import {
     InstancedBufferAttribute,
     StorageInstancedBufferAttribute,
     LineBasicMaterial,
+    LineBasicNodeMaterial,
     EdgesGeometry,
     BoxGeometry,
     Material,
@@ -28,7 +29,7 @@ import {
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import type { GroupChildObject } from '../grouping/group';
-import { dragPreviewPositionNode, dragSelectedAttributeName } from '../../entity-material';
+import { dragDeltaMatrix, dragPreviewPositionNode, dragSelectedAttributeName } from '../../entity-material';
 import { ConvexHull } from 'three/examples/jsm/math/ConvexHull.js';
 
 // --- Types & Interfaces ---
@@ -474,6 +475,104 @@ export function prepareMultiSelectionDrag(_currentSelection: SelectionState): vo
 }
 
 // --- Overlay State ---
+
+const _headGridDragMatrix = new Matrix4();
+let headPainterGridOverlay: LineSegments | null = null;
+let headPainterGridDirty = true;
+
+export function invalidateHeadPainterGridOverlay(): void {
+    headPainterGridDirty = true;
+}
+
+export function updateHeadPainterGridOverlay(
+    scene: Scene,
+    objectGroup: Group,
+    enabled: boolean,
+    layerMode: 'auto' | 'layer' | 'base',
+    getFaceGridCounts: (objectUuid: string, face: number, worldMatrix: Matrix4) => [number, number],
+    getGridBoundary: (index: number, count: number) => number
+): void {
+    if (!headPainterGridDirty && _headGridDragMatrix.equals(dragDeltaMatrix)) return;
+
+    const positions: number[] = [];
+    const worldMatrix = new Matrix4();
+    const addLine = (a: Vector3, b: Vector3, matrix: Matrix4) => {
+        a.applyMatrix4(matrix);
+        b.applyMatrix4(matrix);
+        positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    };
+
+    objectGroup.updateMatrixWorld(true);
+    if (enabled) objectGroup.traverse(object => {
+        if (!(object as InstancedMesh).isInstancedMesh) return;
+        const mesh = object as InstancedMesh;
+        if (!mesh.geometry.getAttribute('headLayerVisible')) return;
+        const keyToUuid = objectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
+        for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
+            const uuid = keyToUuid?.get(`${mesh.uuid}_${instanceId}`);
+            if (!uuid) continue;
+            const showLayer = layerMode === 'layer' || (layerMode === 'auto' && !!mesh.userData.hasHat?.[instanceId]);
+            const scale = (showLayer ? 1.0625 : 1) * 1.003;
+            const half = scale / 2;
+            const bottom = -0.5 - half;
+            const top = -0.5 + half;
+            const faces = [
+                [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)],
+                [new Vector3(half, bottom, half), new Vector3(0, 0, -scale), new Vector3(0, scale, 0)],
+                [new Vector3(-half, top, half), new Vector3(scale, 0, 0), new Vector3(0, 0, -scale)],
+                [new Vector3(-half, bottom, -half), new Vector3(scale, 0, 0), new Vector3(0, 0, scale)],
+                [new Vector3(-half, bottom, half), new Vector3(scale, 0, 0), new Vector3(0, scale, 0)],
+                [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, scale, 0)]
+            ];
+            mesh.getMatrixAt(instanceId, worldMatrix);
+            worldMatrix.premultiply(mesh.matrixWorld);
+            if (mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(instanceId)) worldMatrix.premultiply(dragDeltaMatrix);
+            for (const [face, [origin, horizontalAxis, verticalAxis]] of faces.entries()) {
+                const [horizontal, vertical] = getFaceGridCounts(uuid, face, worldMatrix);
+                addLine(origin.clone(), origin.clone().add(horizontalAxis), worldMatrix);
+                addLine(origin.clone().add(verticalAxis), origin.clone().add(horizontalAxis).add(verticalAxis), worldMatrix);
+                addLine(origin.clone(), origin.clone().add(verticalAxis), worldMatrix);
+                addLine(origin.clone().add(horizontalAxis), origin.clone().add(horizontalAxis).add(verticalAxis), worldMatrix);
+                for (let line = 1; line < horizontal; line++) {
+                    const start = origin.clone().addScaledVector(horizontalAxis, getGridBoundary(line, horizontal) / 8);
+                    addLine(start, start.clone().add(verticalAxis), worldMatrix);
+                }
+                for (let line = 1; line < vertical; line++) {
+                    const start = origin.clone().addScaledVector(verticalAxis, getGridBoundary(line, vertical) / 8);
+                    addLine(start, start.clone().add(horizontalAxis), worldMatrix);
+                }
+            }
+        }
+    });
+
+    if (positions.length) {
+        const geometry = new BufferGeometry();
+        geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+        if (!headPainterGridOverlay) {
+            headPainterGridOverlay = new LineSegments(geometry, new LineBasicNodeMaterial({ color: 0x70c7ff, transparent: true, opacity: 0.9, depthTest: true, depthWrite: false }));
+            headPainterGridOverlay.name = 'head-painter-grid';
+            headPainterGridOverlay.renderOrder = 1000;
+            scene.add(headPainterGridOverlay);
+        } else {
+            headPainterGridOverlay.geometry.dispose();
+            headPainterGridOverlay.geometry = geometry;
+        }
+    } else {
+        removeHeadPainterGridOverlay();
+    }
+    headPainterGridDirty = false;
+    _headGridDragMatrix.copy(dragDeltaMatrix);
+}
+
+export function removeHeadPainterGridOverlay(): void {
+    if (headPainterGridOverlay) {
+        headPainterGridOverlay.removeFromParent();
+        headPainterGridOverlay.geometry.dispose();
+        (headPainterGridOverlay.material as LineBasicNodeMaterial).dispose();
+        headPainterGridOverlay = null;
+    }
+    headPainterGridDirty = true;
+}
 
 let selectionOverlay: InstancedMesh | null = null;
 let selectionPointsOverlay: Group | null = null;

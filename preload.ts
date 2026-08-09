@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 type AssetEventChannel = 'assets-downloaded' | 'assets-download-failed' | 'assets-progress';
 type AtlasName = 'block-atlas.png' | 'item-atlas.png';
+type PainterAssetType = 'brush' | 'palette';
 
 // 렌더러 프로세스의 window 객체에 안전하게 API 노출
 contextBridge.exposeInMainWorld('ipcApi', {
@@ -48,6 +49,10 @@ contextBridge.exposeInMainWorld('ipcApi', {
   loadKeyMappingPreset: (name: string) => ipcRenderer.invoke('load-key-mapping-preset', name),
   saveKeyMappingPreset: (name: string, mapping: Record<string, string[]>) => ipcRenderer.invoke('save-key-mapping-preset', name, mapping),
   deleteKeyMappingPreset: (name: string) => ipcRenderer.invoke('delete-key-mapping-preset', name),
+  listPainterAssets: (kind: PainterAssetType) => ipcRenderer.invoke('list-painter-assets', kind),
+  loadPainterAsset: (kind: PainterAssetType, name: string) => ipcRenderer.invoke('load-painter-asset', kind, name),
+  savePainterAsset: (kind: PainterAssetType, name: string, data: unknown) => ipcRenderer.invoke('save-painter-asset', kind, name, data),
+  deletePainterAsset: (kind: PainterAssetType, name: string) => ipcRenderer.invoke('delete-painter-asset', kind, name),
   // 리스너 정리 (메모리 누수 방지)
   removeAllListeners: (channel: AssetEventChannel) => {
     const validChannels = ['assets-downloaded', 'assets-download-failed'];

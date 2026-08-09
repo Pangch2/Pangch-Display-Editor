@@ -30,6 +30,7 @@ import { initContextMenu } from './ui/context-menu';
 import './ui/scene-panel';
 import './ui/panel-layout';
 import './ui/object-properties';
+import { initHeadPainter, updateHeadPainter } from './ui/head-painter';
 
 // 전역 변수로 선언
 let scene: Scene;
@@ -525,7 +526,7 @@ async function initScene(): Promise<void> {
     camera = new PerspectiveCamera(
         cameraFov,
         mainContent.clientWidth / mainContent.clientHeight,
-        0.05,
+        0.01,
         1000
     );
     camera.position.set(3, 3, 3);
@@ -544,6 +545,17 @@ async function initScene(): Promise<void> {
     // 4. 컨트롤(Controls)
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
+    initHeadPainter({
+        renderer,
+        scene,
+        getCamera: () => camera,
+        isGizmoHovered: () => (gizmoModule?.getTransformControls().axis ?? null) !== null,
+        suspendCameraControls: () => {
+            const wasEnabled = controls.enabled;
+            controls.enabled = false;
+            return () => { controls.enabled = wasEnabled; };
+        }
+    });
 
     initContextMenu({
         element: renderer.domElement,
@@ -697,6 +709,7 @@ function animate(): void {
     
     // Update gizmo: overlay and axis orientation
     if (gizmoModule) gizmoModule.updateGizmo();
+    updateHeadPainter();
     if (renderer && scene && camera && !scenePrecompileInProgress) {
         viewHelper.center.copy(controls.target);
         viewHelperTimer.update();

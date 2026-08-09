@@ -87,6 +87,7 @@ export interface LoadedObjectUserData {
     objectLabels?: Map<string, string>;
     objectIsItemDisplay?: Set<string>;
     objectDisplayTypes?: Map<string, string>;
+    objectTextures?: Map<string, string>;
     objectBlockProps?: Map<string, any>;
     objectTextDisplayOptions?: Map<string, unknown>;
     groups?: Map<string, GroupData>;

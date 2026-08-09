@@ -16,6 +16,8 @@ declare interface LoadingIconResult {
   error?: string;
 }
 
+declare type PainterAssetKind = 'brush' | 'palette';
+
 declare interface IpcApi {
   getAssetContent(path: string): Promise<AssetContentResult>;
   saveIconAtlas(name: 'block-atlas.png' | 'item-atlas.png', data: Uint8Array): Promise<{ success: boolean; error?: string }>;
@@ -29,6 +31,10 @@ reorderKeyMappingPresets(names: string[]): Promise<{ success: boolean; error?: s
 loadKeyMappingPreset(name: string): Promise<{ success: boolean; mapping?: Record<string, string[]>; error?: string }>;
 saveKeyMappingPreset(name: string, mapping: Record<string, string[]>): Promise<{ success: boolean; error?: string }>;
 deleteKeyMappingPreset(name: string): Promise<{ success: boolean; error?: string }>;
+  listPainterAssets(kind: PainterAssetKind): Promise<{ success: boolean; items: string[]; error?: string }>;
+  loadPainterAsset(kind: PainterAssetKind, name: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
+  savePainterAsset(kind: PainterAssetKind, name: string, data: unknown): Promise<{ success: boolean; error?: string }>;
+  deletePainterAsset(kind: PainterAssetKind, name: string): Promise<{ success: boolean; error?: string }>;
   on?: (channel: string, listener: (...args: unknown[]) => void) => void;
   removeAllListeners?: (channel: string) => void;
   send?: (channel: string, ...args: unknown[]) => void;

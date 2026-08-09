@@ -1,0 +1,312 @@
+#scene-toolbar i.head-painter-active {
+  color: #2e87ec;
+}
+
+#project-details.head-painter-mode > #project-properties,
+#project-details.head-painter-mode > #multi-selection-pivot,
+#project-details.head-painter-mode > #object-properties,
+#project-details.head-painter-mode #project-tabs {
+  display: none !important;
+}
+
+.head-painter-panel {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+  color: #ccc;
+}
+
+.head-painter-panel[hidden],
+.head-painter-preset-menu[hidden],
+.head-painter-brush-editor[hidden],
+.head-painter-panel [hidden] {
+  display: none;
+}
+
+.head-painter-panel button,
+.head-painter-panel input,
+.head-painter-panel select,
+.head-painter-brush-editor button,
+.head-painter-brush-editor input {
+  box-sizing: border-box;
+  min-width: 0;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  padding: 3px 5px;
+  background: #1e1e21;
+  color: #eee;
+  font: inherit;
+}
+
+.head-painter-panel button,
+.head-painter-panel select,
+.head-painter-brush-editor button {
+  cursor: pointer;
+}
+
+.head-painter-panel .lucide-icon,
+.head-painter-brush-editor .lucide-icon {
+  font-family: 'lucide';
+}
+
+.head-painter-panel fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  border: 1px solid #3a3a3e;
+  padding: 8px;
+}
+
+.head-painter-panel fieldset > label,
+.head-painter-color-area > label {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.head-painter-tools,
+.head-painter-stamp-actions {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.head-painter-tool {
+  height: 30px;
+  font-size: 18px !important;
+}
+
+.head-painter-tool.active,
+.head-painter-custom-brush button.active {
+  border-color: #70c7ff;
+  color: #70c7ff;
+}
+
+.head-painter-inline,
+.head-painter-checks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.head-painter-inline label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.head-painter-checks label,
+.head-painter-overwrite {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.head-painter-checks input,
+.head-painter-overwrite input {
+  width: auto;
+}
+
+#project-details .head-painter-panel input[type="checkbox"] {
+  appearance: auto;
+  width: auto;
+}
+
+#project-details .head-painter-panel input[type="range"] {
+  appearance: auto;
+  padding: 0;
+}
+
+.head-painter-range {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  gap: 5px;
+}
+
+.head-painter-range input {
+  width: 100%;
+}
+
+.head-painter-custom-brushes {
+  display: grid;
+  gap: 3px;
+}
+
+.head-painter-custom-brush {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px 28px 28px;
+  gap: 3px;
+  align-items: center;
+}
+
+.head-painter-color-area {
+  display: grid;
+  gap: 7px;
+  min-height: 150px;
+  max-height: 70vh;
+  padding: 8px;
+  border: 1px solid #3a3a3e;
+  resize: vertical;
+  overflow: auto;
+}
+
+.head-painter-color-row {
+  display: grid;
+  grid-template-columns: 32px 68px minmax(0, 1fr);
+  gap: 5px;
+}
+
+.head-painter-color-preview {
+  width: 32px;
+  height: 100%;
+  min-height: 28px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid #777;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.head-painter-palette {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(16px, 1fr));
+  aspect-ratio: 1;
+  gap: 2px;
+}
+
+.head-painter-panel .head-painter-swatch {
+  min-width: 0;
+  padding: 0;
+  background-color: #19191c;
+  background-image: linear-gradient(45deg, #333 25%, transparent 25%), linear-gradient(-45deg, #333 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #333 75%), linear-gradient(-45deg, transparent 75%, #333 75%);
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+  background-size: 8px 8px;
+}
+
+.head-painter-swatch.active {
+  outline: 2px solid #70c7ff;
+  outline-offset: -2px;
+}
+
+.head-painter-swatch.anchor {
+  outline: 2px solid #fff;
+  outline-offset: -3px;
+}
+
+.head-painter-palette-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.head-painter-stamp-preview {
+  display: grid;
+  min-height: 36px;
+  max-width: 128px;
+  aspect-ratio: 1;
+  gap: 1px;
+  background: #111;
+}
+
+.head-painter-stamp-preview span {
+  min-width: 0;
+  background-color: #29292d;
+}
+
+.head-painter-preset {
+  position: relative;
+}
+
+.head-painter-preset-button {
+  width: 100%;
+  text-align: left;
+}
+
+.head-painter-preset-menu {
+  position: absolute;
+  inset: calc(100% + 3px) 0 auto;
+  z-index: 30;
+  border: 1px solid #45454a;
+  background: #202023;
+  box-shadow: 0 5px 15px #0008;
+}
+
+.head-painter-preset-menu > button,
+.head-painter-preset-row {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) 28px;
+}
+
+.head-painter-preset-menu > button {
+  display: block;
+  border-radius: 0;
+  text-align: left;
+}
+
+.head-painter-preset-row button {
+  border-radius: 0;
+  text-align: left;
+}
+
+.head-painter-preset-row button.active {
+  color: #70c7ff;
+}
+
+.head-painter-brush-editor {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  background: #0009;
+}
+
+.head-painter-brush-editor > section {
+  display: grid;
+  gap: 8px;
+  width: min(420px, calc(100vw - 30px));
+  padding: 14px;
+  border: 1px solid #555;
+  border-radius: 6px;
+  background: #252528;
+  color: #ddd;
+}
+
+.head-painter-brush-editor h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.head-painter-brush-editor label {
+  display: grid;
+  grid-template-columns: 55px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.head-painter-brush-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  aspect-ratio: 1;
+  gap: 2px;
+  user-select: none;
+}
+
+.head-painter-brush-grid button {
+  padding: 0;
+  background: #111;
+}
+
+.head-painter-brush-grid button:disabled {
+  background: #29292d;
+}
+
+.head-painter-brush-editor footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}

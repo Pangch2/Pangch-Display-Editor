@@ -13,6 +13,7 @@ const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
 const ASSET_CACHE_READY_PATH = path.join(CACHE_DIR, '.assets-complete');
 const KEY_MAPPING_DIR = path.join(CACHE_DIR, 'key-mapping');
 const KEY_MAPPING_ORDER_PATH = path.join(KEY_MAPPING_DIR, '.order');
+const BRUSH_DIR = path.join(CACHE_DIR, 'brush');
 const clientUrl = 'https://piston-data.mojang.com/v1/objects/16169fc68cc553b82f495bb2896bde6170aa51a7/client.jar';
 const serverUrl = 'https://piston-data.mojang.com/v1/objects/06157fedd67ff4dd6e0e6fa4a9dd0af296f0dd61/server.jar';
 // When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
@@ -107,6 +108,34 @@ function keyMappingPresetPath(name: string): string {
 function isKeyMapping(value: unknown): value is Record<string, string[]> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
     && Object.values(value).every(keys => Array.isArray(keys) && keys.every(key => typeof key === 'string'));
+}
+
+type PainterAssetKind = 'brush' | 'palette';
+
+function painterAssetPath(kind: PainterAssetKind, name: string): string {
+  if (!['brush', 'palette'].includes(kind)) throw new Error('Invalid painter asset kind.');
+  const normalized = name.trim();
+  if (!normalized || normalized.length > 100 || /[<>:"/\\|?*\u0000-\u001f]|[. ]$/u.test(normalized)
+    || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(normalized)) throw new Error('Invalid painter asset name.');
+  return path.join(BRUSH_DIR, kind === 'palette' ? 'palette' : '', `${normalized}.json`);
+}
+
+function isRgba(value: unknown): value is [number, number, number, number] {
+  return Array.isArray(value) && value.length === 4
+    && value.every(channel => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+}
+
+function isPainterAsset(kind: PainterAssetKind, name: string, value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const data = value as Record<string, unknown>;
+  if (kind === 'palette') {
+    return Array.isArray(data.colors) && data.colors.length === 64
+      && data.colors.every(color => color === null || isRgba(color));
+  }
+  return data.name === name && Number.isInteger(data.width) && Number(data.width) >= 0 && Number(data.width) <= 8
+    && Number.isInteger(data.height) && Number(data.height) >= 0 && Number(data.height) <= 8
+    && Array.isArray(data.pixels) && data.pixels.length === Number(data.width) * Number(data.height)
+    && data.pixels.every(pixel => pixel === null || isRgba(pixel));
 }
 
 async function pathExists(filePath: string): Promise<boolean> {
@@ -443,7 +472,8 @@ function createWindow() {
         await Promise.all([
           win.webContents.session.clearCache(),
           win.webContents.session.clearStorageData(),
-          fs.rm(KEY_MAPPING_DIR, { recursive: true, force: true })
+          fs.rm(KEY_MAPPING_DIR, { recursive: true, force: true }),
+          fs.rm(BRUSH_DIR, { recursive: true, force: true })
         ]);
       } else {
         throw new Error('Invalid reset scope.');
@@ -523,6 +553,50 @@ function createWindow() {
   ipcMain.handle('delete-key-mapping-preset', async (_event, name: string) => {
     try {
       await fs.unlink(keyMappingPresetPath(name));
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('list-painter-assets', async (_event, kind: PainterAssetKind) => {
+    try {
+      if (!['brush', 'palette'].includes(kind)) throw new Error('Invalid painter asset kind.');
+      const directory = path.dirname(painterAssetPath(kind, 'placeholder'));
+      await fs.mkdir(directory, { recursive: true });
+      const items = (await fs.readdir(directory)).filter(file => file.endsWith('.json'))
+        .map(file => file.slice(0, -5)).sort((a, b) => a.localeCompare(b));
+      return { success: true, items };
+    } catch (error) {
+      return { success: false, items: [], error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('load-painter-asset', async (_event, kind: PainterAssetKind, name: string) => {
+    try {
+      const data: unknown = JSON.parse(await fs.readFile(painterAssetPath(kind, name), 'utf8'));
+      if (!isPainterAsset(kind, name, data)) throw new Error('Invalid painter asset.');
+      return { success: true, data };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('save-painter-asset', async (_event, kind: PainterAssetKind, name: string, data: unknown) => {
+    try {
+      const filePath = painterAssetPath(kind, name);
+      if (!isPainterAsset(kind, name, data)) throw new Error('Invalid painter asset.');
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf8');
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('delete-painter-asset', async (_event, kind: PainterAssetKind, name: string) => {
+    try {
+      await fs.unlink(painterAssetPath(kind, name));
       return { success: true };
     } catch (error) {
       return { success: false, error: errorMessage(error) };

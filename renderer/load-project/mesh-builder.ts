@@ -71,6 +71,16 @@ type MaterialUpdate = {
     signature: string;
 };
 export type LoadedSelection = Map<THREE.Object3D, Set<number>>;
+export type PlayerHeadPaintSurface = {
+    mesh: THREE.InstancedMesh;
+    instanceId: number;
+    objectUuid: string;
+    context: CanvasRenderingContext2D;
+    texture: THREE.Texture;
+    slot: number;
+    x: number;
+    y: number;
+};
 
 const skyLightColors = [
     0x2c2621, 0x302a25, 0x342e2a, 0x39332f,
@@ -618,6 +628,9 @@ function createHeadGeometries() {
         const scale = isLayer ? PLAYER_HEAD_LAYER_SCALE : 1.0;
         const geometry = new THREE.BoxGeometry(scale, scale, scale);
         geometry.translate(0, -0.5, 0);
+        geometry.setAttribute('headLayer', new THREE.BufferAttribute(
+            new Float32Array((geometry.getAttribute('position') as THREE.BufferAttribute).count).fill(isLayer ? 1 : 0), 1
+        ));
         
 
         const w = 64; // 텍스처 너비
@@ -1579,7 +1592,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             const atlasCanvas = document.createElement('canvas');
                             atlasCanvas.width = PLAYER_HEAD_ATLAS_SIZE;
                             atlasCanvas.height = PLAYER_HEAD_ATLAS_SIZE;
-                            const atlasCtx = atlasCanvas.getContext('2d');
+                            const atlasCtx = atlasCanvas.getContext('2d', { willReadFrequently: true });
                             if (!atlasCtx) return;
                             atlasCtx.imageSmoothingEnabled = false;
 
@@ -1603,7 +1616,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             atlasTexture.minFilter = THREE.NearestFilter;
                             atlasTexture.colorSpace = THREE.SRGBColorSpace;
                             
-                            const atlasMaterial = createEntityMaterial(atlasTexture, 0xffffff, true).material;
+                            const atlasMaterial = createEntityMaterial(atlasTexture, 0xffffff, true, false, 1, 0, true).material;
                             atlasMaterial.toneMapped = false;
                             atlasMaterial.fog = false;
                             atlasMaterial.flatShading = true;
@@ -1663,15 +1676,19 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             const totalInstances = playerHeadItems.length;
                             const headCapacity = Math.max(INITIAL_INSTANCES_PER_INSTANCED_MESH, getAppendableInstanceCapacity(totalInstances));
                             const matrices = new Float32Array(headCapacity * 16);
-                            const uvData = new Float32Array(headCapacity * 10);
-                            const interleavedUvData = new THREE.InstancedInterleavedBuffer(uvData, 10);
+                            const uvData = new Float32Array(headCapacity * 11);
+                            const interleavedUvData = new THREE.InstancedInterleavedBuffer(uvData, 11);
                             const uvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 0);
                             const uvFlips = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 2);
                             const knifeUvScales = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 4);
                             const knifeUvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 7);
+                            const headLayerVisible = new THREE.InterleavedBufferAttribute(interleavedUvData, 1, 10);
                             const hasHatArray = new Array(totalInstances).fill(false);
 
-                            for (let index = 0; index < headCapacity; index++) knifeUvScales.setXYZ(index, 1, 1, 1);
+                            for (let index = 0; index < headCapacity; index++) {
+                                knifeUvScales.setXYZ(index, 1, 1, 1);
+                                headLayerVisible.setX(index, 1);
+                            }
 
                             let i = 0;
                             for (const item of playerHeadItems) {
@@ -1696,6 +1713,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             
                             sharedGeometry.setAttribute('instancedUvOffset', uvOffsets);
                             sharedGeometry.setAttribute('instancedUvFlip', uvFlips);
+                            sharedGeometry.setAttribute('headLayerVisible', headLayerVisible);
                             sharedGeometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
                             sharedGeometry.setAttribute('instancedKnifeUvOffset', knifeUvOffsets);
                             sharedGeometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(headCapacity), 1));
@@ -1750,6 +1768,106 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 }
                 return newlyAddedSelectableMeshes;
 
+}
+
+function getPlayerHeadSlot(uvOffsets: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, instanceId: number): number {
+    return Math.round(uvOffsets.getX(instanceId) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH)
+        + Math.round((1 - uvOffsets.getY(instanceId)) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT - 1) * PLAYER_HEAD_BLOCKS_PER_ROW;
+}
+
+function getPlayerHeadSlotUsage(material: THREE.Material, slot: number): number {
+    let count = 0;
+    loadedObjectGroup.traverse(object => {
+        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
+        const mesh = object as THREE.InstancedMesh;
+        const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
+        if (meshMaterial !== material || !offsets) return;
+        for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
+            if (getPlayerHeadSlot(offsets, instanceId) === slot) count++;
+        }
+    });
+    return count;
+}
+
+export function getPlayerHeadPaintSurface(
+    mesh: THREE.InstancedMesh,
+    instanceId: number,
+    exclusive = false
+): PlayerHeadPaintSurface | null {
+    const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.Material;
+    const atlas = playerHeadAtlases.get(material);
+    const uvOffsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
+    const objectUuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(`${mesh.uuid}_${instanceId}`);
+    if (!atlas || !uvOffsets || !objectUuid || instanceId < 0 || instanceId >= mesh.count) return null;
+
+    let slot = getPlayerHeadSlot(uvOffsets, instanceId);
+    if (exclusive && getPlayerHeadSlotUsage(material, slot) > 1) {
+        const nextSlot = atlas.nextSlot++;
+        const maxSlots = PLAYER_HEAD_BLOCKS_PER_ROW * Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT);
+        if (nextSlot >= maxSlots) throw new Error('Player head paint atlas is full.');
+        const oldX = (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
+        const oldY = Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
+        const nextX = (nextSlot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
+        const nextY = Math.floor(nextSlot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
+        atlas.context.putImageData(atlas.context.getImageData(oldX, oldY, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT), nextX, nextY);
+        slot = nextSlot;
+        uvOffsets.setXY(instanceId, nextX / PLAYER_HEAD_ATLAS_SIZE, 1 - (nextY + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE);
+        uvOffsets.needsUpdate = true;
+        atlas.texture.needsUpdate = true;
+    }
+    return {
+        mesh,
+        instanceId,
+        objectUuid,
+        context: atlas.context,
+        texture: atlas.texture,
+        slot,
+        x: (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH,
+        y: Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT
+    };
+}
+
+export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface): void {
+    const packed = surface.context.getImageData(surface.x, surface.y, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT);
+    let hasHat = false;
+    for (let y = PLAYER_HEAD_PART_SIZE * 2; y < PLAYER_HEAD_BLOCK_HEIGHT && !hasHat; y++) {
+        for (let x = 0; x < PLAYER_HEAD_BLOCK_WIDTH; x++) {
+            if (packed.data[(y * PLAYER_HEAD_BLOCK_WIDTH + x) * 4 + 3] > 0) {
+                hasHat = true;
+                break;
+            }
+        }
+    }
+    surface.mesh.userData.hasHat[surface.instanceId] = hasHat;
+    surface.texture.needsUpdate = true;
+
+    const skin = document.createElement('canvas');
+    skin.width = skin.height = 64;
+    const context = skin.getContext('2d');
+    if (!context) return;
+    context.imageSmoothingEnabled = false;
+    playerHeadPartOrder.forEach((key, index) => {
+        const [dx, dy] = playerHeadFaceParts[key];
+        context.putImageData(surface.context.getImageData(
+            surface.x + (index % 3) * PLAYER_HEAD_PART_SIZE,
+            surface.y + Math.floor(index / 3) * PLAYER_HEAD_PART_SIZE,
+            PLAYER_HEAD_PART_SIZE,
+            PLAYER_HEAD_PART_SIZE
+        ), dx, dy);
+    });
+    (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.set(surface.objectUuid, skin.toDataURL('image/png'));
+}
+
+export function setPlayerHeadLayerVisible(visible: boolean): void {
+    loadedObjectGroup.traverse(object => {
+        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
+        const mesh = object as THREE.InstancedMesh;
+        const attribute = mesh.geometry.getAttribute('headLayerVisible') as THREE.InstancedBufferAttribute | undefined;
+        if (!attribute) return;
+        for (let instanceId = 0; instanceId < mesh.count; instanceId++) attribute.setX(instanceId, visible ? 1 : 0);
+        attribute.needsUpdate = true;
+    });
 }
 
 function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: HTMLImageElement): void {

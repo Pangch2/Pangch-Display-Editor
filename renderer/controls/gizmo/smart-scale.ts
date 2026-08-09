@@ -180,7 +180,7 @@ export function beginSmartScaleDrag(
     initialPosition: Vector3
 ): void {
     visualPivot = null;
-    if (!canBeginSmartScaleDrag(enabled, mode, items.length) || !gizmoAxis) {
+    if (!canBeginSmartScaleDrag(enabled, mode, items.length) || !gizmoAxis || gizmoAxis === 'XYZ') {
         if (drag) drag.active = false;
         return;
     }

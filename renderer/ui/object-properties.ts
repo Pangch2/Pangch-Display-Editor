@@ -20,6 +20,8 @@ import {
 } from '../controls/transform/mirroring';
 import { captureSceneState, recordSceneChange, type SceneSnapshot } from '../controls/undo-redo/scene-history';
 import { record } from '../controls/undo-redo/undo-redo';
+import { getHeadGridValue, setHeadGridOverride } from './head-painter';
+import { hexToRgb, openColorPicker, rgbToHex } from './color-picker';
 
 const title = document.getElementById('details-title')!;
 const tabs = document.getElementById('project-tabs')!;
@@ -101,35 +103,6 @@ function format(value: number): string {
     return Number(value.toFixed(6)).toString();
 }
 
-function hexToOklch(hex: string): [number, number, number] {
-    const value = Number.parseInt(hex.slice(1), 16);
-    const rgb = [value >> 16, (value >> 8) & 255, value & 255].map(channel => {
-        const linear = channel / 255;
-        return linear <= 0.04045 ? linear / 12.92 : ((linear + 0.055) / 1.055) ** 2.4;
-    });
-    const l = Math.cbrt(0.4122214708 * rgb[0] + 0.5363325363 * rgb[1] + 0.0514459929 * rgb[2]);
-    const m = Math.cbrt(0.2119034982 * rgb[0] + 0.6806995451 * rgb[1] + 0.1073969566 * rgb[2]);
-    const s = Math.cbrt(0.0883024619 * rgb[0] + 0.2817188376 * rgb[1] + 0.6299787005 * rgb[2]);
-    const lightness = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
-    const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
-    const b = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
-    return [lightness, Math.hypot(a, b), (Math.atan2(b, a) * 180 / Math.PI + 360) % 360];
-}
-
-function oklchToHex(lightness: number, chroma: number, hue: number): string {
-    const a = chroma * Math.cos(hue * Math.PI / 180);
-    const b = chroma * Math.sin(hue * Math.PI / 180);
-    const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
-    const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
-    const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
-    return `#${[4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s]
-        .map(channel => Math.round(255 * Math.max(0, Math.min(1, channel <= 0.0031308 ? 12.92 * channel : 1.055 * channel ** (1 / 2.4) - 0.055))).toString(16).padStart(2, '0')).join('')}`;
-}
-
-if (import.meta.env.DEV) {
-    console.assert(oklchToHex(...hexToOklch('#ff0000')) === '#ff0000', 'OKLCH color conversion changed.');
-}
-
 function trackHistoryInput(input: HTMLInputElement | HTMLTextAreaElement, settle?: () => Promise<void>): void {
     let before: SceneSnapshot | null = null;
     let initialValue = '';
@@ -168,7 +141,6 @@ function numberInput(value: number, onChange: (value: number) => void): HTMLInpu
 
 function scaleNumberInput(value: number, onChange: (value: number) => void): HTMLInputElement {
     const input = numberInput(value, next => {
-        if (next === 0) input.value = '0.0001';
         onChange(next === 0 ? 0.0001 : next);
     });
     return input;
@@ -418,12 +390,17 @@ function metadataProperty(key: string, labelText: string, control: HTMLElement):
 }
 
 function sortMetadataRows(section: HTMLElement): void {
+    const rank = (key: string): number => {
+        const index = metadataOrder.indexOf(key);
+        if (index >= 0) return index * 10;
+        const textureIndex = metadataOrder.indexOf('texture');
+        if (textureIndex < 0) return Infinity;
+        if (key === 'headGridHorizontal') return textureIndex * 10 + 1;
+        if (key === 'headGridVertical') return textureIndex * 10 + 2;
+        return Infinity;
+    };
     [...section.querySelectorAll<HTMLElement>(':scope > .object-metadata-row')]
-        .sort((a, b) => {
-            const aIndex = metadataOrder.indexOf(a.dataset.metadataKey ?? '');
-            const bIndex = metadataOrder.indexOf(b.dataset.metadataKey ?? '');
-            return (aIndex < 0 ? Infinity : aIndex) - (bIndex < 0 ? Infinity : bIndex);
-        })
+        .sort((a, b) => rank(a.dataset.metadataKey ?? '') - rank(b.dataset.metadataKey ?? ''))
         .forEach(row => section.append(row));
 }
 
@@ -1002,59 +979,31 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             mode.value = localStorage.getItem(colorModeKey) === 'oklch' ? 'oklch' : 'hex';
             const picker = document.createElement('span');
             picker.className = 'text-display-color-picker';
-            const renderPicker = () => {
-                picker.replaceChildren();
-                if (mode.value === 'hex') {
-                    const input = document.createElement('input');
-                    input.type = 'color';
-                    input.value = value;
-                    picker.append(propertyValueControl(input, next => {
-                        value = next;
-                        return updateColor(next);
-                    }, true));
-                    return;
-                }
-                const [lightness, chroma, hue] = hexToOklch(value);
-                const channels: Array<[string, number, number, number, number]> = [
-                    ['L', lightness, 0, 1, 0.01], ['C', chroma, 0, 0.4, 0.005], ['H', hue, 0, 360, 1]
-                ];
-                const inputs = channels.map(([name, channelValue, min, max, step]) => {
-                    const input = document.createElement('input');
-                    input.type = 'range';
-                    input.min = String(min);
-                    input.max = String(max);
-                    input.step = String(step);
-                    input.value = String(channelValue);
-                    input.setAttribute('aria-label', `${label} ${name}`);
-                    return input;
-                });
-                const update = () => {
-                    value = oklchToHex(...inputs.map(input => Number(input.value)) as [number, number, number]);
-                    return updateColor(value);
-                };
-                inputs.forEach((input, index) => {
-                    const channel = document.createElement('label');
-                    const range = document.createElement('span');
-                    range.className = 'text-display-color-range';
-                    const output = document.createElement('output');
-                    const updateOutput = () => {
-                        output.value = output.textContent = input.value;
-                        range.style.setProperty('--value-position', `${(Number(input.value) - Number(input.min)) / (Number(input.max) - Number(input.min)) * 100}%`);
-                    };
-                    input.addEventListener('input', updateOutput);
-                    updateOutput();
-                    channel.textContent = channels[index][0];
-                    range.append(propertyValueControl(input, update, true), output);
-                    channel.append(range);
-                    picker.append(channel);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'text-display-color-button';
+            button.title = button.ariaLabel = `${label} 선택`;
+            button.style.background = value;
+            button.onclick = () => {
+                const before = captureSceneState(loadedObjectGroup);
+                openColorPicker(button, hexToRgb(value), color => {
+                    value = rgbToHex(color);
+                    button.style.background = value;
+                    void updateColor(value);
+                }, {
+                    oklch: mode.value === 'oklch',
+                    onOklchChange: enabled => {
+                        mode.value = enabled ? 'oklch' : 'hex';
+                        localStorage.setItem(colorModeKey, mode.value);
+                    },
+                    onClose: () => recordSceneChange(loadedObjectGroup, before)
                 });
             };
+            picker.append(button);
             mode.onchange = () => {
                 localStorage.setItem(colorModeKey, mode.value);
-                renderPicker();
             };
             controls.append(mode, picker);
-            renderPicker();
             metadataSection.append(metadataProperty(key, label, controls));
         };
         const addAlpha = (key: 'alpha' | 'backgroundAlpha', label: string) => {
@@ -1149,6 +1098,23 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 });
             };
             metadataSection.append(metadataProperty('texture', '텍스쳐', input));
+            const gridInput = (axis: 'horizontal' | 'vertical') => {
+                const control = document.createElement('input');
+                control.type = 'number';
+                control.min = '0';
+                control.max = '8';
+                control.value = String(getHeadGridValue(uuid, axis));
+                control.oninput = () => {
+                    const value = Math.min(8, Math.max(0, Math.round(control.valueAsNumber || 0)));
+                    control.value = String(value);
+                    setHeadGridOverride(uuid, axis, value);
+                };
+                return control;
+            };
+            metadataSection.append(
+                metadataProperty('headGridHorizontal', '그리드 가로', gridInput('horizontal')),
+                metadataProperty('headGridVertical', '그리드 세로', gridInput('vertical'))
+            );
         }
         metadataSection.append(brightnessProperty(brightness, updateBrightness));
         const displayType = (loadedObjectGroup.userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid) ?? 'none';

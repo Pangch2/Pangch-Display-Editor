@@ -73,7 +73,7 @@ export function toggleShading(): boolean {
   return shadingEnabled.value === 1;
 }
 
-export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0) {
+export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
 
@@ -127,10 +127,13 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   const normalizedSkyLight = skyLightLevel.div(15.0);
   const lightMapColor = normalizedSkyLight.div(float(4.0).sub(normalizedSkyLight.mul(3.0)));
 
-  const unlitColor = vec4(mul(diffuseNode.xyz, tintVec), diffuseNode.w);
+  const alpha = useHeadLayerVisibility
+    ? diffuseNode.w.mul(float(1).sub(attribute('headLayer', 'float').mul(float(1).sub(attribute('headLayerVisible', 'float')))))
+    : diffuseNode.w;
+  const unlitColor = vec4(mul(diffuseNode.xyz, tintVec), alpha);
   const litColor = vec4(
     mul(mul(mul(diffuseNode.xyz, tintVec), directionalLight), lightMapColor),
-    diffuseNode.w
+    alpha
   );
 
   const material = new MeshBasicNodeMaterial();

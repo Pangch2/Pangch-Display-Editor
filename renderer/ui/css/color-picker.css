@@ -1,0 +1,221 @@
+.color-picker {
+  --hue: 0;
+  position: fixed;
+  z-index: 10000;
+  container-type: inline-size;
+  display: grid;
+  grid-template-rows: auto minmax(120px, 1fr) auto auto;
+  gap: 10px;
+  width: 390px;
+  height: 390px;
+  min-width: 300px;
+  min-height: 300px;
+  padding: 10px;
+  box-sizing: border-box;
+  overflow: visible;
+  border: 1px solid #45454a;
+  border-radius: 8px;
+  background: #252528;
+  box-shadow: 0 18px 60px #0009;
+  color: #ccc;
+  font: inherit;
+}
+
+.color-picker[hidden] {
+  display: none;
+}
+
+.color-picker header,
+.color-picker-values {
+  align-items: center;
+  gap: 6px;
+}
+
+.color-picker header {
+  display: flex;
+  justify-content: space-between;
+  margin: -10px -10px 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid #3a3a3e;
+}
+
+.color-picker-values {
+  display: grid;
+  grid-template-columns: auto auto repeat(3, minmax(55px, 1fr)) minmax(70px, 82px);
+}
+
+@container (max-width: 360px) {
+  .color-picker-values {
+    grid-template-columns: auto auto repeat(3, minmax(0, 1fr));
+  }
+
+  .color-picker-values .color-picker-hex {
+    grid-column: 1 / -1;
+  }
+}
+
+.color-picker header button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.color-picker header button:hover {
+  border-radius: 4px;
+  background: #3b3b40;
+  color: #f0f0f0;
+}
+
+.color-picker-surface {
+  position: relative;
+  min-height: 0;
+  cursor: crosshair;
+  touch-action: none;
+  background:
+    linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, transparent),
+    hsl(var(--hue) 100% 50%);
+}
+
+.color-picker-marker {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-sizing: border-box;
+  box-shadow: 0 0 2px #000;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.color-picker-hue {
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  border-radius: 7px;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+
+.color-picker-hue::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 20px;
+  border: 2px solid #fff;
+  border-radius: 4px;
+  background: hsl(var(--hue) 100% 50%);
+  box-shadow: 0 0 2px #000;
+  cursor: ew-resize;
+}
+
+.color-picker-values label.color-picker-channel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.color-picker-values label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.color-picker-values input {
+  min-width: 0;
+}
+
+.color-picker-channel input {
+  min-width: 45px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.color-picker-values .color-picker-hex {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.color-picker-oklch {
+  min-width: 20px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.color-picker-oklch span {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.color-picker-oklch input {
+  flex: none;
+  width: auto;
+}
+
+.color-picker-eyedropper {
+  width: 28px;
+  height: 26px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e21;
+  color: #ccc;
+  cursor: pointer;
+}
+
+.color-picker-eyedropper:hover {
+  background: #3b3b40;
+  color: #f0f0f0;
+}
+
+.color-picker input[type="number"]::-webkit-inner-spin-button {
+  opacity: 0;
+}
+
+.color-picker input[type="number"]::-webkit-inner-spin-button:hover {
+  opacity: 1;
+}
+
+.color-picker-resize {
+  position: absolute;
+  z-index: 1;
+}
+
+.color-picker-resize-n,
+.color-picker-resize-s {
+  left: 8px;
+  right: 8px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.color-picker-resize-e,
+.color-picker-resize-w {
+  top: 8px;
+  bottom: 8px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.color-picker-resize-n { top: -4px; }
+.color-picker-resize-s { bottom: -4px; }
+.color-picker-resize-e { right: -4px; }
+.color-picker-resize-w { left: -4px; }
+
+.color-picker-resize-ne,
+.color-picker-resize-se,
+.color-picker-resize-sw,
+.color-picker-resize-nw {
+  width: 12px;
+  height: 12px;
+}
+
+.color-picker-resize-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.color-picker-resize-se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.color-picker-resize-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.color-picker-resize-nw { top: -5px; left: -5px; cursor: nwse-resize; }
+
+.color-picker > :not(.color-picker-resize) {
+  min-width: 0;
+}

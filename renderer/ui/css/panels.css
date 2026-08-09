@@ -607,6 +607,15 @@
   gap: 2px;
 }
 
+.object-property .text-display-color-button {
+  width: 100%;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
 .object-property .text-display-color-picker label {
   display: grid;
   grid-template-columns: 14px minmax(0, 1fr);
@@ -679,12 +688,14 @@
   cursor: pointer;
 }
 
-.object-property input[type="number"] {
+.object-property input[type="number"],
+.color-picker input[type="number"] {
   appearance: auto;
   color-scheme: dark;
 }
 
-.object-property input[type="number"]::-webkit-inner-spin-button {
+.object-property input[type="number"]::-webkit-inner-spin-button,
+.color-picker input[type="number"]::-webkit-inner-spin-button {
   opacity: 1;
   cursor: ns-resize;
 }

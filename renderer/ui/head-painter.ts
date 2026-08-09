@@ -1,0 +1,1163 @@
+import {
+  Camera,
+  InstancedMesh,
+  Matrix4,
+  Raycaster,
+  RenderTarget,
+  RGBAFormat,
+  Scene,
+  UnsignedByteType,
+  Vector2,
+  Vector3,
+  WebGPURenderer
+} from 'three/webgpu';
+import {
+  commitPlayerHeadPaint,
+  getPlayerHeadPaintSurface,
+  loadedObjectGroup,
+  setPlayerHeadLayerVisible,
+  type PlayerHeadPaintSurface
+} from '../load-project/mesh-builder';
+import { currentSelection } from '../controls/selection/select';
+import {
+  invalidateHeadPainterGridOverlay,
+  removeHeadPainterGridOverlay,
+  updateHeadPainterGridOverlay
+} from '../controls/selection/overlay';
+import { record } from '../controls/undo-redo/undo-redo';
+import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
+import { oklchToRgb, openColorPicker, rgbToOklch } from './color-picker';
+
+type Tool = 'brush' | 'bucket' | 'eraser' | 'picker' | 'stamp';
+type LayerMode = 'auto' | 'layer' | 'base';
+type Rgba = [number, number, number, number];
+type BrushAsset = { name: string; width: number; height: number; pixels: Array<Rgba | null> };
+type PaletteAsset = { colors: Array<Rgba | null> };
+type PainterContext = {
+  renderer: WebGPURenderer;
+  scene: Scene;
+  getCamera: () => Camera;
+  isGizmoHovered: () => boolean;
+  suspendCameraControls: () => () => void;
+};
+type PaintHit = {
+  mesh: InstancedMesh;
+  instanceId: number;
+  surface: PlayerHeadPaintSurface;
+  face: number;
+  layer: 0 | 1;
+  x: number;
+  y: number;
+  columns: number;
+  rows: number;
+};
+type WorkSurface = {
+  surface: PlayerHeadPaintSurface;
+  before: ImageData;
+  beforeTexture?: string;
+  image: ImageData;
+  changed: boolean;
+};
+
+const atlasSize = 2048;
+const blockWidth = 24;
+const blockHeight = 32;
+const partSize = 8;
+const facePartIndexes = [1, 0, 2, 3, 4, 5] as const;
+const faceGridAxes = [[2, 1], [2, 1], [0, 2], [0, 2], [0, 1], [0, 1]] as const;
+const toolIcons: Record<Tool, string> = { brush: '\uE1D3', bucket: '\uE2E6', eraser: '\uE28F', picker: '\uE13B', stamp: '\uE3BB' };
+const toolLabels: Record<Tool, string> = { brush: '브러시', bucket: '양동이', eraser: '지우개', picker: '색상선택', stamp: '스탬프' };
+const gridOverrides = new Map<string, Partial<{ horizontal: number; vertical: number }>>();
+const raycaster = new Raycaster();
+const pointer = new Vector2();
+
+let painterContext: PainterContext | null = null;
+let active = false;
+let lastTool: Tool = 'brush';
+let layerMode: LayerMode = 'auto';
+let gridHorizontal = 8;
+let gridVertical = 8;
+let gridEnabled = true;
+let smartGrid = true;
+let brushSize = 1;
+let brushHardness = 100;
+let brushSpacing = 25;
+let brushShape: 'square' | 'circle' | 'custom' = 'square';
+let eraserSize = 1;
+let eraserHardness = 100;
+let eraserStrength = 100;
+let overwrite = false;
+let colorMode: 'rgb' | 'oklch' = 'rgb';
+let currentColor: Rgba = [0, 0, 0, 255];
+let palette: Array<Rgba | null> = Array(64).fill(null);
+let activePaletteSlot = 0;
+let paletteAnchor: number | null = null;
+let activePalettePreset: string | null = null;
+let palettePresetNames: string[] = [];
+let customBrushes: BrushAsset[] = [];
+let selectedBrushName: string | null = null;
+let stampWidth = 8;
+let stampHeight = 8;
+let stampPixels: Array<Rgba | null> = Array(64).fill(null);
+let stroke: Map<string, WorkSurface> | null = null;
+let lastStrokeHit: PaintHit | null = null;
+let paintPointerId: number | null = null;
+let paintPointerStart: Vector2 | null = null;
+let paintDragged = false;
+let restoreCameraControls: (() => void) | null = null;
+let colorTarget: RenderTarget | null = null;
+let root: HTMLElement | null = null;
+let brushEditor: HTMLElement | null = null;
+let editingBrush: BrushAsset | null = null;
+let editorColor: Rgba = [0, 0, 0, 255];
+
+const clampByte = (value: number): number => Math.round(Math.min(255, Math.max(0, value)));
+const clampGrid = (value: number): number => Math.round(Math.min(8, Math.max(0, Number.isFinite(value) ? value : 0)));
+const cloneRgba = (color: Rgba): Rgba => [...color] as Rgba;
+const cloneImage = (image: ImageData): ImageData => new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
+const rgbaEqual = (a: Rgba | null, b: Rgba | null): boolean => !!a === !!b && (!a || !b || a.every((value, index) => value === b[index]));
+
+function formatColor(color: Rgba): string {
+  if (colorMode === 'rgb') return `#${color.slice(0, 3).map(channel => channel.toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+  const [lightness, chroma, hue] = rgbToOklch(color.slice(0, 3) as [number, number, number]);
+  return `oklch(${lightness.toFixed(3)} ${chroma.toFixed(3)} ${hue.toFixed(1)})`;
+}
+
+function parseColor(value: string, alpha: number): Rgba | null {
+  const hex = /^#?([\da-f]{6})$/i.exec(value.trim());
+  if (hex) return [0, 2, 4].map(index => parseInt(hex[1].slice(index, index + 2), 16)).concat(clampByte(alpha)) as Rgba;
+  const match = /^oklch\(\s*([\d.]+)(%)?\s+([\d.]+)\s+(-?[\d.]+)(?:deg)?\s*\)$/i.exec(value.trim());
+  if (!match) return null;
+  return [...oklchToRgb([Number(match[1]) / (match[2] ? 100 : 1), Number(match[3]), Number(match[4])]), clampByte(alpha)];
+}
+
+function interpolateColor(a: Rgba, b: Rgba, amount: number): Rgba {
+  const first = rgbToOklch(a.slice(0, 3) as [number, number, number]);
+  const second = rgbToOklch(b.slice(0, 3) as [number, number, number]);
+  const hueDelta = ((second[2] - first[2] + 540) % 360) - 180;
+  return [...oklchToRgb([
+    first[0] + (second[0] - first[0]) * amount,
+    first[1] + (second[1] - first[1]) * amount,
+    first[2] + hueDelta * amount
+  ]), clampByte(a[3] + (b[3] - a[3]) * amount)];
+}
+
+function pixelOffset(part: number, x: number, y: number): number {
+  return ((Math.floor(part / 3) * partSize + y) * blockWidth + (part % 3) * partSize + x) * 4;
+}
+
+const gridBoundary = (index: number, count: number): number => Math.round(index * partSize / count);
+
+function forEachGridPixel(columns: number, rows: number, x: number, y: number, visit: (pixelX: number, pixelY: number) => void): void {
+  for (let pixelY = gridBoundary(y, rows); pixelY < gridBoundary(y + 1, rows); pixelY++) {
+    for (let pixelX = gridBoundary(x, columns); pixelX < gridBoundary(x + 1, columns); pixelX++) visit(pixelX, pixelY);
+  }
+}
+
+function gridCellPixel(index: number, count: number): number {
+  return Math.floor((gridBoundary(index, count) + gridBoundary(index + 1, count) - 1) / 2);
+}
+
+function readPixel(image: ImageData, part: number, x: number, y: number): Rgba {
+  const offset = pixelOffset(part, x, y);
+  return [image.data[offset], image.data[offset + 1], image.data[offset + 2], image.data[offset + 3]];
+}
+
+function writePixel(image: ImageData, part: number, x: number, y: number, color: Rgba): boolean {
+  const offset = pixelOffset(part, x, y);
+  if (color.every((value, index) => image.data[offset + index] === value)) return false;
+  image.data.set(color, offset);
+  return true;
+}
+
+function sourceOver(destination: Rgba, source: Rgba, coverage: number): Rgba {
+  const sourceAlpha = source[3] / 255 * coverage;
+  const destinationAlpha = destination[3] / 255;
+  const alpha = sourceAlpha + destinationAlpha * (1 - sourceAlpha);
+  if (alpha <= 0) return [0, 0, 0, 0];
+  return [0, 1, 2].map(index => Math.round(
+    (source[index] * sourceAlpha + destination[index] * destinationAlpha * (1 - sourceAlpha)) / alpha
+  )).concat(Math.round(alpha * 255)) as Rgba;
+}
+
+function getHit(event: PointerEvent): PaintHit | null {
+  if (!painterContext) return null;
+  const rect = painterContext.renderer.domElement.getBoundingClientRect();
+  pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
+  raycaster.layers.enable(2);
+  raycaster.setFromCamera(pointer, painterContext.getCamera());
+  loadedObjectGroup.updateMatrixWorld(true);
+  const intersection = raycaster.intersectObject(loadedObjectGroup, true)[0];
+  if (!intersection || !(intersection.object as InstancedMesh).isInstancedMesh || intersection.instanceId === undefined || !intersection.uv || intersection.faceIndex === undefined) return null;
+  const mesh = intersection.object as InstancedMesh;
+  const surface = getPlayerHeadPaintSurface(mesh, intersection.instanceId);
+  if (!surface) return null;
+  const triangle = intersection.faceIndex % 24;
+  const actualLayer = triangle >= 12 ? 1 : 0;
+  const face = Math.floor((triangle % 12) / 2);
+  const actualPart = facePartIndexes[face] + actualLayer * 6;
+  const partX = (actualPart % 3) * partSize;
+  const partY = Math.floor(actualPart / 3) * partSize;
+  const pixelX = Math.min(7, Math.max(0, Math.floor(intersection.uv.x * atlasSize - partX)));
+  const pixelY = Math.min(7, Math.max(0, Math.floor(blockHeight - intersection.uv.y * atlasSize - partY)));
+  const matrix = getInstanceWorldMatrix(mesh, intersection.instanceId, new Matrix4());
+  const [horizontal, vertical] = getFaceGridCounts(surface.objectUuid, face, matrix);
+  const columns = Math.max(1, horizontal);
+  const rows = Math.max(1, vertical);
+  const x = Math.min(columns - 1, Math.floor((pixelX + 0.5) * columns / partSize));
+  const y = Math.min(rows - 1, Math.floor((pixelY + 0.5) * rows / partSize));
+  const packed = surface.context.getImageData(surface.x, surface.y, blockWidth, blockHeight);
+  const layer = layerMode === 'layer' ? 1 : layerMode === 'base' ? 0
+    : readPixel(packed, facePartIndexes[face] + 6, gridCellPixel(x, columns), gridCellPixel(y, rows))[3] > 0 ? 1 : 0;
+  return { mesh, instanceId: intersection.instanceId, surface, face, layer, x, y, columns, rows };
+}
+
+function getWork(hit: PaintHit): WorkSurface {
+  if (!stroke) stroke = new Map();
+  let work = stroke.get(hit.surface.objectUuid);
+  if (!work) {
+    const surface = getPlayerHeadPaintSurface(hit.mesh, hit.instanceId, true)!;
+    const image = surface.context.getImageData(surface.x, surface.y, blockWidth, blockHeight);
+    const beforeTexture = (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.get(surface.objectUuid);
+    work = { surface, before: cloneImage(image), beforeTexture, image, changed: false };
+    stroke.set(surface.objectUuid, work);
+  }
+  return work;
+}
+
+function flushWork(work: WorkSurface): void {
+  work.surface.context.putImageData(work.image, work.surface.x, work.surface.y);
+  work.surface.texture.needsUpdate = true;
+}
+
+function finishStroke(): void {
+  if (!stroke) return;
+  const changes = [...stroke.values()].filter(work => work.changed).map(work => ({
+    surface: work.surface,
+    before: work.before,
+    beforeTexture: work.beforeTexture,
+    after: cloneImage(work.image)
+  }));
+  stroke = null;
+  lastStrokeHit = null;
+  if (!changes.length) return;
+  changes.forEach(({ surface }) => commitPlayerHeadPaint(surface));
+  window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+  const apply = (key: 'before' | 'after') => {
+    changes.forEach(change => {
+      change.surface.context.putImageData(change[key], change.surface.x, change.surface.y);
+      commitPlayerHeadPaint(change.surface);
+      if (key === 'before') {
+        const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
+        if (change.beforeTexture === undefined) textures?.delete(change.surface.objectUuid);
+        else textures?.set(change.surface.objectUuid, change.beforeTexture);
+      }
+    });
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    invalidateHeadPainterGridOverlay();
+  };
+  record({ undo: () => apply('before'), redo: () => apply('after') });
+  invalidateHeadPainterGridOverlay();
+}
+
+function brushCoverage(dx: number, dy: number, size: number, hardness: number, circle: boolean): number {
+  const radius = Math.max(0.5, size / 2);
+  const distance = circle ? Math.hypot(dx, dy) : Math.max(Math.abs(dx), Math.abs(dy));
+  if (distance > radius) return 0;
+  const inner = radius * hardness / 100;
+  return distance <= inner || inner >= radius ? 1 : (radius - distance) / (radius - inner);
+}
+
+function stampBrush(hit: PaintHit): void {
+  const work = getWork(hit);
+  const part = facePartIndexes[hit.face] + hit.layer * 6;
+  const custom = brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
+  const width = custom?.width ?? brushSize;
+  const height = custom?.height ?? brushSize;
+  const startX = -Math.floor(width / 2);
+  const startY = -Math.floor(height / 2);
+  for (let row = 0; row < height; row++) {
+    for (let column = 0; column < width; column++) {
+      const x = hit.x + startX + column;
+      const y = hit.y + startY + row;
+      if (x < 0 || x >= hit.columns || y < 0 || y >= hit.rows) continue;
+      const source = custom?.pixels[row * width + column] ?? currentColor;
+      if (!source) continue;
+      const coverage = custom ? 1 : brushCoverage(
+        startX + column + (width % 2 === 0 ? 0.5 : 0),
+        startY + row + (height % 2 === 0 ? 0.5 : 0),
+        brushSize,
+        brushHardness,
+        brushShape === 'circle'
+      );
+      if (coverage <= 0) continue;
+      forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
+        const next = overwrite ? source : sourceOver(readPixel(work.image, part, pixelX, pixelY), source, coverage);
+        work.changed = writePixel(work.image, part, pixelX, pixelY, next) || work.changed;
+      });
+    }
+  }
+  flushWork(work);
+}
+
+function eraseAt(hit: PaintHit): void {
+  const work = getWork(hit);
+  const part = facePartIndexes[hit.face] + hit.layer * 6;
+  const start = -Math.floor(eraserSize / 2);
+  for (let row = 0; row < eraserSize; row++) {
+    for (let column = 0; column < eraserSize; column++) {
+      const x = hit.x + start + column;
+      const y = hit.y + start + row;
+      if (x < 0 || x >= hit.columns || y < 0 || y >= hit.rows) continue;
+      const coverage = brushCoverage(
+        start + column + (eraserSize % 2 === 0 ? 0.5 : 0),
+        start + row + (eraserSize % 2 === 0 ? 0.5 : 0),
+        eraserSize,
+        eraserHardness,
+        false
+      ) * eraserStrength / 100;
+      if (coverage <= 0) continue;
+      forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
+        const old = readPixel(work.image, part, pixelX, pixelY);
+        const next = hit.layer
+          ? [old[0], old[1], old[2], Math.round(old[3] * (1 - coverage))] as Rgba
+          : old.map((value, index) => Math.round(value + ((index === 3 ? 255 : 0) - value) * coverage)) as Rgba;
+        work.changed = writePixel(work.image, part, pixelX, pixelY, next) || work.changed;
+      });
+    }
+  }
+  flushWork(work);
+}
+
+function continueStroke(hit: PaintHit): void {
+  const draw = lastTool === 'eraser' ? eraseAt : stampBrush;
+  const previous = lastStrokeHit;
+  let drew = false;
+  if (!previous || previous.surface.objectUuid !== hit.surface.objectUuid || previous.face !== hit.face || previous.layer !== hit.layer) {
+    draw(hit);
+    drew = true;
+  } else {
+    const distance = Math.hypot(hit.x - previous.x, hit.y - previous.y);
+    const size = lastTool === 'eraser' ? eraserSize : brushShape === 'custom'
+      ? Math.max(customBrushes.find(brush => brush.name === selectedBrushName)?.width ?? 1, customBrushes.find(brush => brush.name === selectedBrushName)?.height ?? 1)
+      : brushSize;
+    const step = Math.max(1, size * brushSpacing / 100);
+    for (let offset = step; offset < distance + step; offset += step) {
+      const amount = Math.min(1, offset / Math.max(distance, 1));
+      draw({ ...hit, x: Math.round(previous.x + (hit.x - previous.x) * amount), y: Math.round(previous.y + (hit.y - previous.y) * amount) });
+      drew = true;
+    }
+  }
+  if (drew) lastStrokeHit = hit;
+}
+
+function fillAt(hit: PaintHit, event: PointerEvent): void {
+  const work = getWork(hit);
+  const part = facePartIndexes[hit.face] + hit.layer * 6;
+  const parts = event.ctrlKey || event.metaKey
+    ? facePartIndexes.map(index => index + hit.layer * 6)
+    : [part];
+  const target = readPixel(work.image, part, gridCellPixel(hit.x, hit.columns), gridCellPixel(hit.y, hit.rows));
+  if (!event.shiftKey && !(event.ctrlKey || event.metaKey)) {
+    for (let y = 0; y < hit.rows; y++) {
+      for (let x = 0; x < hit.columns; x++) {
+        if (!rgbaEqual(readPixel(work.image, part, gridCellPixel(x, hit.columns), gridCellPixel(y, hit.rows)), target)) continue;
+        forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
+          work.changed = writePixel(work.image, part, pixelX, pixelY, currentColor) || work.changed;
+        });
+      }
+    }
+    flushWork(work);
+    finishStroke();
+    return;
+  }
+  for (const currentPart of parts) {
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        work.changed = writePixel(work.image, currentPart, x, y, currentColor) || work.changed;
+      }
+    }
+  }
+  flushWork(work);
+  finishStroke();
+}
+
+function copyStamp(hit: PaintHit): void {
+  const image = hit.surface.context.getImageData(hit.surface.x, hit.surface.y, blockWidth, blockHeight);
+  const part = facePartIndexes[hit.face] + hit.layer * 6;
+  const startX = hit.x - Math.floor(stampWidth / 2);
+  const startY = hit.y - Math.floor(stampHeight / 2);
+  stampPixels = Array.from({ length: stampWidth * stampHeight }, (_, index) => {
+    const x = startX + index % stampWidth;
+    const y = startY + Math.floor(index / stampWidth);
+    return x < 0 || x >= hit.columns || y < 0 || y >= hit.rows
+      ? null
+      : readPixel(image, part, gridCellPixel(x, hit.columns), gridCellPixel(y, hit.rows));
+  });
+  syncStampInputs();
+}
+
+function placeStamp(hit: PaintHit): void {
+  const work = getWork(hit);
+  const part = facePartIndexes[hit.face] + hit.layer * 6;
+  const startX = hit.x - Math.floor(stampWidth / 2);
+  const startY = hit.y - Math.floor(stampHeight / 2);
+  stampPixels.forEach((color, index) => {
+    if (!color) return;
+    const x = startX + index % stampWidth;
+    const y = startY + Math.floor(index / stampWidth);
+    if (x < 0 || x >= hit.columns || y < 0 || y >= hit.rows) return;
+    forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
+      work.changed = writePixel(work.image, part, pixelX, pixelY, color) || work.changed;
+    });
+  });
+  flushWork(work);
+  finishStroke();
+}
+
+function transformStamp(kind: 'left' | 'right' | 'vertical' | 'horizontal'): void {
+  const oldWidth = stampWidth;
+  const oldHeight = stampHeight;
+  const oldPixels = stampPixels;
+  if (kind === 'left' || kind === 'right') {
+    stampWidth = oldHeight;
+    stampHeight = oldWidth;
+    stampPixels = Array.from({ length: stampWidth * stampHeight }, (_, index) => {
+      const x = index % stampWidth;
+      const y = Math.floor(index / stampWidth);
+      const oldX = kind === 'right' ? y : oldWidth - 1 - y;
+      const oldY = kind === 'right' ? oldHeight - 1 - x : x;
+      return oldPixels[oldY * oldWidth + oldX] ?? null;
+    });
+  } else {
+    stampPixels = Array.from({ length: oldWidth * oldHeight }, (_, index) => {
+      const x = index % oldWidth;
+      const y = Math.floor(index / oldWidth);
+      const oldX = kind === 'horizontal' ? oldWidth - 1 - x : x;
+      const oldY = kind === 'vertical' ? oldHeight - 1 - y : y;
+      return oldPixels[oldY * oldWidth + oldX] ?? null;
+    });
+  }
+  syncStampInputs();
+}
+
+async function pickScreenColor(event: PointerEvent): Promise<void> {
+  if (!painterContext) return;
+  const { renderer, scene } = painterContext;
+  const size = renderer.getDrawingBufferSize(new Vector2());
+  if (!colorTarget) {
+    colorTarget = new RenderTarget(size.x, size.y, { format: RGBAFormat, type: UnsignedByteType, depthBuffer: true });
+    colorTarget.texture.colorSpace = renderer.outputColorSpace;
+  } else if (colorTarget.width !== size.x || colorTarget.height !== size.y) {
+    colorTarget.setSize(size.x, size.y);
+  }
+  const rect = renderer.domElement.getBoundingClientRect();
+  const x = Math.min(size.x - 1, Math.max(0, Math.floor((event.clientX - rect.left) / rect.width * size.x)));
+  const y = Math.min(size.y - 1, Math.max(0, Math.floor((rect.bottom - event.clientY) / rect.height * size.y)));
+  const previousTarget = renderer.getRenderTarget();
+  renderer.setRenderTarget(colorTarget);
+  renderer.render(scene, painterContext.getCamera());
+  renderer.setRenderTarget(previousTarget);
+  const pixels = await renderer.readRenderTargetPixelsAsync(colorTarget, x, y, 1, 1);
+  setCurrentColor([pixels[0], pixels[1], pixels[2], pixels[3]], true);
+}
+
+function onPointerDown(event: PointerEvent): void {
+  if (!active || !painterContext || event.button !== 0 || event.target !== painterContext.renderer.domElement) return;
+  if (painterContext.isGizmoHovered()) return;
+  const hit = getHit(event);
+  if (!hit) return;
+  paintPointerId = event.pointerId;
+  paintPointerStart = new Vector2(event.clientX, event.clientY);
+  paintDragged = false;
+  restoreCameraControls = painterContext.suspendCameraControls();
+  painterContext.renderer.domElement.setPointerCapture(event.pointerId);
+}
+
+function startPaint(hit: PaintHit, event: PointerEvent): void {
+  if (lastTool === 'picker') {
+    void pickScreenColor(event);
+    return;
+  }
+  if (lastTool === 'brush' || lastTool === 'eraser') {
+    stroke = new Map();
+    lastStrokeHit = null;
+  } else if (lastTool === 'bucket') {
+    stroke = new Map();
+    fillAt(hit, event);
+  } else if (event.shiftKey) {
+    copyStamp(hit);
+  } else {
+    stroke = new Map();
+    placeStamp(hit);
+  }
+}
+
+function onPointerMove(event: PointerEvent): void {
+  if (!active || !painterContext || !(event.buttons & 1) || event.pointerId !== paintPointerId) return;
+  if (!painterContext.renderer.domElement.hasPointerCapture(event.pointerId)) return;
+  if (!paintDragged) {
+    if (!paintPointerStart || Math.hypot(event.clientX - paintPointerStart.x, event.clientY - paintPointerStart.y) <= 5) return;
+    const hit = getHit(event);
+    if (!hit) return;
+    paintDragged = true;
+    startPaint(hit, event);
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!stroke || (lastTool !== 'brush' && lastTool !== 'eraser')) return;
+  const hit = getHit(event);
+  if (hit) continueStroke(hit);
+}
+
+function onPointerUp(event: PointerEvent): void {
+  if (!painterContext || event.pointerId !== paintPointerId) return;
+  if (paintDragged && active && stroke && (lastTool === 'brush' || lastTool === 'eraser')) finishStroke();
+  if (painterContext.renderer.domElement.hasPointerCapture(event.pointerId)) painterContext.renderer.domElement.releasePointerCapture(event.pointerId);
+  restoreCameraControls?.();
+  restoreCameraControls = null;
+  paintPointerId = null;
+  paintPointerStart = null;
+  paintDragged = false;
+}
+
+function smartCounts(configuredHorizontal: number, configuredVertical: number, horizontalSize: number, verticalSize: number): [number, number] {
+  const cellSize = Math.max(
+    configuredHorizontal ? horizontalSize / configuredHorizontal : 0,
+    configuredVertical ? verticalSize / configuredVertical : 0);
+  const count = (configured: number, size: number) => configured === 0 || size === 0 ? 0 : Math.min(
+    2 ** Math.floor(Math.log2(configured)),
+    Math.max(1, 2 ** Math.round(Math.log2(size / cellSize))));
+  return [count(configuredHorizontal, horizontalSize), count(configuredVertical, verticalSize)];
+}
+
+function getInstanceWorldMatrix(mesh: InstancedMesh, instanceId: number, target: Matrix4): Matrix4 {
+  mesh.getMatrixAt(instanceId, target);
+  target.premultiply(mesh.matrixWorld);
+  if (mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(instanceId)) target.premultiply(dragDeltaMatrix);
+  return target;
+}
+
+function getFaceGridCounts(objectUuid: string, face: number, worldMatrix: Matrix4): [number, number] {
+  const override = gridOverrides.get(objectUuid);
+  const configuredHorizontal = override?.horizontal ?? gridHorizontal;
+  const configuredVertical = override?.vertical ?? gridVertical;
+  if (!smartGrid || override) return [configuredHorizontal, configuredVertical];
+  const [horizontalAxis, verticalAxis] = faceGridAxes[face];
+  const axis = new Vector3();
+  return smartCounts(
+    configuredHorizontal,
+    configuredVertical,
+    axis.setFromMatrixColumn(worldMatrix, horizontalAxis).length(),
+    axis.setFromMatrixColumn(worldMatrix, verticalAxis).length());
+}
+
+export function updateHeadPainter(): void {
+  if (!active || !painterContext) return;
+  updateHeadPainterGridOverlay(painterContext.scene, loadedObjectGroup, gridEnabled, layerMode, getFaceGridCounts, gridBoundary);
+}
+
+export function getHeadGridValue(objectUuid: string, axis: 'horizontal' | 'vertical'): number {
+  return gridOverrides.get(objectUuid)?.[axis] ?? (axis === 'horizontal' ? gridHorizontal : gridVertical);
+}
+
+export function setHeadGridOverride(objectUuid: string, axis: 'horizontal' | 'vertical', value: number): void {
+  const override = gridOverrides.get(objectUuid) ?? {};
+  override[axis] = clampGrid(value);
+  gridOverrides.set(objectUuid, override);
+  invalidateHeadPainterGridOverlay();
+}
+
+function saveActivePalette(): void {
+  if (activePalettePreset) void window.ipcApi.savePainterAsset('palette', activePalettePreset, { colors: palette });
+}
+
+function setCurrentColor(color: Rgba, writePalette = false): void {
+  currentColor = cloneRgba(color);
+  if (writePalette) {
+    palette[activePaletteSlot] = cloneRgba(color);
+    saveActivePalette();
+  }
+  syncColorControls();
+  renderPalette();
+}
+
+function renderPalette(): void {
+  const grid = root?.querySelector<HTMLElement>('.head-painter-palette');
+  if (!grid) return;
+  grid.replaceChildren(...palette.map((color, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `head-painter-swatch${index === activePaletteSlot ? ' active' : ''}${index === paletteAnchor ? ' anchor' : ''}`;
+    button.title = color ? `rgba(${color.join(', ')})` : '빈 색상';
+    if (color) button.style.background = `rgba(${color[0]},${color[1]},${color[2]},${color[3] / 255})`;
+    button.onclick = event => {
+      if (event.shiftKey && color) {
+        if (paletteAnchor === null || !palette[paletteAnchor]) paletteAnchor = index;
+        else {
+          const start = Math.min(paletteAnchor, index);
+          const end = Math.max(paletteAnchor, index);
+          const first = palette[start]!;
+          const last = palette[end]!;
+          for (let slot = start; slot <= end; slot++) palette[slot] = interpolateColor(first, last, end === start ? 0 : (slot - start) / (end - start));
+          paletteAnchor = null;
+          saveActivePalette();
+        }
+      } else {
+        paletteAnchor = null;
+        activePaletteSlot = index;
+        if (color) currentColor = cloneRgba(color);
+      }
+      syncColorControls();
+      renderPalette();
+    };
+    return button;
+  }));
+}
+
+function syncColorControls(): void {
+  if (!root) return;
+  const input = root.querySelector<HTMLInputElement>('#head-painter-color')!;
+  const alpha = root.querySelector<HTMLInputElement>('#head-painter-alpha')!;
+  const alphaRange = root.querySelector<HTMLInputElement>('#head-painter-alpha-range')!;
+  input.value = formatColor(currentColor);
+  alpha.value = alphaRange.value = String(currentColor[3]);
+  root.querySelector<HTMLElement>('.head-painter-color-preview')!.style.background = `rgb(${currentColor[0]} ${currentColor[1]} ${currentColor[2]})`;
+}
+
+function bindRangePair(id: string, minimum: number, maximum: number, setValue: (value: number) => void): void {
+  if (!root) return;
+  const number = root.querySelector<HTMLInputElement>(`#${id}`)!;
+  const range = root.querySelector<HTMLInputElement>(`#${id}-range`)!;
+  const update = (input: HTMLInputElement) => {
+    const value = Math.min(maximum, Math.max(minimum, Number(input.value)));
+    number.value = range.value = String(Number.isFinite(value) ? value : minimum);
+    setValue(Number(number.value));
+  };
+  number.oninput = () => update(number);
+  range.oninput = () => update(range);
+}
+
+function renderToolSettings(): void {
+  if (!root) return;
+  root.querySelectorAll<HTMLElement>('[data-tool-settings]').forEach(element => { element.hidden = element.dataset.toolSettings !== lastTool; });
+  root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.classList.toggle('active', button.dataset.tool === lastTool));
+}
+
+function setTool(tool: Tool): void {
+  if (stroke) finishStroke();
+  lastTool = tool;
+  renderToolSettings();
+}
+
+function renderCustomBrushes(): void {
+  const list = root?.querySelector<HTMLElement>('.head-painter-custom-brushes');
+  if (!list) return;
+  list.replaceChildren(...customBrushes.map(brush => {
+    const row = document.createElement('div');
+    row.className = 'head-painter-custom-brush';
+    const name = document.createElement('span');
+    name.textContent = brush.name;
+    const select = document.createElement('button');
+    select.type = 'button';
+    select.className = 'lucide-icon';
+    select.textContent = toolIcons.brush;
+    select.title = '브러시 선택';
+    select.classList.toggle('active', selectedBrushName === brush.name);
+    select.onclick = () => {
+      selectedBrushName = brush.name;
+      brushShape = 'custom';
+      root!.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.value = 'custom';
+      renderCustomBrushes();
+    };
+    const settings = document.createElement('button');
+    settings.type = 'button';
+    settings.className = 'lucide-icon';
+    settings.textContent = '\uE2F0';
+    settings.title = '설정';
+    settings.onclick = () => openBrushEditor(brush);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'lucide-icon';
+    remove.textContent = '\uE18E';
+    remove.title = '삭제';
+    remove.onclick = async () => {
+      if (!window.confirm(`'${brush.name}' 브러시를 삭제할까요?`)) return;
+      const result = await window.ipcApi.deletePainterAsset('brush', brush.name);
+      if (!result.success) return window.alert(result.error ?? '브러시 삭제에 실패했습니다.');
+      customBrushes = customBrushes.filter(item => item !== brush);
+      if (selectedBrushName === brush.name) selectedBrushName = customBrushes[0]?.name ?? null;
+      renderCustomBrushes();
+    };
+    row.append(name, select, settings, remove);
+    return row;
+  }));
+}
+
+async function addCustomBrush(): Promise<void> {
+  let index = 1;
+  while (customBrushes.some(brush => brush.name === `커스텀${index}`)) index++;
+  const brush: BrushAsset = { name: `커스텀${index}`, width: 8, height: 8, pixels: Array(64).fill(null) };
+  const result = await window.ipcApi.savePainterAsset('brush', brush.name, brush);
+  if (!result.success) return window.alert(result.error ?? '브러시 저장에 실패했습니다.');
+  customBrushes.push(brush);
+  selectedBrushName = brush.name;
+  brushShape = 'custom';
+  root!.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.value = 'custom';
+  renderCustomBrushes();
+  openBrushEditor(brush);
+}
+
+function renderBrushEditorGrid(): void {
+  if (!brushEditor || !editingBrush) return;
+  const grid = brushEditor.querySelector<HTMLElement>('.head-painter-brush-grid')!;
+  grid.replaceChildren(...Array.from({ length: 64 }, (_, index) => {
+    const x = index % 8;
+    const y = Math.floor(index / 8);
+    const button = document.createElement('button');
+    button.type = 'button';
+    const enabled = x < editingBrush!.width && y < editingBrush!.height;
+    const color = enabled ? editingBrush!.pixels[y * editingBrush!.width + x] : null;
+    button.disabled = !enabled;
+    if (color) button.style.background = `rgba(${color[0]},${color[1]},${color[2]},${color[3] / 255})`;
+    button.dataset.x = String(x);
+    button.dataset.y = String(y);
+    return button;
+  }));
+}
+
+function resizeEditingBrush(width: number, height: number): void {
+  if (!editingBrush) return;
+  const old = editingBrush;
+  const pixels = Array<Rgba | null>(width * height).fill(null);
+  for (let y = 0; y < Math.min(old.height, height); y++) {
+    for (let x = 0; x < Math.min(old.width, width); x++) pixels[y * width + x] = old.pixels[y * old.width + x];
+  }
+  editingBrush = { ...old, width, height, pixels };
+  renderBrushEditorGrid();
+}
+
+function paintBrushEditorCell(target: EventTarget | null, erase: boolean): void {
+  if (!editingBrush || !(target instanceof HTMLButtonElement) || target.disabled) return;
+  const x = Number(target.dataset.x);
+  const y = Number(target.dataset.y);
+  editingBrush.pixels[y * editingBrush.width + x] = erase ? null : cloneRgba(editorColor);
+  renderBrushEditorGrid();
+}
+
+function openBrushEditor(brush: BrushAsset): void {
+  if (!brushEditor) return;
+  editingBrush = { ...brush, pixels: brush.pixels.map(color => color && cloneRgba(color)) };
+  editorColor = cloneRgba(currentColor);
+  brushEditor.hidden = false;
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-name')!.value = brush.name;
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-color')!.value = formatColor(editorColor).startsWith('#') ? formatColor(editorColor) : `#${editorColor.slice(0, 3).map(value => value.toString(16).padStart(2, '0')).join('')}`;
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-alpha')!.value = String(editorColor[3]);
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-width')!.value = String(brush.width);
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-height')!.value = String(brush.height);
+  renderBrushEditorGrid();
+}
+
+async function saveBrushEditor(): Promise<void> {
+  if (!brushEditor || !editingBrush) return;
+  const oldName = editingBrush.name;
+  const name = brushEditor.querySelector<HTMLInputElement>('#head-brush-name')!.value.trim();
+  if (customBrushes.some(brush => brush.name === name && brush.name !== oldName)) return window.alert('같은 이름의 브러시가 이미 있습니다.');
+  const brush = { ...editingBrush, name };
+  const result = await window.ipcApi.savePainterAsset('brush', name, brush);
+  if (!result.success) return window.alert(result.error ?? '브러시 저장에 실패했습니다.');
+  if (oldName !== name) await window.ipcApi.deletePainterAsset('brush', oldName);
+  const index = customBrushes.findIndex(item => item.name === oldName);
+  if (index >= 0) customBrushes[index] = brush;
+  selectedBrushName = name;
+  editingBrush = null;
+  brushEditor.hidden = true;
+  renderCustomBrushes();
+}
+
+function createBrushEditor(): void {
+  brushEditor = document.createElement('div');
+  brushEditor.className = 'head-painter-brush-editor';
+  brushEditor.hidden = true;
+  brushEditor.innerHTML = `
+    <section role="dialog" aria-modal="true" aria-labelledby="head-brush-title">
+      <h2 id="head-brush-title">커스텀 브러시</h2>
+      <label>이름 <input id="head-brush-name" maxlength="100"></label>
+      <div class="head-painter-inline"><label>색상 <input id="head-brush-color" value="#000000"></label><label>알파 <input id="head-brush-alpha" type="number" min="0" max="255" value="255"></label></div>
+      <div class="head-painter-inline"><label>가로 <input id="head-brush-width" type="number" min="1" max="8"></label><label>세로 <input id="head-brush-height" type="number" min="1" max="8"></label></div>
+      <div class="head-painter-brush-grid"></div>
+      <footer><button type="button" data-close>나가기</button><button type="button" data-save>저장</button></footer>
+    </section>`;
+  document.body.append(brushEditor);
+  brushEditor.querySelector('[data-close]')!.addEventListener('click', () => { brushEditor!.hidden = true; editingBrush = null; });
+  brushEditor.querySelector('[data-save]')!.addEventListener('click', () => void saveBrushEditor());
+  const color = brushEditor.querySelector<HTMLInputElement>('#head-brush-color')!;
+  const alpha = brushEditor.querySelector<HTMLInputElement>('#head-brush-alpha')!;
+  const updateColor = () => {
+    const parsed = parseColor(color.value, Number(alpha.value));
+    if (parsed) editorColor = parsed;
+  };
+  color.oninput = updateColor;
+  alpha.oninput = updateColor;
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-width')!.oninput = event => resizeEditingBrush(Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value))), editingBrush?.height ?? 1);
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-height')!.oninput = event => resizeEditingBrush(editingBrush?.width ?? 1, Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value))));
+  const grid = brushEditor.querySelector<HTMLElement>('.head-painter-brush-grid')!;
+  grid.oncontextmenu = event => event.preventDefault();
+  grid.onpointerdown = event => {
+    if (event.button > 2) return;
+    event.preventDefault();
+    paintBrushEditorCell(event.target, event.button === 2);
+  };
+  grid.onpointermove = event => {
+    if (!(event.buttons & 3)) return;
+    paintBrushEditorCell(event.target, !!(event.buttons & 2));
+  };
+}
+
+function renderPalettePresetMenu(): void {
+  if (!root) return;
+  const button = root.querySelector<HTMLButtonElement>('.head-painter-preset-button')!;
+  const menu = root.querySelector<HTMLElement>('.head-painter-preset-menu')!;
+  button.textContent = activePalettePreset ?? '작업 팔레트';
+  const rows = palettePresetNames.map(name => {
+    const row = document.createElement('div');
+    row.className = 'head-painter-preset-row';
+    const choose = document.createElement('button');
+    choose.type = 'button';
+    choose.textContent = name;
+    choose.className = name === activePalettePreset ? 'active' : '';
+    choose.onclick = async () => {
+      const result = await window.ipcApi.loadPainterAsset('palette', name);
+      if (!result.success) return window.alert(result.error ?? '팔레트를 불러오지 못했습니다.');
+      palette = (result.data as PaletteAsset).colors.map(color => color && cloneRgba(color));
+      activePalettePreset = name;
+      localStorage.setItem('pdeHeadPainterPalettePreset', name);
+      menu.hidden = true;
+      renderPalettePresetMenu();
+      renderPalette();
+    };
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'lucide-icon';
+    remove.textContent = '\uE18E';
+    remove.title = '삭제';
+    remove.onclick = async event => {
+      event.stopPropagation();
+      if (!window.confirm(`'${name}' 팔레트를 삭제할까요?`)) return;
+      const result = await window.ipcApi.deletePainterAsset('palette', name);
+      if (!result.success) return window.alert(result.error ?? '팔레트 삭제에 실패했습니다.');
+      palettePresetNames = palettePresetNames.filter(item => item !== name);
+      if (activePalettePreset === name) {
+        activePalettePreset = null;
+        localStorage.removeItem('pdeHeadPainterPalettePreset');
+      }
+      renderPalettePresetMenu();
+    };
+    row.append(choose, remove);
+    return row;
+  });
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.textContent = '+ 추가 팔레트';
+  add.onclick = async () => {
+    const name = window.prompt('팔레트 이름');
+    if (!name?.trim()) return;
+    const result = await window.ipcApi.savePainterAsset('palette', name.trim(), { colors: palette });
+    if (!result.success) return window.alert(result.error ?? '팔레트 저장에 실패했습니다.');
+    if (!palettePresetNames.includes(name.trim())) palettePresetNames.push(name.trim());
+    activePalettePreset = name.trim();
+    localStorage.setItem('pdeHeadPainterPalettePreset', activePalettePreset);
+    menu.hidden = true;
+    renderPalettePresetMenu();
+  };
+  menu.replaceChildren(...rows, add);
+}
+
+async function loadPainterAssets(): Promise<void> {
+  const [brushList, paletteList] = await Promise.all([
+    window.ipcApi.listPainterAssets('brush'),
+    window.ipcApi.listPainterAssets('palette')
+  ]);
+  if (brushList.success) {
+    const results = await Promise.all(brushList.items.map(name => window.ipcApi.loadPainterAsset('brush', name)));
+    customBrushes = results.filter(result => result.success).map(result => result.data as BrushAsset);
+    selectedBrushName ??= customBrushes[0]?.name ?? null;
+  }
+  if (paletteList.success) {
+    palettePresetNames = paletteList.items;
+    const saved = localStorage.getItem('pdeHeadPainterPalettePreset');
+    if (saved && palettePresetNames.includes(saved)) {
+      const result = await window.ipcApi.loadPainterAsset('palette', saved);
+      if (result.success) {
+        palette = (result.data as PaletteAsset).colors.map(color => color && cloneRgba(color));
+        activePalettePreset = saved;
+      }
+    }
+  }
+  renderCustomBrushes();
+  renderPalettePresetMenu();
+  renderPalette();
+}
+
+function resizeStamp(width: number, height: number): void {
+  const oldWidth = stampWidth;
+  const oldHeight = stampHeight;
+  const oldPixels = stampPixels;
+  stampWidth = clampGrid(width);
+  stampHeight = clampGrid(height);
+  stampPixels = Array<Rgba | null>(stampWidth * stampHeight).fill(null);
+  for (let y = 0; y < Math.min(oldHeight, stampHeight); y++) {
+    for (let x = 0; x < Math.min(oldWidth, stampWidth); x++) stampPixels[y * stampWidth + x] = oldPixels[y * oldWidth + x] ?? null;
+  }
+  syncStampInputs();
+}
+
+function syncStampInputs(): void {
+  if (!root) return;
+  root.querySelector<HTMLInputElement>('#head-painter-stamp-width')!.value = String(stampWidth);
+  root.querySelector<HTMLInputElement>('#head-painter-stamp-height')!.value = String(stampHeight);
+  const preview = root.querySelector<HTMLElement>('.head-painter-stamp-preview');
+  if (!preview) return;
+  preview.style.gridTemplateColumns = `repeat(${Math.max(1, stampWidth)}, 1fr)`;
+  preview.replaceChildren(...stampPixels.map(color => {
+    const cell = document.createElement('span');
+    if (color) cell.style.background = `rgba(${color[0]},${color[1]},${color[2]},${color[3] / 255})`;
+    return cell;
+  }));
+}
+
+function createPanel(): void {
+  root = document.createElement('section');
+  root.className = 'head-painter-panel';
+  root.hidden = true;
+  root.innerHTML = `
+    <div class="head-painter-preset">
+      <button class="head-painter-preset-button" type="button">작업 팔레트</button>
+      <div class="head-painter-preset-menu" hidden></div>
+    </div>
+    <div class="head-painter-tools" aria-label="Head Painter 도구">
+      ${(['brush', 'bucket', 'eraser', 'picker', 'stamp'] as Tool[]).map(tool => `<button type="button" class="head-painter-tool lucide-icon" data-tool="${tool}" aria-label="${toolLabels[tool]}" title="${toolLabels[tool]}">${toolIcons[tool]}</button>`).join('')}
+    </div>
+    <fieldset>
+      <legend>레이어와 그리드</legend>
+      <label>2번 레이어 <select id="head-painter-layer"><option value="auto">기본</option><option value="layer">켜기</option><option value="base">끄기</option></select></label>
+      <div class="head-painter-inline"><label>가로 <input id="head-painter-grid-horizontal" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-grid-vertical" type="number" min="0" max="8" value="8"></label></div>
+      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label></div>
+    </fieldset>
+    <fieldset data-tool-settings="brush">
+      <legend>브러시</legend>
+      <label>모양 <select id="head-painter-brush-shape"><option value="square">사각형</option><option value="circle">원형</option><option value="custom">커스텀</option></select></label>
+      <label>크기 <span class="head-painter-range"><input id="head-painter-brush-size-range" type="range" min="1" max="8" value="1"><input id="head-painter-brush-size" type="number" min="1" max="8" value="1"></span></label>
+      <label>경도 <span class="head-painter-range"><input id="head-painter-brush-hardness-range" type="range" min="0" max="100" value="100"><input id="head-painter-brush-hardness" type="number" min="0" max="100" value="100"></span></label>
+      <label>간격 % <span class="head-painter-range"><input id="head-painter-brush-spacing-range" type="range" min="1" max="100" value="25"><input id="head-painter-brush-spacing" type="number" min="1" max="100" value="25"></span></label>
+      <div class="head-painter-custom-brushes"></div><button type="button" id="head-painter-add-brush">+ 커스텀 브러시</button>
+    </fieldset>
+    <fieldset data-tool-settings="bucket" hidden><legend>양동이</legend><small>클릭: 같은 RGBA · Shift: 면 전체 · Ctrl: 6면 전체</small></fieldset>
+    <fieldset data-tool-settings="eraser" hidden>
+      <legend>지우개</legend>
+      <label>크기 <span class="head-painter-range"><input id="head-painter-eraser-size-range" type="range" min="1" max="8" value="1"><input id="head-painter-eraser-size" type="number" min="1" max="8" value="1"></span></label>
+      <label>경도 <span class="head-painter-range"><input id="head-painter-eraser-hardness-range" type="range" min="0" max="100" value="100"><input id="head-painter-eraser-hardness" type="number" min="0" max="100" value="100"></span></label>
+      <label>강도 <span class="head-painter-range"><input id="head-painter-eraser-strength-range" type="range" min="0" max="100" value="100"><input id="head-painter-eraser-strength" type="number" min="0" max="100" value="100"></span></label>
+    </fieldset>
+    <fieldset data-tool-settings="picker" hidden><legend>색상선택</legend><small>최종 화면색을 선택합니다.</small></fieldset>
+    <fieldset data-tool-settings="stamp" hidden>
+      <legend>스탬프</legend>
+      <div class="head-painter-inline"><label>가로 <input id="head-painter-stamp-width" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-stamp-height" type="number" min="0" max="8" value="8"></label></div>
+      <div class="head-painter-stamp-actions"><button type="button" data-stamp="left" class="lucide-icon" aria-label="왼쪽 회전" title="왼쪽 회전">\uE148</button><button type="button" data-stamp="right" class="lucide-icon" aria-label="오른쪽 회전" title="오른쪽 회전">\uE149</button><button type="button" data-stamp="vertical" class="lucide-icon" aria-label="상하 반전" title="상하 반전">\uE35E</button><button type="button" data-stamp="horizontal" class="lucide-icon" aria-label="좌우 반전" title="좌우 반전">\uE35D</button></div>
+      <div class="head-painter-stamp-preview"></div>
+      <small>Shift+클릭으로 복사, 클릭으로 배치</small>
+    </fieldset>
+    <label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label>
+    <section class="head-painter-color-area">
+      <div class="head-painter-color-row"><button class="head-painter-color-preview" type="button" aria-label="색상 선택"></button><select id="head-painter-color-mode"><option value="rgb">일반</option><option value="oklch">OKLCH</option></select><input id="head-painter-color" value="#000000"></div>
+      <label>알파 <span class="head-painter-range"><input id="head-painter-alpha-range" type="range" min="0" max="255" value="255"><input id="head-painter-alpha" type="number" min="0" max="255" value="255"></span></label>
+      <div class="head-painter-palette"></div>
+      <div class="head-painter-palette-actions"><button type="button" data-sort>색 정렬</button><button type="button" data-clear>지우기</button></div>
+    </section>`;
+  document.getElementById('project-details')!.append(root);
+  createBrushEditor();
+
+  root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.onclick = () => setTool(button.dataset.tool as Tool));
+  root.querySelector<HTMLButtonElement>('.head-painter-preset-button')!.onclick = () => {
+    const menu = root!.querySelector<HTMLElement>('.head-painter-preset-menu')!;
+    menu.hidden = !menu.hidden;
+  };
+  root.querySelector<HTMLSelectElement>('#head-painter-layer')!.onchange = event => {
+    layerMode = (event.target as HTMLSelectElement).value as LayerMode;
+    setPlayerHeadLayerVisible(layerMode !== 'base');
+    invalidateHeadPainterGridOverlay();
+  };
+  root.querySelector<HTMLInputElement>('#head-painter-grid-horizontal')!.oninput = event => {
+    gridHorizontal = clampGrid(Number((event.target as HTMLInputElement).value));
+    (event.target as HTMLInputElement).value = String(gridHorizontal);
+    invalidateHeadPainterGridOverlay();
+  };
+  root.querySelector<HTMLInputElement>('#head-painter-grid-vertical')!.oninput = event => {
+    gridVertical = clampGrid(Number((event.target as HTMLInputElement).value));
+    (event.target as HTMLInputElement).value = String(gridVertical);
+    invalidateHeadPainterGridOverlay();
+  };
+  root.querySelector<HTMLInputElement>('#head-painter-grid')!.onchange = event => { gridEnabled = (event.target as HTMLInputElement).checked; invalidateHeadPainterGridOverlay(); };
+  root.querySelector<HTMLInputElement>('#head-painter-smart-grid')!.onchange = event => { smartGrid = (event.target as HTMLInputElement).checked; invalidateHeadPainterGridOverlay(); };
+  root.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.onchange = event => { brushShape = (event.target as HTMLSelectElement).value as typeof brushShape; };
+  root.querySelector<HTMLButtonElement>('#head-painter-add-brush')!.onclick = () => void addCustomBrush();
+  bindRangePair('head-painter-brush-size', 1, 8, value => { brushSize = value; });
+  bindRangePair('head-painter-brush-hardness', 0, 100, value => { brushHardness = value; });
+  bindRangePair('head-painter-brush-spacing', 1, 100, value => { brushSpacing = value; });
+  bindRangePair('head-painter-eraser-size', 1, 8, value => { eraserSize = value; });
+  bindRangePair('head-painter-eraser-hardness', 0, 100, value => { eraserHardness = value; });
+  bindRangePair('head-painter-eraser-strength', 0, 100, value => { eraserStrength = value; });
+  root.querySelector<HTMLInputElement>('#head-painter-overwrite')!.onchange = event => { overwrite = (event.target as HTMLInputElement).checked; };
+  root.querySelector<HTMLInputElement>('#head-painter-stamp-width')!.oninput = event => resizeStamp(Number((event.target as HTMLInputElement).value), stampHeight);
+  root.querySelector<HTMLInputElement>('#head-painter-stamp-height')!.oninput = event => resizeStamp(stampWidth, Number((event.target as HTMLInputElement).value));
+  root.querySelectorAll<HTMLButtonElement>('[data-stamp]').forEach(button => button.onclick = () => transformStamp(button.dataset.stamp as 'left' | 'right' | 'vertical' | 'horizontal'));
+  root.querySelector<HTMLSelectElement>('#head-painter-color-mode')!.onchange = event => {
+    colorMode = (event.target as HTMLSelectElement).value as typeof colorMode;
+    syncColorControls();
+  };
+  const colorInput = root.querySelector<HTMLInputElement>('#head-painter-color')!;
+  const colorPicker = root.querySelector<HTMLElement>('.head-painter-color-preview')!;
+  const alphaInput = root.querySelector<HTMLInputElement>('#head-painter-alpha')!;
+  const alphaRange = root.querySelector<HTMLInputElement>('#head-painter-alpha-range')!;
+  const updateColor = (writePalette: boolean) => {
+    const parsed = parseColor(colorInput.value, Number(alphaInput.value));
+    if (!parsed) return colorInput.setCustomValidity('색상 형식이 올바르지 않습니다.');
+    colorInput.setCustomValidity('');
+    setCurrentColor(parsed, writePalette);
+  };
+  colorInput.onchange = () => updateColor(true);
+  colorPicker.onclick = () => openColorPicker(
+    colorPicker,
+    currentColor.slice(0, 3) as [number, number, number],
+    color => setCurrentColor([...color, currentColor[3]], true),
+    {
+      oklch: colorMode === 'oklch',
+      onOklchChange: enabled => {
+        colorMode = enabled ? 'oklch' : 'rgb';
+        root!.querySelector<HTMLSelectElement>('#head-painter-color-mode')!.value = colorMode;
+        syncColorControls();
+      }
+    }
+  );
+  const updateAlpha = (source: HTMLInputElement) => {
+    const alpha = clampByte(Number(source.value));
+    alphaInput.value = alphaRange.value = String(alpha);
+    currentColor[3] = alpha;
+    palette[activePaletteSlot] = cloneRgba(currentColor);
+    saveActivePalette();
+    syncColorControls();
+    renderPalette();
+  };
+  alphaInput.oninput = () => updateAlpha(alphaInput);
+  alphaRange.oninput = () => updateAlpha(alphaRange);
+  root.querySelector<HTMLButtonElement>('[data-sort]')!.onclick = () => {
+    const colors = palette.filter((color): color is Rgba => !!color).sort((a, b) =>
+      (a[0] * 0x1000000 + a[1] * 0x10000 + a[2] * 0x100 + a[3]) - (b[0] * 0x1000000 + b[1] * 0x10000 + b[2] * 0x100 + b[3]));
+    palette = [...colors, ...Array<Rgba | null>(64 - colors.length).fill(null)];
+    activePaletteSlot = Math.min(activePaletteSlot, Math.max(0, colors.length - 1));
+    saveActivePalette();
+    renderPalette();
+  };
+  root.querySelector<HTMLButtonElement>('[data-clear]')!.onclick = () => {
+    palette = Array(64).fill(null);
+    activePaletteSlot = 0;
+    paletteAnchor = null;
+    saveActivePalette();
+    renderPalette();
+  };
+  renderToolSettings();
+  syncStampInputs();
+  syncColorControls();
+  renderPalette();
+  void loadPainterAssets();
+}
+
+function syncPanelTitle(): void {
+  if (active) document.getElementById('details-title')!.textContent = 'Head Painter';
+}
+
+export function setHeadPainterEnabled(enabled: boolean): void {
+  if (active === enabled) return;
+  active = enabled;
+  if (!root) createPanel();
+  const details = document.getElementById('project-details')!;
+  const tabs = document.getElementById('project-tabs')!;
+  const toolbarButton = document.querySelectorAll<HTMLElement>('#scene-toolbar i')[4];
+  toolbarButton?.classList.toggle('head-painter-active', enabled);
+  toolbarButton?.setAttribute('aria-pressed', String(enabled));
+  details.classList.toggle('head-painter-mode', enabled);
+  root!.hidden = !enabled;
+  if (enabled) {
+    tabs.hidden = true;
+    syncPanelTitle();
+    setPlayerHeadLayerVisible(layerMode !== 'base');
+    invalidateHeadPainterGridOverlay();
+    updateHeadPainter();
+  } else {
+    if (stroke) finishStroke();
+    if (paintPointerId !== null && painterContext?.renderer.domElement.hasPointerCapture(paintPointerId)) {
+      painterContext.renderer.domElement.releasePointerCapture(paintPointerId);
+    }
+    restoreCameraControls?.();
+    restoreCameraControls = null;
+    paintPointerId = null;
+    paintPointerStart = null;
+    paintDragged = false;
+    setPlayerHeadLayerVisible(true);
+    removeHeadPainterGridOverlay();
+    if (brushEditor) brushEditor.hidden = true;
+    window.dispatchEvent(new CustomEvent('pde:selection-changed', { detail: currentSelection }));
+  }
+}
+
+export function toggleHeadPainter(): void {
+  setHeadPainterEnabled(!active);
+}
+
+export function initHeadPainter(context: PainterContext): void {
+  painterContext = context;
+  window.addEventListener('pointerdown', onPointerDown, true);
+  window.addEventListener('pointermove', onPointerMove, true);
+  window.addEventListener('pointerup', onPointerUp, true);
+  window.addEventListener('pointercancel', onPointerUp, true);
+  if (active) {
+    setPlayerHeadLayerVisible(layerMode !== 'base');
+    invalidateHeadPainterGridOverlay();
+  }
+}
+
+window.addEventListener('pde:selection-changed', () => queueMicrotask(syncPanelTitle));
+window.addEventListener('pde:scene-updated', () => {
+  if (active) setPlayerHeadLayerVisible(layerMode !== 'base');
+  invalidateHeadPainterGridOverlay();
+});
+window.addEventListener('pde:object-transform-changed', invalidateHeadPainterGridOverlay);
+window.addEventListener('pde:history-restored', invalidateHeadPainterGridOverlay);
+document.addEventListener('pointerdown', event => {
+  const menu = root?.querySelector<HTMLElement>('.head-painter-preset-menu');
+  const preset = root?.querySelector<HTMLElement>('.head-painter-preset');
+  if (menu && preset && !preset.contains(event.target as Node)) menu.hidden = true;
+});
+
+if (import.meta.env.DEV) {
+  const black = oklchToRgb(rgbToOklch([0, 0, 0]));
+  const redBlueMiddle = interpolateColor([255, 0, 0, 0], [0, 0, 255, 255], 0.5);
+  console.assert(pixelOffset(facePartIndexes[0], 0, 0) === 8 * 4 && pixelOffset(facePartIndexes[4] + 6, 7, 7) < blockWidth * blockHeight * 4, 'Head face to texture mapping failed.');
+  console.assert(black[0] === 0 && black[1] === 0 && black[2] === 0 && redBlueMiddle[3] === 128, 'OKLCH conversion or alpha interpolation failed.');
+  const [smartHorizontal, smartVertical] = smartCounts(8, 8, 1, 3);
+  console.assert(smartHorizontal === 2 && smartVertical === 8 && partSize % smartHorizontal === 0 && partSize % smartVertical === 0 && smartCounts(0, 8, 1, 3)[0] === 0, 'Smart grid limits failed.');
+  console.assert(gridBoundary(1, 4) === 2 && gridBoundary(2, 4) === 4, 'Grid paint boundaries failed.');
+  gridOverrides.set('__grid_override_check__', { horizontal: 3, vertical: 5 });
+  const [manualHorizontal, manualVertical] = getFaceGridCounts('__grid_override_check__', 0, new Matrix4());
+  gridOverrides.delete('__grid_override_check__');
+  console.assert(manualHorizontal === 3 && manualVertical === 5, 'Per-head grid override was ignored.');
+  console.assert(clampGrid(-1) === 0 && clampGrid(9) === 8 && clampByte(300) === 255, 'Head Painter input limits failed.');
+  const savedStamp = { width: stampWidth, height: stampHeight, pixels: stampPixels };
+  stampWidth = 2; stampHeight = 1; stampPixels = [[1, 0, 0, 255], [2, 0, 0, 255]];
+  transformStamp('right');
+  console.assert(stampWidth === 1 && stampHeight === 2 && stampPixels[0]?.[0] === 1 && stampPixels[1]?.[0] === 2, 'Stamp rotation failed.');
+  transformStamp('vertical');
+  console.assert(stampPixels[0]?.[0] === 2, 'Stamp flip failed.');
+  stampWidth = savedStamp.width; stampHeight = savedStamp.height; stampPixels = savedStamp.pixels;
+  console.assert(facePartIndexes.map(index => index + 6).length === 6, 'Bucket six-face scope failed.');
+}
