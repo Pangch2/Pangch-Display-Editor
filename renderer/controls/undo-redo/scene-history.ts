@@ -2,6 +2,7 @@ import {
     BufferAttribute,
     BufferGeometry,
     Group,
+    InterleavedBufferAttribute,
     InstancedMesh,
     Matrix4,
     Material,
@@ -45,10 +46,21 @@ let captureGizmoState: (() => HistoryGizmoState) | null = null;
 let restoreGizmoState: ((state: HistoryGizmoState) => void) | null = null;
 
 type TypedArray = Exclude<BufferAttribute['array'], number[]>;
+type HistoryAttribute = BufferAttribute | InterleavedBufferAttribute;
 
 interface AttributeSnapshot {
-    attribute: BufferAttribute;
+    attribute: HistoryAttribute;
     array: TypedArray;
+}
+
+function isInstancedGeometryAttribute(attribute: unknown): attribute is HistoryAttribute {
+    const candidate = attribute as BufferAttribute & {
+        isInstancedBufferAttribute?: boolean;
+        isInterleavedBufferAttribute?: boolean;
+        data?: { isInstancedInterleavedBuffer?: boolean };
+    };
+    return !!(candidate?.isInstancedBufferAttribute
+        || (candidate?.isInterleavedBufferAttribute && candidate.data?.isInstancedInterleavedBuffer));
 }
 
 interface ObjectSnapshot {
@@ -142,11 +154,11 @@ function captureObject(object: Object3D): ObjectSnapshot {
         const mesh = object as InstancedMesh;
         attributes.push({ attribute: mesh.instanceMatrix, array: mesh.instanceMatrix.array.slice() as TypedArray });
         if (mesh.instanceColor) attributes.push({ attribute: mesh.instanceColor, array: mesh.instanceColor.array.slice() as TypedArray });
-        (Object.values(mesh.geometry.attributes) as BufferAttribute[]).forEach(attribute => {
-            if ((attribute as BufferAttribute & { isInstancedBufferAttribute?: boolean }).isInstancedBufferAttribute
-                && attribute !== mesh.instanceMatrix && attribute !== mesh.instanceColor) {
-                attributes.push({ attribute, array: attribute.array.slice() as TypedArray });
-            }
+        const capturedArrays = new Set(attributes.map(({ attribute }) => attribute.array));
+        Object.values(mesh.geometry.attributes).forEach(attribute => {
+            if (!isInstancedGeometryAttribute(attribute) || capturedArrays.has(attribute.array)) return;
+            capturedArrays.add(attribute.array);
+            attributes.push({ attribute, array: attribute.array.slice() as TypedArray });
         });
     }
     return {

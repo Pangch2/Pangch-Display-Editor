@@ -1,6 +1,7 @@
 import {
     Matrix4,
     Group,
+    InterleavedBufferAttribute,
     Mesh,
     InstancedMesh,
     BufferAttribute
@@ -23,6 +24,18 @@ interface DeleteUserData {
     objectBlockProps?: Map<string, unknown>;
     objectTextDisplayOptions?: Map<string, unknown>;
     sceneOrder?: SceneOrderEntry[];
+}
+
+type InstancedGeometryAttribute = BufferAttribute | InterleavedBufferAttribute;
+
+function isInstancedGeometryAttribute(attribute: unknown): attribute is InstancedGeometryAttribute {
+    const candidate = attribute as BufferAttribute & {
+        isInstancedBufferAttribute?: boolean;
+        isInterleavedBufferAttribute?: boolean;
+        data?: { isInstancedInterleavedBuffer?: boolean };
+    };
+    return !!(candidate?.isInstancedBufferAttribute
+        || (candidate?.isInterleavedBufferAttribute && candidate.data?.isInstancedInterleavedBuffer));
 }
 
 // 성능을 위한 임시 변수
@@ -74,10 +87,16 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
         _TMP_MAT4_A.toArray(instanceMatrix.array as number[], dstIdx * 16);
 
         for (const attribute of Object.values(mesh.geometry.attributes)) {
-            const instanced = attribute as BufferAttribute & { isInstancedBufferAttribute?: boolean };
-            if (!instanced.isInstancedBufferAttribute) continue;
-            const source = srcIdx * instanced.itemSize;
-            instanced.array.copyWithin(dstIdx * instanced.itemSize, source, source + instanced.itemSize);
+            if (!isInstancedGeometryAttribute(attribute)) continue;
+            const instanced = attribute;
+            if (instanced.isInterleavedBufferAttribute) {
+                for (let component = 0; component < instanced.itemSize; component++) {
+                    instanced.setComponent(dstIdx, component, instanced.getComponent(srcIdx, component));
+                }
+            } else {
+                const source = srcIdx * instanced.itemSize;
+                instanced.array.copyWithin(dstIdx * instanced.itemSize, source, source + instanced.itemSize);
+            }
             instanced.needsUpdate = true;
         }
         if (mesh.instanceColor) {

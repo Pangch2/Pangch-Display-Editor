@@ -1,6 +1,7 @@
 import {
     Color,
     Group,
+    InterleavedBufferAttribute,
     InstancedBufferAttribute,
     InstancedMesh,
     MathUtils,
@@ -66,6 +67,17 @@ interface DuplicateTimingStats {
     attrsMs: number;
     metadataMs: number;
     chunks: number;
+}
+
+type InstancedGeometryAttribute = InstancedBufferAttribute | InterleavedBufferAttribute;
+
+function isInstancedGeometryAttribute(attribute: unknown): attribute is InstancedGeometryAttribute {
+    const candidate = attribute as InstancedBufferAttribute & {
+        isInterleavedBufferAttribute?: boolean;
+        data?: { isInstancedInterleavedBuffer?: boolean };
+    };
+    return !!(candidate?.isInstancedBufferAttribute
+        || (candidate?.isInterleavedBufferAttribute && candidate.data?.isInstancedInterleavedBuffer));
 }
 
 export interface DuplicationSelection {
@@ -295,8 +307,7 @@ function getInstancedCapacity(mesh: InstancedMesh): number {
     let capacity = (mesh.instanceMatrix as InstancedBufferAttribute).count;
     if (mesh.instanceColor) capacity = Math.min(capacity, (mesh.instanceColor as InstancedBufferAttribute).count);
     for (const attribute of Object.values(mesh.geometry.attributes)) {
-        const instancedAttribute = attribute as InstancedBufferAttribute;
-        if (instancedAttribute.isInstancedBufferAttribute) capacity = Math.min(capacity, instancedAttribute.count);
+        if (isInstancedGeometryAttribute(attribute)) capacity = Math.min(capacity, attribute.count);
     }
     return capacity;
 }
@@ -306,20 +317,26 @@ function copyInstancedGeometryAttributes(
     sourceId: number,
     targetMesh: InstancedMesh,
     targetId: number,
-    updatedAttributes: Set<InstancedBufferAttribute>
+    updatedAttributes: Set<InstancedGeometryAttribute>
 ): void {
     for (const [name, attribute] of Object.entries(sourceMesh.geometry.attributes)) {
-        const sourceAttribute = attribute as InstancedBufferAttribute;
-        if (!sourceAttribute.isInstancedBufferAttribute) continue;
+        if (!isInstancedGeometryAttribute(attribute)) continue;
+        const sourceAttribute = attribute;
 
-        const targetAttribute = targetMesh.geometry.getAttribute(name) as InstancedBufferAttribute | undefined;
-        if (!targetAttribute?.isInstancedBufferAttribute) continue;
+        const targetAttribute = targetMesh.geometry.getAttribute(name);
+        if (!isInstancedGeometryAttribute(targetAttribute)) continue;
 
         const itemSize = Math.min(sourceAttribute.itemSize, targetAttribute.itemSize);
         const srcOffset = sourceId * sourceAttribute.itemSize;
         const dstOffset = targetId * targetAttribute.itemSize;
         if (name === dragSelectedAttributeName) targetAttribute.setX(targetId, 0);
-        else targetAttribute.array.set(sourceAttribute.array.subarray(srcOffset, srcOffset + itemSize), dstOffset);
+        else if (sourceAttribute.isInterleavedBufferAttribute || targetAttribute.isInterleavedBufferAttribute) {
+            for (let component = 0; component < itemSize; component++) {
+                targetAttribute.setComponent(targetId, component, sourceAttribute.getComponent(sourceId, component));
+            }
+        } else {
+            targetAttribute.array.set(sourceAttribute.array.subarray(srcOffset, srcOffset + itemSize), dstOffset);
+        }
         updatedAttributes.add(targetAttribute);
     }
 }
@@ -434,7 +451,7 @@ function cloneInstancedBatch(
     const results: CloneResult[] = [];
     const updatedMeshes = new Set<InstancedMesh>();
     const updatedColorMeshes = new Set<InstancedMesh>();
-    const updatedAttributes = new Set<InstancedBufferAttribute>();
+    const updatedAttributes = new Set<InstancedGeometryAttribute>();
 
     for (const job of jobs) {
         if (targetMesh.count >= targetCapacity) {

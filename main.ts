@@ -591,12 +591,14 @@ function createWindow() {
         pathExists(registryPath)
       ]);
       const hasAssets = hasAssetsMarker && hasFontAssets;
+      if (!hasAssets || !hasRegistry) event.sender.send('assets-progress', '팽치가 모장에서 뛰어오는중');
       const [clientResponse, serverResponse] = await Promise.all([
         hasAssets ? null : axios<ArrayBuffer>({ url: clientUrl, method: 'GET', responseType: 'arraybuffer' }),
         hasRegistry ? null : axios<ArrayBuffer>({ url: serverUrl, method: 'GET', responseType: 'arraybuffer' })
       ]);
 
         if (clientResponse) {
+        event.sender.send('assets-progress', '팽치가 블럭을 쌓는중');
         console.log('Assets not found. Downloading client assets...');
         // assets 폴더만 선택적으로 압축 해제
         console.log('Unzipping assets only...');
@@ -648,6 +650,7 @@ function createWindow() {
         }
 
         if (serverResponse) {
+        event.sender.send('assets-progress', '팽치가 블럭 아이템 리스트를 배껴적는중');
         console.log('item-block-list.json not found. Downloading server registry...');
         const serverBundle = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
           unzip(new Uint8Array(serverResponse.data), {

@@ -7,7 +7,7 @@ import * as Overlay from '../controls/selection/overlay';
 import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject } from './scene-parser';
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
-import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupChild, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
+import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
 import { createTextDisplayMesh, createTextDisplayTemplates, getTextDisplayTemplateKey, type TextDisplayOptions } from './text-display';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../controls/transform/mirroring';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
@@ -138,12 +138,22 @@ async function addTextDisplayItems(
     }
 }
 
+type InstancedGeometryAttribute = THREE.InstancedBufferAttribute | THREE.InterleavedBufferAttribute;
+
+function isInstancedGeometryAttribute(attribute: unknown): attribute is InstancedGeometryAttribute {
+    const candidate = attribute as THREE.InstancedBufferAttribute & {
+        isInterleavedBufferAttribute?: boolean;
+        data?: { isInstancedInterleavedBuffer?: boolean };
+    };
+    return !!(candidate?.isInstancedBufferAttribute
+        || (candidate?.isInterleavedBufferAttribute && candidate.data?.isInstancedInterleavedBuffer));
+}
+
 function getInstancedCapacity(mesh: THREE.InstancedMesh): number {
     let capacity = mesh.instanceMatrix.count;
     if (mesh.instanceColor) capacity = Math.min(capacity, mesh.instanceColor.count);
     for (const attribute of Object.values(mesh.geometry.attributes)) {
-        const instancedAttribute = attribute as THREE.InstancedBufferAttribute;
-        if (instancedAttribute.isInstancedBufferAttribute) capacity = Math.min(capacity, instancedAttribute.count);
+        if (isInstancedGeometryAttribute(attribute)) capacity = Math.min(capacity, attribute.count);
     }
     return capacity;
 }
@@ -1068,6 +1078,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     }
                 }
 
+                const groupObjectChildIndices = new WeakMap<GroupData, Map<string, number>>();
+
                 function registerObject(mesh: THREE.Object3D, instanceId: number, uuid: string, groupId: string) {
                     const key = `${mesh.uuid}_${instanceId}`;
                     // Always store reverse lookup: instanceKey → custom uuid
@@ -1082,8 +1094,19 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
                     const group = effectiveGroups.get(finalGroupId);
                     if (group && Array.isArray(group.children)) {
-                        const childIndex = group.children.findIndex((c: GroupChild) => c && c.type === 'object' && c.id === uuid);
-                        if (childIndex !== -1) {
+                        let childIndices = groupObjectChildIndices.get(group);
+                        if (!childIndices) {
+                            childIndices = new Map<string, number>();
+                            for (let index = 0; index < group.children.length; index++) {
+                                const child = group.children[index];
+                                if (child?.type === 'object' && child.id !== undefined && !childIndices.has(child.id)) {
+                                    childIndices.set(child.id, index);
+                                }
+                            }
+                            groupObjectChildIndices.set(group, childIndices);
+                        }
+                        const childIndex = childIndices.get(uuid);
+                        if (childIndex !== undefined) {
                             group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId, id: uuid };
                         }
                     }
@@ -1640,9 +1663,15 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             const totalInstances = playerHeadItems.length;
                             const headCapacity = getAppendableInstanceCapacity(totalInstances);
                             const matrices = new Float32Array(headCapacity * 16);
-                            const uvOffsets = new Float32Array(headCapacity * 2);
-                            const uvFlips = new Float32Array(headCapacity * 2);
+                            const uvData = new Float32Array(headCapacity * 10);
+                            const interleavedUvData = new THREE.InstancedInterleavedBuffer(uvData, 10);
+                            const uvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 0);
+                            const uvFlips = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 2);
+                            const knifeUvScales = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 4);
+                            const knifeUvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 7);
                             const hasHatArray = new Array(totalInstances).fill(false);
+
+                            for (let index = 0; index < headCapacity; index++) knifeUvScales.setXYZ(index, 1, 1, 1);
 
                             let i = 0;
                             for (const item of playerHeadItems) {
@@ -1655,8 +1684,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     const uOffset = skinBlockPos.x / PLAYER_HEAD_ATLAS_SIZE;
                                     const vOffset = 1.0 - (skinBlockPos.y + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE;
                                     
-                                    uvOffsets[i * 2 + 0] = uOffset;
-                                    uvOffsets[i * 2 + 1] = vOffset;
+                                    uvOffsets.setXY(i, uOffset, vOffset);
                                 }
 
                                 const isTransparent = skinTransparency.get(item.textureUrl);
@@ -1666,8 +1694,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 i++;
                             }
                             
-                            sharedGeometry.setAttribute('instancedUvOffset', new THREE.InstancedBufferAttribute(uvOffsets, 2));
-                            sharedGeometry.setAttribute('instancedUvFlip', new THREE.InstancedBufferAttribute(uvFlips, 2));
+                            sharedGeometry.setAttribute('instancedUvOffset', uvOffsets);
+                            sharedGeometry.setAttribute('instancedUvFlip', uvFlips);
+                            sharedGeometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
+                            sharedGeometry.setAttribute('instancedKnifeUvOffset', knifeUvOffsets);
                             sharedGeometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(headCapacity), 1));
 
                             const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, headCapacity);
@@ -1918,11 +1948,17 @@ export function isolateTextDisplay(objectUuid: string): void {
             oldMesh.setColorAt(oldInstanceId, color);
         }
         for (const attribute of Object.values(oldMesh.geometry.attributes)) {
-            const instanced = attribute as THREE.InstancedBufferAttribute;
-            if (!instanced.isInstancedBufferAttribute) continue;
-            const source = oldLastInstanceId * instanced.itemSize;
-            const target = oldInstanceId * instanced.itemSize;
-            instanced.array.copyWithin(target, source, source + instanced.itemSize);
+            if (!isInstancedGeometryAttribute(attribute)) continue;
+            const instanced = attribute;
+            if (instanced.isInterleavedBufferAttribute) {
+                for (let component = 0; component < instanced.itemSize; component++) {
+                    instanced.setComponent(oldInstanceId, component, instanced.getComponent(oldLastInstanceId, component));
+                }
+            } else {
+                const source = oldLastInstanceId * instanced.itemSize;
+                const target = oldInstanceId * instanced.itemSize;
+                instanced.array.copyWithin(target, source, source + instanced.itemSize);
+            }
             instanced.needsUpdate = true;
         }
         for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {

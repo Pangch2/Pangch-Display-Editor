@@ -18,6 +18,7 @@ export const shortcutDefinitions = [
   { id: 'renameSceneItem', category: '선택', label: '씬 항목 이름 변경', defaults: ['F2'] },
   { id: 'deleteSelection', category: '오브젝트', label: '선택 삭제', defaults: ['Delete', 'Backspace'] },
   { id: 'duplicate', category: '오브젝트', label: '선택 복제', defaults: ['D'] },
+  { id: 'knife', category: '오브젝트', label: '나이프', defaults: ['K'] },
   { id: 'group', category: '오브젝트', label: '그룹 생성/해제', defaults: ['G'] },
   { id: 'ungroup', category: '오브젝트', label: '그룹 해제', defaults: ['Ctrl+G'] },
   { id: 'openSettings', category: '열기', label: '설정 열기', defaults: ['Tab'] },

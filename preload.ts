@@ -1,13 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-type AssetEventChannel = 'assets-downloaded' | 'assets-download-failed';
+type AssetEventChannel = 'assets-downloaded' | 'assets-download-failed' | 'assets-progress';
 type AtlasName = 'block-atlas.png' | 'item-atlas.png';
 
 // 렌더러 프로세스의 window 객체에 안전하게 API 노출
 contextBridge.exposeInMainWorld('ipcApi', {
   // Main -> Renderer (수신)
   on: (channel: AssetEventChannel, callback: (...args: unknown[]) => void) => {
-    const validChannels = ['assets-downloaded', 'assets-download-failed'];
+    const validChannels = ['assets-downloaded', 'assets-download-failed', 'assets-progress'];
     if (validChannels.includes(channel)) {
       // 유효한 채널에 대해서만 콜백 등록
       ipcRenderer.on(channel, (_event: unknown, ...args: unknown[]) => callback(...args));

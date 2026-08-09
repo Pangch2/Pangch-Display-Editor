@@ -536,6 +536,7 @@ async function loadAtlases(): Promise<ItemIconAtlas | null> {
 }
 
 async function createAtlases(): Promise<ItemIconAtlas> {
+    window.dispatchEvent(new Event('pde:creating-icon-atlases'));
     const list = await readJson('item-block-list.json');
     const itemNames = [...new Set<string>(list?.items ?? [])];
     const blockNames = [...new Set<string>(list?.blocks ?? [])];

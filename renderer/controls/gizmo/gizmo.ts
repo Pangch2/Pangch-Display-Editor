@@ -28,12 +28,13 @@ import {
     computeBlockbenchScaleShift
 } from './blockbench-scale';
 import * as GroupUtils from '../grouping/group';
+import { knifeSelection } from '../grouping/knife';
 import * as Overlay from '../selection/overlay';
 import * as CustomPivot from '../pivot/custom-pivot';
 import { initDrag, applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState } from '../input/handle-key';
-import { captureSceneState, recordSceneChange, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
+import { captureSceneState, recordSceneChange, restoreSceneState, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
 import type { DragInterface } from '../selection/drag';
 import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
@@ -1051,6 +1052,36 @@ function duplicateSelected(): void {
     });
 }
 
+function knifeSelected(): void {
+    if (!_hasAnySelection()) return;
+    const x = Number(document.querySelector<HTMLInputElement>('.toolbar-dimensions input[name="x"]')?.value);
+    const y = Number(document.querySelector<HTMLInputElement>('.toolbar-dimensions input[name="y"]')?.value);
+    const z = Number(document.querySelector<HTMLInputElement>('.toolbar-dimensions input[name="z"]')?.value);
+    const before = captureSceneState(loadedObjectGroup);
+    const primary = currentSelection.primary;
+
+    _runWithoutVertexQueue(() => {
+        try {
+            const result = knifeSelection(loadedObjectGroup, currentSelection, x, y, z, isMirrorModelingEnabled());
+            if (!result.changed) return;
+            _replaceSelectionWithGroupsAndObjects(result.groups, result.objects, {
+                anchorMode: isCustomPivot || _multiSelectionOriginAnchorValid ? _selectionAnchorMode : 'center',
+                preserveAnchors: true,
+                explicitPrimary: primary
+            });
+            _emitSceneUpdated();
+            recordSceneChange(loadedObjectGroup, before);
+        } catch (error) {
+            restoreSceneState(loadedObjectGroup, before);
+            invalidateSelectionCaches();
+            updateHelperPosition();
+            updateSelectionOverlay();
+            console.error('나이프 실행에 실패했습니다.', error);
+            window.alert(error instanceof Error ? error.message : '나이프 실행에 실패했습니다.');
+        }
+    });
+}
+
 async function flipSelected(axis: FlipAxis): Promise<void> {
     if (!_hasAnySelection() || !selectionHelper) return;
     const before = captureSceneState(loadedObjectGroup);
@@ -1572,6 +1603,7 @@ export function initGizmo({
         revertEphemeralPivotUndoIfAny:            _revertEphemeralPivotUndoIfAny,
 
         duplicateSelected,
+        knifeSelected,
         toggleSmartScale,
         resetSelectionAndDeselect,
         deleteSelectedItems,

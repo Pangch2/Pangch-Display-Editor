@@ -8,6 +8,7 @@ import {
   vec3,
   normalize,
   normalWorld,
+  normalGeometry,
   max,
   dot,
   float,
@@ -23,7 +24,8 @@ import {
   modelViewProjection,
   vec2,
   sRGBTransferEOTF,
-  sRGBTransferOETF
+  sRGBTransferOETF,
+  step
 } from 'three/tsl';
 
 export const dragSelectedAttributeName = 'dragSelected';
@@ -87,14 +89,36 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   const offsetUv = useInstancedUv
     ? uvNode.add(attribute('instancedUvOffset', 'vec2'))
     : uvNode;
+  const mirroredUv = useInstancedUv
+    ? mix(
+        offsetUv,
+        attribute('uvMirrorCenter', 'vec2').add(attribute('instancedUvOffset', 'vec2')).mul(2).sub(offsetUv),
+        attribute('instancedUvFlip', 'vec2')
+      )
+    : uvNode;
+  const knifeScale = attribute('instancedKnifeUvScale', 'vec3');
+  const knifeOffset = attribute('instancedKnifeUvOffset', 'vec3');
+  const faceNormal = normalGeometry.abs();
+  const knifeUvScale = vec2(knifeScale.z, knifeScale.y).mul(faceNormal.x)
+    .add(vec2(knifeScale.x, knifeScale.z).mul(faceNormal.y))
+    .add(vec2(knifeScale.x, knifeScale.y).mul(faceNormal.z));
+  const knifeUvOffset = vec2(
+    mix(knifeOffset.z, float(1).sub(knifeOffset.z).sub(knifeScale.z), step(0, normalGeometry.x)),
+    knifeOffset.y
+  ).mul(faceNormal.x).add(vec2(
+    float(1).sub(knifeOffset.x).sub(knifeScale.x),
+    knifeOffset.z
+  ).mul(faceNormal.y)).add(vec2(
+    mix(float(1).sub(knifeOffset.x).sub(knifeScale.x), knifeOffset.x, step(0, normalGeometry.z)),
+    knifeOffset.y
+  ).mul(faceNormal.z));
+  const faceCenter = attribute('uvMirrorCenter', 'vec2').add(attribute('instancedUvOffset', 'vec2'));
+  const faceMin = faceCenter.sub(4 / 2048);
+  const knifeUv = faceMin.add(knifeUvOffset.mul(8 / 2048)).add(mirroredUv.sub(faceMin).mul(knifeUvScale));
   const finalUv = useInstancedUvTransform
     ? uvNode.mul(uvTransformNode.xy).add(uvTransformNode.zw)
     : useInstancedUv
-      ? mix(
-          offsetUv,
-          attribute('uvMirrorCenter', 'vec2').add(attribute('instancedUvOffset', 'vec2')).mul(2).sub(offsetUv),
-          attribute('instancedUvFlip', 'vec2')
-        )
+      ? knifeUv
       : uvNode;
   const diffuseNode = texture(diffuseTex, finalUv);
 

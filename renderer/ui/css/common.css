@@ -29,6 +29,16 @@ textarea {
   user-select: text;
 }
 
+.pde-input {
+  box-sizing: border-box;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  padding: 3px 5px;
+  background: #1e1e21;
+  color: #f0f0f0;
+  font: inherit;
+}
+
 :focus,
 :focus-visible {
   outline: none;

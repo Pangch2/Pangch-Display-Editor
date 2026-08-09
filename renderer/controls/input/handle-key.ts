@@ -105,6 +105,7 @@ export interface HandleKeyParams {
 
     // -- Selection manipulation callbacks --
     duplicateSelected(): void;
+    knifeSelected(): void;
     toggleSmartScale(): void;
     resetSelectionAndDeselect(): void;
     deleteSelectedItems(): void;
@@ -203,6 +204,9 @@ export function initHandleKey(p: HandleKeyParams): void {
                 break;
             case 'duplicate':
                 p.duplicateSelected();
+                break;
+            case 'knife':
+                p.knifeSelected();
                 break;
             case 'toggleSpace': {
                 const newSpace = p.state.currentSpace === 'world' ? 'local' : 'world';
@@ -323,6 +327,7 @@ export function initHandleKey(p: HandleKeyParams): void {
         }
 
         if ((event.target as HTMLElement).tagName === 'INPUT' || (event.target as HTMLElement).tagName === 'TEXTAREA') return;
+        if (event.repeat && matchesShortcut(event, 'knife')) return;
 
         if (matchesShortcut(event, 'undo') || matchesShortcut(event, 'redo')) {
             event.preventDefault();
@@ -495,7 +500,7 @@ export function initHandleKey(p: HandleKeyParams): void {
         }
 
         if (p.state.isGizmoBusy) return;
-        const key = (['translate', 'rotate', 'scale', 'toggleSpace', 'togglePivot', 'removeShear', 'toggleScaleMode', 'toggleSmartScale', 'group', 'duplicate', 'toggleVertex', 'toggleShading'] as ShortcutId[])
+        const key = (['translate', 'rotate', 'scale', 'toggleSpace', 'togglePivot', 'removeShear', 'toggleScaleMode', 'toggleSmartScale', 'group', 'duplicate', 'knife', 'toggleVertex', 'toggleShading'] as ShortcutId[])
             .find(id => matchesShortcut(event, id));
         if (key && p.getTransformControls().dragging) {
             p.state.isGizmoBusy = true;

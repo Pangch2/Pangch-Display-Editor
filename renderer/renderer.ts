@@ -381,8 +381,27 @@ async function startApp(): Promise<void> {
   // --- 1. 로딩 화면 준비 ---
   const loadingOverlay = document.getElementById('loading-overlay');
   const loadingIcon = document.getElementById('loading-icon') as HTMLImageElement;
+  const loadingText = document.getElementById('loading-text');
 
   if (!loadingOverlay || !loadingIcon) return;
+
+  let loadingDots = 0;
+  let loadingMessage = '';
+  const showLoadingStatus = (message: string) => {
+    loadingMessage = message;
+    loadingDots = 0;
+    if (loadingText) loadingText.textContent = message;
+  };
+  const loadingDotsTimer = window.setInterval(() => {
+    loadingDots = (loadingDots + 1) % 4;
+    if (loadingText) loadingText.textContent = `${loadingMessage}${'.'.repeat(loadingDots)}`;
+  }, 400);
+  const progressListener = (message: unknown) => {
+    if (typeof message === 'string') showLoadingStatus(message);
+  };
+  const atlasListener = () => showLoadingStatus('팽치가 손목을 불태우며 아이콘을 그리는중');
+  window.ipcApi.on?.('assets-progress', progressListener);
+  window.addEventListener('pde:creating-icon-atlases', atlasListener);
 
   // 메인 프로세스로부터 아이콘 Data URL 받아오기
   const iconResult = await window.ipcApi.getLoadingIcon?.();
@@ -402,9 +421,12 @@ async function startApp(): Promise<void> {
   } catch (error) {
     console.error("Asset initialization failed:", error);
     // 에러 발생 시 사용자에게 알림 (예: 로딩 텍스트 변경)
-    const loadingText = document.getElementById('loading-text');
     if (loadingText) loadingText.textContent = '에셋 로딩 실패!';
     return; // 앱 시작 중단
+  } finally {
+    window.clearInterval(loadingDotsTimer);
+    window.ipcApi.removeAllListeners?.('assets-progress');
+    window.removeEventListener('pde:creating-icon-atlases', atlasListener);
   }
 
   // --- 3. 로딩 화면 숨기기 ---
