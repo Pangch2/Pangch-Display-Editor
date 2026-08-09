@@ -1661,7 +1661,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             sharedGeometry.setAttribute('uvMirrorCenter', new THREE.BufferAttribute(uvMirrorCenters, 2));
 
                             const totalInstances = playerHeadItems.length;
-                            const headCapacity = getAppendableInstanceCapacity(totalInstances);
+                            const headCapacity = Math.max(INITIAL_INSTANCES_PER_INSTANCED_MESH, getAppendableInstanceCapacity(totalInstances));
                             const matrices = new Float32Array(headCapacity * 16);
                             const uvData = new Float32Array(headCapacity * 10);
                             const interleavedUvData = new THREE.InstancedInterleavedBuffer(uvData, 10);
