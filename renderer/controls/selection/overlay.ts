@@ -478,6 +478,7 @@ export function prepareMultiSelectionDrag(_currentSelection: SelectionState): vo
 
 const _headGridDragMatrix = new Matrix4();
 let headPainterGridOverlay: LineSegments | null = null;
+let headPainterStampPreview: LineSegments | null = null;
 let headPainterGridDirty = true;
 
 export function invalidateHeadPainterGridOverlay(): void {
@@ -572,6 +573,63 @@ export function removeHeadPainterGridOverlay(): void {
         headPainterGridOverlay = null;
     }
     headPainterGridDirty = true;
+}
+
+export function updateHeadPainterStampPreview(
+    scene: Scene,
+    hit: { mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number },
+    width: number,
+    height: number,
+    getGridBoundary: (index: number, count: number) => number
+): void {
+    const startX = Math.max(0, hit.x - Math.floor(width / 2));
+    const startY = Math.max(0, hit.y - Math.floor(height / 2));
+    const endX = Math.min(hit.columns, hit.x - Math.floor(width / 2) + width);
+    const endY = Math.min(hit.rows, hit.y - Math.floor(height / 2) + height);
+    if (startX >= endX || startY >= endY) return removeHeadPainterStampPreview();
+
+    const scale = (hit.layer ? 1.0625 : 1) * 1.006;
+    const half = scale / 2;
+    const bottom = -0.5 - half;
+    const top = -0.5 + half;
+    const [origin, horizontalAxis, verticalAxis] = [
+        [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)],
+        [new Vector3(half, bottom, half), new Vector3(0, 0, -scale), new Vector3(0, scale, 0)],
+        [new Vector3(-half, top, half), new Vector3(scale, 0, 0), new Vector3(0, 0, -scale)],
+        [new Vector3(-half, bottom, -half), new Vector3(scale, 0, 0), new Vector3(0, 0, scale)],
+        [new Vector3(-half, bottom, half), new Vector3(scale, 0, 0), new Vector3(0, scale, 0)],
+        [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, scale, 0)]
+    ][hit.face];
+    const point = (x: number, y: number) => origin.clone()
+        .addScaledVector(horizontalAxis, getGridBoundary(x, hit.columns) / 8)
+        .addScaledVector(verticalAxis, 1 - getGridBoundary(y, hit.rows) / 8);
+    const matrix = new Matrix4();
+    hit.mesh.getMatrixAt(hit.instanceId, matrix);
+    matrix.premultiply(hit.mesh.matrixWorld);
+    if (hit.mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(hit.instanceId)) matrix.premultiply(dragDeltaMatrix);
+    const topLeft = point(startX, startY).applyMatrix4(matrix);
+    const topRight = point(endX, startY).applyMatrix4(matrix);
+    const bottomRight = point(endX, endY).applyMatrix4(matrix);
+    const bottomLeft = point(startX, endY).applyMatrix4(matrix);
+    const geometry = new BufferGeometry().setFromPoints([topLeft, topRight, topRight, bottomRight, bottomRight, bottomLeft, bottomLeft, topLeft]);
+
+    if (!headPainterStampPreview) {
+        headPainterStampPreview = new LineSegments(geometry, new LineBasicNodeMaterial({ color: 0xffffff, transparent: true, opacity: 1, depthTest: false, depthWrite: false }));
+        headPainterStampPreview.name = 'head-painter-stamp-preview';
+        headPainterStampPreview.renderOrder = 2000;
+        scene.add(headPainterStampPreview);
+    } else {
+        headPainterStampPreview.geometry.dispose();
+        headPainterStampPreview.geometry = geometry;
+    }
+}
+
+export function removeHeadPainterStampPreview(): void {
+    if (!headPainterStampPreview) return;
+    headPainterStampPreview.removeFromParent();
+    headPainterStampPreview.geometry.dispose();
+    (headPainterStampPreview.material as LineBasicNodeMaterial).dispose();
+    headPainterStampPreview = null;
 }
 
 let selectionOverlay: InstancedMesh | null = null;

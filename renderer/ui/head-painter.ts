@@ -21,17 +21,20 @@ import {
 import { currentSelection } from '../controls/selection/select';
 import {
   invalidateHeadPainterGridOverlay,
+  removeHeadPainterStampPreview,
   removeHeadPainterGridOverlay,
+  updateHeadPainterStampPreview,
   updateHeadPainterGridOverlay
 } from '../controls/selection/overlay';
 import { record } from '../controls/undo-redo/undo-redo';
 import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
 import { oklchToRgb, openColorPicker, rgbToOklch } from './color-picker';
+import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 
-type Tool = 'brush' | 'bucket' | 'eraser' | 'picker' | 'stamp';
+type Tool = 'brush' | 'bucket' | 'eraser' | 'picker' | 'stamp' | 'select';
 type LayerMode = 'auto' | 'layer' | 'base';
 type Rgba = [number, number, number, number];
-type BrushAsset = { name: string; width: number; height: number; pixels: Array<Rgba | null> };
+type BrushAsset = { name: string; width: number; height: number; pixels: Array<Rgba | null>; strength?: number; spacing?: number };
 type PaletteAsset = { colors: Array<Rgba | null> };
 type PainterContext = {
   renderer: WebGPURenderer;
@@ -65,8 +68,10 @@ const blockHeight = 32;
 const partSize = 8;
 const facePartIndexes = [1, 0, 2, 3, 4, 5] as const;
 const faceGridAxes = [[2, 1], [2, 1], [0, 2], [0, 2], [0, 1], [0, 1]] as const;
-const toolIcons: Record<Tool, string> = { brush: '\uE1D3', bucket: '\uE2E6', eraser: '\uE28F', picker: '\uE13B', stamp: '\uE3BB' };
-const toolLabels: Record<Tool, string> = { brush: '브러시', bucket: '양동이', eraser: '지우개', picker: '색상선택', stamp: '스탬프' };
+const toolIcons: Record<Tool, string> = { brush: '\uE1D3', bucket: '\uE2E6', eraser: '\uE28F', picker: '\uE13B', stamp: '\uE3BB', select: '\uE121' };
+const toolLabels: Record<Tool, string> = { brush: '브러시', bucket: '양동이', eraser: '지우개', picker: '색상선택', stamp: '스탬프', select: '선택' };
+const brushOrderKey = 'pdeHeadPainterBrushOrder';
+const paletteOrderKey = 'pdeHeadPainterPaletteOrder';
 const gridOverrides = new Map<string, Partial<{ horizontal: number; vertical: number }>>();
 const raycaster = new Raycaster();
 const pointer = new Vector2();
@@ -79,8 +84,9 @@ let gridHorizontal = 8;
 let gridVertical = 8;
 let gridEnabled = true;
 let smartGrid = true;
-let brushSize = 1;
-let brushHardness = 100;
+let brushWidth = 1;
+let brushHeight = 1;
+let brushStrength = 100;
 let brushSpacing = 25;
 let brushShape: 'square' | 'circle' | 'custom' = 'square';
 let eraserSize = 1;
@@ -90,6 +96,7 @@ let overwrite = false;
 let colorMode: 'rgb' | 'oklch' = 'rgb';
 let currentColor: Rgba = [0, 0, 0, 255];
 let palette: Array<Rgba | null> = Array(64).fill(null);
+let defaultPalette: Array<Rgba | null> = Array(64).fill(null);
 let activePaletteSlot = 0;
 let paletteAnchor: number | null = null;
 let activePalettePreset: string | null = null;
@@ -102,18 +109,25 @@ let stampPixels: Array<Rgba | null> = Array(64).fill(null);
 let stroke: Map<string, WorkSurface> | null = null;
 let lastStrokeHit: PaintHit | null = null;
 let paintPointerId: number | null = null;
-let paintPointerStart: Vector2 | null = null;
-let paintDragged = false;
 let restoreCameraControls: (() => void) | null = null;
+let altPicking = false;
+let pickingColor = false;
+let pickerCursorBefore: string | null = null;
 let colorTarget: RenderTarget | null = null;
 let root: HTMLElement | null = null;
 let brushEditor: HTMLElement | null = null;
 let editingBrush: BrushAsset | null = null;
 let editorColor: Rgba = [0, 0, 0, 255];
+let selectedBrushPixels = new Set<string>();
+let brushSelectionAnchor: { x: number; y: number } | null = null;
+let brushSelectionActive = false;
+let brushUndo: BrushAsset[] = [];
+let brushRedo: BrushAsset[] = [];
 
 const clampByte = (value: number): number => Math.round(Math.min(255, Math.max(0, value)));
 const clampGrid = (value: number): number => Math.round(Math.min(8, Math.max(0, Number.isFinite(value) ? value : 0)));
 const cloneRgba = (color: Rgba): Rgba => [...color] as Rgba;
+const colorForLayer = (color: Rgba, layer: number): Rgba => layer ? color : [color[0], color[1], color[2], 255];
 const cloneImage = (image: ImageData): ImageData => new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
 const rgbaEqual = (a: Rgba | null, b: Rgba | null): boolean => !!a === !!b && (!a || !b || a.every((value, index) => value === b[index]));
 
@@ -260,20 +274,28 @@ function finishStroke(): void {
   invalidateHeadPainterGridOverlay();
 }
 
-function brushCoverage(dx: number, dy: number, size: number, hardness: number, circle: boolean): number {
-  const radius = Math.max(0.5, size / 2);
-  const distance = circle ? Math.hypot(dx, dy) : Math.max(Math.abs(dx), Math.abs(dy));
-  if (distance > radius) return 0;
-  const inner = radius * hardness / 100;
-  return distance <= inner || inner >= radius ? 1 : (radius - distance) / (radius - inner);
+function endPaintPointer(): void {
+  finishStroke();
+  restoreCameraControls?.();
+  restoreCameraControls = null;
+  paintPointerId = null;
+}
+
+function brushCoverage(dx: number, dy: number, width: number, height: number, hardness: number, circle: boolean): number {
+  const distance = circle
+    ? Math.hypot(dx / Math.max(0.5, width / 2), dy / Math.max(0.5, height / 2))
+    : Math.max(Math.abs(dx) / Math.max(0.5, width / 2), Math.abs(dy) / Math.max(0.5, height / 2));
+  if (distance > 1) return 0;
+  const inner = hardness / 100;
+  return distance <= inner || inner >= 1 ? 1 : (1 - distance) / (1 - inner);
 }
 
 function stampBrush(hit: PaintHit): void {
   const work = getWork(hit);
   const part = facePartIndexes[hit.face] + hit.layer * 6;
   const custom = brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
-  const width = custom?.width ?? brushSize;
-  const height = custom?.height ?? brushSize;
+  const width = custom?.width ?? brushWidth;
+  const height = custom?.height ?? brushHeight;
   const startX = -Math.floor(width / 2);
   const startY = -Math.floor(height / 2);
   for (let row = 0; row < height; row++) {
@@ -281,18 +303,19 @@ function stampBrush(hit: PaintHit): void {
       const x = hit.x + startX + column;
       const y = hit.y + startY + row;
       if (x < 0 || x >= hit.columns || y < 0 || y >= hit.rows) continue;
-      const source = custom?.pixels[row * width + column] ?? currentColor;
+      const source = custom ? custom.pixels[row * width + column] : currentColor;
       if (!source) continue;
-      const coverage = custom ? 1 : brushCoverage(
+      const coverage = custom ? (custom.strength ?? 100) / 100 : brushCoverage(
         startX + column + (width % 2 === 0 ? 0.5 : 0),
         startY + row + (height % 2 === 0 ? 0.5 : 0),
-        brushSize,
-        brushHardness,
+        width,
+        height,
+        100,
         brushShape === 'circle'
-      );
+      ) * brushStrength / 100;
       if (coverage <= 0) continue;
       forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
-        const next = overwrite ? source : sourceOver(readPixel(work.image, part, pixelX, pixelY), source, coverage);
+        const next = colorForLayer(overwrite && coverage === 1 ? source : sourceOver(readPixel(work.image, part, pixelX, pixelY), source, coverage), hit.layer);
         work.changed = writePixel(work.image, part, pixelX, pixelY, next) || work.changed;
       });
     }
@@ -313,6 +336,7 @@ function eraseAt(hit: PaintHit): void {
         start + column + (eraserSize % 2 === 0 ? 0.5 : 0),
         start + row + (eraserSize % 2 === 0 ? 0.5 : 0),
         eraserSize,
+        eraserSize,
         eraserHardness,
         false
       ) * eraserStrength / 100;
@@ -330,7 +354,7 @@ function eraseAt(hit: PaintHit): void {
 }
 
 function continueStroke(hit: PaintHit): void {
-  const draw = lastTool === 'eraser' ? eraseAt : stampBrush;
+  const draw = lastTool === 'eraser' ? eraseAt : lastTool === 'stamp' ? placeStamp : stampBrush;
   const previous = lastStrokeHit;
   let drew = false;
   if (!previous || previous.surface.objectUuid !== hit.surface.objectUuid || previous.face !== hit.face || previous.layer !== hit.layer) {
@@ -338,10 +362,11 @@ function continueStroke(hit: PaintHit): void {
     drew = true;
   } else {
     const distance = Math.hypot(hit.x - previous.x, hit.y - previous.y);
-    const size = lastTool === 'eraser' ? eraserSize : brushShape === 'custom'
+    const size = lastTool === 'stamp' ? 1 : lastTool === 'eraser' ? eraserSize : brushShape === 'custom'
       ? Math.max(customBrushes.find(brush => brush.name === selectedBrushName)?.width ?? 1, customBrushes.find(brush => brush.name === selectedBrushName)?.height ?? 1)
-      : brushSize;
-    const step = Math.max(1, size * brushSpacing / 100);
+      : Math.max(brushWidth, brushHeight);
+    const spacing = lastTool === 'stamp' ? 100 : brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName)?.spacing ?? brushSpacing : brushSpacing;
+    const step = Math.max(1, size * spacing / 100);
     for (let offset = step; offset < distance + step; offset += step) {
       const amount = Math.min(1, offset / Math.max(distance, 1));
       draw({ ...hit, x: Math.round(previous.x + (hit.x - previous.x) * amount), y: Math.round(previous.y + (hit.y - previous.y) * amount) });
@@ -351,35 +376,55 @@ function continueStroke(hit: PaintHit): void {
   if (drew) lastStrokeHit = hit;
 }
 
+function connectedCellIndexes(columns: number, rows: number, start: number, matches: (index: number) => boolean): number[] {
+  const pending = [start];
+  const connected: number[] = [];
+  const visited = new Set<number>();
+  for (let offset = 0; offset < pending.length; offset++) {
+    const index = pending[offset];
+    if (visited.has(index) || !matches(index)) continue;
+    visited.add(index);
+    connected.push(index);
+    const x = index % columns;
+    if (x > 0) pending.push(index - 1);
+    if (x + 1 < columns) pending.push(index + 1);
+    if (index >= columns) pending.push(index - columns);
+    if (index + columns < columns * rows) pending.push(index + columns);
+  }
+  return connected;
+}
+
 function fillAt(hit: PaintHit, event: PointerEvent): void {
   const work = getWork(hit);
   const part = facePartIndexes[hit.face] + hit.layer * 6;
-  const parts = event.ctrlKey || event.metaKey
-    ? facePartIndexes.map(index => index + hit.layer * 6)
-    : [part];
   const target = readPixel(work.image, part, gridCellPixel(hit.x, hit.columns), gridCellPixel(hit.y, hit.rows));
-  if (!event.shiftKey && !(event.ctrlKey || event.metaKey)) {
-    for (let y = 0; y < hit.rows; y++) {
-      for (let x = 0; x < hit.columns; x++) {
-        if (!rgbaEqual(readPixel(work.image, part, gridCellPixel(x, hit.columns), gridCellPixel(y, hit.rows)), target)) continue;
-        forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
-          work.changed = writePixel(work.image, part, pixelX, pixelY, currentColor) || work.changed;
-        });
-      }
+  if (!(event.ctrlKey || event.metaKey)) {
+    const matches = (index: number) => {
+      const x = index % hit.columns;
+      const y = Math.floor(index / hit.columns);
+      return rgbaEqual(readPixel(work.image, part, gridCellPixel(x, hit.columns), gridCellPixel(y, hit.rows)), target);
+    };
+    const indexes = event.shiftKey
+      ? connectedCellIndexes(hit.columns, hit.rows, hit.y * hit.columns + hit.x, matches)
+      : Array.from({ length: hit.columns * hit.rows }, (_, index) => index).filter(matches);
+    for (const index of indexes) {
+      const x = index % hit.columns;
+      const y = Math.floor(index / hit.columns);
+      forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
+        work.changed = writePixel(work.image, part, pixelX, pixelY, colorForLayer(currentColor, hit.layer)) || work.changed;
+      });
     }
     flushWork(work);
-    finishStroke();
     return;
   }
-  for (const currentPart of parts) {
+  for (const currentPart of facePartIndexes.map(index => index + hit.layer * 6)) {
     for (let y = 0; y < 8; y++) {
       for (let x = 0; x < 8; x++) {
-        work.changed = writePixel(work.image, currentPart, x, y, currentColor) || work.changed;
+        work.changed = writePixel(work.image, currentPart, x, y, colorForLayer(currentColor, hit.layer)) || work.changed;
       }
     }
   }
   flushWork(work);
-  finishStroke();
 }
 
 function copyStamp(hit: PaintHit): void {
@@ -408,11 +453,10 @@ function placeStamp(hit: PaintHit): void {
     const y = startY + Math.floor(index / stampWidth);
     if (x < 0 || x >= hit.columns || y < 0 || y >= hit.rows) return;
     forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
-      work.changed = writePixel(work.image, part, pixelX, pixelY, color) || work.changed;
+      work.changed = writePixel(work.image, part, pixelX, pixelY, colorForLayer(color, hit.layer)) || work.changed;
     });
   });
   flushWork(work);
-  finishStroke();
 }
 
 function transformStamp(kind: 'left' | 'right' | 'vertical' | 'horizontal'): void {
@@ -441,8 +485,9 @@ function transformStamp(kind: 'left' | 'right' | 'vertical' | 'horizontal'): voi
   syncStampInputs();
 }
 
-async function pickScreenColor(event: PointerEvent): Promise<void> {
-  if (!painterContext) return;
+async function pickColor(event: PointerEvent): Promise<void> {
+  if (!painterContext || pickingColor) return;
+  pickingColor = true;
   const { renderer, scene } = painterContext;
   const size = renderer.getDrawingBufferSize(new Vector2());
   if (!colorTarget) {
@@ -455,70 +500,101 @@ async function pickScreenColor(event: PointerEvent): Promise<void> {
   const x = Math.min(size.x - 1, Math.max(0, Math.floor((event.clientX - rect.left) / rect.width * size.x)));
   const y = Math.min(size.y - 1, Math.max(0, Math.floor((rect.bottom - event.clientY) / rect.height * size.y)));
   const previousTarget = renderer.getRenderTarget();
-  renderer.setRenderTarget(colorTarget);
-  renderer.render(scene, painterContext.getCamera());
-  renderer.setRenderTarget(previousTarget);
-  const pixels = await renderer.readRenderTargetPixelsAsync(colorTarget, x, y, 1, 1);
-  setCurrentColor([pixels[0], pixels[1], pixels[2], pixels[3]], true);
+  try {
+    renderer.setRenderTarget(colorTarget);
+    renderer.render(scene, painterContext.getCamera());
+    renderer.setRenderTarget(previousTarget);
+    const pixels = await renderer.readRenderTargetPixelsAsync(colorTarget, x, y, 1, 1);
+    const emptySlot = palette.findIndex(color => !color);
+    if (emptySlot >= 0) activePaletteSlot = emptySlot;
+    setCurrentColor([pixels[0], pixels[1], pixels[2], pixels[3]], emptySlot >= 0);
+  } finally {
+    renderer.setRenderTarget(previousTarget);
+    pickingColor = false;
+  }
+}
+
+function setAltPicking(enabled: boolean): void {
+  altPicking = enabled;
+  const canvas = painterContext?.renderer.domElement;
+  if (!canvas) return;
+  if (enabled && pickerCursorBefore === null) {
+    pickerCursorBefore = canvas.style.cursor;
+    canvas.style.cursor = 'crosshair';
+  } else if (!enabled && pickerCursorBefore !== null) {
+    canvas.style.cursor = pickerCursorBefore;
+    pickerCursorBefore = null;
+  }
 }
 
 function onPointerDown(event: PointerEvent): void {
   if (!active || !painterContext || event.button !== 0 || event.target !== painterContext.renderer.domElement) return;
+  finishStroke();
+  if (lastTool === 'select') return;
+  if (lastTool === 'picker') {
+    if (!altPicking) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void pickColor(event);
+    return;
+  }
   if (painterContext.isGizmoHovered()) return;
   const hit = getHit(event);
   if (!hit) return;
   paintPointerId = event.pointerId;
-  paintPointerStart = new Vector2(event.clientX, event.clientY);
-  paintDragged = false;
   restoreCameraControls = painterContext.suspendCameraControls();
-  painterContext.renderer.domElement.setPointerCapture(event.pointerId);
+  paintAt(hit, event);
 }
 
-function startPaint(hit: PaintHit, event: PointerEvent): void {
-  if (lastTool === 'picker') {
-    void pickScreenColor(event);
+function onKeyDown(event: KeyboardEvent): void {
+  if (!active || lastTool !== 'picker' || event.key !== 'Alt' || event.repeat) return;
+  setAltPicking(true);
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
+function onKeyUp(event: KeyboardEvent): void {
+  if (event.key === 'Alt') setAltPicking(false);
+  if (event.key === 'Shift') removeHeadPainterStampPreview();
+}
+
+function paintAt(hit: PaintHit, event: PointerEvent): void {
+  if (lastTool === 'stamp' && event.shiftKey) {
+    finishStroke();
+    copyStamp(hit);
     return;
   }
-  if (lastTool === 'brush' || lastTool === 'eraser') {
+  if (!stroke) {
     stroke = new Map();
     lastStrokeHit = null;
-  } else if (lastTool === 'bucket') {
-    stroke = new Map();
-    fillAt(hit, event);
-  } else if (event.shiftKey) {
-    copyStamp(hit);
-  } else {
-    stroke = new Map();
-    placeStamp(hit);
   }
+  if (lastTool === 'bucket') fillAt(hit, event);
+  else continueStroke(hit);
 }
 
 function onPointerMove(event: PointerEvent): void {
-  if (!active || !painterContext || !(event.buttons & 1) || event.pointerId !== paintPointerId) return;
-  if (!painterContext.renderer.domElement.hasPointerCapture(event.pointerId)) return;
-  if (!paintDragged) {
-    if (!paintPointerStart || Math.hypot(event.clientX - paintPointerStart.x, event.clientY - paintPointerStart.y) <= 5) return;
-    const hit = getHit(event);
-    if (!hit) return;
-    paintDragged = true;
-    startPaint(hit, event);
+  if (!active || !painterContext) return;
+  if (event.target !== painterContext.renderer.domElement || painterContext.isGizmoHovered()) {
+    removeHeadPainterStampPreview();
+    finishStroke();
+    return;
   }
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  if (!stroke || (lastTool !== 'brush' && lastTool !== 'eraser')) return;
   const hit = getHit(event);
-  if (hit) continueStroke(hit);
+  if (lastTool === 'stamp' && event.shiftKey && hit) {
+    updateHeadPainterStampPreview(painterContext.scene, hit, stampWidth, stampHeight, gridBoundary);
+  } else {
+    removeHeadPainterStampPreview();
+  }
+  if (!(event.buttons & 1) || event.pointerId !== paintPointerId || lastTool === 'select' || lastTool === 'picker' || !hit) {
+    finishStroke();
+    return;
+  }
+  paintAt(hit, event);
 }
 
 function onPointerUp(event: PointerEvent): void {
-  if (!painterContext || event.pointerId !== paintPointerId) return;
-  if (paintDragged && active && stroke && (lastTool === 'brush' || lastTool === 'eraser')) finishStroke();
-  if (painterContext.renderer.domElement.hasPointerCapture(event.pointerId)) painterContext.renderer.domElement.releasePointerCapture(event.pointerId);
-  restoreCameraControls?.();
-  restoreCameraControls = null;
-  paintPointerId = null;
-  paintPointerStart = null;
-  paintDragged = false;
+  if (event.pointerId !== paintPointerId) return;
+  endPaintPointer();
 }
 
 function smartCounts(configuredHorizontal: number, configuredVertical: number, horizontalSize: number, verticalSize: number): [number, number] {
@@ -570,6 +646,7 @@ export function setHeadGridOverride(objectUuid: string, axis: 'horizontal' | 've
 
 function saveActivePalette(): void {
   if (activePalettePreset) void window.ipcApi.savePainterAsset('palette', activePalettePreset, { colors: palette });
+  else defaultPalette = palette.map(color => color && cloneRgba(color));
 }
 
 function setCurrentColor(color: Rgba, writePalette = false): void {
@@ -645,17 +722,51 @@ function renderToolSettings(): void {
 }
 
 function setTool(tool: Tool): void {
-  if (stroke) finishStroke();
+  endPaintPointer();
   lastTool = tool;
+  if (active && painterContext) painterContext.renderer.domElement.dataset.headPainterTool = tool;
+  if (tool !== 'picker') setAltPicking(false);
+  if (tool !== 'stamp') removeHeadPainterStampPreview();
   renderToolSettings();
+}
+
+function syncBrushControls(): void {
+  if (!root) return;
+  const brush = brushShape === 'custom' ? customBrushes.find(item => item.name === selectedBrushName) : null;
+  root.querySelector<HTMLInputElement>('#head-painter-brush-width')!.value = String(brush?.width ?? brushWidth);
+  root.querySelector<HTMLInputElement>('#head-painter-brush-height')!.value = String(brush?.height ?? brushHeight);
+  const strength = String(brush?.strength ?? brushStrength);
+  const spacing = String(brush?.spacing ?? brushSpacing);
+  root.querySelector<HTMLInputElement>('#head-painter-brush-strength')!.value = root.querySelector<HTMLInputElement>('#head-painter-brush-strength-range')!.value = strength;
+  root.querySelector<HTMLInputElement>('#head-painter-brush-spacing')!.value = root.querySelector<HTMLInputElement>('#head-painter-brush-spacing-range')!.value = spacing;
+  root.querySelectorAll<HTMLButtonElement>('[data-basic-brush]').forEach(button => button.classList.toggle('active', brushShape !== 'custom'));
+}
+
+function setBrushValue(key: 'width' | 'height' | 'strength' | 'spacing', value: number): void {
+  const brush = brushShape === 'custom' ? customBrushes.find(item => item.name === selectedBrushName) : null;
+  if (brush) {
+    if (key === 'width' || key === 'height') Object.assign(brush, resizeBrush(brush, key === 'width' ? value : brush.width, key === 'height' ? value : brush.height));
+    else brush[key] = value;
+    void window.ipcApi.savePainterAsset('brush', brush.name, brush);
+    return;
+  }
+  if (key === 'width') brushWidth = value;
+  else if (key === 'height') brushHeight = value;
+  else if (key === 'strength') brushStrength = value;
+  else brushSpacing = value;
+}
+
+function saveBrushOrder(): void {
+  localStorage.setItem(brushOrderKey, JSON.stringify(customBrushes.map(brush => brush.name)));
 }
 
 function renderCustomBrushes(): void {
   const list = root?.querySelector<HTMLElement>('.head-painter-custom-brushes');
   if (!list) return;
-  list.replaceChildren(...customBrushes.map(brush => {
+  list.replaceChildren(...customBrushes.map((brush, index) => {
     const row = document.createElement('div');
     row.className = 'head-painter-custom-brush';
+    row.draggable = true;
     const name = document.createElement('span');
     name.textContent = brush.name;
     const select = document.createElement('button');
@@ -663,11 +774,11 @@ function renderCustomBrushes(): void {
     select.className = 'lucide-icon';
     select.textContent = toolIcons.brush;
     select.title = '브러시 선택';
-    select.classList.toggle('active', selectedBrushName === brush.name);
+    select.classList.toggle('active', brushShape === 'custom' && selectedBrushName === brush.name);
     select.onclick = () => {
       selectedBrushName = brush.name;
       brushShape = 'custom';
-      root!.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.value = 'custom';
+      syncBrushControls();
       renderCustomBrushes();
     };
     const settings = document.createElement('button');
@@ -682,13 +793,38 @@ function renderCustomBrushes(): void {
     remove.textContent = '\uE18E';
     remove.title = '삭제';
     remove.onclick = async () => {
-      if (!window.confirm(`'${brush.name}' 브러시를 삭제할까요?`)) return;
       const result = await window.ipcApi.deletePainterAsset('brush', brush.name);
       if (!result.success) return window.alert(result.error ?? '브러시 삭제에 실패했습니다.');
       customBrushes = customBrushes.filter(item => item !== brush);
       if (selectedBrushName === brush.name) selectedBrushName = customBrushes[0]?.name ?? null;
+      saveBrushOrder();
       renderCustomBrushes();
     };
+    row.ondragstart = event => {
+      event.dataTransfer?.setData('text/brush-index', String(index));
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+    };
+    row.ondragover = event => {
+      const from = Number(event.dataTransfer?.getData('text/brush-index'));
+      if (!Number.isInteger(from)) return;
+      event.preventDefault();
+      list.querySelectorAll('.brush-drop-before, .brush-drop-after').forEach(item => item.classList.remove('brush-drop-before', 'brush-drop-after'));
+      const rect = row.getBoundingClientRect();
+      row.classList.add(event.clientY < rect.top + rect.height / 2 ? 'brush-drop-before' : 'brush-drop-after');
+    };
+    row.ondrop = event => {
+      event.preventDefault();
+      const from = Number(event.dataTransfer?.getData('text/brush-index'));
+      if (!Number.isInteger(from)) return;
+      const rect = row.getBoundingClientRect();
+      let to = index + (event.clientY < rect.top + rect.height / 2 ? 0 : 1);
+      const [moved] = customBrushes.splice(from, 1);
+      if (from < to) to--;
+      customBrushes.splice(to, 0, moved);
+      saveBrushOrder();
+      renderCustomBrushes();
+    };
+    row.ondragend = () => renderCustomBrushes();
     row.append(name, select, settings, remove);
     return row;
   }));
@@ -701,10 +837,11 @@ async function addCustomBrush(): Promise<void> {
   const result = await window.ipcApi.savePainterAsset('brush', brush.name, brush);
   if (!result.success) return window.alert(result.error ?? '브러시 저장에 실패했습니다.');
   customBrushes.push(brush);
+  saveBrushOrder();
   selectedBrushName = brush.name;
   brushShape = 'custom';
-  root!.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.value = 'custom';
   renderCustomBrushes();
+  syncBrushControls();
   openBrushEditor(brush);
 }
 
@@ -719,21 +856,26 @@ function renderBrushEditorGrid(): void {
     const enabled = x < editingBrush!.width && y < editingBrush!.height;
     const color = enabled ? editingBrush!.pixels[y * editingBrush!.width + x] : null;
     button.disabled = !enabled;
-    if (color) button.style.background = `rgba(${color[0]},${color[1]},${color[2]},${color[3] / 255})`;
+    button.classList.toggle('active', !!color);
+    button.classList.toggle('selected', selectedBrushPixels.has(`${x},${y}`));
+    if (color) button.style.backgroundColor = `rgba(${color[0]},${color[1]},${color[2]},${color[3] / 255})`;
     button.dataset.x = String(x);
     button.dataset.y = String(y);
     return button;
   }));
 }
 
-function resizeEditingBrush(width: number, height: number): void {
-  if (!editingBrush) return;
-  const old = editingBrush;
+function resizeBrush(old: BrushAsset, width: number, height: number): BrushAsset {
   const pixels = Array<Rgba | null>(width * height).fill(null);
   for (let y = 0; y < Math.min(old.height, height); y++) {
     for (let x = 0; x < Math.min(old.width, width); x++) pixels[y * width + x] = old.pixels[y * old.width + x];
   }
-  editingBrush = { ...old, width, height, pixels };
+  return { ...old, width, height, pixels };
+}
+
+function resizeEditingBrush(width: number, height: number): void {
+  if (!editingBrush) return;
+  editingBrush = resizeBrush(editingBrush, width, height);
   renderBrushEditorGrid();
 }
 
@@ -741,13 +883,63 @@ function paintBrushEditorCell(target: EventTarget | null, erase: boolean): void 
   if (!editingBrush || !(target instanceof HTMLButtonElement) || target.disabled) return;
   const x = Number(target.dataset.x);
   const y = Number(target.dataset.y);
-  editingBrush.pixels[y * editingBrush.width + x] = erase ? null : cloneRgba(editorColor);
+  if (brushSelectionActive && !selectedBrushPixels.has(`${x},${y}`)) return;
+  const index = y * editingBrush.width + x;
+  const color = erase ? null : cloneRgba(editorColor);
+  if (!brushSelectionActive) selectedBrushPixels = new Set([`${x},${y}`]);
+  if (rgbaEqual(editingBrush.pixels[index], color)) return renderBrushEditorGrid();
+  brushUndo.push({ ...editingBrush, pixels: editingBrush.pixels.map(pixel => pixel && cloneRgba(pixel)) });
+  brushRedo = [];
+  editingBrush.pixels[index] = color;
+  renderBrushEditorGrid();
+}
+
+function selectBrushPixel(target: EventTarget | null): void {
+  if (brushSelectionActive || !(target instanceof HTMLButtonElement) || target.disabled) return;
+  selectedBrushPixels = new Set([`${target.dataset.x},${target.dataset.y}`]);
+  renderBrushEditorGrid();
+}
+
+function selectBrushArea(target: EventTarget | null): void {
+  if (!editingBrush || !(target instanceof HTMLButtonElement) || target.disabled) return;
+  const end = { x: Number(target.dataset.x), y: Number(target.dataset.y) };
+  brushSelectionAnchor ??= end;
+  brushSelectionActive = true;
+  selectedBrushPixels = new Set<string>();
+  for (let y = Math.min(brushSelectionAnchor.y, end.y); y <= Math.max(brushSelectionAnchor.y, end.y); y++) {
+    for (let x = Math.min(brushSelectionAnchor.x, end.x); x <= Math.max(brushSelectionAnchor.x, end.x); x++) selectedBrushPixels.add(`${x},${y}`);
+  }
+  renderBrushEditorGrid();
+}
+
+function eraseSelectedBrushPixels(): void {
+  if (!editingBrush) return;
+  const indexes = [...selectedBrushPixels].map(key => {
+    const [x, y] = key.split(',').map(Number);
+    return y * editingBrush!.width + x;
+  }).filter(index => editingBrush!.pixels[index]);
+  if (!indexes.length) return;
+  brushUndo.push({ ...editingBrush, pixels: editingBrush.pixels.map(pixel => pixel && cloneRgba(pixel)) });
+  brushRedo = [];
+  indexes.forEach(index => { editingBrush!.pixels[index] = null; });
+  renderBrushEditorGrid();
+}
+
+function restoreBrushEdit(source: BrushAsset[], target: BrushAsset[]): void {
+  if (!editingBrush || !source.length) return;
+  target.push({ ...editingBrush, pixels: editingBrush.pixels.map(pixel => pixel && cloneRgba(pixel)) });
+  editingBrush = source.pop()!;
   renderBrushEditorGrid();
 }
 
 function openBrushEditor(brush: BrushAsset): void {
   if (!brushEditor) return;
   editingBrush = { ...brush, pixels: brush.pixels.map(color => color && cloneRgba(color)) };
+  selectedBrushPixels.clear();
+  brushSelectionAnchor = null;
+  brushSelectionActive = false;
+  brushUndo = [];
+  brushRedo = [];
   editorColor = cloneRgba(currentColor);
   brushEditor.hidden = false;
   brushEditor.querySelector<HTMLInputElement>('#head-brush-name')!.value = brush.name;
@@ -755,7 +947,17 @@ function openBrushEditor(brush: BrushAsset): void {
   brushEditor.querySelector<HTMLInputElement>('#head-brush-alpha')!.value = String(editorColor[3]);
   brushEditor.querySelector<HTMLInputElement>('#head-brush-width')!.value = String(brush.width);
   brushEditor.querySelector<HTMLInputElement>('#head-brush-height')!.value = String(brush.height);
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-strength')!.value = String(brush.strength ?? 100);
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-spacing')!.value = String(brush.spacing ?? 25);
+  brushEditor.querySelector<HTMLElement>('[data-brush-color-picker]')!.style.background = `rgb(${editorColor[0]}, ${editorColor[1]}, ${editorColor[2]})`;
   renderBrushEditorGrid();
+  openWithAnimation(brushEditor.querySelector<HTMLElement>('section')!);
+}
+
+function closeBrushEditor(): void {
+  if (!brushEditor || brushEditor.hidden) return;
+  editingBrush = null;
+  void closeWithAnimation(brushEditor.querySelector<HTMLElement>('section')!).then(() => { brushEditor!.hidden = true; });
 }
 
 async function saveBrushEditor(): Promise<void> {
@@ -769,10 +971,11 @@ async function saveBrushEditor(): Promise<void> {
   if (oldName !== name) await window.ipcApi.deletePainterAsset('brush', oldName);
   const index = customBrushes.findIndex(item => item.name === oldName);
   if (index >= 0) customBrushes[index] = brush;
+  saveBrushOrder();
   selectedBrushName = name;
-  editingBrush = null;
-  brushEditor.hidden = true;
   renderCustomBrushes();
+  syncBrushControls();
+  closeBrushEditor();
 }
 
 function createBrushEditor(): void {
@@ -783,34 +986,84 @@ function createBrushEditor(): void {
     <section role="dialog" aria-modal="true" aria-labelledby="head-brush-title">
       <h2 id="head-brush-title">커스텀 브러시</h2>
       <label>이름 <input id="head-brush-name" maxlength="100"></label>
-      <div class="head-painter-inline"><label>색상 <input id="head-brush-color" value="#000000"></label><label>알파 <input id="head-brush-alpha" type="number" min="0" max="255" value="255"></label></div>
+      <div class="head-painter-inline"><label>색상 <span class="head-painter-brush-color"><button type="button" class="head-painter-color-preview" data-brush-color-picker aria-label="색상 선택"></button><input id="head-brush-color" value="#000000"></span></label><label>알파 <input id="head-brush-alpha" type="number" min="0" max="255" value="255"></label></div>
+      <div class="head-painter-inline"><label>강도 <input id="head-brush-strength" type="number" min="0" max="100" value="100"></label><label>간격 % <input id="head-brush-spacing" type="number" min="1" max="100" value="25"></label></div>
       <div class="head-painter-inline"><label>가로 <input id="head-brush-width" type="number" min="1" max="8"></label><label>세로 <input id="head-brush-height" type="number" min="1" max="8"></label></div>
       <div class="head-painter-brush-grid"></div>
       <footer><button type="button" data-close>나가기</button><button type="button" data-save>저장</button></footer>
     </section>`;
   document.body.append(brushEditor);
-  brushEditor.querySelector('[data-close]')!.addEventListener('click', () => { brushEditor!.hidden = true; editingBrush = null; });
+  brushEditor.querySelector('[data-close]')!.addEventListener('click', closeBrushEditor);
   brushEditor.querySelector('[data-save]')!.addEventListener('click', () => void saveBrushEditor());
+  brushEditor.addEventListener('click', event => {
+    if (event.target === brushEditor) closeBrushEditor();
+  });
   const color = brushEditor.querySelector<HTMLInputElement>('#head-brush-color')!;
   const alpha = brushEditor.querySelector<HTMLInputElement>('#head-brush-alpha')!;
   const updateColor = () => {
     const parsed = parseColor(color.value, Number(alpha.value));
-    if (parsed) editorColor = parsed;
+    if (!parsed) {
+      color.value = `#${editorColor.slice(0, 3).map(value => value.toString(16).padStart(2, '0')).join('')}`;
+      return;
+    }
+    editorColor = parsed;
+    brushEditor!.querySelector<HTMLElement>('[data-brush-color-picker]')!.style.background = `rgb(${parsed[0]}, ${parsed[1]}, ${parsed[2]})`;
   };
   color.oninput = updateColor;
   alpha.oninput = updateColor;
+  brushEditor.querySelector<HTMLElement>('[data-brush-color-picker]')!.onclick = event => openColorPicker(
+    event.currentTarget as HTMLElement,
+    editorColor.slice(0, 3) as [number, number, number],
+    rgb => {
+      editorColor = [...rgb, editorColor[3]];
+      color.value = `#${rgb.map(value => value.toString(16).padStart(2, '0')).join('')}`;
+      updateColor();
+    }
+  );
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-strength')!.oninput = event => {
+    if (editingBrush) editingBrush.strength = Math.min(100, Math.max(0, Number((event.target as HTMLInputElement).value) || 0));
+  };
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-spacing')!.oninput = event => {
+    if (editingBrush) editingBrush.spacing = Math.min(100, Math.max(1, Number((event.target as HTMLInputElement).value) || 1));
+  };
   brushEditor.querySelector<HTMLInputElement>('#head-brush-width')!.oninput = event => resizeEditingBrush(Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value))), editingBrush?.height ?? 1);
   brushEditor.querySelector<HTMLInputElement>('#head-brush-height')!.oninput = event => resizeEditingBrush(editingBrush?.width ?? 1, Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value))));
   const grid = brushEditor.querySelector<HTMLElement>('.head-painter-brush-grid')!;
+  grid.tabIndex = 0;
   grid.oncontextmenu = event => event.preventDefault();
   grid.onpointerdown = event => {
     if (event.button > 2) return;
     event.preventDefault();
-    paintBrushEditorCell(event.target, event.button === 2);
+    grid.focus();
+    if (event.ctrlKey && event.button === 0) selectBrushArea(event.target);
+    else selectBrushPixel(event.target);
   };
   grid.onpointermove = event => {
     if (!(event.buttons & 3)) return;
-    paintBrushEditorCell(event.target, !!(event.buttons & 2));
+    if (event.ctrlKey && event.buttons & 1) selectBrushArea(event.target);
+    else paintBrushEditorCell(event.target, !!(event.buttons & 2));
+  };
+  grid.onpointerup = () => { brushSelectionAnchor = null; };
+  grid.onkeydown = event => {
+    if (event.ctrlKey && event.key.toLowerCase() === 'g' && selectedBrushPixels.size) {
+      selectedBrushPixels.clear();
+      brushSelectionActive = false;
+      renderBrushEditorGrid();
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.key === 'Delete' || event.key === 'Backspace') {
+      eraseSelectedBrushPixels();
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'z') {
+      restoreBrushEdit(brushUndo, brushRedo);
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.ctrlKey && (event.key.toLowerCase() === 'y' || event.shiftKey && event.key.toLowerCase() === 'z')) {
+      restoreBrushEdit(brushRedo, brushUndo);
+      event.preventDefault();
+      event.stopPropagation();
+    }
   };
 }
 
@@ -818,23 +1071,69 @@ function renderPalettePresetMenu(): void {
   if (!root) return;
   const button = root.querySelector<HTMLButtonElement>('.head-painter-preset-button')!;
   const menu = root.querySelector<HTMLElement>('.head-painter-preset-menu')!;
-  button.textContent = activePalettePreset ?? '작업 팔레트';
-  const rows = palettePresetNames.map(name => {
+  button.textContent = '팔레트 목록';
+  menu.querySelectorAll('.palette-drop-before, .palette-drop-after').forEach(row => row.classList.remove('palette-drop-before', 'palette-drop-after'));
+  const defaultRow = document.createElement('div');
+  defaultRow.className = `head-painter-preset-row${activePalettePreset === null ? ' active' : ''}`;
+  const defaultName = Object.assign(document.createElement('input'), { value: '기본 팔레트', disabled: true });
+  const defaultUse = document.createElement('button');
+  defaultUse.type = 'button';
+  defaultUse.className = 'lucide-icon';
+  defaultUse.textContent = '\uE1DD';
+  defaultUse.title = defaultUse.ariaLabel = '팔레트 사용';
+  defaultUse.onclick = () => {
+    palette = defaultPalette.map(color => color && cloneRgba(color));
+    activePalettePreset = null;
+    localStorage.removeItem('pdeHeadPainterPalettePreset');
+    renderPalettePresetMenu();
+    renderPalette();
+  };
+  const defaultRemove = document.createElement('button');
+  defaultRemove.type = 'button';
+  defaultRemove.className = 'lucide-icon';
+  defaultRemove.textContent = '\uE18E';
+  defaultRemove.title = defaultRemove.ariaLabel = '삭제';
+  defaultRemove.disabled = true;
+  defaultRow.append(defaultName, defaultUse, defaultRemove);
+  const rows = palettePresetNames.map((name, index) => {
     const row = document.createElement('div');
     row.className = 'head-painter-preset-row';
-    const choose = document.createElement('button');
-    choose.type = 'button';
-    choose.textContent = name;
-    choose.className = name === activePalettePreset ? 'active' : '';
-    choose.onclick = async () => {
+    row.draggable = true;
+    row.classList.toggle('active', name === activePalettePreset);
+    const input = document.createElement('input');
+    input.value = name;
+    input.maxLength = 100;
+    input.title = '팔레트 이름';
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.className = 'lucide-icon';
+    use.textContent = '\uE1DD';
+    use.title = use.ariaLabel = '팔레트 사용';
+    use.onclick = async () => {
       const result = await window.ipcApi.loadPainterAsset('palette', name);
       if (!result.success) return window.alert(result.error ?? '팔레트를 불러오지 못했습니다.');
       palette = (result.data as PaletteAsset).colors.map(color => color && cloneRgba(color));
       activePalettePreset = name;
       localStorage.setItem('pdeHeadPainterPalettePreset', name);
-      menu.hidden = true;
-      renderPalettePresetMenu();
+      menu.querySelectorAll('.head-painter-preset-row').forEach(item => item.classList.toggle('active', item === row));
       renderPalette();
+    };
+    input.onchange = async () => {
+      const nextName = input.value.trim();
+      if (!nextName || nextName === name) return renderPalettePresetMenu();
+      if (palettePresetNames.includes(nextName)) return window.alert('같은 이름의 팔레트가 이미 있습니다.');
+      const loaded = await window.ipcApi.loadPainterAsset('palette', name);
+      if (!loaded.success) return window.alert(loaded.error ?? '팔레트를 불러오지 못했습니다.');
+      const saved = await window.ipcApi.savePainterAsset('palette', nextName, loaded.data);
+      if (!saved.success) return window.alert(saved.error ?? '팔레트 이름을 바꾸지 못했습니다.');
+      await window.ipcApi.deletePainterAsset('palette', name);
+      palettePresetNames[index] = nextName;
+      if (activePalettePreset === name) {
+        activePalettePreset = nextName;
+        localStorage.setItem('pdeHeadPainterPalettePreset', nextName);
+      }
+      localStorage.setItem(paletteOrderKey, JSON.stringify(palettePresetNames));
+      renderPalettePresetMenu();
     };
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -843,7 +1142,6 @@ function renderPalettePresetMenu(): void {
     remove.title = '삭제';
     remove.onclick = async event => {
       event.stopPropagation();
-      if (!window.confirm(`'${name}' 팔레트를 삭제할까요?`)) return;
       const result = await window.ipcApi.deletePainterAsset('palette', name);
       if (!result.success) return window.alert(result.error ?? '팔레트 삭제에 실패했습니다.');
       palettePresetNames = palettePresetNames.filter(item => item !== name);
@@ -851,26 +1149,65 @@ function renderPalettePresetMenu(): void {
         activePalettePreset = null;
         localStorage.removeItem('pdeHeadPainterPalettePreset');
       }
+      localStorage.setItem(paletteOrderKey, JSON.stringify(palettePresetNames));
       renderPalettePresetMenu();
     };
-    row.append(choose, remove);
+    row.ondragstart = event => {
+      event.dataTransfer?.setData('text/palette-index', String(index));
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+    };
+    row.ondragover = event => {
+      const from = Number(event.dataTransfer?.getData('text/palette-index'));
+      if (!Number.isInteger(from)) return;
+      event.preventDefault();
+      menu.querySelectorAll('.palette-drop-before, .palette-drop-after').forEach(item => item.classList.remove('palette-drop-before', 'palette-drop-after'));
+      const rect = row.getBoundingClientRect();
+      row.classList.add(event.clientY < rect.top + rect.height / 2 ? 'palette-drop-before' : 'palette-drop-after');
+    };
+    row.ondrop = event => {
+      event.preventDefault();
+      const from = Number(event.dataTransfer?.getData('text/palette-index'));
+      if (!Number.isInteger(from)) return;
+      const rect = row.getBoundingClientRect();
+      let to = index + (event.clientY < rect.top + rect.height / 2 ? 0 : 1);
+      const [moved] = palettePresetNames.splice(from, 1);
+      if (from < to) to--;
+      palettePresetNames.splice(to, 0, moved);
+      localStorage.setItem(paletteOrderKey, JSON.stringify(palettePresetNames));
+      renderPalettePresetMenu();
+    };
+    row.ondragend = () => renderPalettePresetMenu();
+    row.append(input, use, remove);
     return row;
   });
   const add = document.createElement('button');
   add.type = 'button';
-  add.textContent = '+ 추가 팔레트';
-  add.onclick = async () => {
-    const name = window.prompt('팔레트 이름');
-    if (!name?.trim()) return;
-    const result = await window.ipcApi.savePainterAsset('palette', name.trim(), { colors: palette });
-    if (!result.success) return window.alert(result.error ?? '팔레트 저장에 실패했습니다.');
-    if (!palettePresetNames.includes(name.trim())) palettePresetNames.push(name.trim());
-    activePalettePreset = name.trim();
-    localStorage.setItem('pdeHeadPainterPalettePreset', activePalettePreset);
-    menu.hidden = true;
-    renderPalettePresetMenu();
+  add.textContent = '+ 커스텀 팔레트 추가';
+  add.onclick = () => {
+    const input = document.createElement('input');
+    input.placeholder = '팔레트 이름';
+    input.maxLength = 100;
+    const save = async () => {
+      const name = input.value.trim();
+      if (!name || palettePresetNames.includes(name)) return renderPalettePresetMenu();
+      const result = await window.ipcApi.savePainterAsset('palette', name, { colors: palette });
+      if (!result.success) return window.alert(result.error ?? '팔레트 저장에 실패했습니다.');
+      palettePresetNames.push(name);
+      activePalettePreset = name;
+      localStorage.setItem('pdeHeadPainterPalettePreset', activePalettePreset);
+      localStorage.setItem(paletteOrderKey, JSON.stringify(palettePresetNames));
+      renderPalettePresetMenu();
+    };
+    input.onkeydown = event => {
+      if (event.key === 'Enter') void save();
+      else if (event.key === 'Escape') renderPalettePresetMenu();
+      event.stopPropagation();
+    };
+    input.onblur = () => { if (input.isConnected) renderPalettePresetMenu(); };
+    add.replaceWith(input);
+    input.focus();
   };
-  menu.replaceChildren(...rows, add);
+  menu.replaceChildren(defaultRow, ...rows, add);
 }
 
 async function loadPainterAssets(): Promise<void> {
@@ -880,11 +1217,17 @@ async function loadPainterAssets(): Promise<void> {
   ]);
   if (brushList.success) {
     const results = await Promise.all(brushList.items.map(name => window.ipcApi.loadPainterAsset('brush', name)));
-    customBrushes = results.filter(result => result.success).map(result => result.data as BrushAsset);
+    const brushes = results.filter(result => result.success).map(result => result.data as BrushAsset);
+    const savedOrder = JSON.parse(localStorage.getItem(brushOrderKey) ?? '[]') as string[];
+    customBrushes = [
+      ...savedOrder.map(name => brushes.find(brush => brush.name === name)).filter((brush): brush is BrushAsset => !!brush),
+      ...brushes.filter(brush => !savedOrder.includes(brush.name))
+    ];
     selectedBrushName ??= customBrushes[0]?.name ?? null;
   }
   if (paletteList.success) {
-    palettePresetNames = paletteList.items;
+    const savedOrder = JSON.parse(localStorage.getItem(paletteOrderKey) ?? '[]') as string[];
+    palettePresetNames = [...savedOrder.filter(name => paletteList.items.includes(name)), ...paletteList.items.filter(name => !savedOrder.includes(name))];
     const saved = localStorage.getItem('pdeHeadPainterPalettePreset');
     if (saved && palettePresetNames.includes(saved)) {
       const result = await window.ipcApi.loadPainterAsset('palette', saved);
@@ -899,6 +1242,19 @@ async function loadPainterAssets(): Promise<void> {
   renderPalette();
 }
 
+function openPainterColorPicker(): void {
+  if (!root) return;
+  const target = root.querySelector<HTMLElement>('.head-painter-color-preview')!;
+  openColorPicker(target, currentColor.slice(0, 3) as [number, number, number], color => setCurrentColor([...color, currentColor[3]], true), {
+    oklch: colorMode === 'oklch',
+    onOklchChange: enabled => {
+      colorMode = enabled ? 'oklch' : 'rgb';
+      root!.querySelector<HTMLSelectElement>('#head-painter-color-mode')!.value = colorMode;
+      syncColorControls();
+    }
+  });
+}
+
 function resizeStamp(width: number, height: number): void {
   const oldWidth = stampWidth;
   const oldHeight = stampHeight;
@@ -909,6 +1265,7 @@ function resizeStamp(width: number, height: number): void {
   for (let y = 0; y < Math.min(oldHeight, stampHeight); y++) {
     for (let x = 0; x < Math.min(oldWidth, stampWidth); x++) stampPixels[y * stampWidth + x] = oldPixels[y * oldWidth + x] ?? null;
   }
+  removeHeadPainterStampPreview();
   syncStampInputs();
 }
 
@@ -931,12 +1288,8 @@ function createPanel(): void {
   root.className = 'head-painter-panel';
   root.hidden = true;
   root.innerHTML = `
-    <div class="head-painter-preset">
-      <button class="head-painter-preset-button" type="button">작업 팔레트</button>
-      <div class="head-painter-preset-menu" hidden></div>
-    </div>
     <div class="head-painter-tools" aria-label="Head Painter 도구">
-      ${(['brush', 'bucket', 'eraser', 'picker', 'stamp'] as Tool[]).map(tool => `<button type="button" class="head-painter-tool lucide-icon" data-tool="${tool}" aria-label="${toolLabels[tool]}" title="${toolLabels[tool]}">${toolIcons[tool]}</button>`).join('')}
+      ${(['brush', 'bucket', 'eraser', 'picker', 'stamp', 'select'] as Tool[]).map(tool => `<button type="button" class="head-painter-tool lucide-icon" data-tool="${tool}" aria-label="${toolLabels[tool]}" title="${toolLabels[tool]}">${toolIcons[tool]}</button>`).join('')}
     </div>
     <fieldset>
       <legend>레이어와 그리드</legend>
@@ -946,20 +1299,21 @@ function createPanel(): void {
     </fieldset>
     <fieldset data-tool-settings="brush">
       <legend>브러시</legend>
-      <label>모양 <select id="head-painter-brush-shape"><option value="square">사각형</option><option value="circle">원형</option><option value="custom">커스텀</option></select></label>
-      <label>크기 <span class="head-painter-range"><input id="head-painter-brush-size-range" type="range" min="1" max="8" value="1"><input id="head-painter-brush-size" type="number" min="1" max="8" value="1"></span></label>
-      <label>경도 <span class="head-painter-range"><input id="head-painter-brush-hardness-range" type="range" min="0" max="100" value="100"><input id="head-painter-brush-hardness" type="number" min="0" max="100" value="100"></span></label>
+      <label>모양 <select id="head-painter-brush-shape"><option value="square">사각형</option><option value="circle">원형</option></select></label>
+      <div class="head-painter-inline"><label>가로 <input id="head-painter-brush-width" type="number" min="1" max="8" value="1"></label><label>세로 <input id="head-painter-brush-height" type="number" min="1" max="8" value="1"></label></div>
+      <label>강도 <span class="head-painter-range"><input id="head-painter-brush-strength-range" type="range" min="0" max="100" value="100"><input id="head-painter-brush-strength" type="number" min="0" max="100" value="100"></span></label>
       <label>간격 % <span class="head-painter-range"><input id="head-painter-brush-spacing-range" type="range" min="1" max="100" value="25"><input id="head-painter-brush-spacing" type="number" min="1" max="100" value="25"></span></label>
+      <div class="head-painter-custom-brush"><span>기본 브러시</span><button type="button" class="lucide-icon" data-basic-brush="square" aria-label="브러시 선택" title="브러시 선택">${toolIcons.brush}</button><button type="button" class="lucide-icon" aria-label="설정" title="설정" disabled>\uE2F0</button><button type="button" class="lucide-icon" aria-label="삭제" title="삭제" disabled>\uE18E</button></div>
       <div class="head-painter-custom-brushes"></div><button type="button" id="head-painter-add-brush">+ 커스텀 브러시</button>
     </fieldset>
-    <fieldset data-tool-settings="bucket" hidden><legend>양동이</legend><small>클릭: 같은 RGBA · Shift: 면 전체 · Ctrl: 6면 전체</small></fieldset>
+    <fieldset data-tool-settings="bucket" hidden><legend>양동이</legend><small>클릭: 같은 RGBA · Shift: 인접한 같은 RGBA · Ctrl: 6면 전체</small></fieldset>
     <fieldset data-tool-settings="eraser" hidden>
       <legend>지우개</legend>
       <label>크기 <span class="head-painter-range"><input id="head-painter-eraser-size-range" type="range" min="1" max="8" value="1"><input id="head-painter-eraser-size" type="number" min="1" max="8" value="1"></span></label>
       <label>경도 <span class="head-painter-range"><input id="head-painter-eraser-hardness-range" type="range" min="0" max="100" value="100"><input id="head-painter-eraser-hardness" type="number" min="0" max="100" value="100"></span></label>
       <label>강도 <span class="head-painter-range"><input id="head-painter-eraser-strength-range" type="range" min="0" max="100" value="100"><input id="head-painter-eraser-strength" type="number" min="0" max="100" value="100"></span></label>
     </fieldset>
-    <fieldset data-tool-settings="picker" hidden><legend>색상선택</legend><small>최종 화면색을 선택합니다.</small></fieldset>
+    <fieldset data-tool-settings="picker" hidden><legend>색상선택</legend><small>Alt로 화면색을 선택합니다.</small></fieldset>
     <fieldset data-tool-settings="stamp" hidden>
       <legend>스탬프</legend>
       <div class="head-painter-inline"><label>가로 <input id="head-painter-stamp-width" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-stamp-height" type="number" min="0" max="8" value="8"></label></div>
@@ -973,6 +1327,7 @@ function createPanel(): void {
       <label>알파 <span class="head-painter-range"><input id="head-painter-alpha-range" type="range" min="0" max="255" value="255"><input id="head-painter-alpha" type="number" min="0" max="255" value="255"></span></label>
       <div class="head-painter-palette"></div>
       <div class="head-painter-palette-actions"><button type="button" data-sort>색 정렬</button><button type="button" data-clear>지우기</button></div>
+      <div class="head-painter-preset"><button class="head-painter-preset-button" type="button">팔레트 목록</button><div class="head-painter-preset-menu" hidden></div></div>
     </section>`;
   document.getElementById('project-details')!.append(root);
   createBrushEditor();
@@ -999,11 +1354,22 @@ function createPanel(): void {
   };
   root.querySelector<HTMLInputElement>('#head-painter-grid')!.onchange = event => { gridEnabled = (event.target as HTMLInputElement).checked; invalidateHeadPainterGridOverlay(); };
   root.querySelector<HTMLInputElement>('#head-painter-smart-grid')!.onchange = event => { smartGrid = (event.target as HTMLInputElement).checked; invalidateHeadPainterGridOverlay(); };
-  root.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.onchange = event => { brushShape = (event.target as HTMLSelectElement).value as typeof brushShape; };
+  root.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.onchange = event => {
+    brushShape = (event.target as HTMLSelectElement).value as typeof brushShape;
+    syncBrushControls();
+    renderCustomBrushes();
+  };
+  root.querySelectorAll<HTMLButtonElement>('[data-basic-brush]').forEach(button => button.onclick = () => {
+    brushShape = button.dataset.basicBrush as typeof brushShape;
+    root!.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.value = brushShape;
+    syncBrushControls();
+    renderCustomBrushes();
+  });
   root.querySelector<HTMLButtonElement>('#head-painter-add-brush')!.onclick = () => void addCustomBrush();
-  bindRangePair('head-painter-brush-size', 1, 8, value => { brushSize = value; });
-  bindRangePair('head-painter-brush-hardness', 0, 100, value => { brushHardness = value; });
-  bindRangePair('head-painter-brush-spacing', 1, 100, value => { brushSpacing = value; });
+  root.querySelector<HTMLInputElement>('#head-painter-brush-width')!.oninput = event => setBrushValue('width', Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value) || 1)));
+  root.querySelector<HTMLInputElement>('#head-painter-brush-height')!.oninput = event => setBrushValue('height', Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value) || 1)));
+  bindRangePair('head-painter-brush-strength', 0, 100, value => setBrushValue('strength', value));
+  bindRangePair('head-painter-brush-spacing', 1, 100, value => setBrushValue('spacing', value));
   bindRangePair('head-painter-eraser-size', 1, 8, value => { eraserSize = value; });
   bindRangePair('head-painter-eraser-hardness', 0, 100, value => { eraserHardness = value; });
   bindRangePair('head-painter-eraser-strength', 0, 100, value => { eraserStrength = value; });
@@ -1021,24 +1387,16 @@ function createPanel(): void {
   const alphaRange = root.querySelector<HTMLInputElement>('#head-painter-alpha-range')!;
   const updateColor = (writePalette: boolean) => {
     const parsed = parseColor(colorInput.value, Number(alphaInput.value));
-    if (!parsed) return colorInput.setCustomValidity('색상 형식이 올바르지 않습니다.');
+    if (!parsed) {
+      colorInput.setCustomValidity('');
+      syncColorControls();
+      return;
+    }
     colorInput.setCustomValidity('');
     setCurrentColor(parsed, writePalette);
   };
   colorInput.onchange = () => updateColor(true);
-  colorPicker.onclick = () => openColorPicker(
-    colorPicker,
-    currentColor.slice(0, 3) as [number, number, number],
-    color => setCurrentColor([...color, currentColor[3]], true),
-    {
-      oklch: colorMode === 'oklch',
-      onOklchChange: enabled => {
-        colorMode = enabled ? 'oklch' : 'rgb';
-        root!.querySelector<HTMLSelectElement>('#head-painter-color-mode')!.value = colorMode;
-        syncColorControls();
-      }
-    }
-  );
+  colorPicker.onclick = openPainterColorPicker;
   const updateAlpha = (source: HTMLInputElement) => {
     const alpha = clampByte(Number(source.value));
     alphaInput.value = alphaRange.value = String(alpha);
@@ -1066,6 +1424,7 @@ function createPanel(): void {
     renderPalette();
   };
   renderToolSettings();
+  syncBrushControls();
   syncStampInputs();
   syncColorControls();
   renderPalette();
@@ -1073,7 +1432,7 @@ function createPanel(): void {
 }
 
 function syncPanelTitle(): void {
-  if (active) document.getElementById('details-title')!.textContent = 'Head Painter';
+  if (active) document.getElementById('details-title')!.textContent = '헤드 페인터';
 }
 
 export function setHeadPainterEnabled(enabled: boolean): void {
@@ -1087,24 +1446,24 @@ export function setHeadPainterEnabled(enabled: boolean): void {
   toolbarButton?.setAttribute('aria-pressed', String(enabled));
   details.classList.toggle('head-painter-mode', enabled);
   root!.hidden = !enabled;
+  if (painterContext) {
+    if (enabled) painterContext.renderer.domElement.dataset.headPainterTool = lastTool;
+    else delete painterContext.renderer.domElement.dataset.headPainterTool;
+  }
+  loadedObjectGroup.userData.headPainterActive = enabled;
   if (enabled) {
+    (loadedObjectGroup.userData.resetSelection as (() => void) | undefined)?.();
     tabs.hidden = true;
     syncPanelTitle();
     setPlayerHeadLayerVisible(layerMode !== 'base');
     invalidateHeadPainterGridOverlay();
     updateHeadPainter();
   } else {
-    if (stroke) finishStroke();
-    if (paintPointerId !== null && painterContext?.renderer.domElement.hasPointerCapture(paintPointerId)) {
-      painterContext.renderer.domElement.releasePointerCapture(paintPointerId);
-    }
-    restoreCameraControls?.();
-    restoreCameraControls = null;
-    paintPointerId = null;
-    paintPointerStart = null;
-    paintDragged = false;
+    endPaintPointer();
+    setAltPicking(false);
     setPlayerHeadLayerVisible(true);
     removeHeadPainterGridOverlay();
+    removeHeadPainterStampPreview();
     if (brushEditor) brushEditor.hidden = true;
     window.dispatchEvent(new CustomEvent('pde:selection-changed', { detail: currentSelection }));
   }
@@ -1116,6 +1475,8 @@ export function toggleHeadPainter(): void {
 
 export function initHeadPainter(context: PainterContext): void {
   painterContext = context;
+  window.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('pointerdown', onPointerDown, true);
   window.addEventListener('pointermove', onPointerMove, true);
   window.addEventListener('pointerup', onPointerUp, true);
@@ -1160,4 +1521,5 @@ if (import.meta.env.DEV) {
   console.assert(stampPixels[0]?.[0] === 2, 'Stamp flip failed.');
   stampWidth = savedStamp.width; stampHeight = savedStamp.height; stampPixels = savedStamp.pixels;
   console.assert(facePartIndexes.map(index => index + 6).length === 6, 'Bucket six-face scope failed.');
+  console.assert(connectedCellIndexes(3, 2, 0, index => index % 3 !== 1).join() === '0,3', 'Bucket connected fill failed.');
 }

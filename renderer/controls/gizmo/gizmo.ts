@@ -1736,6 +1736,11 @@ export function initGizmo({
     renderer.domElement.addEventListener('pointerdown', (event: PointerEvent) => {
         if (isGizmoBusy) return;
         if (event.button !== 0) return;
+        const headPainterTool = renderer.domElement.dataset.headPainterTool;
+        if (headPainterTool && headPainterTool !== 'select') {
+            mouseDownPos = null;
+            return;
+        }
 
         if (isVertexMode) {
             const rect = renderer.domElement.getBoundingClientRect();

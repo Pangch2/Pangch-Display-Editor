@@ -73,13 +73,20 @@
   gap: 4px;
 }
 
+.head-painter-tools {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
 .head-painter-tool {
+  width: calc(100% + 1px);
+  justify-self: center;
   height: 30px;
   font-size: 18px !important;
 }
 
 .head-painter-tool.active,
-.head-painter-custom-brush button.active {
+.head-painter-custom-brush button.active,
+.head-painter-basic-brushes button.active {
   border-color: #70c7ff;
   color: #70c7ff;
 }
@@ -98,6 +105,12 @@
   gap: 4px;
 }
 
+.head-painter-brush-color {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 4px;
+}
+
 .head-painter-checks label,
 .head-painter-overwrite {
   display: flex;
@@ -113,6 +126,23 @@
 #project-details .head-painter-panel input[type="checkbox"] {
   appearance: auto;
   width: auto;
+}
+
+#project-details .head-painter-panel input[type="number"],
+.head-painter-brush-editor input[type="number"] {
+  appearance: auto;
+  color-scheme: dark;
+}
+
+#project-details .head-painter-panel input[type="number"]::-webkit-inner-spin-button,
+.head-painter-brush-editor input[type="number"]::-webkit-inner-spin-button {
+  opacity: 0;
+  cursor: ns-resize;
+}
+
+#project-details .head-painter-panel input[type="number"]::-webkit-inner-spin-button:hover,
+.head-painter-brush-editor input[type="number"]::-webkit-inner-spin-button:hover {
+  opacity: 1;
 }
 
 #project-details .head-painter-panel input[type="range"] {
@@ -135,11 +165,42 @@
   gap: 3px;
 }
 
+.head-painter-basic-brushes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+}
+
 .head-painter-custom-brush {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 28px 28px 28px;
   gap: 3px;
   align-items: center;
+}
+
+.head-painter-custom-brush.brush-drop-before::before,
+.head-painter-custom-brush.brush-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #70c7ff;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.head-painter-custom-brush.brush-drop-before::before {
+  top: -2px;
+}
+
+.head-painter-custom-brush.brush-drop-after::after {
+  bottom: -2px;
+}
+
+.head-painter-custom-brush button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .head-painter-color-area {
@@ -149,7 +210,6 @@
   max-height: 70vh;
   padding: 8px;
   border: 1px solid #3a3a3e;
-  resize: vertical;
   overflow: auto;
 }
 
@@ -222,12 +282,12 @@
 
 .head-painter-preset-button {
   width: 100%;
-  text-align: left;
+  text-align: center;
 }
 
 .head-painter-preset-menu {
   position: absolute;
-  inset: calc(100% + 3px) 0 auto;
+  inset: auto 0 calc(100% + 3px);
   z-index: 30;
   border: 1px solid #45454a;
   background: #202023;
@@ -238,7 +298,7 @@
 .head-painter-preset-row {
   display: grid;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
 }
 
 .head-painter-preset-menu > button {
@@ -254,6 +314,35 @@
 
 .head-painter-preset-row button.active {
   color: #70c7ff;
+}
+
+.head-painter-preset-row {
+  position: relative;
+}
+
+.head-painter-preset-row.active input,
+.head-painter-preset-row.active button:first-of-type {
+  border-color: #70c7ff;
+  color: #70c7ff !important;
+}
+
+.head-painter-preset-row.palette-drop-before::before,
+.head-painter-preset-row.palette-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #70c7ff;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.head-painter-preset-row.palette-drop-before::before {
+  top: 0;
+}
+
+.head-painter-preset-row.palette-drop-after::after {
+  bottom: 0;
 }
 
 .head-painter-brush-editor {
@@ -281,6 +370,13 @@
   font-size: 16px;
 }
 
+.head-painter-brush-editor footer {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
 .head-painter-brush-editor label {
   display: grid;
   grid-template-columns: 55px minmax(0, 1fr);
@@ -301,12 +397,14 @@
   background: #111;
 }
 
-.head-painter-brush-grid button:disabled {
-  background: #29292d;
+.head-painter-brush-grid button.active {
+  border-color: #aaa;
 }
 
-.head-painter-brush-editor footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
+.head-painter-brush-grid button.selected {
+  outline: 2px solid #70c7ff;
+}
+
+.head-painter-brush-grid button:disabled {
+  background: #29292d;
 }

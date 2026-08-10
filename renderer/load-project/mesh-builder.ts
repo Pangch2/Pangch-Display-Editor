@@ -890,6 +890,7 @@ function _clearSceneAndCaches(): void {
  * Extracted from _loadAndRenderPbde to allow batch selection control.
  */
 export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, anchorMode = 'center') {
+    if (loadedObjectGroup.userData.headPainterActive) return;
     const selectGroupsObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithGroupsAndObjects as
         | undefined
         | ((groupIds: Set<string>, meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);

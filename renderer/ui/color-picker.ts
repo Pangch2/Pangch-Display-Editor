@@ -19,6 +19,17 @@ const srgbChannel = (value: number): number => {
 
 const linearChannel = (value: number): number => clampByte((value <= 0.0031308 ? 12.92 * value : 1.055 * value ** (1 / 2.4) - 0.055) * 255);
 
+export async function pickScreenColor(): Promise<RgbColor | null> {
+  const EyeDropper = (window as unknown as { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
+  if (!EyeDropper) return null;
+  try {
+    const { sRGBHex } = await new EyeDropper().open();
+    return [1, 3, 5].map(index => parseInt(sRGBHex.slice(index, index + 2), 16)) as RgbColor;
+  } catch {
+    return null;
+  }
+}
+
 export function rgbToOklch([red, green, blue]: RgbColor): OklchColor {
   const r = srgbChannel(red);
   const g = srgbChannel(green);
@@ -194,14 +205,10 @@ function createPicker(): HTMLElement {
     syncPicker(false);
   };
   element.querySelector<HTMLButtonElement>('.color-picker-eyedropper')!.onclick = async () => {
-    const EyeDropper = (window as unknown as { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
-    if (!EyeDropper) return;
-    try {
-      const result = await new EyeDropper().open();
-      const rgb = [1, 3, 5].map(index => parseInt(result.sRGBHex.slice(index, index + 2), 16)) as RgbColor;
-      [hue, saturation, value] = rgbToHsv(rgb);
-      syncPicker();
-    } catch { /* picker cancelled */ }
+    const rgb = await pickScreenColor();
+    if (!rgb) return;
+    [hue, saturation, value] = rgbToHsv(rgb);
+    syncPicker();
   };
   element.querySelectorAll<HTMLElement>('[data-resize]').forEach(handle => {
     handle.onpointerdown = event => {
