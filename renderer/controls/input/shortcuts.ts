@@ -10,6 +10,7 @@ export const shortcutDefinitions = [
   { id: 'removeShear', category: '일반', label: 'Shear 제거', defaults: ['Q'] },
   { id: 'toggleScaleMode', category: '일반', label: '스케일 모드 전환', defaults: ['B'] },
   { id: 'toggleSmartScale', category: '일반', label: '스마트 스케일', defaults: ['J'] },
+  { id: 'fineAdjust', category: '일반', label: '미세조정', defaults: ['Shift'] },
   { id: 'undo', category: '기록', label: '실행 취소', defaults: ['Ctrl+Z'] },
   { id: 'redo', category: '기록', label: '다시 실행', defaults: ['Ctrl+Shift+Z', 'Ctrl+Y'] },
   { id: 'focusSelection', category: '선택', label: '선택 항목에 초점', defaults: ['F'] },
@@ -98,6 +99,11 @@ export function matchesShortcut(event: KeyboardEvent, id: ShortcutId): boolean {
   const keys = new Set(pressedKeys);
   keys.add(normalizeShortcutKey(event.key));
   const key = shortcutFromKeys(keys);
+  return getShortcuts(id).includes(key) && !getShortcutConflicts(id).includes(key);
+}
+
+export function isShortcutPressed(id: ShortcutId): boolean {
+  const key = shortcutFromKeys(pressedKeys);
   return getShortcuts(id).includes(key) && !getShortcutConflicts(id).includes(key);
 }
 

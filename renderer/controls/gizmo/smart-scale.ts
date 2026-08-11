@@ -101,6 +101,21 @@ function canContinueSmartScaleSession(
         && currentDrag.selectionKey === selectionKey;
 }
 
+function getScaleFrame(initialMatrix: Matrix4, sourceMatrix?: Matrix4 | null): Matrix4 {
+    const framePosition = new Vector3();
+    const frameRotation = new Quaternion();
+    initialMatrix.decompose(framePosition, frameRotation, new Vector3());
+    const frame = new Matrix4().compose(framePosition, frameRotation, new Vector3(1, 1, 1));
+    if (!sourceMatrix) return frame;
+
+    const x = new Vector3().setFromMatrixColumn(sourceMatrix, 0).normalize();
+    const y = new Vector3().setFromMatrixColumn(sourceMatrix, 1).normalize();
+    const z = new Vector3().setFromMatrixColumn(sourceMatrix, 2).normalize();
+    if (Math.max(Math.abs(x.dot(y)), Math.abs(x.dot(z)), Math.abs(y.dot(z))) <= 1e-6) return frame;
+
+    return new Matrix4().makeBasis(x, y, z).setPosition(framePosition);
+}
+
 function getInstanceRanges(items: SelectedItem[]): Map<Object3D, InstanceIdRange[]> {
     const idsByMesh = new Map<Object3D, number[]>();
     for (const { mesh, instanceId } of items) {
@@ -177,7 +192,8 @@ export function beginSmartScaleDrag(
     items: SelectedItem[],
     initialMatrix: Matrix4,
     initialScale: Vector3,
-    initialPosition: Vector3
+    initialPosition: Vector3,
+    sourceMatrix?: Matrix4 | null
 ): void {
     visualPivot = null;
     if (!canBeginSmartScaleDrag(enabled, mode, items.length) || !gizmoAxis || gizmoAxis === 'XYZ') {
@@ -188,10 +204,7 @@ export function beginSmartScaleDrag(
     const selectionKey = getSelectionKey(items);
     const directionKey = getDirectionKey(gizmoAxis, directions);
     const referenceScale = drag?.selectionKey === selectionKey ? drag.referenceScale.clone() : initialScale.clone();
-    const framePosition = new Vector3();
-    const frameRotation = new Quaternion();
-    initialMatrix.decompose(framePosition, frameRotation, new Vector3());
-    const frame = new Matrix4().compose(framePosition, frameRotation, new Vector3(1, 1, 1));
+    const frame = getScaleFrame(initialMatrix, sourceMatrix);
     const frameInverse = frame.clone().invert();
     const box = new Box3().makeEmpty();
     for (const { mesh, instanceId } of items) {
@@ -531,6 +544,14 @@ if (import.meta.env.DEV) {
     console.assert(
         canContinueSmartScaleSession({ selectionKey: 'selection' }, 'selection'),
         'Every axis must retain the original scale reference until the selection changes.'
+    );
+    const shearFrame = getScaleFrame(
+        new Matrix4(),
+        new Matrix4().set(1, 0, 0, 0, 0.5, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+    );
+    console.assert(
+        Math.abs(new Vector3().setFromMatrixColumn(shearFrame, 0).dot(new Vector3().setFromMatrixColumn(shearFrame, 1))) > 1e-6,
+        'Smart scale must preserve a sheared local frame so adjacent clones share an edge.'
     );
     const box = new Box3(new Vector3(0, 0, 0), new Vector3(1, 1, 1));
     const stretched = new Box3(new Vector3(0, 0, 0), new Vector3(2.1, 1, 1));

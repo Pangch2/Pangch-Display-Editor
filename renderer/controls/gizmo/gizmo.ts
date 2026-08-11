@@ -34,6 +34,7 @@ import * as CustomPivot from '../pivot/custom-pivot';
 import { initDrag, applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState } from '../input/handle-key';
+import { isShortcutPressed } from '../input/shortcuts';
 import { captureSceneState, recordSceneChange, restoreSceneState, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
 import type { DragInterface } from '../selection/drag';
 import type { InstanceIdRange } from '../selection/instance-ranges';
@@ -238,22 +239,33 @@ let transformControls: TransformControls | null = null;
 let selectionHelper: Mesh | null = null;
 let previousHelperMatrix = new Matrix4();
 let positionDragValue: number | null = null;
+let rotationDragValue: number | null = null;
 let scaleDragValue: number | null = null;
+
+function applyRotationDragValue(): void {
+    transformControls?.setRotationSnap(isShortcutPressed('fineAdjust') || rotationDragValue === null
+        ? null
+        : rotationDragValue * Math.PI / 180);
+}
 
 function applyGizmoDragValues(): void {
     const value = (key: string): number | null => {
         const stored = Number(localStorage.getItem(key) ?? '0.0001');
         return Number.isFinite(stored) && stored > 0 ? stored : null;
     };
-    const rotation = value('pdeRotationDragValue');
     positionDragValue = value('pdePositionDragValue');
+    rotationDragValue = value('pdeRotationDragValue');
     scaleDragValue = value('pdeScaleDragValue');
     transformControls?.setTranslationSnap(null);
-    transformControls?.setRotationSnap(rotation === null ? null : rotation * Math.PI / 180);
+    applyRotationDragValue();
     transformControls?.setScaleSnap(null);
 }
 
 window.addEventListener('pde:gizmo-drag-values-changed', applyGizmoDragValues);
+window.addEventListener('pde:shortcuts-changed', applyRotationDragValue);
+window.addEventListener('keydown', applyRotationDragValue);
+window.addEventListener('keyup', applyRotationDragValue);
+window.addEventListener('blur', applyRotationDragValue);
 
 //  Selection state 
 
@@ -472,6 +484,7 @@ function snapFromStart(current: number, start: number, step: number): number {
 
 function applyRelativeDragSnap(): void {
     if (!selectionHelper || !transformControls) return;
+    if (isShortcutPressed('fineAdjust')) return;
     if (transformControls.mode === 'translate' && positionDragValue !== null) {
         const delta = _TMP_VEC3_A.copy(selectionHelper.position).sub(dragInitialPosition);
         if (currentSpace === 'local') delta.applyQuaternion(_TMP_QUAT_A.copy(dragInitialQuaternion).invert());
@@ -1273,7 +1286,8 @@ export function initGizmo({
                 items,
                 dragInitialMatrix,
                 dragInitialScale,
-                dragInitialPosition
+                dragInitialPosition,
+                currentSpace === 'local' ? _getPrimaryWorldMatrix(new Matrix4()) : null
             );
 
             if ((blockbenchScaleMode || isSmartScaleEnabled()) && draggingMode === 'scale' && !isUniformScale) {
