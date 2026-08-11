@@ -62,6 +62,7 @@
 }
 
 #scene-panel-header,
+#player-head-atlas-header,
 #project-details-header {
   padding: 8px 12px;
   border-bottom: 1px solid #3a3a3e;
@@ -74,6 +75,25 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+#player-head-atlas {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+#player-head-atlas-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  color: #666;
+  font-size: 12px;
+}
+
+#player-head-atlas-scroll canvas {
+  display: block;
+  image-rendering: pixelated;
 }
 
 #scene-toolbar {

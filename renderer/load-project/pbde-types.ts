@@ -24,6 +24,7 @@ export interface GeometryMeta {
     geometryBufferKey?: string;
     geometryIndex: number;
     texPath: string;
+    atlasKey?: string;
     tintHex?: number;
     uvTransform?: [number, number, number, number];
     isItemDisplayModel: boolean;
@@ -105,7 +106,7 @@ export interface WorkerMetadata {
     geometryBatches?: GeometryInstanceBatch[];
     otherItems: OtherItem[];
     useUint32Indices?: boolean;
-    atlas?: { width: number; height: number; data: Uint8ClampedArray<ArrayBuffer> };
+    atlas?: { key: string; width: number; height: number; data: Uint8ClampedArray<ArrayBuffer> };
     groups?: Map<string, GroupData>;
     sceneOrder?: { type: 'group' | 'object'; id: string }[];
     projectDetails: ProjectDetails;

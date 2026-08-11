@@ -1,7 +1,7 @@
 type DockSide = 'left' | 'right';
-type PanelId = 'scene-objects' | 'project-details';
+type PanelId = 'player-head-atlas' | 'scene-objects' | 'project-details';
 
-const panelIds: PanelId[] = ['scene-objects', 'project-details'];
+const panelIds: PanelId[] = ['player-head-atlas', 'scene-objects', 'project-details'];
 const panels = Object.fromEntries(panelIds.map(id => [id, document.getElementById(id)!])) as Record<PanelId, HTMLElement>;
 const mainContent = document.getElementById('main-content')!;
 const sceneObjects = panels['scene-objects'];
@@ -16,16 +16,16 @@ let resizeFrame = 0;
 const oldSide: DockSide = localStorage.getItem('scene-panel-dock') === 'left' ? 'left' : 'right';
 const oldOrder: PanelId[] = localStorage.getItem('project-details-first') === 'true'
     ? ['project-details', 'scene-objects']
-    : [...panelIds];
+    : ['scene-objects', 'project-details'];
 let layout: Record<DockSide, PanelId[]> = oldSide === 'left'
-    ? { left: oldOrder, right: [] }
-    : { left: [], right: oldOrder };
+    ? { left: ['player-head-atlas', ...oldOrder], right: [] }
+    : { left: ['player-head-atlas'], right: oldOrder };
 let sceneHeight = localStorage.getItem('scene-objects-height') ?? '';
 
 try {
     const saved = JSON.parse(localStorage.getItem('panel-layout') ?? 'null') as Partial<Record<DockSide, PanelId[]>> | null;
     const ids = [...(saved?.left ?? []), ...(saved?.right ?? [])];
-    if (ids.length === 2 && panelIds.every(id => ids.includes(id))) {
+    if (ids.length === panelIds.length && panelIds.every(id => ids.includes(id))) {
         layout = { left: saved!.left ?? [], right: saved!.right ?? [] };
     }
 } catch {
@@ -53,7 +53,9 @@ function renderLayout(): void {
         dock.classList.toggle('single-panel', dockPanels.length === 1);
     }
 
-    const together = layout.left.length === 2 || layout.right.length === 2;
+    const together = (['left', 'right'] as DockSide[]).some(side =>
+        layout[side].includes('scene-objects') && layout[side].includes('project-details')
+    );
     sceneObjects.style.flexBasis = together ? sceneHeight : '';
     localStorage.setItem('panel-layout', JSON.stringify(layout));
     applyLayout();
@@ -130,7 +132,7 @@ for (const side of ['left', 'right'] as DockSide[]) {
     });
 }
 
-document.querySelectorAll<HTMLElement>('#scene-panel-header, #project-details-header').forEach(header => {
+document.querySelectorAll<HTMLElement>('#player-head-atlas-header, #scene-panel-header, #project-details-header').forEach(header => {
     header.addEventListener('dragstart', event => {
         const panel = header.parentElement!;
         draggedPanelId = panel.id as PanelId;
@@ -166,6 +168,11 @@ document.querySelectorAll<HTMLElement>('#scene-panel-header, #project-details-he
             movePreview(event);
         }
     });
+});
+
+window.addEventListener('pde:player-head-atlases-changed', event => {
+    const canvases = (event as CustomEvent<HTMLCanvasElement[]>).detail;
+    document.getElementById('player-head-atlas-scroll')!.replaceChildren(...(canvases.length ? canvases : ['No player head atlas']));
 });
 
 function getDropPlacement(x: number, y: number): { side: DockSide; index: number } | null {

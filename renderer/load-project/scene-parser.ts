@@ -194,7 +194,7 @@ export interface ParsedPbdeProject {
         geometryBatches?: any[];
         otherItems: any[];
         useUint32Indices: boolean;
-        atlas: { width: number; height: number; data: Uint8ClampedArray } | null;
+        atlas: { key: string; width: number; height: number; data: Uint8ClampedArray } | null;
         groups: Map<string, ParserGroupData>;
         sceneOrder: { type: 'group' | 'object'; id: string }[];
     };

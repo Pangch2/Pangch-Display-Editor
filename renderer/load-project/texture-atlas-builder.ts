@@ -5,6 +5,7 @@ export type TexturePixelData = {
 };
 
 export type TextureAtlasInfo = {
+    key: string;
     width: number;
     height: number;
     data: Uint8ClampedArray;
@@ -128,7 +129,7 @@ export async function buildTextureAtlasForRenderList(
     loadedTextures.sort((a, b) => b.pixels.h - a.pixels.h);
 
     const totalArea = loadedTextures.reduce((sum, texture) => sum + texture.pixels.w * texture.pixels.h, 0);
-    let atlasW = Math.max(512, Math.pow(2, Math.ceil(Math.log2(Math.sqrt(totalArea)))));
+    let atlasW = Math.pow(2, Math.ceil(Math.log2(Math.sqrt(totalArea))));
     const maxW = Math.max(...loadedTextures.map(texture => texture.pixels.w));
     if (atlasW < maxW) atlasW = Math.pow(2, Math.ceil(Math.log2(maxW)));
 
@@ -168,6 +169,7 @@ export async function buildTextureAtlasForRenderList(
     applyAtlasUvTransforms(renderList, packed, textureTypes, atlasW, atlasH);
 
     const atlasInfo: CachedAtlasBuild = {
+        key: atlasCacheKey,
         width: atlasW,
         height: atlasH,
         data: atlasData,

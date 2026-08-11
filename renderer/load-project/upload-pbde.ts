@@ -1,6 +1,6 @@
 import { openWithAnimation, closeWithAnimation } from '../ui/ui-open-close.js';
 import * as THREE from 'three/webgpu';
-import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, performSelection, updateGlobalBrightness } from './mesh-builder';
+import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, notifyPlayerHeadAtlasesChanged, performSelection, updateGlobalBrightness } from './mesh-builder';
 import type { GlobalBrightness, LoadedSelection } from './mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import { captureSceneState, recordSceneChange, type SceneSnapshot } from '../controls/undo-redo/scene-history.js';
@@ -146,6 +146,7 @@ window.addEventListener('pde:history-restored', () => {
     updateProjectDetails();
     saveActiveProject();
     renderProjectTabs();
+    notifyPlayerHeadAtlasesChanged();
 });
 
 function saveActiveProject(): void {
@@ -171,6 +172,7 @@ function switchProject(index: number): void {
     setHistoryContext(projects[index].id);
     Object.assign(loadedObjectGroup.userData, projects[index].data);
     for (const child of projects[index].children) loadedObjectGroup.add(child);
+    notifyPlayerHeadAtlasesChanged();
     if (projects[index].camera) {
         window.dispatchEvent(new CustomEvent('pde:set-camera-state', { detail: projects[index].camera }));
     }

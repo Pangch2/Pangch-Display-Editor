@@ -21,13 +21,25 @@ const blockTextureCache = new Map<string, THREE.Texture>(); // 텍스처 경로�
 const blockTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // 텍스처 경로별 로드 프라미스 매핑
 const blockMaterialCache = new Map<string, THREE.Material>(); // `${texPath}|${tintHex}` 조합별 머티리얼 캐시
 const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); // 동일 키에 대한 생성 프라미스 캐시
-let currentAtlasTexture: THREE.Texture | null = null;
+const BLOCK_ATLAS_MIN_PAGE_SIZE = 512;
+type BlockAtlasRegion = { x: number; y: number; width: number; height: number };
+type BlockAtlasPage = {
+    context: CanvasRenderingContext2D;
+    texture: THREE.Texture;
+    index: number;
+    nextX: number;
+    nextY: number;
+    rowHeight: number;
+    regions: Map<string, BlockAtlasRegion>;
+};
+const blockAtlasPages = new WeakMap<THREE.Texture, BlockAtlasPage>();
 
 const PLAYER_HEAD_ATLAS_SIZE = 2048;
 const PLAYER_HEAD_PART_SIZE = 8;
 const PLAYER_HEAD_BLOCK_WIDTH = PLAYER_HEAD_PART_SIZE * 3;
 const PLAYER_HEAD_BLOCK_HEIGHT = PLAYER_HEAD_PART_SIZE * 4;
 const PLAYER_HEAD_BLOCKS_PER_ROW = Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH);
+const MAX_PLAYER_HEAD_SLOTS_PER_ATLAS = 2048;
 const PLAYER_HEAD_LAYER_SCALE = 1.0625;
 const playerHeadFaceParts = {
     right: [16, 8], left: [0, 8], top: [8, 0], bottom: [16, 0], front: [24, 8], back: [8, 8],
@@ -35,7 +47,16 @@ const playerHeadFaceParts = {
 } as const;
 const playerHeadPartOrder = Object.keys(playerHeadFaceParts) as Array<keyof typeof playerHeadFaceParts>;
 const playerHeadLayerRegions = [[48, 8, 8, 8], [32, 8, 8, 8], [40, 0, 8, 8], [48, 0, 8, 8], [56, 8, 8, 8], [40, 8, 8, 8]];
-const playerHeadAtlases = new WeakMap<THREE.Material, { context: CanvasRenderingContext2D; texture: THREE.Texture; nextSlot: number }>();
+type PlayerHeadSkin = { slot: number; hasHat: boolean };
+type PlayerHeadAtlas = {
+    context: CanvasRenderingContext2D;
+    texture: THREE.Texture;
+    material: THREE.Material;
+    nextSlot: number;
+    skins: Map<string, PlayerHeadSkin>;
+    slotUrls: Array<string | undefined>;
+};
+const playerHeadAtlases = new WeakMap<THREE.Material, PlayerHeadAtlas>();
 
 export function getPlayerHeadRenderMatrix(displayType?: string): THREE.Matrix4 {
     return (getPlayerHeadDisplayMatrix(displayType) ?? new THREE.Matrix4())
@@ -219,8 +240,10 @@ function buildPartHashKeys(parts: GeometryMeta[]): { signature: string; geometry
         signatureHashA = hashString(signatureHashA, geometryBufferKey);
         signatureHashA = mixHash(signatureHashA, part.geometryIndex);
         signatureHashA = hashString(signatureHashA, part.texPath);
+        signatureHashA = hashString(signatureHashA, part.atlasKey ?? '');
         signatureHashA = mixHash(signatureHashA, (part.tintHex ?? 0xffffff) >>> 0);
         signatureHashB = hashString(signatureHashB, part.texPath);
+        signatureHashB = hashString(signatureHashB, part.atlasKey ?? '');
         signatureHashB = mixHash(signatureHashB, (part.tintHex ?? 0xffffff) >>> 0);
         signatureHashB = hashString(signatureHashB, part.geometryId);
         signatureHashB = hashString(signatureHashB, geometryBufferKey);
@@ -301,6 +324,151 @@ function getMaterialKey(part: GeometryMeta, instancedUvTransformCount: number, i
     return `${part.texPath}|${(part.tintHex ?? 0xffffff) >>> 0}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}:${instancedUvTransformIndex}` : 'base'}`;
 }
 
+function isAtlasTexturePath(texPath: string): boolean {
+    return texPath.startsWith('__ATLAS__') || texPath.startsWith('__ATLAS_TRANSLUCENT__');
+}
+
+function isTranslucentAtlasTexturePath(texPath: string): boolean {
+    return texPath.startsWith('__ATLAS_TRANSLUCENT__');
+}
+
+function getBlockAtlasTextures(): THREE.Texture[] {
+    return (loadedObjectGroup.userData.blockAtlasTextures as THREE.Texture[] | undefined)
+        ?? (loadedObjectGroup.userData.blockAtlasTextures = []);
+}
+
+function getBlockAtlasPage(texPath: string): BlockAtlasPage | undefined {
+    const index = Number(/PAGE_(\d+)$/.exec(texPath)?.[1]);
+    const texture = Number.isInteger(index) ? getBlockAtlasTextures()[index] : undefined;
+    return texture ? blockAtlasPages.get(texture) : undefined;
+}
+
+function createBlockAtlasPage(width: number, height: number): BlockAtlasPage {
+    const size = Math.max(BLOCK_ATLAS_MIN_PAGE_SIZE, 2 ** Math.ceil(Math.log2(Math.max(width, height))));
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('블록 아틀라스 캔버스를 만들 수 없습니다.');
+    context.imageSmoothingEnabled = false;
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const textures = getBlockAtlasTextures();
+    const page: BlockAtlasPage = { context, texture, index: textures.length, nextX: 0, nextY: 0, rowHeight: 0, regions: new Map() };
+    textures.push(texture);
+    blockAtlasPages.set(texture, page);
+    return page;
+}
+
+function placeBlockAtlas(page: BlockAtlasPage, key: string, width: number, height: number): BlockAtlasRegion | null {
+    let x = page.nextX;
+    let y = page.nextY;
+    let rowHeight = page.rowHeight;
+    if (x + width > page.context.canvas.width) {
+        x = 0;
+        y += rowHeight;
+        rowHeight = 0;
+    }
+    if (y + height > page.context.canvas.height) return null;
+    const region = { x, y, width, height };
+    page.nextX = x + width;
+    page.nextY = y;
+    page.rowHeight = Math.max(rowHeight, height);
+    page.regions.set(key, region);
+    return region;
+}
+
+function addProjectBlockAtlas(atlas: NonNullable<WorkerMetadata['atlas']>): { page: BlockAtlasPage; transform: [number, number, number, number] } {
+    const pages = getBlockAtlasTextures().map(texture => blockAtlasPages.get(texture)).filter(page => page !== undefined);
+    for (const page of pages) {
+        const region = page.regions.get(atlas.key);
+        if (region) return {
+            page,
+            transform: [region.width / page.context.canvas.width, region.height / page.context.canvas.height, region.x / page.context.canvas.width, (page.context.canvas.height - region.y - region.height) / page.context.canvas.height]
+        };
+    }
+
+    // ponytail: pages are append-only; repack only if repeated merge/undo churn makes unused regions measurable.
+    let page: BlockAtlasPage | undefined;
+    let region: BlockAtlasRegion | null = null;
+    for (const candidate of pages) {
+        region = placeBlockAtlas(candidate, atlas.key, atlas.width, atlas.height);
+        if (region) {
+            page = candidate;
+            break;
+        }
+    }
+    if (!page || !region) {
+        page = createBlockAtlasPage(atlas.width, atlas.height);
+        region = placeBlockAtlas(page, atlas.key, atlas.width, atlas.height);
+    }
+    if (!region) throw new Error('Block atlas does not fit in a new page.');
+    page.context.putImageData(new ImageData(new Uint8ClampedArray(atlas.data), atlas.width, atlas.height), region.x, region.y);
+    page.texture.needsUpdate = true;
+    return {
+        page,
+        transform: [region.width / page.context.canvas.width, region.height / page.context.canvas.height, region.x / page.context.canvas.width, (page.context.canvas.height - region.y - region.height) / page.context.canvas.height]
+    };
+}
+
+function composeAtlasTransform(
+    transform: [number, number, number, number],
+    pageTransform: [number, number, number, number]
+): [number, number, number, number] {
+    return [
+        transform[0] * pageTransform[0],
+        transform[1] * pageTransform[1],
+        transform[2] * pageTransform[0] + pageTransform[2],
+        transform[3] * pageTransform[1] + pageTransform[3]
+    ];
+}
+
+if (import.meta.env.DEV) {
+    const testPage = {
+        context: { canvas: { width: 16, height: 16 } },
+        texture: {}, index: 0, nextX: 0, nextY: 0, rowHeight: 0, regions: new Map()
+    } as unknown as BlockAtlasPage;
+    const firstRegion = placeBlockAtlas(testPage, 'first', 12, 8);
+    const wrappedRegion = placeBlockAtlas(testPage, 'wrapped', 8, 8);
+    placeBlockAtlas(testPage, 'last', 8, 8);
+    console.assert(
+        firstRegion?.x === 0 && firstRegion.y === 0
+        && wrappedRegion?.x === 0 && wrappedRegion.y === 8
+        && placeBlockAtlas(testPage, 'overflow', 1, 1) === null
+        && composeAtlasTransform([0.5, 0.5, 0.25, 0.25], [0.5, 0.5, 0.25, 0.25])
+            .every((value, index) => value === [0.25, 0.25, 0.375, 0.375][index]),
+        'Block atlas pages must wrap, overflow, and compose UV transforms correctly.'
+    );
+}
+
+function remapBlockAtlasMetadata(
+    geometryMetas: GeometryMeta[],
+    geometryBatches: GeometryInstanceBatch[] | null,
+    geometryBuffer: ArrayBuffer,
+    atlasKey: string,
+    pageIndex: number,
+    pageTransform: [number, number, number, number]
+): void {
+    const parts = geometryBatches ? geometryBatches.flatMap(batch => batch.parts) : geometryMetas;
+    for (const part of parts) {
+        if (!isAtlasTexturePath(part.texPath)) continue;
+        const uvs = new Float32Array(geometryBuffer, part.uvByteOffset, part.uvLen);
+        for (let index = 0; index < uvs.length; index += 2) {
+            uvs[index] = uvs[index] * pageTransform[0] + pageTransform[2];
+            uvs[index + 1] = uvs[index + 1] * pageTransform[1] + pageTransform[3];
+        }
+        if (part.uvTransform) part.uvTransform = composeAtlasTransform(part.uvTransform, pageTransform);
+        part.atlasKey = atlasKey;
+        part.texPath = `${isTranslucentAtlasTexturePath(part.texPath) ? '__ATLAS_TRANSLUCENT__' : '__ATLAS__'}PAGE_${pageIndex}`;
+    }
+    for (const batch of geometryBatches ?? []) for (const instance of batch.instances) {
+        if (instance.atlasUvTransform) instance.atlasUvTransform = composeAtlasTransform(instance.atlasUvTransform, pageTransform);
+        if (instance.atlasUvTransforms) instance.atlasUvTransforms = instance.atlasUvTransforms.map(transform => composeAtlasTransform(transform, pageTransform));
+    }
+}
+
 
 // 리로드 이후 늦게 도착한 비동기 결과를 무시하기 위한 세대 토큰
 let currentLoadGen = 0;
@@ -350,8 +518,9 @@ function decodeIpcContentToUint8Array(content: unknown): Uint8Array {
 }
 
 async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Texture> {
-    if (texPath === '__ATLAS__' || texPath === '__ATLAS_TRANSLUCENT__') {
-        if (currentAtlasTexture) return currentAtlasTexture;
+    if (isAtlasTexturePath(texPath)) {
+        const page = getBlockAtlasPage(texPath);
+        if (page) return page.texture;
         throw new Error("Atlas requested but not loaded");
     }
     // 동일 텍스처의 중복 로드를 방지한다.
@@ -468,7 +637,7 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
     if (blockMaterialCache.has(key) && gen === currentLoadGen) {
         const mat = blockMaterialCache.get(key)!;
         // 아틀라스 텍스처가 변경되었으면 stale 항목을 캐시에서 제거하고 재생성한다.
-        if (texPath.includes('__ATLAS__') && mat.map !== currentAtlasTexture) {
+        if (isAtlasTexturePath(texPath) && mat.map !== getBlockAtlasPage(texPath)?.texture) {
             blockMaterialCache.delete(key);
         } else {
             return mat;
@@ -503,10 +672,10 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
 
         // 텍스처 분석을 통한 투명도 및 렌더링 설정 자동화
         let transparencyType = TransparencyType.Opaque;
-        if (texPath === '__ATLAS__') {
-            transparencyType = TransparencyType.Cutout;
-        } else if (texPath === '__ATLAS_TRANSLUCENT__') {
+        if (isTranslucentAtlasTexturePath(texPath)) {
             transparencyType = TransparencyType.Translucent;
+        } else if (isAtlasTexturePath(texPath)) {
+            transparencyType = TransparencyType.Cutout;
         } else {
             transparencyType = analyzeTextureTransparency(tex);
         }
@@ -788,6 +957,61 @@ function drawPlayerHeadSlot(context: CanvasRenderingContext2D, image: HTMLImageE
     return !isLayerTransparent(image, playerHeadLayerRegions);
 }
 
+function getProjectPlayerHeadAtlases(): PlayerHeadAtlas[] {
+    const materials = (loadedObjectGroup.userData.playerHeadAtlasMaterials as THREE.Material[] | undefined)
+        ?? (loadedObjectGroup.userData.playerHeadAtlasMaterials = []);
+    return materials.map(material => playerHeadAtlases.get(material)).filter(atlas => atlas !== undefined);
+}
+
+export function notifyPlayerHeadAtlasesChanged(): void {
+    window.dispatchEvent(new CustomEvent('pde:player-head-atlases-changed', {
+        detail: getProjectPlayerHeadAtlases().map(atlas => atlas.context.canvas)
+    }));
+}
+
+function findAvailablePlayerHeadAtlas<T extends { nextSlot: number }>(atlases: T[]): T | undefined {
+    return atlases.find(atlas => atlas.nextSlot < MAX_PLAYER_HEAD_SLOTS_PER_ATLAS);
+}
+
+function getOrCreatePlayerHeadAtlas<T extends { nextSlot: number }>(atlases: T[], create: () => T): T {
+    const atlas = findAvailablePlayerHeadAtlas(atlases) ?? create();
+    if (!atlases.includes(atlas)) atlases.push(atlas);
+    return atlas;
+}
+
+if (import.meta.env.DEV) {
+    const full = { nextSlot: MAX_PLAYER_HEAD_SLOTS_PER_ATLAS };
+    const created = { nextSlot: 0 };
+    const atlases = [full];
+    console.assert(getOrCreatePlayerHeadAtlas(atlases, () => created) === created && atlases[1] === created, 'Player head atlas rollover is broken.');
+}
+
+function createPlayerHeadAtlas(): PlayerHeadAtlas {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = PLAYER_HEAD_ATLAS_SIZE;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('플레이어 헤드 아틀라스 캔버스를 만들 수 없습니다.');
+    context.imageSmoothingEnabled = false;
+
+    const texture = new THREE.Texture(canvas);
+    texture.needsUpdate = true;
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.colorSpace = THREE.SRGBColorSpace;
+
+    const material = createEntityMaterial(texture, 0xffffff, true, false, 1, 0, true).material;
+    material.toneMapped = false;
+    material.fog = false;
+    material.flatShading = true;
+    material.side = THREE.DoubleSide;
+
+    const atlas: PlayerHeadAtlas = { context, texture, material, nextSlot: 0, skins: new Map(), slotUrls: [] };
+    playerHeadAtlases.set(material, atlas);
+    (loadedObjectGroup.userData.playerHeadAtlasMaterials as THREE.Material[]).push(material);
+    notifyPlayerHeadAtlasesChanged();
+    return atlas;
+}
+
 function mirroredPlayerHeadFace(key: keyof typeof playerHeadFaceParts): keyof typeof playerHeadFaceParts {
     return (key.endsWith('right') ? key.replace('right', 'left')
         : key.endsWith('left') ? key.replace('left', 'right') : key) as keyof typeof playerHeadFaceParts;
@@ -832,10 +1056,6 @@ if (import.meta.env.DEV) {
  */
 function _clearSceneAndCaches(): void {
     // 1-1. 캐시된 텍스처 및 리소스 완벽 해제
-    if (currentAtlasTexture) {
-        currentAtlasTexture.dispose();
-        currentAtlasTexture = null;
-    }
     // 1-1-b. 블럭 텍스처/머티리얼 캐시 해제 및 초기화
     blockMaterialCache.forEach((mat) => { try { mat.dispose(); } catch {} });
     blockMaterialCache.clear();
@@ -969,14 +1189,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
         if (!isMerge) {
             _clearSceneAndCaches();
+            loadedObjectGroup.userData.blockAtlasTextures = [];
         } else {
-            // 프로젝트 병합 시, 머티리얼 캐시를 초기화하여 새로운 아틀라스가 적용되도록 한다.
-            // 기존 객체들은 이미 생성된 머티리얼을 참조하고 있으므로 영향받지 않는다.
-            blockMaterialCache.clear();
             blockMaterialPromiseCache.clear();
-            
-            // 이전 프로젝트의 아틀라스 텍스처 참조를 제거
-            currentAtlasTexture = null;
         }
         
         createHeadGeometries();
@@ -1129,14 +1344,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 const atlasStartMs = performance.now();
                 if (atlas) {
                     try {
-                        const imageData = new ImageData(atlas.data, atlas.width, atlas.height);
-                        const tex = new THREE.Texture(await createImageBitmap(imageData));
-                        tex.magFilter = THREE.NearestFilter;
-                        tex.minFilter = THREE.NearestFilter;
-                        tex.generateMipmaps = false;
-                        tex.colorSpace = THREE.SRGBColorSpace;
-                        tex.needsUpdate = true;
-                        currentAtlasTexture = tex;
+                        const { page, transform } = addProjectBlockAtlas(atlas);
+                        remapBlockAtlasMetadata(geometryMetas, activeGeometryBatches, sharedBuffer, atlas.key, page.index, transform);
                     } catch (e) {
                         console.warn("Failed to create atlas texture", e);
                     }
@@ -1388,9 +1597,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                     const reusableCapacity = reusableMeshes.get(signature)?.reduce(
                         (sum, mesh) => sum + Math.max(0, getInstancedCapacity(mesh) - mesh.count), 0
                     ) ?? 0;
-                    if (instancedUvTransformCount === 0
-                        && group.parts.every(part => !part.texPath.includes('__ATLAS__'))
-                        && reusableCapacity >= group.instances.length) continue;
+                    if (instancedUvTransformCount === 0 && reusableCapacity >= group.instances.length) continue;
                     for (const [partIndex, part] of group.parts.entries()) {
                         materialPreloadPromises.add(ensureInstancedMaterialPromise(part, instancedUvTransformCount, partIndex));
                     }
@@ -1409,8 +1616,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         const instances = group.instances;
                         const instancedUvTransformCount = group.instancedUvTransformCount;
                         const usesAtlasUvTransform = instancedUvTransformCount > 0;
-                        const hasReusableSignature = !usesAtlasUvTransform
-                            && representativeParts.every(part => !part.texPath.includes('__ATLAS__'));
+                        const hasReusableSignature = !usesAtlasUvTransform;
                         const canReuseExisting = isMerge && hasReusableSignature;
                         const instanceMatrix = new THREE.Matrix4();
                         let transformStart = 0;
@@ -1580,6 +1786,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                 });
 
                 const playerHeadStartMs = performance.now();
+                if (!isMerge) {
+                    loadedObjectGroup.userData.playerHeadAtlasMaterials = [];
+                    notifyPlayerHeadAtlasesChanged();
+                }
                 if (playerHeadItems.length > 0) {
                     const playerHeadPromise = (async () => {
                         try {
@@ -1588,41 +1798,36 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 return;
                             }
 
-                            const uniqueUrls = [...new Set(playerHeadItems.map(item => item.textureUrl))];
-                            
-                            const atlasCanvas = document.createElement('canvas');
-                            atlasCanvas.width = PLAYER_HEAD_ATLAS_SIZE;
-                            atlasCanvas.height = PLAYER_HEAD_ATLAS_SIZE;
-                            const atlasCtx = atlasCanvas.getContext('2d', { willReadFrequently: true });
-                            if (!atlasCtx) return;
-                            atlasCtx.imageSmoothingEnabled = false;
+                            const atlases = getProjectPlayerHeadAtlases();
+                            const skinAssignments = new Map<string, { atlas: PlayerHeadAtlas; skin: PlayerHeadSkin }>();
+                            const uniqueUrls = [...new Set(playerHeadItems.map(item => item.textureUrl!))];
+                            const missingUrls: string[] = [];
+                            for (const url of uniqueUrls) {
+                                const atlas = atlases.find(candidate => candidate.skins.has(url));
+                                const skin = atlas?.skins.get(url);
+                                if (atlas && skin) skinAssignments.set(url, { atlas, skin });
+                                else missingUrls.push(url);
+                            }
 
-                            const skinLayouts = new Map<string, { x: number, y: number }>();
-                            const skinTransparency = new Map<string, boolean>(); // URL -> isLayerTransparent
-                            
-                            const imagePromises = uniqueUrls.map((url, index) => {
-                                return loadPlayerHeadImage(url).then(image => {
-                                    const blockX = (index % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
-                                    const blockY = Math.floor(index / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
-                                    skinLayouts.set(url, { x: blockX, y: blockY });
-                                    skinTransparency.set(url, !drawPlayerHeadSlot(atlasCtx, image, index));
-                                });
-                            });
+                            const loadedSkins = await Promise.all(missingUrls.map(async url => ({ url, image: await loadPlayerHeadImage(url) })));
+                            for (const { url, image } of loadedSkins) {
+                                const atlas = getOrCreatePlayerHeadAtlas(atlases, createPlayerHeadAtlas);
+                                const slot = atlas.nextSlot++;
+                                const skin = { slot, hasHat: drawPlayerHeadSlot(atlas.context, image, slot) };
+                                atlas.skins.set(url, skin);
+                                atlas.slotUrls[slot] = url;
+                                atlas.texture.needsUpdate = true;
+                                skinAssignments.set(url, { atlas, skin });
+                            }
 
-                            await Promise.all(imagePromises);
-
-                            const atlasTexture = new THREE.Texture(atlasCanvas);
-                            atlasTexture.needsUpdate = true;
-                            atlasTexture.magFilter = THREE.NearestFilter;
-                            atlasTexture.minFilter = THREE.NearestFilter;
-                            atlasTexture.colorSpace = THREE.SRGBColorSpace;
-                            
-                            const atlasMaterial = createEntityMaterial(atlasTexture, 0xffffff, true, false, 1, 0, true).material;
-                            atlasMaterial.toneMapped = false;
-                            atlasMaterial.fog = false;
-                            atlasMaterial.flatShading = true;
-                            atlasMaterial.side = THREE.DoubleSide;
-                            playerHeadAtlases.set(atlasMaterial, { context: atlasCtx, texture: atlasTexture, nextSlot: uniqueUrls.length });
+                            const atlasItems = new Map<PlayerHeadAtlas, Array<{ item: OtherItem; skin: PlayerHeadSkin }>>();
+                            for (const item of playerHeadItems) {
+                                const assignment = skinAssignments.get(item.textureUrl!);
+                                if (!assignment) continue;
+                                let items = atlasItems.get(assignment.atlas);
+                                if (!items) atlasItems.set(assignment.atlas, items = []);
+                                items.push({ item, skin: assignment.skin });
+                            }
                             
                             const sharedGeometry = (headGeometries.merged as THREE.BufferGeometry).clone();
                             const newUvAttr = sharedGeometry.getAttribute('uv') as THREE.BufferAttribute;
@@ -1674,69 +1879,62 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             newUvAttr.needsUpdate = true;
                             sharedGeometry.setAttribute('uvMirrorCenter', new THREE.BufferAttribute(uvMirrorCenters, 2));
 
-                            const totalInstances = playerHeadItems.length;
-                            const headCapacity = Math.max(INITIAL_INSTANCES_PER_INSTANCED_MESH, getAppendableInstanceCapacity(totalInstances));
-                            const matrices = new Float32Array(headCapacity * 16);
-                            const uvData = new Float32Array(headCapacity * 11);
-                            const interleavedUvData = new THREE.InstancedInterleavedBuffer(uvData, 11);
-                            const uvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 0);
-                            const uvFlips = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 2);
-                            const knifeUvScales = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 4);
-                            const knifeUvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 7);
-                            const headLayerVisible = new THREE.InterleavedBufferAttribute(interleavedUvData, 1, 10);
-                            const hasHatArray = new Array(totalInstances).fill(false);
+                            let firstAtlas = true;
+                            for (const [atlas, entries] of atlasItems) {
+                                const geometry = firstAtlas ? sharedGeometry : sharedGeometry.clone();
+                                firstAtlas = false;
+                                const totalInstances = entries.length;
+                                const headCapacity = Math.max(INITIAL_INSTANCES_PER_INSTANCED_MESH, getAppendableInstanceCapacity(totalInstances));
+                                const matrices = new Float32Array(headCapacity * 16);
+                                const uvData = new Float32Array(headCapacity * 11);
+                                const interleavedUvData = new THREE.InstancedInterleavedBuffer(uvData, 11);
+                                const uvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 0);
+                                const uvFlips = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 2);
+                                const knifeUvScales = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 4);
+                                const knifeUvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 7);
+                                const headLayerVisible = new THREE.InterleavedBufferAttribute(interleavedUvData, 1, 10);
+                                const hasHatArray = new Array(totalInstances).fill(false);
 
-                            for (let index = 0; index < headCapacity; index++) {
-                                knifeUvScales.setXYZ(index, 1, 1, 1);
-                                headLayerVisible.setX(index, 1);
-                            }
-
-                            let i = 0;
-                            for (const item of playerHeadItems) {
-                                const matrix = new THREE.Matrix4().fromArray(item.transform).transpose();
-                                matrix.multiply(getPlayerHeadRenderMatrix(item.displayType));
-                                matrix.toArray(matrices, i * 16);
-
-                                const skinBlockPos = skinLayouts.get(item.textureUrl);
-                                if (skinBlockPos) {
-                                    const uOffset = skinBlockPos.x / PLAYER_HEAD_ATLAS_SIZE;
-                                    const vOffset = 1.0 - (skinBlockPos.y + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE;
-                                    
-                                    uvOffsets.setXY(i, uOffset, vOffset);
+                                for (let index = 0; index < headCapacity; index++) {
+                                    knifeUvScales.setXYZ(index, 1, 1, 1);
+                                    headLayerVisible.setX(index, 1);
                                 }
 
-                                const isTransparent = skinTransparency.get(item.textureUrl);
-                                // If layer is NOT transparent, it has a hat.
-                                hasHatArray[i] = !isTransparent;
+                                entries.forEach(({ item, skin }, index) => {
+                                    const matrix = new THREE.Matrix4().fromArray(item.transform).transpose();
+                                    matrix.multiply(getPlayerHeadRenderMatrix(item.displayType));
+                                    matrix.toArray(matrices, index * 16);
+                                    const x = (skin.slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
+                                    const y = Math.floor(skin.slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
+                                    uvOffsets.setXY(index, x / PLAYER_HEAD_ATLAS_SIZE, 1 - (y + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE);
+                                    hasHatArray[index] = skin.hasHat;
+                                });
 
-                                i++;
+                                geometry.setAttribute('instancedUvOffset', uvOffsets);
+                                geometry.setAttribute('instancedUvFlip', uvFlips);
+                                geometry.setAttribute('headLayerVisible', headLayerVisible);
+                                geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
+                                geometry.setAttribute('instancedKnifeUvOffset', knifeUvOffsets);
+                                geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(headCapacity), 1));
+
+                                const instancedMesh = new THREE.InstancedMesh(geometry, atlas.material, headCapacity);
+                                instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
+                                instancedMesh.count = totalInstances;
+                                instancedMesh.userData.displayType = 'item_display';
+                                instancedMesh.userData.hasHat = hasHatArray;
+                                instancedMesh.instanceMatrix.needsUpdate = true;
+                                instancedMesh.frustumCulled = false;
+                                instancedMesh.layers.enable(2);
+                                instancedMesh.computeBoundingSphere();
+
+                                entries.forEach(({ item }, index) => {
+                                    setInstanceSkyBrightness(instancedMesh, index, item.brightness as Brightness | undefined);
+                                    registerObject(instancedMesh, index, item.uuid, item.groupId);
+                                    addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, index);
+                                });
+                                if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
+                                loadedObjectGroup.add(instancedMesh);
                             }
-                            
-                            sharedGeometry.setAttribute('instancedUvOffset', uvOffsets);
-                            sharedGeometry.setAttribute('instancedUvFlip', uvFlips);
-                            sharedGeometry.setAttribute('headLayerVisible', headLayerVisible);
-                            sharedGeometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
-                            sharedGeometry.setAttribute('instancedKnifeUvOffset', knifeUvOffsets);
-                            sharedGeometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(headCapacity), 1));
-
-                            const instancedMesh = new THREE.InstancedMesh(sharedGeometry, atlasMaterial, headCapacity);
-                            instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
-                            instancedMesh.count = totalInstances;
-                            instancedMesh.userData.displayType = 'item_display';
-                            instancedMesh.userData.hasHat = hasHatArray; // Store hat info for gizmo
-                            instancedMesh.instanceMatrix.needsUpdate = true;
-                            instancedMesh.frustumCulled = false;
-                            instancedMesh.layers.enable(2);
-                            instancedMesh.computeBoundingSphere();
-
-                            playerHeadItems.forEach((item, idx) => {
-                                setInstanceSkyBrightness(instancedMesh, idx, item.brightness as Brightness | undefined);
-                                registerObject(instancedMesh, idx, item.uuid, item.groupId);
-                                addLoadedInstance(newlyAddedSelectableMeshes, instancedMesh, idx);
-                            });
-                            if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
-
-                            loadedObjectGroup.add(instancedMesh);
 
                         } catch (err) {
                             console.error('Player head instancing failed:', err);
@@ -1804,9 +2002,8 @@ export function getPlayerHeadPaintSurface(
 
     let slot = getPlayerHeadSlot(uvOffsets, instanceId);
     if (exclusive && getPlayerHeadSlotUsage(material, slot) > 1) {
+        if (atlas.nextSlot >= MAX_PLAYER_HEAD_SLOTS_PER_ATLAS) throw new Error('Player head paint atlas is full.');
         const nextSlot = atlas.nextSlot++;
-        const maxSlots = PLAYER_HEAD_BLOCKS_PER_ROW * Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT);
-        if (nextSlot >= maxSlots) throw new Error('Player head paint atlas is full.');
         const oldX = (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
         const oldY = Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
         const nextX = (nextSlot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
@@ -1857,7 +2054,16 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface): void {
             PLAYER_HEAD_PART_SIZE
         ), dx, dy);
     });
-    (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.set(surface.objectUuid, skin.toDataURL('image/png'));
+    const dataUrl = skin.toDataURL('image/png');
+    const material = (Array.isArray(surface.mesh.material) ? surface.mesh.material[0] : surface.mesh.material) as THREE.Material;
+    const atlas = playerHeadAtlases.get(material);
+    const oldUrl = atlas?.slotUrls[surface.slot];
+    if (atlas) {
+        if (oldUrl && atlas.skins.get(oldUrl)?.slot === surface.slot) atlas.skins.delete(oldUrl);
+        atlas.skins.set(dataUrl, { slot: surface.slot, hasHat });
+        atlas.slotUrls[surface.slot] = dataUrl;
+    }
+    (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.set(surface.objectUuid, dataUrl);
 }
 
 export function setPlayerHeadLayerVisible(visible: boolean): void {
@@ -1896,13 +2102,26 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
         }
     });
 
-    let slot = Math.round(oldU * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH)
+    const oldSlot = Math.round(oldU * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH)
         + Math.round((1 - oldV) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT - 1) * PLAYER_HEAD_BLOCKS_PER_ROW;
-    if (usageCount > 1) slot = atlas.nextSlot++;
-    const maxSlots = PLAYER_HEAD_BLOCKS_PER_ROW * Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT);
-    if (slot >= maxSlots) throw new Error('플레이어 헤드 아틀라스 슬롯이 부족합니다.');
+    const storedUrl = image.src === DEFAULT_PLAYER_HEAD_TEXTURE ? DEFAULT_PLAYER_HEAD_TEXTURE : textureUrl;
+    const existing = atlas.skins.get(storedUrl);
+    let slot = existing?.slot ?? oldSlot;
+    let hasHat = existing?.hasHat;
+    if (!existing) {
+        if (usageCount > 1) {
+            if (atlas.nextSlot >= MAX_PLAYER_HEAD_SLOTS_PER_ATLAS) throw new Error('플레이어 헤드 아틀라스 슬롯이 부족합니다.');
+            slot = atlas.nextSlot++;
+        } else {
+            const oldUrl = atlas.slotUrls[oldSlot];
+            if (oldUrl && atlas.skins.get(oldUrl)?.slot === oldSlot) atlas.skins.delete(oldUrl);
+        }
+        hasHat = drawPlayerHeadSlot(atlas.context, image, slot);
+        atlas.skins.set(storedUrl, { slot, hasHat });
+        atlas.slotUrls[slot] = storedUrl;
+    }
 
-    ref.mesh.userData.hasHat[ref.instanceId] = drawPlayerHeadSlot(atlas.context, image, slot);
+    ref.mesh.userData.hasHat[ref.instanceId] = hasHat;
     uvOffsets.setXY(
         ref.instanceId,
         (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH / PLAYER_HEAD_ATLAS_SIZE,
@@ -1910,10 +2129,7 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
     );
     uvOffsets.needsUpdate = true;
     atlas.texture.needsUpdate = true;
-    (userData.objectTextures as Map<string, string> | undefined)?.set(
-        objectUuid,
-        image.src === DEFAULT_PLAYER_HEAD_TEXTURE ? DEFAULT_PLAYER_HEAD_TEXTURE : textureUrl
-    );
+    (userData.objectTextures as Map<string, string> | undefined)?.set(objectUuid, storedUrl);
 }
 
 export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
