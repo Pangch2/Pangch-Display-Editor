@@ -2,7 +2,7 @@ import { blockbenchScaleMode, toggleBlockbenchScaleMode } from '../controls/gizm
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { cleanLabel } from './scene-panel/scene-panel-model';
-import { getShortcutConflicts, getShortcutMapping, getShortcuts, matchesShortcut, normalizeShortcutKey, resetShortcutMapping, resetShortcuts, setShortcutMapping, setShortcuts, shortcutDefinitions, shortcutFromKeys } from '../controls/input/shortcuts';
+import { getShortcutConflictDetails, getShortcutMapping, getShortcuts, matchesShortcut, normalizeShortcutKey, resetShortcutMapping, resetShortcuts, setShortcutMapping, setShortcuts, shortcutDefinitions, shortcutFromKeys } from '../controls/input/shortcuts';
 
 const settingsButton = document.getElementById('settings-button')!;
 const toolbar = document.getElementById('scene-toolbar')!;
@@ -159,9 +159,10 @@ function renderShortcuts(): void {
     row.className = 'settings-shortcut-row';
     keyButton.type = addButton.type = clearButton.type = resetButton.type = 'button';
     keyButton.textContent = getShortcuts(shortcut.id).map(key => key.split('+').join(' + ')).join(', ') || '지정 안 함';
-    if (getShortcutConflicts(shortcut.id).length) {
+    const conflicts = getShortcutConflictDetails(shortcut.id);
+    if (conflicts.length) {
       keyButton.classList.add('settings-shortcut-conflict');
-      keyButton.title = '키가 겹칩니다. 겹치는 상황에서는 양쪽의 조작이 비활성화됩니다.';
+      keyButton.title = `겹치는 조작키\n${conflicts.join('\n')}`;
     }
     addButton.className = 'settings-shortcut-add';
     addButton.textContent = '+';

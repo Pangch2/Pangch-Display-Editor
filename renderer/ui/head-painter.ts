@@ -27,6 +27,7 @@ import {
   updateHeadPainterGridOverlay
 } from '../controls/selection/overlay';
 import { record } from '../controls/undo-redo/undo-redo';
+import { isShortcutPressed, matchesShortcut } from '../controls/input/shortcuts';
 import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
 import { oklchToRgb, openColorPicker, rgbToOklch } from './color-picker';
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
@@ -109,6 +110,7 @@ let stampPixels: Array<Rgba | null> = Array(64).fill(null);
 let stroke: Map<string, WorkSurface> | null = null;
 let lastStrokeHit: PaintHit | null = null;
 let paintPointerId: number | null = null;
+let deferredPaint: { pointerId: number; x: number; y: number } | null = null;
 let restoreCameraControls: (() => void) | null = null;
 let altPicking = false;
 let pickingColor = false;
@@ -194,7 +196,7 @@ function sourceOver(destination: Rgba, source: Rgba, coverage: number): Rgba {
   )).concat(Math.round(alpha * 255)) as Rgba;
 }
 
-function getHit(event: PointerEvent): PaintHit | null {
+function getHit(event: PointerEvent, deselectOnMiss = false): PaintHit | null {
   if (!painterContext) return null;
   const rect = painterContext.renderer.domElement.getBoundingClientRect();
   pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
@@ -202,7 +204,11 @@ function getHit(event: PointerEvent): PaintHit | null {
   raycaster.setFromCamera(pointer, painterContext.getCamera());
   loadedObjectGroup.updateMatrixWorld(true);
   const intersection = raycaster.intersectObject(loadedObjectGroup, true)[0];
-  if (!intersection || !(intersection.object as InstancedMesh).isInstancedMesh || intersection.instanceId === undefined || !intersection.uv || intersection.faceIndex === undefined) return null;
+  if (!intersection) {
+    if (deselectOnMiss) (loadedObjectGroup.userData.resetSelection as (() => void) | undefined)?.();
+    return null;
+  }
+  if (!(intersection.object as InstancedMesh).isInstancedMesh || intersection.instanceId === undefined || !intersection.uv || intersection.faceIndex === undefined) return null;
   const mesh = intersection.object as InstancedMesh;
   const surface = getPlayerHeadPaintSurface(mesh, intersection.instanceId);
   if (!surface) return null;
@@ -279,6 +285,7 @@ function endPaintPointer(): void {
   restoreCameraControls?.();
   restoreCameraControls = null;
   paintPointerId = null;
+  deferredPaint = null;
 }
 
 function brushCoverage(dx: number, dy: number, width: number, height: number, hardness: number, circle: boolean): number {
@@ -394,17 +401,17 @@ function connectedCellIndexes(columns: number, rows: number, start: number, matc
   return connected;
 }
 
-function fillAt(hit: PaintHit, event: PointerEvent): void {
+function fillAt(hit: PaintHit): void {
   const work = getWork(hit);
   const part = facePartIndexes[hit.face] + hit.layer * 6;
   const target = readPixel(work.image, part, gridCellPixel(hit.x, hit.columns), gridCellPixel(hit.y, hit.rows));
-  if (!(event.ctrlKey || event.metaKey)) {
+  if (!isShortcutPressed('headPainterFillAllFaces')) {
     const matches = (index: number) => {
       const x = index % hit.columns;
       const y = Math.floor(index / hit.columns);
       return rgbaEqual(readPixel(work.image, part, gridCellPixel(x, hit.columns), gridCellPixel(y, hit.rows)), target);
     };
-    const indexes = event.shiftKey
+    const indexes = isShortcutPressed('headPainterConnectedFill')
       ? connectedCellIndexes(hit.columns, hit.rows, hit.y * hit.columns + hit.x, matches)
       : Array.from({ length: hit.columns * hit.rows }, (_, index) => index).filter(matches);
     for (const index of indexes) {
@@ -531,35 +538,40 @@ function onPointerDown(event: PointerEvent): void {
   if (!active || !painterContext || event.button !== 0 || event.target !== painterContext.renderer.domElement) return;
   finishStroke();
   if (lastTool === 'select') return;
+  if (event.ctrlKey || event.metaKey) {
+    if (lastTool !== 'picker' && !painterContext.isGizmoHovered()) deferredPaint = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    return;
+  }
   if (lastTool === 'picker') {
     if (!altPicking) return;
+    getHit(event, true);
     event.preventDefault();
     event.stopImmediatePropagation();
     void pickColor(event);
     return;
   }
   if (painterContext.isGizmoHovered()) return;
-  const hit = getHit(event);
+  const hit = getHit(event, true);
   if (!hit) return;
   paintPointerId = event.pointerId;
   restoreCameraControls = painterContext.suspendCameraControls();
-  paintAt(hit, event);
+  paintAt(hit);
 }
 
 function onKeyDown(event: KeyboardEvent): void {
-  if (!active || lastTool !== 'picker' || event.key !== 'Alt' || event.repeat) return;
+  if (!active || lastTool !== 'picker' || !matchesShortcut(event, 'headPainterPickColor') || event.repeat) return;
   setAltPicking(true);
   event.preventDefault();
   event.stopImmediatePropagation();
 }
 
 function onKeyUp(event: KeyboardEvent): void {
-  if (event.key === 'Alt') setAltPicking(false);
-  if (event.key === 'Shift') removeHeadPainterStampPreview();
+  if (matchesShortcut(event, 'headPainterPickColor')) setAltPicking(false);
+  if (matchesShortcut(event, 'headPainterCopyStamp')) removeHeadPainterStampPreview();
 }
 
-function paintAt(hit: PaintHit, event: PointerEvent): void {
-  if (lastTool === 'stamp' && event.shiftKey) {
+function paintAt(hit: PaintHit): void {
+  if (lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp')) {
     finishStroke();
     copyStamp(hit);
     return;
@@ -568,7 +580,7 @@ function paintAt(hit: PaintHit, event: PointerEvent): void {
     stroke = new Map();
     lastStrokeHit = null;
   }
-  if (lastTool === 'bucket') fillAt(hit, event);
+  if (lastTool === 'bucket') fillAt(hit);
   else continueStroke(hit);
 }
 
@@ -580,7 +592,7 @@ function onPointerMove(event: PointerEvent): void {
     return;
   }
   const hit = getHit(event);
-  if (lastTool === 'stamp' && event.shiftKey && hit) {
+  if (lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp') && hit) {
     updateHeadPainterStampPreview(painterContext.scene, hit, stampWidth, stampHeight, gridBoundary);
   } else {
     removeHeadPainterStampPreview();
@@ -589,10 +601,22 @@ function onPointerMove(event: PointerEvent): void {
     finishStroke();
     return;
   }
-  paintAt(hit, event);
+  paintAt(hit);
 }
 
 function onPointerUp(event: PointerEvent): void {
+  if (event.pointerId === deferredPaint?.pointerId) {
+    const click = event.type === 'pointerup' && Math.hypot(event.clientX - deferredPaint.x, event.clientY - deferredPaint.y) < 6;
+    deferredPaint = null;
+    if (click) {
+      const hit = getHit(event, true);
+      if (hit) {
+        paintAt(hit);
+        finishStroke();
+      }
+    }
+    return;
+  }
   if (event.pointerId !== paintPointerId) return;
   endPaintPointer();
 }
@@ -668,8 +692,8 @@ function renderPalette(): void {
     button.className = `head-painter-swatch${index === activePaletteSlot ? ' active' : ''}${index === paletteAnchor ? ' anchor' : ''}`;
     button.title = color ? `rgba(${color.join(', ')})` : '빈 색상';
     if (color) button.style.background = `rgba(${color[0]},${color[1]},${color[2]},${color[3] / 255})`;
-    button.onclick = event => {
-      if (event.shiftKey && color) {
+    button.onclick = () => {
+      if (isShortcutPressed('headPainterPaletteGradient') && color) {
         if (paletteAnchor === null || !palette[paletteAnchor]) paletteAnchor = index;
         else {
           const start = Math.min(paletteAnchor, index);
@@ -1035,17 +1059,17 @@ function createBrushEditor(): void {
     if (event.button > 2) return;
     event.preventDefault();
     grid.focus();
-    if (event.ctrlKey && event.button === 0) selectBrushArea(event.target);
+    if (isShortcutPressed('headPainterSelectBrushArea') && event.button === 0) selectBrushArea(event.target);
     else selectBrushPixel(event.target);
   };
   grid.onpointermove = event => {
     if (!(event.buttons & 3)) return;
-    if (event.ctrlKey && event.buttons & 1) selectBrushArea(event.target);
+    if (isShortcutPressed('headPainterSelectBrushArea') && event.buttons & 1) selectBrushArea(event.target);
     else paintBrushEditorCell(event.target, !!(event.buttons & 2));
   };
   grid.onpointerup = () => { brushSelectionAnchor = null; };
   grid.onkeydown = event => {
-    if (event.ctrlKey && event.key.toLowerCase() === 'g' && selectedBrushPixels.size) {
+    if (matchesShortcut(event, 'headPainterClearBrushSelection') && selectedBrushPixels.size) {
       selectedBrushPixels.clear();
       brushSelectionActive = false;
       renderBrushEditorGrid();

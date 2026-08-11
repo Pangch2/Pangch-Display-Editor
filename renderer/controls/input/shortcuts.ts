@@ -11,6 +11,13 @@ export const shortcutDefinitions = [
   { id: 'toggleScaleMode', category: '일반', label: '스케일 모드 전환', defaults: ['B'] },
   { id: 'toggleSmartScale', category: '일반', label: '스마트 스케일', defaults: ['J'] },
   { id: 'fineAdjust', category: '일반', label: '미세조정', defaults: ['Shift'] },
+  { id: 'headPainterPickColor', category: '헤드 페인터', label: '색상 피킹', defaults: ['Alt'] },
+  { id: 'headPainterCopyStamp', category: '헤드 페인터', label: '스탬프 복사', defaults: ['Shift'] },
+  { id: 'headPainterConnectedFill', category: '헤드 페인터', label: '인접 영역 채우기', defaults: ['Shift'] },
+  { id: 'headPainterFillAllFaces', category: '헤드 페인터', label: '6면 전체 채우기', defaults: ['Ctrl'] },
+  { id: 'headPainterPaletteGradient', category: '헤드 페인터', label: '팔레트 그라데이션', defaults: ['Shift'] },
+  { id: 'headPainterSelectBrushArea', category: '헤드 페인터', label: '브러시 픽셀 영역 선택', defaults: ['Ctrl'] },
+  { id: 'headPainterClearBrushSelection', category: '헤드 페인터', label: '브러시 선택 해제', defaults: ['Ctrl+G'] },
   { id: 'undo', category: '기록', label: '실행 취소', defaults: ['Ctrl+Z'] },
   { id: 'redo', category: '기록', label: '다시 실행', defaults: ['Ctrl+Shift+Z', 'Ctrl+Y'] },
   { id: 'focusSelection', category: '선택', label: '선택 항목에 초점', defaults: ['F'] },
@@ -61,7 +68,7 @@ export function getShortcutMapping(): ShortcutMapping {
 }
 
 export function setShortcutMapping(mapping: Partial<ShortcutMapping>): void {
-  shortcutDefinitions.forEach(shortcut => localStorage.setItem(storagePrefix + shortcut.id, (mapping[shortcut.id] ?? []).join('|')));
+  shortcutDefinitions.forEach(shortcut => localStorage.setItem(storagePrefix + shortcut.id, (mapping[shortcut.id] ?? shortcut.defaults).join('|')));
   window.dispatchEvent(new Event('pde:shortcuts-changed'));
 }
 
@@ -75,8 +82,11 @@ export function setShortcuts(id: ShortcutId, shortcuts: string[]): void {
   window.dispatchEvent(new CustomEvent('pde:shortcuts-changed', { detail: id }));
 }
 
-export function getShortcutConflicts(id: ShortcutId): string[] {
-  return getShortcuts(id).filter(key => shortcutDefinitions.some(shortcut => shortcut.id !== id && getShortcuts(shortcut.id).includes(key)));
+export function getShortcutConflictDetails(id: ShortcutId): string[] {
+  const shortcuts = new Set(getShortcuts(id));
+  return shortcutDefinitions.flatMap(shortcut => shortcut.id === id ? [] : getShortcuts(shortcut.id)
+    .filter(key => shortcuts.has(key))
+    .map(key => `${key.split('+').join(' + ')}: ${shortcut.label}`));
 }
 
 export function resetShortcuts(id: ShortcutId): void {
@@ -99,12 +109,12 @@ export function matchesShortcut(event: KeyboardEvent, id: ShortcutId): boolean {
   const keys = new Set(pressedKeys);
   keys.add(normalizeShortcutKey(event.key));
   const key = shortcutFromKeys(keys);
-  return getShortcuts(id).includes(key) && !getShortcutConflicts(id).includes(key);
+  return getShortcuts(id).includes(key);
 }
 
 export function isShortcutPressed(id: ShortcutId): boolean {
   const key = shortcutFromKeys(pressedKeys);
-  return getShortcuts(id).includes(key) && !getShortcutConflicts(id).includes(key);
+  return getShortcuts(id).includes(key);
 }
 
 if (import.meta.env.DEV) {

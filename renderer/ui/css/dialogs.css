@@ -134,9 +134,9 @@
 }
 
 .settings-shortcut-row > .settings-shortcut-conflict {
-  border-color: #ff5c67;
-  background: #ff5c6720;
-  color: #ff5c67;
+  border-color: #ff9f43;
+  background: #ff9f4320;
+  color: #ff9f43;
 }
 
 .settings-shortcut-row > .settings-shortcut-add,
@@ -499,4 +499,3 @@
   cursor: pointer;
   image-rendering: pixelated;
 }
-

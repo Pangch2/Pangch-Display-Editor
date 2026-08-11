@@ -1751,7 +1751,7 @@ export function initGizmo({
         if (isGizmoBusy) return;
         if (event.button !== 0) return;
         const headPainterTool = renderer.domElement.dataset.headPainterTool;
-        if (headPainterTool && headPainterTool !== 'select') {
+        if (headPainterTool && headPainterTool !== 'select' && !(event.ctrlKey || event.metaKey)) {
             mouseDownPos = null;
             return;
         }
@@ -1866,6 +1866,12 @@ export function initGizmo({
 
     renderer.domElement.addEventListener('pointerup', (event: PointerEvent) => {
         if (dragControls.onPointerUp(event)) {
+            mouseDownPos = null;
+            return;
+        }
+
+        const headPainterTool = renderer.domElement.dataset.headPainterTool;
+        if (headPainterTool && headPainterTool !== 'select') {
             mouseDownPos = null;
             return;
         }
