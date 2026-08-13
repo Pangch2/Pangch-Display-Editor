@@ -93,6 +93,8 @@ export interface LoadedObjectUserData {
     groups?: Map<string, GroupData>;
     objectToGroup?: Map<string, string>;
     sceneOrder?: SceneOrderEntry[];
+    hiddenObjectUuids?: Set<string>;
+    hiddenGroupIds?: Set<string>;
     replaceSelectionWithGroupsAndObjects?: (
         groupIds: Set<string>,
         meshToIds: Map<Object3D, Set<number>>,

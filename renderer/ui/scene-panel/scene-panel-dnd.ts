@@ -16,6 +16,7 @@ import {
     isGroupAncestorOf,
     moveSceneItemsByDropHint
 } from './scene-panel-model';
+import { applySceneVisibility } from '../../controls/scene-visibility';
 
 function getSceneDragItemKey(item: SceneDragSource): string {
     return `${item.type}:${item.id}`;
@@ -479,6 +480,7 @@ function dropSceneItems(clientX: number, clientY: number): void {
 
     if (moved) {
         scenePanelState.suppressSceneItemClickUntil = Date.now() + 180;
+        applySceneVisibility(loadedObjectGroup);
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
         recordSceneChange(loadedObjectGroup, before);
     }

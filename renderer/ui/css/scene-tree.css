@@ -134,6 +134,7 @@
   flex-shrink: 0;
   color: #CCCCCC;
   font-weight: 600;
+  cursor: pointer;
 }
 
 .scene-extra {

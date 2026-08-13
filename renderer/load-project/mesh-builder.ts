@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { compressSync, strToU8 } from 'fflate';
-import { createEndPortalMaterial, createEntityMaterial, dragSelectedAttributeName } from '../entity-material';
+import { createEndPortalMaterial, createEntityMaterial, dragSelectedAttributeName, entityVisibleAttributeName, setEntityStateAttributes } from '../entity-material';
 import { deleteSelectedItems } from '../controls/grouping/delete';
 import * as GroupUtils from '../controls/grouping/group';
 import * as Overlay from '../controls/selection/overlay';
@@ -145,10 +145,7 @@ async function addTextDisplayItems(
         for (let start = 0; start < group.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
             const chunk = group.slice(start, start + MAX_INSTANCES_PER_INSTANCED_MESH);
             const geometry = start === 0 ? template.geometry : template.geometry.clone();
-            geometry.setAttribute(
-                dragSelectedAttributeName,
-                new THREE.InstancedBufferAttribute(new Float32Array(chunk.length), 1)
-            );
+            setEntityStateAttributes(geometry, chunk.length);
             const textMesh = new THREE.InstancedMesh(geometry, template.material, chunk.length);
             textMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(chunk.length, 16);
             textMesh.userData.displayType = 'text_display';
@@ -658,13 +655,13 @@ async function getBlockMaterial(texPath: string, tintHex: number | undefined, ge
                 texture.wrapT = THREE.RepeatWrapping;
                 texture.needsUpdate = true;
             }
-            const material = createEndPortalMaterial(endSkyTexture, endPortalTexture, endPortalLayerCount);
+            const material = createEndPortalMaterial(endSkyTexture, endPortalTexture, endPortalLayerCount, true);
             blockMaterialCache.set(key, material);
             return material;
         }
 
         const tex = await loadBlockTexture(texPath, gen);
-        const { material } = createEntityMaterial(tex, effectiveTint, false, instancedUvTransformCount > 0, instancedUvTransformCount, instancedUvTransformIndex);
+        const { material } = createEntityMaterial(tex, effectiveTint, false, instancedUvTransformCount > 0, instancedUvTransformCount, instancedUvTransformIndex, false, true);
         material.toneMapped = false;
         material.fog = false;
         material.flatShading = true;
@@ -999,7 +996,7 @@ function createPlayerHeadAtlas(): PlayerHeadAtlas {
     texture.minFilter = THREE.NearestFilter;
     texture.colorSpace = THREE.SRGBColorSpace;
 
-    const material = createEntityMaterial(texture, 0xffffff, true, false, 1, 0, true).material;
+    const material = createEntityMaterial(texture, 0xffffff, true, false, 1, 0, true, true).material;
     material.toneMapped = false;
     material.fog = false;
     material.flatShading = true;
@@ -1718,7 +1715,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                         meshGeometry.setAttribute(attributeName, new THREE.InstancedBufferAttribute(uvTransforms, 4));
                                     }
                                 }
-                                meshGeometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(chunkCapacity), 1));
+                                setEntityStateAttributes(meshGeometry, chunkCapacity);
                                 const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCapacity);
                                 instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(chunkCapacity, 16);
                                 instancedMesh.count = chunkCount;
@@ -1915,7 +1912,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 geometry.setAttribute('headLayerVisible', headLayerVisible);
                                 geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
                                 geometry.setAttribute('instancedKnifeUvOffset', knifeUvOffsets);
-                                geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(headCapacity), 1));
+                                setEntityStateAttributes(geometry, headCapacity);
 
                                 const instancedMesh = new THREE.InstancedMesh(geometry, atlas.material, headCapacity);
                                 instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
@@ -2233,7 +2230,7 @@ export function isolateTextDisplay(objectUuid: string): void {
     const oldInstanceId = ref.instanceId;
     const oldLastInstanceId = oldMesh.count - 1;
     const geometry = oldMesh.geometry.clone();
-    geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(1), 1));
+    setEntityStateAttributes(geometry, 1, [oldMesh.geometry.getAttribute(entityVisibleAttributeName)?.getX(oldInstanceId) ?? 1]);
     const mesh = new THREE.InstancedMesh(geometry, oldMesh.material, 1);
     mesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(1, 16);
     const matrix = new THREE.Matrix4();
@@ -2355,6 +2352,7 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
         replacementMaterial.dispose();
     } else {
         replacement.geometry.setAttribute(dragSelectedAttributeName, ref.mesh.geometry.getAttribute(dragSelectedAttributeName));
+        replacement.geometry.setAttribute(entityVisibleAttributeName, ref.mesh.geometry.getAttribute(entityVisibleAttributeName));
         ref.mesh.geometry = replacement.geometry;
         ref.mesh.material = replacementMaterial;
         ref.mesh.userData.textDisplayMaterialOwned = true;

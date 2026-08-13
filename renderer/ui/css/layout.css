@@ -26,7 +26,7 @@
 }
 
 .panel-dock.minimized > :not(.scene-resizer) {
-  display: none;
+  display: none !important;
 }
 
 .panel-dock.minimize-preview::after,
@@ -84,15 +84,40 @@
 }
 
 #player-head-atlas-scroll {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   flex: 1;
   min-height: 0;
+  gap: 12px;
   overflow: auto;
-  color: #666;
+  padding: 12px;
+  box-sizing: border-box;
+  color: #777;
   font-size: 12px;
+}
+
+#player-head-atlas-scroll span {
+  margin: auto;
 }
 
 #player-head-atlas-scroll canvas {
   display: block;
+  width: calc(100% * var(--player-head-atlas-zoom, 1));
+  height: auto;
+  flex: none;
+  margin-inline: auto;
+  border: 1px solid #45454a;
+  box-sizing: border-box;
+  background-color: #202023;
+  background-image:
+    linear-gradient(45deg, #29292d 25%, transparent 25%),
+    linear-gradient(-45deg, #29292d 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #29292d 75%),
+    linear-gradient(-45deg, transparent 75%, #29292d 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+  box-shadow: 0 2px 8px #0008;
   image-rendering: pixelated;
 }
 

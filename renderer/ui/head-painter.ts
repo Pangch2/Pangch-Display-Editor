@@ -31,6 +31,7 @@ import { isShortcutPressed, matchesShortcut } from '../controls/input/shortcuts'
 import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
 import { oklchToRgb, openColorPicker, rgbToOklch } from './color-picker';
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
+import { isSceneObjectVisible } from '../controls/scene-visibility';
 
 type Tool = 'brush' | 'bucket' | 'eraser' | 'picker' | 'stamp' | 'select';
 type LayerMode = 'auto' | 'layer' | 'base';
@@ -203,7 +204,12 @@ function getHit(event: PointerEvent, deselectOnMiss = false): PaintHit | null {
   raycaster.layers.enable(2);
   raycaster.setFromCamera(pointer, painterContext.getCamera());
   loadedObjectGroup.updateMatrixWorld(true);
-  const intersection = raycaster.intersectObject(loadedObjectGroup, true)[0];
+  const intersection = raycaster.intersectObject(loadedObjectGroup, true).find(hit => {
+    if (!(hit.object as InstancedMesh).isInstancedMesh || hit.instanceId === undefined) return true;
+    const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
+      ?.get(`${hit.object.uuid}_${hit.instanceId}`);
+    return !uuid || isSceneObjectVisible(loadedObjectGroup, uuid);
+  });
   if (!intersection) {
     if (deselectOnMiss) (loadedObjectGroup.userData.resetSelection as (() => void) | undefined)?.();
     return null;

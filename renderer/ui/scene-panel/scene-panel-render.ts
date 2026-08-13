@@ -3,6 +3,7 @@ import { isPbdeLogEnabled } from '../../load-project/pbde-log';
 import { loadedObjectGroup } from '../../load-project/upload-pbde';
 import { getLinkedMirrorUuid, getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
 import { captureSceneState, recordSceneChange } from '../../controls/undo-redo/scene-history';
+import { record } from '../../controls/undo-redo/undo-redo';
 import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';
 import { handleSceneItemPointerDown } from './scene-panel-dnd';
 import { ELLIPSIS, scenePanelState } from './scene-panel-state';
@@ -17,6 +18,22 @@ import {
     isObjectUuidGrouped,
     resolveChildObjectUuid
 } from './scene-panel-model';
+import { isSceneItemEnabled, setSceneItemEnabled } from '../../controls/scene-visibility';
+
+function bindVisibilityToggle(icon: HTMLElement, type: 'group' | 'object', id: string): void {
+    const enabled = isSceneItemEnabled(loadedObjectGroup, type, id);
+    icon.innerHTML = enabled ? '&#xE0BA;' : '&#xE0BB;';
+    icon.style.color = enabled ? '' : '#666';
+    icon.title = enabled ? '숨기기' : '보이기';
+    icon.addEventListener('pointerdown', event => event.stopPropagation());
+    icon.addEventListener('click', event => {
+        event.stopPropagation();
+        const next = !isSceneItemEnabled(loadedObjectGroup, type, id);
+        const apply = (value: boolean) => setSceneItemEnabled(loadedObjectGroup, type, id, value);
+        apply(next);
+        record({ undo: () => apply(!next), redo: () => apply(next) });
+    });
+}
 
 function getRowKey(row: ScenePanelRow): string {
     return `${row.type}:${row.id}:${row.type === 'group' && scenePanelState.expandedGroupIds.has(row.id)}`;
@@ -89,7 +106,7 @@ function makeObjectRow(row: ScenePanelRow): HTMLElement {
 
     const rightIcon = document.createElement('span');
     rightIcon.className = 'scene-icon-right';
-    rightIcon.innerHTML = '&#xE0BA;';
+    bindVisibilityToggle(rightIcon, 'object', uuid);
     el.appendChild(rightIcon);
 
     el.addEventListener('click', (e) => handleSceneItemClick(e, el));
@@ -132,7 +149,7 @@ function makeGroupRow(row: ScenePanelRow): HTMLElement {
 
     const rightIconEl = document.createElement('span');
     rightIconEl.className = 'scene-icon-right';
-    rightIconEl.innerHTML = '&#xE0BA;';
+    bindVisibilityToggle(rightIconEl, 'group', row.id);
 
     header.appendChild(toggleEl);
     header.appendChild(nameEl);

@@ -8,6 +8,7 @@ import {
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from './overlay';
+import { entityVisibleAttributeName } from '../../entity-material';
 
 // --- Types ---
 
@@ -151,6 +152,7 @@ export function pickInstance(
 ): { mesh: Mesh | InstancedMesh; instanceId: number } | null {
     const hit = raycaster.intersectObject(rootGroup, true).find(({ object, instanceId }) =>
         object instanceof InstancedMesh && instanceId !== undefined && Overlay.isInstanceValid(object, instanceId)
+        && object.geometry.getAttribute(entityVisibleAttributeName)?.getX(instanceId) !== 0
     );
     return hit ? { mesh: hit.object as InstancedMesh, instanceId: hit.instanceId! } : null;
 }
@@ -339,8 +341,9 @@ export function selectAllObjectsVisibleInScene(loadedObjectGroup: Group): Map<Me
         if (instanceCount <= 0) return;
 
         const ids = new Set<number>();
+        const visibility = mesh.geometry.getAttribute(entityVisibleAttributeName);
         for (let i = 0; i < instanceCount; i++) {
-            if (Overlay.isInstanceValid(mesh, i)) {
+            if (Overlay.isInstanceValid(mesh, i) && visibility?.getX(i) !== 0) {
                 ids.add(i);
             }
         }

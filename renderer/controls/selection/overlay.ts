@@ -29,7 +29,7 @@ import {
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import type { GroupChildObject } from '../grouping/group';
-import { dragDeltaMatrix, dragPreviewPositionNode, dragSelectedAttributeName } from '../../entity-material';
+import { dragDeltaMatrix, dragPreviewPositionNode, dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
 import { ConvexHull } from 'three/examples/jsm/math/ConvexHull.js';
 
 // --- Types & Interfaces ---
@@ -510,6 +510,7 @@ export function updateHeadPainterGridOverlay(
         if (!mesh.geometry.getAttribute('headLayerVisible')) return;
         const keyToUuid = objectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
         for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
+            if (mesh.geometry.getAttribute(entityVisibleAttributeName)?.getX(instanceId) === 0) continue;
             const uuid = keyToUuid?.get(`${mesh.uuid}_${instanceId}`);
             if (!uuid) continue;
             const showLayer = layerMode === 'layer' || (layerMode === 'auto' && !!mesh.userData.hasHat?.[instanceId]);

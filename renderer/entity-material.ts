@@ -1,4 +1,4 @@
-import { FrontSide, Matrix4, MeshBasicNodeMaterial, type Texture } from 'three/webgpu';
+import { BufferGeometry, FrontSide, InstancedInterleavedBuffer, InterleavedBufferAttribute, Matrix4, MeshBasicNodeMaterial, type Texture } from 'three/webgpu';
 import {
   uniform,
   renderGroup,
@@ -29,7 +29,21 @@ import {
 } from 'three/tsl';
 
 export const dragSelectedAttributeName = 'dragSelected';
+export const entityVisibleAttributeName = 'entityVisible';
 export const dragDeltaMatrix = new Matrix4();
+
+export function setEntityStateAttributes(geometry: BufferGeometry, count: number, visible?: ArrayLike<number>): void {
+  const oldDrag = geometry.getAttribute(dragSelectedAttributeName);
+  const oldVisible = geometry.getAttribute(entityVisibleAttributeName);
+  const values = new Float32Array(count * 2);
+  for (let index = 0; index < count; index++) {
+    values[index * 2] = oldDrag?.getX(index) ?? 0;
+    values[index * 2 + 1] = visible?.[index] ?? oldVisible?.getX(index) ?? 1;
+  }
+  const state = new InstancedInterleavedBuffer(values, 2);
+  geometry.setAttribute(dragSelectedAttributeName, new InterleavedBufferAttribute(state, 1, 0));
+  geometry.setAttribute(entityVisibleAttributeName, new InterleavedBufferAttribute(state, 1, 1));
+}
 
 const tintNodeCache = new Map<number, ReturnType<typeof vec3>>();
 const shadingEnabled = uniform(1.0);
@@ -39,6 +53,9 @@ const draggedPosition = modelWorldMatrixInverse
   .mul(modelWorldMatrix)
   .mul(vec4(positionLocal, 1.0)).xyz;
 export const dragPreviewPositionNode = mix(positionLocal, draggedPosition, attribute(dragSelectedAttributeName, 'float'));
+export const entityVisiblePositionNode = dragPreviewPositionNode.add(
+  float(1).sub(attribute(entityVisibleAttributeName, 'float')).mul(1e10)
+);
 
 const srgbToLinear = (c: number): number => {
   const x = Math.min(1, Math.max(0, c));
@@ -73,7 +90,7 @@ export function toggleShading(): boolean {
   return shadingEnabled.value === 1;
 }
 
-export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false) {
+export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
 
@@ -137,7 +154,7 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   );
 
   const material = new MeshBasicNodeMaterial();
-  material.positionNode = dragPreviewPositionNode;
+  material.positionNode = useEntityVisibility ? entityVisiblePositionNode : dragPreviewPositionNode;
   material.colorNode = mix(unlitColor, litColor, shadingEnabled);
   material.map = diffuseTex;
   material.transparent = true;
@@ -161,7 +178,7 @@ const endPortalColors = [
 
 if (import.meta.env.DEV) console.assert(endPortalColors.length === 16, 'End portal palette must keep Minecraft\'s 16 colors.');
 
-export function createEndPortalMaterial(endSkyTexture: Texture, endPortalTexture: Texture, layerCount: 15 | 16): MeshBasicNodeMaterial {
+export function createEndPortalMaterial(endSkyTexture: Texture, endPortalTexture: Texture, layerCount: 15 | 16, useEntityVisibility = false): MeshBasicNodeMaterial {
   const projectedUv = modelViewProjection.xy.div(modelViewProjection.w).mul(0.5).add(0.5);
   let portalColor = sRGBTransferOETF(texture(endSkyTexture, projectedUv).rgb).mul(vec3(...endPortalColors[0]));
 
@@ -177,7 +194,7 @@ export function createEndPortalMaterial(endSkyTexture: Texture, endPortalTexture
   }
 
   const material = new MeshBasicNodeMaterial();
-  material.positionNode = dragPreviewPositionNode;
+  material.positionNode = useEntityVisibility ? entityVisiblePositionNode : dragPreviewPositionNode;
   material.colorNode = vec4(sRGBTransferEOTF(portalColor), 1);
   material.side = FrontSide;
   material.depthWrite = true;

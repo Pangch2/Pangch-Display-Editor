@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { strFromU8 } from 'fflate';
 import { getAssetBytes } from '../asset-manager';
-import { dragPreviewPositionNode, dragSelectedAttributeName } from '../entity-material';
+import { entityVisiblePositionNode, setEntityStateAttributes } from '../entity-material';
 
 export type TextDisplayOptions = {
     color?: string;
@@ -366,7 +366,7 @@ function createTextDisplayMaterial(texture: THREE.Texture, opaqueBackground: boo
         toneMapped: false,
         fog: false
     });
-    material.positionNode = dragPreviewPositionNode;
+    material.positionNode = entityVisiblePositionNode;
     return material;
 }
 
@@ -518,7 +518,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     if (import.meta.env.DEV) {
         console.assert(positions[2] === textBackgroundOffset && positions.some((_, index) => index % 3 === 2 && positions[index] === 0), 'Text display layers must stay separated.');
     }
-    geometry.setAttribute(dragSelectedAttributeName, new THREE.InstancedBufferAttribute(new Float32Array(1), 1));
+    setEntityStateAttributes(geometry, 1);
 
     const material = createTextDisplayMaterial(texture, backgroundAlpha === 1);
     material.visible = text.length > 0;
