@@ -35,7 +35,7 @@ import { initDrag, applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState } from '../input/handle-key';
 import { isShortcutPressed } from '../input/shortcuts';
-import { captureSceneState, recordSceneChange, restoreSceneState, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
+import { captureSceneState, captureTransformState, recordSceneChange, restoreSceneState, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
 import type { DragInterface } from '../selection/drag';
 import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
@@ -1236,14 +1236,6 @@ export function initGizmo({
     transformControls.addEventListener('dragging-changed', (event: { value: boolean }) => {
         controls.enabled = !event.value;
         if (event.value) {
-            dragHistoryBefore = captureSceneState(loadedObjectGroup);
-            Overlay.prepareMultiSelectionDrag(currentSelection);
-            draggingMode = transformControls!.mode;
-            selectionTransformDirty = false;
-            _dragPreviewActive = false;
-            _dragTotalDeltaMatrix.identity();
-            dragDeltaMatrix.identity();
-
             const items = getSelectedItems();
             const meshToInstanceIds = new Map<Object3D, number[]>();
             for (const { mesh, instanceId } of items) {
@@ -1259,6 +1251,50 @@ export function initGizmo({
             for (const [mesh, instanceIds] of meshToInstanceIds) {
                 _meshToInstanceRanges.set(mesh, mergeInstanceIds(instanceIds));
             }
+
+            const needsFullHistory = isVertexMode || isPivotEditMode
+                || (transformControls!.mode === 'scale' && isSmartScaleEnabled())
+                || items.some(({ mesh }) => !(mesh as InstancedMesh).isInstancedMesh);
+            if (needsFullHistory) {
+                dragHistoryBefore = captureSceneState(loadedObjectGroup);
+            } else {
+                const affectedObjects = new Map<InstancedMesh, Set<number>>();
+                const addObject = (mesh: InstancedMesh, instanceId: number): void => {
+                    const ids = affectedObjects.get(mesh) ?? new Set<number>();
+                    ids.add(instanceId);
+                    affectedObjects.set(mesh, ids);
+                };
+                items.forEach(({ mesh, instanceId }) => addObject(mesh as InstancedMesh, instanceId));
+
+                const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
+                for (const [mesh, ids] of linked.objects) {
+                    if (!(mesh as InstancedMesh).isInstancedMesh) continue;
+                    ids.forEach(instanceId => addObject(mesh as InstancedMesh, instanceId));
+                }
+                for (const groupId of linked.groups) {
+                    GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId).forEach(({ mesh, instanceId }) => {
+                        if ((mesh as InstancedMesh).isInstancedMesh) addObject(mesh as InstancedMesh, instanceId);
+                    });
+                }
+
+                const affectedGroupIds = new Set<string>();
+                for (const groupId of [...currentSelection.groups, ...linked.groups]) {
+                    affectedGroupIds.add(groupId);
+                    GroupUtils.getAllDescendantGroups(loadedObjectGroup, groupId).forEach(id => affectedGroupIds.add(id));
+                }
+                dragHistoryBefore = captureTransformState(
+                    loadedObjectGroup,
+                    affectedObjects,
+                    affectedGroupIds
+                );
+            }
+
+            Overlay.prepareMultiSelectionDrag(currentSelection);
+            draggingMode = transformControls!.mode;
+            selectionTransformDirty = false;
+            _dragPreviewActive = false;
+            _dragTotalDeltaMatrix.identity();
+            dragDeltaMatrix.identity();
 
             if (transformControls!.axis === 'XYZ') isUniformScale = true;
 

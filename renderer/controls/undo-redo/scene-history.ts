@@ -13,6 +13,7 @@ import {
 } from 'three/webgpu';
 
 import { record } from './undo-redo.js';
+import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 
 interface HistorySelection {
@@ -78,6 +79,26 @@ interface ObjectSnapshot {
     attributes: AttributeSnapshot[];
 }
 
+interface TransformObjectSnapshot {
+    mesh: InstancedMesh;
+    instanceIds: number[];
+    matrices: Float32Array;
+}
+
+interface TransformGroupSnapshot {
+    id: string;
+    position?: Vector3;
+    quaternion?: Quaternion;
+    scale?: Vector3;
+    matrix?: Matrix4;
+    pivot?: Vector3;
+}
+
+interface TransformSnapshot {
+    objects: TransformObjectSnapshot[];
+    groups: TransformGroupSnapshot[];
+}
+
 export interface SceneSnapshot {
     children: Object3D[];
     objects: ObjectSnapshot[];
@@ -85,6 +106,7 @@ export interface SceneSnapshot {
     selection: HistorySelection | null;
     gizmo: HistoryGizmoState | null;
     metadataOnly: boolean;
+    transform?: TransformSnapshot;
 }
 
 function captureSelection(): HistorySelection | null {
@@ -177,6 +199,85 @@ function captureObject(object: Object3D): ObjectSnapshot {
     };
 }
 
+function captureTransformObject(mesh: InstancedMesh, instanceIds: Iterable<number>): TransformObjectSnapshot {
+    const ids = [...new Set(instanceIds)].filter(id => id >= 0 && id < mesh.count).sort((a, b) => a - b);
+    const matrices = new Float32Array(ids.length * 16);
+    const matrix = new Matrix4();
+    ids.forEach((instanceId, index) => {
+        mesh.getMatrixAt(instanceId, matrix);
+        matrix.toArray(matrices, index * 16);
+    });
+    return { mesh, instanceIds: ids, matrices };
+}
+
+function captureTransformGroup(group: GroupData): TransformGroupSnapshot {
+    return {
+        id: group.id,
+        position: group.position?.clone(),
+        quaternion: group.quaternion?.clone(),
+        scale: group.scale?.clone(),
+        matrix: group.matrix?.clone(),
+        pivot: group.pivot?.clone()
+    };
+}
+
+export function captureTransformState(
+    root: Group,
+    meshToInstanceIds: Map<InstancedMesh, Iterable<number>>,
+    groupIds: Iterable<string>
+): SceneSnapshot {
+    const groups = root.userData.groups as Map<string, GroupData> | undefined;
+    return {
+        children: [],
+        objects: [],
+        userData: {},
+        selection: captureSelection(),
+        gizmo: captureGizmoState ? cloneValue(captureGizmoState()) : null,
+        metadataOnly: false,
+        transform: {
+            objects: Array.from(meshToInstanceIds, ([mesh, instanceIds]) => captureTransformObject(mesh, instanceIds)),
+            groups: Array.from(new Set(groupIds), id => groups?.get(id)).filter((group): group is GroupData => !!group).map(captureTransformGroup)
+        }
+    };
+}
+
+function restoreTransformState(root: Group, transform: TransformSnapshot): void {
+    const matrix = new Matrix4();
+    for (const state of transform.objects) {
+        state.instanceIds.forEach((instanceId, index) => {
+            matrix.fromArray(state.matrices, index * 16);
+            state.mesh.setMatrixAt(instanceId, matrix);
+            state.mesh.instanceMatrix.addUpdateRange(instanceId * 16, 16);
+        });
+        state.mesh.instanceMatrix.needsUpdate = true;
+        state.mesh.boundingBox = null;
+        state.mesh.boundingSphere = null;
+    }
+    const groups = root.userData.groups as Map<string, GroupData> | undefined;
+    for (const state of transform.groups) {
+        const group = groups?.get(state.id) as Partial<GroupData> | undefined;
+        if (!group) continue;
+        group.position = state.position?.clone();
+        group.quaternion = state.quaternion?.clone();
+        group.scale = state.scale?.clone();
+        group.matrix = state.matrix?.clone();
+        group.pivot = state.pivot?.clone();
+    }
+}
+
+if (import.meta.env.DEV) {
+    const mesh = new InstancedMesh(new BufferGeometry(), undefined!, 2);
+    mesh.setMatrixAt(0, new Matrix4().makeTranslation(1, 0, 0));
+    mesh.setMatrixAt(1, new Matrix4().makeTranslation(2, 0, 0));
+    const selectedOnly = captureTransformObject(mesh, [0]);
+    mesh.setMatrixAt(0, new Matrix4().makeTranslation(3, 0, 0));
+    mesh.setMatrixAt(1, new Matrix4().makeTranslation(4, 0, 0));
+    restoreTransformState(new Group(), { objects: [selectedOnly], groups: [] });
+    const restored = mesh.getMatrixAt(0, new Matrix4());
+    const untouched = mesh.getMatrixAt(1, new Matrix4());
+    console.assert(restored.elements[12] === 1 && untouched.elements[12] === 4, 'Transform history must restore only selected instances.');
+}
+
 export function captureSceneState(root: Group, metadataOnly = false): SceneSnapshot {
     const objects: ObjectSnapshot[] = [];
     if (!metadataOnly) root.traverse(object => { if (object !== root) objects.push(captureObject(object)); });
@@ -191,7 +292,9 @@ export function captureSceneState(root: Group, metadataOnly = false): SceneSnaps
 }
 
 export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
-    if (!snapshot.metadataOnly) {
+    if (snapshot.transform) {
+        restoreTransformState(root, snapshot.transform);
+    } else if (!snapshot.metadataOnly) {
         root.clear();
         snapshot.objects.forEach(state => state.object.clear());
         snapshot.objects.forEach(state => state.children.forEach(child => state.object.add(child)));
@@ -221,7 +324,7 @@ export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
             }
         }
     }
-    root.userData = cloneValue(snapshot.userData);
+    if (!snapshot.transform) root.userData = cloneValue(snapshot.userData);
     if (currentSelection && snapshot.selection) {
         currentSelection.groups = new Set(snapshot.selection.groups);
         currentSelection.objects = new Map(Array.from(snapshot.selection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
@@ -232,7 +335,13 @@ export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
 }
 
 export function recordSceneChange(root: Group, before: SceneSnapshot): void {
-    const after = captureSceneState(root, before.metadataOnly);
+    const after = before.transform
+        ? captureTransformState(
+            root,
+            new Map(before.transform.objects.map(state => [state.mesh, state.instanceIds])),
+            before.transform.groups.map(state => state.id)
+        )
+        : captureSceneState(root, before.metadataOnly);
     if (import.meta.env.DEV && before.metadataOnly) console.assert(
         before.objects.length === 0 && after.objects.length === 0,
         'Metadata-only history must not copy scene objects.'

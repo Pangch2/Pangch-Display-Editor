@@ -1390,7 +1390,7 @@ function parseItemName(raw) {
         }
     }
 
-    return { baseName, displayType: displayType === 'none' ? null : displayType };
+    return { baseName, displayType: displayType && itemDisplayTypes.includes(displayType) ? displayType : null };
 }
 
 function parseItemNameCached(raw: string): { baseName: string; displayType: string | null } {
