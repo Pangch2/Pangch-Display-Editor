@@ -490,6 +490,7 @@ export function updateHeadPainterGridOverlay(
     objectGroup: Group,
     enabled: boolean,
     layerMode: 'auto' | 'layer' | 'base',
+    color: number,
     getFaceGridCounts: (objectUuid: string, face: number, worldMatrix: Matrix4) => [number, number],
     getGridBoundary: (index: number, count: number) => number
 ): void {
@@ -551,13 +552,14 @@ export function updateHeadPainterGridOverlay(
         const geometry = new BufferGeometry();
         geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
         if (!headPainterGridOverlay) {
-            headPainterGridOverlay = new LineSegments(geometry, new LineBasicNodeMaterial({ color: 0x70c7ff, transparent: true, opacity: 0.9, depthTest: true, depthWrite: false }));
+            headPainterGridOverlay = new LineSegments(geometry, new LineBasicNodeMaterial({ color, transparent: true, opacity: 0.9, depthTest: true, depthWrite: false }));
             headPainterGridOverlay.name = 'head-painter-grid';
             headPainterGridOverlay.renderOrder = 1000;
             scene.add(headPainterGridOverlay);
         } else {
             headPainterGridOverlay.geometry.dispose();
             headPainterGridOverlay.geometry = geometry;
+            (headPainterGridOverlay.material as LineBasicNodeMaterial).color.setHex(color);
         }
     } else {
         removeHeadPainterGridOverlay();

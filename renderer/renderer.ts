@@ -39,11 +39,15 @@ let renderer: WebGPURenderer;
 let controls: OrbitControls;
 let viewHelper: ViewHelper;
 let floorGrid: Group;
+let coordinateAxes: Group;
 let zSymbol: Group;
 let viewHelperWasAnimating = false;
 let cameraTypeBeforeViewHelper: 'perspective' | 'orthographic' | null = null;
 let perspectiveDistanceBeforeOrthographic: number | null = null;
 let cameraFov = Math.min(120, Math.max(20, Number(localStorage.getItem('pdeCameraFov')) || 80));
+let gridHeight = Number(localStorage.getItem('pdeGridHeight'));
+if (!Number.isFinite(gridHeight)) gridHeight = 0;
+let gridAxesVisible = localStorage.getItem('pdeGridAxesVisible') !== 'false';
 let gizmoModule: InitGizmoResult | null = null;
 type GpuQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike } } };
@@ -131,6 +135,18 @@ window.addEventListener('pde:render-scale-changed', (event: Event) => {
     if (!renderer) return;
     renderer.setPixelRatio(Number((event as CustomEvent<number>).detail) || 1);
     onWindowResize();
+});
+
+window.addEventListener('pde:grid-height-changed', (event: Event) => {
+    gridHeight = Number((event as CustomEvent<number>).detail);
+    if (floorGrid) floorGrid.position.y = gridHeight;
+    if (coordinateAxes) coordinateAxes.position.y = gridHeight;
+});
+
+window.addEventListener('pde:grid-axes-visibility-changed', (event: Event) => {
+    gridAxesVisible = (event as CustomEvent<boolean>).detail;
+    if (floorGrid) floorGrid.visible = gridAxesVisible;
+    if (coordinateAxes) coordinateAxes.visible = gridAxesVisible;
 });
 
 window.addEventListener('pde:camera-type-changed', (event: Event) => {
@@ -633,9 +649,11 @@ async function initScene(): Promise<void> {
     });
 
     // 8. 헬퍼(Helper)
-    const axes = createFullAxesHelper(150);
-    axes.renderOrder = 1;
-    scene.add(axes);
+    coordinateAxes = createFullAxesHelper(150);
+    coordinateAxes.renderOrder = 1;
+    coordinateAxes.position.y = gridHeight;
+    coordinateAxes.visible = gridAxesVisible;
+    scene.add(coordinateAxes);
 
     const detailGrid = new GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
     detailGrid.renderOrder = -2; 
@@ -646,6 +664,8 @@ async function initScene(): Promise<void> {
     zSymbol.renderOrder = 10;
     floorGrid = new Group();
     floorGrid.add(detailGrid, Grid, zSymbol);
+    floorGrid.position.y = gridHeight;
+    floorGrid.visible = gridAxesVisible;
     scene.add(floorGrid);
     
     [detailGrid, Grid].forEach(helper => {

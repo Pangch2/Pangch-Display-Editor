@@ -137,6 +137,7 @@ for (const side of ['left', 'right'] as DockSide[]) {
 document.querySelectorAll<HTMLElement>('#player-head-atlas-header, #scene-panel-header, #project-details-header').forEach(header => {
     header.addEventListener('dragstart', event => {
         const panel = header.parentElement!;
+        if (panel.classList.contains('head-painter-mode')) return;
         draggedPanelId = panel.id as PanelId;
         event.dataTransfer?.setData('text/pde-panel', panel.id);
         if (event.dataTransfer) {

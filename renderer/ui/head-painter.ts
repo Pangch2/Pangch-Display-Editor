@@ -75,6 +75,21 @@ const toolLabels: Record<Tool, string> = { brush: '브러시', bucket: '양동�
 const brushOrderKey = 'pdeHeadPainterBrushOrder';
 const paletteOrderKey = 'pdeHeadPainterPaletteOrder';
 const sectionOrderKey = 'pdeHeadPainterSectionOrder';
+const gridColorKey = 'pdeHeadPainterGridColor';
+const panelOrderKey = 'pdeHeadPainterPanelOrder';
+type PainterPanelId = 'painter' | 'details';
+const painterPanelIds: PainterPanelId[] = ['painter', 'details'];
+let painterPanelOrder = [...painterPanelIds];
+
+const isPainterPanelOrder = (value: unknown): value is PainterPanelId[] => Array.isArray(value)
+  && value.length === painterPanelIds.length
+  && painterPanelIds.every(id => value.includes(id));
+try {
+  const savedOrder: unknown = JSON.parse(localStorage.getItem(panelOrderKey) ?? 'null');
+  if (isPainterPanelOrder(savedOrder)) painterPanelOrder = savedOrder;
+} catch {
+  // Ignore invalid saved order.
+}
 const sectionIds = ['grid', 'brush', 'palette'] as const;
 const gridOverrides = new Map<string, Partial<{ horizontal: number; vertical: number }>>();
 const raycaster = new Raycaster();
@@ -88,6 +103,7 @@ let gridHorizontal = 8;
 let gridVertical = 8;
 let gridEnabled = true;
 let smartGrid = true;
+let gridColor: [number, number, number] = [112, 199, 255];
 let brushWidth = 1;
 let brushHeight = 1;
 let brushStrength = 100;
@@ -132,12 +148,13 @@ let brushRedo: BrushAsset[] = [];
 const clampByte = (value: number): number => Math.round(Math.min(255, Math.max(0, value)));
 const clampGrid = (value: number): number => Math.round(Math.min(8, Math.max(0, Number.isFinite(value) ? value : 0)));
 const cloneRgba = (color: Rgba): Rgba => [...color] as Rgba;
+const formatHexColor = (color: readonly number[]): string => `#${color.slice(0, 3).map(channel => channel.toString(16).padStart(2, '0')).join('').toUpperCase()}`;
 const colorForLayer = (color: Rgba, layer: number): Rgba => layer ? color : [color[0], color[1], color[2], 255];
 const cloneImage = (image: ImageData): ImageData => new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
 const rgbaEqual = (a: Rgba | null, b: Rgba | null): boolean => !!a === !!b && (!a || !b || a.every((value, index) => value === b[index]));
 
 function formatColor(color: Rgba): string {
-  if (colorMode === 'rgb') return `#${color.slice(0, 3).map(channel => channel.toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+  if (colorMode === 'rgb') return formatHexColor(color);
   const [lightness, chroma, hue] = rgbToOklch(color.slice(0, 3) as [number, number, number]);
   return `oklch(${lightness.toFixed(3)} ${chroma.toFixed(3)} ${hue.toFixed(1)})`;
 }
@@ -149,6 +166,9 @@ function parseColor(value: string, alpha: number): Rgba | null {
   if (!match) return null;
   return [...oklchToRgb([Number(match[1]) / (match[2] ? 100 : 1), Number(match[3]), Number(match[4])]), clampByte(alpha)];
 }
+
+const cachedGridColor = parseColor(localStorage.getItem(gridColorKey) ?? '', 255);
+if (cachedGridColor) gridColor = cachedGridColor.slice(0, 3) as [number, number, number];
 
 function interpolateColor(a: Rgba, b: Rgba, amount: number): Rgba {
   const first = rgbToOklch(a.slice(0, 3) as [number, number, number]);
@@ -662,7 +682,15 @@ function getFaceGridCounts(objectUuid: string, face: number, worldMatrix: Matrix
 
 export function updateHeadPainter(): void {
   if (!active || !painterContext) return;
-  updateHeadPainterGridOverlay(painterContext.scene, loadedObjectGroup, gridEnabled, layerMode, getFaceGridCounts, gridBoundary);
+  updateHeadPainterGridOverlay(
+    painterContext.scene,
+    loadedObjectGroup,
+    gridEnabled,
+    layerMode,
+    (gridColor[0] << 16) | (gridColor[1] << 8) | gridColor[2],
+    getFaceGridCounts,
+    gridBoundary
+  );
 }
 
 export function getHeadGridValue(objectUuid: string, axis: 'horizontal' | 'vertical'): number {
@@ -731,7 +759,7 @@ function syncColorControls(): void {
   const alphaRange = root.querySelector<HTMLInputElement>('#head-painter-alpha-range')!;
   input.value = formatColor(currentColor);
   alpha.value = alphaRange.value = String(currentColor[3]);
-  root.querySelector<HTMLElement>('.head-painter-color-preview')!.style.background = `rgb(${currentColor[0]} ${currentColor[1]} ${currentColor[2]})`;
+  root.querySelector<HTMLElement>('#head-painter-palette-color-picker')!.style.background = `rgb(${currentColor[0]} ${currentColor[1]} ${currentColor[2]})`;
 }
 
 function bindRangePair(id: string, minimum: number, maximum: number, setValue: (value: number) => void): void {
@@ -1280,7 +1308,7 @@ async function loadPainterAssets(): Promise<void> {
 
 function openPainterColorPicker(): void {
   if (!root) return;
-  const target = root.querySelector<HTMLElement>('.head-painter-color-preview')!;
+  const target = root.querySelector<HTMLElement>('#head-painter-palette-color-picker')!;
   openColorPicker(target, currentColor.slice(0, 3) as [number, number, number], color => setCurrentColor([...color, currentColor[3]], true), {
     oklch: colorMode === 'oklch',
     onOklchChange: enabled => {
@@ -1419,6 +1447,110 @@ function initSectionReordering(): void {
   if (import.meta.env.DEV) console.assert(isCompleteOrder([...sectionIds]) && !isCompleteOrder(['grid']), 'Head Painter section order validation failed.');
 }
 
+function renderPainterPanelOrder(order = painterPanelOrder): void {
+  const details = document.getElementById('project-details')!;
+  const groups: Record<PainterPanelId, HTMLElement[]> = {
+    painter: [document.getElementById('project-details-header')!, root!],
+    details: [
+      document.getElementById('head-painter-project-details-header')!,
+      document.getElementById('project-properties')!,
+      document.getElementById('multi-selection-pivot')!,
+      document.getElementById('object-properties')!
+    ]
+  };
+  details.append(...order.flatMap(id => groups[id]));
+}
+
+function initPainterPanelReordering(): void {
+  const details = document.getElementById('project-details')!;
+  const headers: Record<PainterPanelId, HTMLElement> = {
+    painter: document.getElementById('project-details-header')!,
+    details: document.getElementById('head-painter-project-details-header')!
+  };
+  const clearPreview = () => Object.values(headers).forEach(header => header.classList.remove('head-painter-panel-drop-target'));
+  const panelAt = (target: EventTarget | null): PainterPanelId | null => {
+    if (!(target instanceof Node)) return null;
+    if (headers.painter.contains(target) || root!.contains(target)) return 'painter';
+    return details.contains(target) ? 'details' : null;
+  };
+
+  for (const [id, header] of Object.entries(headers) as [PainterPanelId, HTMLElement][]) {
+    header.addEventListener('pointerdown', event => {
+      if (!active || !event.isPrimary || event.button !== 0 || (event.target instanceof Element && event.target.closest('#project-tabs'))) return;
+      const pointerId = event.pointerId;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let clientX = startX;
+      let clientY = startY;
+      let dragging = false;
+      let dropTarget: PainterPanelId | null = null;
+      let dragPreview: HTMLElement | null = null;
+      const positionDragPreview = () => {
+        if (!dragPreview) return;
+        dragPreview.style.left = `${Math.min(clientX + 12, window.innerWidth - dragPreview.offsetWidth - 8)}px`;
+        dragPreview.style.top = `${Math.min(clientY + 12, window.innerHeight - dragPreview.offsetHeight - 8)}px`;
+      };
+      const updatePreview = () => {
+        clearPreview();
+        const target = panelAt(document.elementFromPoint(clientX, clientY));
+        dropTarget = target === id ? null : target;
+        if (dropTarget) headers[dropTarget].classList.add('head-painter-panel-drop-target');
+      };
+      const cleanup = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', stop);
+        window.removeEventListener('pointercancel', cancel);
+        window.removeEventListener('keydown', cancelWithEscape);
+        details.removeEventListener('scroll', updatePreview);
+        if (header.hasPointerCapture(pointerId)) header.releasePointerCapture(pointerId);
+        dragPreview?.remove();
+        dragPreview = null;
+        clearPreview();
+      };
+      const move = (moveEvent: PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        clientX = moveEvent.clientX;
+        clientY = moveEvent.clientY;
+        if (!dragging) {
+          if (Math.hypot(clientX - startX, clientY - startY) < 4) return;
+          dragging = true;
+          header.setPointerCapture(pointerId);
+          details.addEventListener('scroll', updatePreview, { passive: true });
+          dragPreview = document.createElement('div');
+          dragPreview.className = 'head-painter-section-drag-preview';
+          dragPreview.textContent = header.querySelector(':scope > span')?.textContent?.trim() ?? '';
+          document.body.append(dragPreview);
+        }
+        moveEvent.preventDefault();
+        positionDragPreview();
+        updatePreview();
+      };
+      const stop = (upEvent: PointerEvent) => {
+        if (upEvent.pointerId !== pointerId) return;
+        if (dragging && dropTarget) {
+          painterPanelOrder = [dropTarget, id];
+          localStorage.setItem(panelOrderKey, JSON.stringify(painterPanelOrder));
+          renderPainterPanelOrder();
+        }
+        cleanup();
+      };
+      const cancel = (cancelEvent: PointerEvent) => {
+        if (cancelEvent.pointerId === pointerId) cleanup();
+      };
+      const cancelWithEscape = (keyEvent: KeyboardEvent) => {
+        if (keyEvent.key !== 'Escape') return;
+        keyEvent.preventDefault();
+        cleanup();
+      };
+      window.addEventListener('pointermove', move, { passive: false });
+      window.addEventListener('pointerup', stop);
+      window.addEventListener('pointercancel', cancel);
+      window.addEventListener('keydown', cancelWithEscape);
+    });
+  }
+  if (import.meta.env.DEV) console.assert(isPainterPanelOrder([...painterPanelIds]) && !isPainterPanelOrder(['painter']), 'Head Painter panel order validation failed.');
+}
+
 function createPanel(): void {
   root = document.createElement('section');
   root.className = 'head-painter-panel';
@@ -1432,6 +1564,7 @@ function createPanel(): void {
       <legend>레이어와 그리드</legend>
       <label>2번 레이어 <select id="head-painter-layer"><option value="auto">기본</option><option value="layer">켜기</option><option value="base">끄기</option></select></label>
       <div class="head-painter-inline"><label>가로 <input id="head-painter-grid-horizontal" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-grid-vertical" type="number" min="0" max="8" value="8"></label></div>
+      <label>그리드 색상 <span class="head-painter-brush-color"><button id="head-painter-grid-color-picker" class="head-painter-color-preview" type="button" aria-label="그리드 색상 선택"></button><input id="head-painter-grid-color" value="#70C7FF" aria-label="그리드 색상 코드"></span></label>
       <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label><label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label></div>
     </fieldset>
     </div>
@@ -1464,15 +1597,16 @@ function createPanel(): void {
     <div class="head-painter-section" data-head-painter-section="palette">
     <fieldset class="head-painter-color-area">
       <legend>팔레트</legend>
-      <div class="head-painter-color-row"><button class="head-painter-color-preview" type="button" aria-label="색상 선택"></button><select id="head-painter-color-mode"><option value="rgb">일반</option><option value="oklch">OKLCH</option></select><input id="head-painter-color" value="#000000"></div>
+      <div class="head-painter-color-row"><button id="head-painter-palette-color-picker" class="head-painter-color-preview" type="button" aria-label="색상 선택"></button><select id="head-painter-color-mode"><option value="rgb">일반</option><option value="oklch">OKLCH</option></select><input id="head-painter-color" value="#000000"></div>
       <label>알파 <span class="head-painter-range"><input id="head-painter-alpha-range" type="range" min="0" max="255" value="255"><input id="head-painter-alpha" type="number" min="0" max="255" value="255"></span></label>
       <div class="head-painter-palette"></div>
       <div class="head-painter-palette-actions"><button type="button" data-sort>색 정렬</button><button type="button" data-clear>지우기</button></div>
       <div class="head-painter-preset"><button class="head-painter-preset-button" type="button">팔레트 목록</button><div class="head-painter-preset-menu" hidden></div></div>
     </fieldset>
     </div>`;
-  document.getElementById('project-details')!.append(root);
+  document.getElementById('head-painter-project-details-header')!.before(root);
   initSectionReordering();
+  initPainterPanelReordering();
   createBrushEditor();
 
   root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.onclick = () => setTool(button.dataset.tool as Tool));
@@ -1494,6 +1628,24 @@ function createPanel(): void {
     gridVertical = clampGrid(Number((event.target as HTMLInputElement).value));
     (event.target as HTMLInputElement).value = String(gridVertical);
     invalidateHeadPainterGridOverlay();
+  };
+  const gridColorPicker = root.querySelector<HTMLButtonElement>('#head-painter-grid-color-picker')!;
+  const gridColorInput = root.querySelector<HTMLInputElement>('#head-painter-grid-color')!;
+  const syncGridColor = () => {
+    gridColorPicker.style.background = `rgb(${gridColor.join(' ')})`;
+    gridColorInput.value = formatHexColor(gridColor);
+    localStorage.setItem(gridColorKey, gridColorInput.value);
+    invalidateHeadPainterGridOverlay();
+  };
+  syncGridColor();
+  gridColorPicker.onclick = () => openColorPicker(gridColorPicker, gridColor, color => {
+    gridColor = color;
+    syncGridColor();
+  });
+  gridColorInput.onchange = () => {
+    const color = parseColor(gridColorInput.value, 255);
+    if (color) gridColor = color.slice(0, 3) as [number, number, number];
+    syncGridColor();
   };
   root.querySelector<HTMLInputElement>('#head-painter-grid')!.onchange = event => { gridEnabled = (event.target as HTMLInputElement).checked; invalidateHeadPainterGridOverlay(); };
   root.querySelector<HTMLInputElement>('#head-painter-smart-grid')!.onchange = event => { smartGrid = (event.target as HTMLInputElement).checked; invalidateHeadPainterGridOverlay(); };
@@ -1525,7 +1677,7 @@ function createPanel(): void {
     syncColorControls();
   };
   const colorInput = root.querySelector<HTMLInputElement>('#head-painter-color')!;
-  const colorPicker = root.querySelector<HTMLElement>('.head-painter-color-preview')!;
+  const colorPicker = root.querySelector<HTMLElement>('#head-painter-palette-color-picker')!;
   const alphaInput = root.querySelector<HTMLInputElement>('#head-painter-alpha')!;
   const alphaRange = root.querySelector<HTMLInputElement>('#head-painter-alpha-range')!;
   const updateColor = (writePalette: boolean) => {
@@ -1584,6 +1736,7 @@ export function setHeadPainterEnabled(enabled: boolean): void {
   if (!root) createPanel();
   const details = document.getElementById('project-details')!;
   const tabs = document.getElementById('project-tabs')!;
+  document.getElementById('project-details-header')!.draggable = !enabled;
   const toolbarButton = document.querySelectorAll<HTMLElement>('#scene-toolbar i')[4];
   toolbarButton?.classList.toggle('head-painter-active', enabled);
   toolbarButton?.setAttribute('aria-pressed', String(enabled));
@@ -1596,12 +1749,16 @@ export function setHeadPainterEnabled(enabled: boolean): void {
   loadedObjectGroup.userData.headPainterActive = enabled;
   if (enabled) {
     (loadedObjectGroup.userData.resetSelection as (() => void) | undefined)?.();
-    tabs.hidden = true;
+    document.getElementById('head-painter-project-details-header')!.append(tabs);
+    renderPainterPanelOrder();
+    tabs.hidden = false;
     syncPanelTitle();
     setPlayerHeadLayerVisible(layerMode !== 'base');
     invalidateHeadPainterGridOverlay();
     updateHeadPainter();
   } else {
+    document.getElementById('project-details-header')!.append(tabs);
+    renderPainterPanelOrder(painterPanelIds);
     endPaintPointer();
     setAltPicking(false);
     setPlayerHeadLayerVisible(true);

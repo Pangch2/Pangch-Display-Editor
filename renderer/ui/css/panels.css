@@ -9,14 +9,16 @@
   overflow: hidden;
 }
 
-#project-details-header {
+#project-details-header,
+#head-painter-project-details-header {
   display: flex;
   align-items: center;
   gap: 8px;
   overflow: visible;
 }
 
-#project-details-header > span {
+#project-details-header > span,
+#head-painter-project-details-header > span {
   flex-shrink: 0;
   overflow: hidden;
   text-overflow: ellipsis;

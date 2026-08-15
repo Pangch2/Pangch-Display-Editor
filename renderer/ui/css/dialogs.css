@@ -282,12 +282,28 @@
   font-size: 13px;
 }
 
+.settings-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-row-toggle input[type='text'] {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e1e;
+}
+
 #scene-object-types {
   margin-top: 0.5em;
 }
 
 .settings-row select,
-.settings-row input[type='number'] {
+.settings-row input[type='number'],
+.settings-row > input[type='text'] {
   min-width: 0;
   padding: 6px 8px;
   border: 1px solid #45454a;
