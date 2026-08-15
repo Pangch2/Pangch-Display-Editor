@@ -20,6 +20,7 @@ import {
 } from '../load-project/mesh-builder';
 import { currentSelection } from '../controls/selection/select';
 import {
+  getHeadPainterFaceAxes,
   invalidateHeadPainterGridOverlay,
   removeHeadPainterStampPreview,
   removeHeadPainterGridOverlay,
@@ -323,17 +324,7 @@ function adjacentBrushHit(hit: PaintHit, x: number, y: number): PaintHit | null 
   if (!paintAdjacentHeads || !painterContext) return null;
 
   const scale = hit.layer ? 1.0625 : 1;
-  const half = scale / 2;
-  const bottom = -0.5 - half;
-  const top = -0.5 + half;
-  const [origin, horizontalAxis, verticalAxis] = [
-    [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)],
-    [new Vector3(half, bottom, half), new Vector3(0, 0, -scale), new Vector3(0, scale, 0)],
-    [new Vector3(-half, top, half), new Vector3(scale, 0, 0), new Vector3(0, 0, -scale)],
-    [new Vector3(-half, bottom, -half), new Vector3(scale, 0, 0), new Vector3(0, 0, scale)],
-    [new Vector3(-half, bottom, half), new Vector3(scale, 0, 0), new Vector3(0, scale, 0)],
-    [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, scale, 0)]
-  ][hit.face];
+  const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(hit.face, scale);
   const horizontal = gridCellCenter(x, hit.columns);
   const vertical = 1 - gridCellCenter(y, hit.rows);
   pointer.copy(origin.clone()
@@ -346,38 +337,43 @@ function adjacentBrushHit(hit: PaintHit, x: number, y: number): PaintHit | null 
   return adjacentHit?.surface.objectUuid === hit.surface.objectUuid ? null : adjacentHit;
 }
 
-function stampBrush(hit: PaintHit): void {
-  const touched = new Set<WorkSurface>();
+function centeredOffsets(width: number, height: number): Array<{ index: number; x: number; y: number }> {
+  return Array.from({ length: width * height }, (_, index) => ({
+    index,
+    x: index % width - Math.floor(width / 2),
+    y: Math.floor(index / width) - Math.floor(height / 2)
+  }));
+}
+
+function getBrushPaints(hit: PaintHit): Array<{ hit: PaintHit; source: Rgba; coverage: number }> {
   const custom = brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
   const width = custom?.width ?? brushWidth;
   const height = custom?.height ?? brushHeight;
-  const startX = -Math.floor(width / 2);
-  const startY = -Math.floor(height / 2);
-  for (let row = 0; row < height; row++) {
-    for (let column = 0; column < width; column++) {
-      const x = hit.x + startX + column;
-      const y = hit.y + startY + row;
-      const target = adjacentBrushHit(hit, x, y);
-      if (!target) continue;
-      const source = custom ? custom.pixels[row * width + column] : currentColor;
-      if (!source) continue;
-      const coverage = custom ? (custom.strength ?? 100) / 100 : brushCoverage(
-        startX + column + (width % 2 === 0 ? 0.5 : 0),
-        startY + row + (height % 2 === 0 ? 0.5 : 0),
-        width,
-        height,
-        100,
-        brushShape === 'circle'
-      ) * brushStrength / 100;
-      if (coverage <= 0) continue;
-      const work = getWork(target);
-      const part = facePartIndexes[target.face] + target.layer * 6;
-      touched.add(work);
-      forEachGridPixel(target.columns, target.rows, target.x, target.y, (pixelX, pixelY) => {
-        const next = colorForLayer(overwrite && coverage === 1 ? source : sourceOver(readPixel(work.image, part, pixelX, pixelY), source, coverage), target.layer);
-        work.changed = writePixel(work.image, part, pixelX, pixelY, next) || work.changed;
-      });
-    }
+  return centeredOffsets(width, height).flatMap(({ index, x, y }) => {
+    const target = adjacentBrushHit(hit, hit.x + x, hit.y + y);
+    const source = custom ? custom.pixels[index] : currentColor;
+    const coverage = custom ? (custom.strength ?? 100) / 100 : brushCoverage(
+      x + (width % 2 === 0 ? 0.5 : 0),
+      y + (height % 2 === 0 ? 0.5 : 0),
+      width,
+      height,
+      100,
+      brushShape === 'circle'
+    ) * brushStrength / 100;
+    return target && source && coverage > 0 ? [{ hit: target, source, coverage }] : [];
+  });
+}
+
+function stampBrush(hit: PaintHit): void {
+  const touched = new Set<WorkSurface>();
+  for (const { hit: target, source, coverage } of getBrushPaints(hit)) {
+    const work = getWork(target);
+    const part = facePartIndexes[target.face] + target.layer * 6;
+    touched.add(work);
+    forEachGridPixel(target.columns, target.rows, target.x, target.y, (pixelX, pixelY) => {
+      const next = colorForLayer(overwrite && coverage === 1 ? source : sourceOver(readPixel(work.image, part, pixelX, pixelY), source, coverage), target.layer);
+      work.changed = writePixel(work.image, part, pixelX, pixelY, next) || work.changed;
+    });
   }
   touched.forEach(flushWork);
 }
@@ -489,11 +485,9 @@ function fillAt(hit: PaintHit): void {
 function copyStamp(hit: PaintHit): void {
   const image = hit.surface.context.getImageData(hit.surface.x, hit.surface.y, blockWidth, blockHeight);
   const part = facePartIndexes[hit.face] + hit.layer * 6;
-  const startX = hit.x - Math.floor(stampWidth / 2);
-  const startY = hit.y - Math.floor(stampHeight / 2);
-  stampPixels = Array.from({ length: stampWidth * stampHeight }, (_, index) => {
-    const x = startX + index % stampWidth;
-    const y = startY + Math.floor(index / stampWidth);
+  stampPixels = centeredOffsets(stampWidth, stampHeight).map(({ x: offsetX, y: offsetY }) => {
+    const x = hit.x + offsetX;
+    const y = hit.y + offsetY;
     return x < 0 || x >= hit.columns || y < 0 || y >= hit.rows
       ? null
       : readPixel(image, part, gridCellPixel(x, hit.columns), gridCellPixel(y, hit.rows));
@@ -501,17 +495,22 @@ function copyStamp(hit: PaintHit): void {
   syncStampInputs();
 }
 
+function getStampCells(hit: PaintHit, includeEmpty: boolean): Array<{ hit: PaintHit; index: number }> {
+  return centeredOffsets(stampWidth, stampHeight).flatMap(({ index, x, y }) => {
+    const target = { ...hit, x: hit.x + x, y: hit.y + y };
+    return (includeEmpty || stampPixels[index])
+      && target.x >= 0 && target.x < target.columns && target.y >= 0 && target.y < target.rows
+      ? [{ hit: target, index }]
+      : [];
+  });
+}
+
 function placeStamp(hit: PaintHit): void {
   const work = getWork(hit);
   const part = facePartIndexes[hit.face] + hit.layer * 6;
-  const startX = hit.x - Math.floor(stampWidth / 2);
-  const startY = hit.y - Math.floor(stampHeight / 2);
-  stampPixels.forEach((color, index) => {
-    if (!color) return;
-    const x = startX + index % stampWidth;
-    const y = startY + Math.floor(index / stampWidth);
-    if (x < 0 || x >= hit.columns || y < 0 || y >= hit.rows) return;
-    forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
+  getStampCells(hit, false).forEach(({ hit: target, index }) => {
+    const color = stampPixels[index]!;
+    forEachGridPixel(target.columns, target.rows, target.x, target.y, (pixelX, pixelY) => {
       work.changed = writePixel(work.image, part, pixelX, pixelY, colorForLayer(color, hit.layer)) || work.changed;
     });
   });
@@ -645,10 +644,11 @@ function onPointerMove(event: PointerEvent): void {
   }
   const hit = getHit(event);
   if (lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp') && hit) {
-    updateHeadPainterStampPreview(painterContext.scene, hit, stampWidth, stampHeight, gridBoundary);
+    updateHeadPainterStampPreview(painterContext.scene, getStampCells(hit, true).map(cell => cell.hit), gridBoundary);
+  } else if (lastTool === 'stamp' && hit) {
+    updateHeadPainterStampPreview(painterContext.scene, getStampCells(hit, false).map(cell => cell.hit), gridBoundary);
   } else if (lastTool === 'brush' && hit) {
-    const brush = brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
-    updateHeadPainterStampPreview(painterContext.scene, hit, brush?.width ?? brushWidth, brush?.height ?? brushHeight, gridBoundary);
+    updateHeadPainterStampPreview(painterContext.scene, getBrushPaints(hit).map(paint => paint.hit), gridBoundary);
   } else {
     removeHeadPainterStampPreview();
   }
@@ -1719,6 +1719,10 @@ if (import.meta.env.DEV) {
   console.assert(smartHorizontal === 2 && smartVertical === 8 && partSize % smartHorizontal === 0 && partSize % smartVertical === 0 && smartCounts(0, 8, 1, 3)[0] === 0, 'Smart grid limits failed.');
   console.assert(gridBoundary(1, 4) === 2 && gridBoundary(2, 4) === 4, 'Grid paint boundaries failed.');
   console.assert(gridCellCenter(-1, 8) === -0.0625 && gridCellCenter(8, 8) === 1.0625, 'Adjacent head brush projection failed.');
+  console.assert(centeredOffsets(2, 1).map(offset => offset.x).join() === '-1,0' && centeredOffsets(3, 1).map(offset => offset.x).join() === '-1,0,1', 'Centered paint offsets failed.');
+  const [sideOrigin, sideHorizontal] = getHeadPainterFaceAxes(0, 1);
+  const [topOrigin, topHorizontal, topVertical] = getHeadPainterFaceAxes(2, 1);
+  console.assert(sideOrigin.x === 0.5 && sideHorizontal.z === -1 && topOrigin.x === 0.5 && topHorizontal.x === -1 && topVertical.z === 1, 'Head painter face axes failed.');
   gridOverrides.set('__grid_override_check__', { horizontal: 3, vertical: 5 });
   const [manualHorizontal, manualVertical] = getFaceGridCounts('__grid_override_check__', 0, new Matrix4());
   gridOverrides.delete('__grid_override_check__');

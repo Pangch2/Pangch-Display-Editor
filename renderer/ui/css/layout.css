@@ -99,16 +99,11 @@
   font-size: 12px;
 }
 
-#player-head-atlas-scroll span {
-  margin: auto;
-}
-
-#player-head-atlas-scroll canvas {
-  display: block;
-  width: calc(100% * var(--player-head-atlas-zoom, 1));
-  height: auto;
+#player-head-atlas-scroll .player-head-atlas-box {
+  width: 100%;
+  aspect-ratio: 1;
   flex: none;
-  margin-inline: auto;
+  overflow: auto;
   border: 1px solid #45454a;
   box-sizing: border-box;
   background-color: #202023;
@@ -120,6 +115,13 @@
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
   background-size: 16px 16px;
   box-shadow: 0 2px 8px #0008;
+}
+
+#player-head-atlas-scroll canvas {
+  display: block;
+  width: calc(100% * var(--player-head-atlas-zoom, 1));
+  height: auto;
+  margin-inline: auto;
   image-rendering: pixelated;
 }
 

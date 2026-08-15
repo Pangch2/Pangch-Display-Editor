@@ -516,21 +516,11 @@ export function updateHeadPainterGridOverlay(
             if (!uuid) continue;
             const showLayer = layerMode === 'layer' || (layerMode === 'auto' && !!mesh.userData.hasHat?.[instanceId]);
             const scale = (showLayer ? 1.0625 : 1) * 1.003;
-            const half = scale / 2;
-            const bottom = -0.5 - half;
-            const top = -0.5 + half;
-            const faces = [
-                [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)],
-                [new Vector3(half, bottom, half), new Vector3(0, 0, -scale), new Vector3(0, scale, 0)],
-                [new Vector3(-half, top, half), new Vector3(scale, 0, 0), new Vector3(0, 0, -scale)],
-                [new Vector3(-half, bottom, -half), new Vector3(scale, 0, 0), new Vector3(0, 0, scale)],
-                [new Vector3(-half, bottom, half), new Vector3(scale, 0, 0), new Vector3(0, scale, 0)],
-                [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, scale, 0)]
-            ];
             mesh.getMatrixAt(instanceId, worldMatrix);
             worldMatrix.premultiply(mesh.matrixWorld);
             if (mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(instanceId)) worldMatrix.premultiply(dragDeltaMatrix);
-            for (const [face, [origin, horizontalAxis, verticalAxis]] of faces.entries()) {
+            for (let face = 0; face < 6; face++) {
+                const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(face, scale);
                 const [horizontal, vertical] = getFaceGridCounts(uuid, face, worldMatrix);
                 addLine(origin.clone(), origin.clone().add(horizontalAxis), worldMatrix);
                 addLine(origin.clone().add(verticalAxis), origin.clone().add(horizontalAxis).add(verticalAxis), worldMatrix);
@@ -578,43 +568,43 @@ export function removeHeadPainterGridOverlay(): void {
     headPainterGridDirty = true;
 }
 
-export function updateHeadPainterStampPreview(
-    scene: Scene,
-    hit: { mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number },
-    width: number,
-    height: number,
-    getGridBoundary: (index: number, count: number) => number
-): void {
-    const startX = Math.max(0, hit.x - Math.floor(width / 2));
-    const startY = Math.max(0, hit.y - Math.floor(height / 2));
-    const endX = Math.min(hit.columns, hit.x - Math.floor(width / 2) + width);
-    const endY = Math.min(hit.rows, hit.y - Math.floor(height / 2) + height);
-    if (startX >= endX || startY >= endY) return removeHeadPainterStampPreview();
-
-    const scale = (hit.layer ? 1.0625 : 1) * 1.006;
+export function getHeadPainterFaceAxes(face: number, scale: number): [Vector3, Vector3, Vector3] {
     const half = scale / 2;
     const bottom = -0.5 - half;
     const top = -0.5 + half;
-    const [origin, horizontalAxis, verticalAxis] = [
-        [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)],
+    return [
         [new Vector3(half, bottom, half), new Vector3(0, 0, -scale), new Vector3(0, scale, 0)],
-        [new Vector3(-half, top, half), new Vector3(scale, 0, 0), new Vector3(0, 0, -scale)],
-        [new Vector3(-half, bottom, -half), new Vector3(scale, 0, 0), new Vector3(0, 0, scale)],
+        [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)],
+        [new Vector3(half, top, -half), new Vector3(-scale, 0, 0), new Vector3(0, 0, scale)],
+        [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, 0, scale)],
         [new Vector3(-half, bottom, half), new Vector3(scale, 0, 0), new Vector3(0, scale, 0)],
         [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, scale, 0)]
-    ][hit.face];
-    const point = (x: number, y: number) => origin.clone()
-        .addScaledVector(horizontalAxis, getGridBoundary(x, hit.columns) / 8)
-        .addScaledVector(verticalAxis, 1 - getGridBoundary(y, hit.rows) / 8);
-    const matrix = new Matrix4();
-    hit.mesh.getMatrixAt(hit.instanceId, matrix);
-    matrix.premultiply(hit.mesh.matrixWorld);
-    if (hit.mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(hit.instanceId)) matrix.premultiply(dragDeltaMatrix);
-    const topLeft = point(startX, startY).applyMatrix4(matrix);
-    const topRight = point(endX, startY).applyMatrix4(matrix);
-    const bottomRight = point(endX, endY).applyMatrix4(matrix);
-    const bottomLeft = point(startX, endY).applyMatrix4(matrix);
-    const geometry = new BufferGeometry().setFromPoints([topLeft, topRight, topRight, bottomRight, bottomRight, bottomLeft, bottomLeft, topLeft]);
+    ][face] as [Vector3, Vector3, Vector3];
+}
+
+export function updateHeadPainterStampPreview(
+    scene: Scene,
+    hits: Array<{ mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number }>,
+    getGridBoundary: (index: number, count: number) => number
+): void {
+    if (!hits.length) return removeHeadPainterStampPreview();
+    const points = hits.flatMap(hit => {
+        const scale = (hit.layer ? 1.0625 : 1) * 1.006;
+        const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(hit.face, scale);
+        const point = (x: number, y: number) => origin.clone()
+            .addScaledVector(horizontalAxis, getGridBoundary(x, hit.columns) / 8)
+            .addScaledVector(verticalAxis, 1 - getGridBoundary(y, hit.rows) / 8);
+        const matrix = new Matrix4();
+        hit.mesh.getMatrixAt(hit.instanceId, matrix);
+        matrix.premultiply(hit.mesh.matrixWorld);
+        if (hit.mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(hit.instanceId)) matrix.premultiply(dragDeltaMatrix);
+        const topLeft = point(hit.x, hit.y).applyMatrix4(matrix);
+        const topRight = point(hit.x + 1, hit.y).applyMatrix4(matrix);
+        const bottomRight = point(hit.x + 1, hit.y + 1).applyMatrix4(matrix);
+        const bottomLeft = point(hit.x, hit.y + 1).applyMatrix4(matrix);
+        return [topLeft, topRight, topRight, bottomRight, bottomRight, bottomLeft, bottomLeft, topLeft];
+    });
+    const geometry = new BufferGeometry().setFromPoints(points);
 
     if (!headPainterStampPreview) {
         headPainterStampPreview = new LineSegments(geometry, new LineBasicNodeMaterial({ color: 0xffffff, transparent: true, opacity: 1, depthTest: false, depthWrite: false }));

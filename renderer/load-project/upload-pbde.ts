@@ -399,7 +399,7 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
 
     try {
         for (const file of fileList) {
-            if (!reuseCurrentProject && (activeProject < 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails)) addProject();
+            if (!reuseCurrentProject && (activeProject < 0 || loadedObjectGroup.children.length > 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails)) addProject();
             clear();
             await loadAndRenderPbde(file, false, beginPbdeLoadGeneration());
             updateProjectDetails();

@@ -1,3 +1,5 @@
+import './head-atlas-panel';
+
 type DockSide = 'left' | 'right';
 type PanelId = 'player-head-atlas' | 'scene-objects' | 'project-details' | 'head-painter';
 
@@ -223,23 +225,6 @@ document.querySelectorAll<HTMLElement>('#player-head-atlas-header, #scene-panel-
         }
     });
 });
-
-window.addEventListener('pde:player-head-atlases-changed', event => {
-    const canvases = (event as CustomEvent<HTMLCanvasElement[]>).detail;
-    document.getElementById('player-head-atlas-scroll')!.replaceChildren(...(canvases.length ? canvases : ['헤드 텍스쳐가 없습니다']));
-});
-
-const playerHeadAtlasScroll = document.getElementById('player-head-atlas-scroll')!;
-const clampPlayerHeadAtlasZoom = (zoom: number): number => Math.min(8, Math.max(0.25, zoom));
-let playerHeadAtlasZoom = 1;
-playerHeadAtlasScroll.addEventListener('wheel', event => {
-    if (!(event.target instanceof HTMLCanvasElement)) return;
-    event.preventDefault();
-    playerHeadAtlasZoom = clampPlayerHeadAtlasZoom(playerHeadAtlasZoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15));
-    playerHeadAtlasScroll.style.setProperty('--player-head-atlas-zoom', String(playerHeadAtlasZoom));
-}, { passive: false });
-
-if (import.meta.env.DEV) console.assert(clampPlayerHeadAtlasZoom(0) === 0.25 && clampPlayerHeadAtlasZoom(10) === 8, 'Player head atlas zoom limits are broken.');
 
 function getDropPlacement(x: number, y: number): { side: DockSide; index: number } | null {
     const edgeWidth = window.innerWidth * 0.05;
