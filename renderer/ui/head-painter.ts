@@ -74,6 +74,8 @@ const toolIcons: Record<Tool, string> = { brush: '\uE1D3', bucket: '\uE2E6', era
 const toolLabels: Record<Tool, string> = { brush: '브러시', bucket: '양동이', eraser: '지우개', picker: '색상선택', stamp: '스탬프', select: '선택' };
 const brushOrderKey = 'pdeHeadPainterBrushOrder';
 const paletteOrderKey = 'pdeHeadPainterPaletteOrder';
+const sectionOrderKey = 'pdeHeadPainterSectionOrder';
+const sectionIds = ['grid', 'brush', 'palette'] as const;
 const gridOverrides = new Map<string, Partial<{ horizontal: number; vertical: number }>>();
 const raycaster = new Raycaster();
 const pointer = new Vector2();
@@ -835,6 +837,7 @@ function renderCustomBrushes(): void {
       if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
     };
     row.ondragover = event => {
+      if (!event.dataTransfer?.types.includes('text/brush-index')) return;
       const from = Number(event.dataTransfer?.getData('text/brush-index'));
       if (!Number.isInteger(from)) return;
       event.preventDefault();
@@ -843,9 +846,10 @@ function renderCustomBrushes(): void {
       row.classList.add(event.clientY < rect.top + rect.height / 2 ? 'brush-drop-before' : 'brush-drop-after');
     };
     row.ondrop = event => {
-      event.preventDefault();
+      if (!event.dataTransfer?.types.includes('text/brush-index')) return;
       const from = Number(event.dataTransfer?.getData('text/brush-index'));
       if (!Number.isInteger(from)) return;
+      event.preventDefault();
       const rect = row.getBoundingClientRect();
       let to = index + (event.clientY < rect.top + rect.height / 2 ? 0 : 1);
       const [moved] = customBrushes.splice(from, 1);
@@ -1187,6 +1191,7 @@ function renderPalettePresetMenu(): void {
       if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
     };
     row.ondragover = event => {
+      if (!event.dataTransfer?.types.includes('text/palette-index')) return;
       const from = Number(event.dataTransfer?.getData('text/palette-index'));
       if (!Number.isInteger(from)) return;
       event.preventDefault();
@@ -1195,9 +1200,10 @@ function renderPalettePresetMenu(): void {
       row.classList.add(event.clientY < rect.top + rect.height / 2 ? 'palette-drop-before' : 'palette-drop-after');
     };
     row.ondrop = event => {
-      event.preventDefault();
+      if (!event.dataTransfer?.types.includes('text/palette-index')) return;
       const from = Number(event.dataTransfer?.getData('text/palette-index'));
       if (!Number.isInteger(from)) return;
+      event.preventDefault();
       const rect = row.getBoundingClientRect();
       let to = index + (event.clientY < rect.top + rect.height / 2 ? 0 : 1);
       const [moved] = palettePresetNames.splice(from, 1);
@@ -1313,6 +1319,106 @@ function syncStampInputs(): void {
   }));
 }
 
+function initSectionReordering(): void {
+  if (!root) return;
+  const sections = () => [...root!.querySelectorAll<HTMLElement>(':scope > [data-head-painter-section]')];
+  const clearPreview = () => sections().forEach(section => section.classList.remove('head-painter-section-drop-before', 'head-painter-section-drop-after'));
+  const isCompleteOrder = (value: unknown): value is string[] => Array.isArray(value)
+    && value.length === sectionIds.length
+    && sectionIds.every(id => value.includes(id));
+  try {
+    const savedOrder: unknown = JSON.parse(localStorage.getItem(sectionOrderKey) ?? 'null');
+    if (isCompleteOrder(savedOrder)) sections()
+      .sort((a, b) => savedOrder.indexOf(a.dataset.headPainterSection!) - savedOrder.indexOf(b.dataset.headPainterSection!))
+      .forEach(section => root!.append(section));
+  } catch {
+    // Ignore invalid saved order.
+  }
+  sections().forEach(section => section.querySelectorAll<HTMLElement>(':scope > legend, :scope > fieldset > legend').forEach(legend => {
+    legend.onpointerdown = event => {
+      if (!event.isPrimary || event.button !== 0) return;
+      const pointerId = event.pointerId;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let clientX = startX;
+      let clientY = startY;
+      let dragging = false;
+      let dropTarget: HTMLElement | null = null;
+      let dropAfter = false;
+      let dragPreview: HTMLElement | null = null;
+      const scrollContainer = root!.parentElement!;
+      const positionDragPreview = () => {
+        if (!dragPreview) return;
+        dragPreview.style.left = `${Math.min(clientX + 12, window.innerWidth - dragPreview.offsetWidth - 8)}px`;
+        dragPreview.style.top = `${Math.min(clientY + 12, window.innerHeight - dragPreview.offsetHeight - 8)}px`;
+      };
+      const updatePreview = () => {
+        clearPreview();
+        dropTarget = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-head-painter-section]') ?? null;
+        if (!dropTarget || dropTarget === section || dropTarget.parentElement !== root) {
+          dropTarget = null;
+          return;
+        }
+        const rect = dropTarget.getBoundingClientRect();
+        dropAfter = clientY >= rect.top + rect.height / 2;
+        dropTarget.classList.add(dropAfter ? 'head-painter-section-drop-after' : 'head-painter-section-drop-before');
+      };
+      const cleanup = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', stop);
+        window.removeEventListener('pointercancel', cancel);
+        window.removeEventListener('keydown', cancelWithEscape);
+        scrollContainer.removeEventListener('scroll', updatePreview);
+        if (legend.hasPointerCapture(pointerId)) legend.releasePointerCapture(pointerId);
+        dragPreview?.remove();
+        dragPreview = null;
+        document.body.classList.remove('head-painter-section-reordering');
+        clearPreview();
+      };
+      const move = (moveEvent: PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        clientX = moveEvent.clientX;
+        clientY = moveEvent.clientY;
+        if (!dragging) {
+          if (Math.hypot(clientX - startX, clientY - startY) < 4) return;
+          dragging = true;
+          legend.setPointerCapture(pointerId);
+          document.body.classList.add('head-painter-section-reordering');
+          scrollContainer.addEventListener('scroll', updatePreview, { passive: true });
+          dragPreview = document.createElement('div');
+          dragPreview.className = 'head-painter-section-drag-preview';
+          dragPreview.textContent = legend.textContent?.trim() ?? '';
+          document.body.append(dragPreview);
+        }
+        moveEvent.preventDefault();
+        positionDragPreview();
+        updatePreview();
+      };
+      const stop = (upEvent: PointerEvent) => {
+        if (upEvent.pointerId !== pointerId) return;
+        if (dragging && dropTarget) {
+          dropAfter ? dropTarget.after(section) : dropTarget.before(section);
+          localStorage.setItem(sectionOrderKey, JSON.stringify(sections().map(item => item.dataset.headPainterSection)));
+        }
+        cleanup();
+      };
+      const cancel = (cancelEvent: PointerEvent) => {
+        if (cancelEvent.pointerId === pointerId) cleanup();
+      };
+      const cancelWithEscape = (keyEvent: KeyboardEvent) => {
+        if (keyEvent.key !== 'Escape') return;
+        keyEvent.preventDefault();
+        cleanup();
+      };
+      window.addEventListener('pointermove', move, { passive: false });
+      window.addEventListener('pointerup', stop);
+      window.addEventListener('pointercancel', cancel);
+      window.addEventListener('keydown', cancelWithEscape);
+    };
+  }));
+  if (import.meta.env.DEV) console.assert(isCompleteOrder([...sectionIds]) && !isCompleteOrder(['grid']), 'Head Painter section order validation failed.');
+}
+
 function createPanel(): void {
   root = document.createElement('section');
   root.className = 'head-painter-panel';
@@ -1321,12 +1427,15 @@ function createPanel(): void {
     <div class="head-painter-tools" aria-label="Head Painter 도구">
       ${(['brush', 'bucket', 'eraser', 'picker', 'stamp', 'select'] as Tool[]).map(tool => `<button type="button" class="head-painter-tool lucide-icon" data-tool="${tool}" aria-label="${toolLabels[tool]}" title="${toolLabels[tool]}">${toolIcons[tool]}</button>`).join('')}
     </div>
+    <div class="head-painter-section" data-head-painter-section="grid">
     <fieldset>
       <legend>레이어와 그리드</legend>
       <label>2번 레이어 <select id="head-painter-layer"><option value="auto">기본</option><option value="layer">켜기</option><option value="base">끄기</option></select></label>
       <div class="head-painter-inline"><label>가로 <input id="head-painter-grid-horizontal" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-grid-vertical" type="number" min="0" max="8" value="8"></label></div>
-      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label></div>
+      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label><label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label></div>
     </fieldset>
+    </div>
+    <div class="head-painter-tool-settings" data-head-painter-section="brush">
     <fieldset data-tool-settings="brush">
       <legend>브러시</legend>
       <label>모양 <select id="head-painter-brush-shape"><option value="square">사각형</option><option value="circle">원형</option></select></label>
@@ -1351,15 +1460,19 @@ function createPanel(): void {
       <div class="head-painter-stamp-preview"></div>
       <small>Shift+클릭으로 복사, 클릭으로 배치</small>
     </fieldset>
-    <label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label>
-    <section class="head-painter-color-area">
+    </div>
+    <div class="head-painter-section" data-head-painter-section="palette">
+    <fieldset class="head-painter-color-area">
+      <legend>팔레트</legend>
       <div class="head-painter-color-row"><button class="head-painter-color-preview" type="button" aria-label="색상 선택"></button><select id="head-painter-color-mode"><option value="rgb">일반</option><option value="oklch">OKLCH</option></select><input id="head-painter-color" value="#000000"></div>
       <label>알파 <span class="head-painter-range"><input id="head-painter-alpha-range" type="range" min="0" max="255" value="255"><input id="head-painter-alpha" type="number" min="0" max="255" value="255"></span></label>
       <div class="head-painter-palette"></div>
       <div class="head-painter-palette-actions"><button type="button" data-sort>색 정렬</button><button type="button" data-clear>지우기</button></div>
       <div class="head-painter-preset"><button class="head-painter-preset-button" type="button">팔레트 목록</button><div class="head-painter-preset-menu" hidden></div></div>
-    </section>`;
+    </fieldset>
+    </div>`;
   document.getElementById('project-details')!.append(root);
+  initSectionReordering();
   createBrushEditor();
 
   root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.onclick = () => setTool(button.dataset.tool as Tool));

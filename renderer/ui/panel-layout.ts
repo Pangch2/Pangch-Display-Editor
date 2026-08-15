@@ -20,8 +20,6 @@ const oldOrder: PanelId[] = localStorage.getItem('project-details-first') === 't
 let layout: Record<DockSide, PanelId[]> = oldSide === 'left'
     ? { left: ['player-head-atlas', ...oldOrder], right: [] }
     : { left: ['player-head-atlas'], right: oldOrder };
-let sceneHeight = localStorage.getItem('scene-objects-height') ?? '';
-
 try {
     const saved = JSON.parse(localStorage.getItem('panel-layout') ?? 'null') as Partial<Record<DockSide, PanelId[]>> | null;
     const ids = [...(saved?.left ?? []), ...(saved?.right ?? [])];
@@ -45,18 +43,20 @@ function renderLayout(): void {
     for (const side of ['left', 'right'] as DockSide[]) {
         const dock = docks[side];
         const resizer = dock.querySelector<HTMLElement>('.scene-resizer')!;
-        const divider = dock.querySelector<HTMLElement>('.details-resizer')!;
         const dockPanels = layout[side].map(id => panels[id]);
-        divider.hidden = dockPanels.length < 2;
-        dock.replaceChildren(resizer, ...(dockPanels.length > 1 ? [dockPanels[0], divider, ...dockPanels.slice(1)] : [...dockPanels, divider]));
+        const children = dockPanels.flatMap((panel, index) => {
+            panel.style.flexBasis = index < dockPanels.length - 1
+                ? localStorage.getItem(`panel-height-${panel.id}`) ?? (panel === sceneObjects ? localStorage.getItem('scene-objects-height') ?? '' : '')
+                : '';
+            if (!index) return [panel];
+            const divider = document.createElement('div');
+            divider.className = 'details-resizer';
+            return [divider, panel];
+        });
+        dock.replaceChildren(resizer, ...children);
         dock.classList.toggle('empty', dockPanels.length === 0);
         dock.classList.toggle('single-panel', dockPanels.length === 1);
     }
-
-    const together = (['left', 'right'] as DockSide[]).some(side =>
-        layout[side].includes('scene-objects') && layout[side].includes('project-details')
-    );
-    sceneObjects.style.flexBasis = together ? sceneHeight : '';
     localStorage.setItem('panel-layout', JSON.stringify(layout));
     applyLayout();
 }
@@ -105,27 +105,29 @@ for (const side of ['left', 'right'] as DockSide[]) {
         window.addEventListener('mouseup', stop);
     });
 
-    dock.querySelector<HTMLElement>('.details-resizer')!.addEventListener('mousedown', (event) => {
-        if (layout[side].length < 2) return;
+    dock.addEventListener('mousedown', (event) => {
+        const divider = (event.target as Element).closest<HTMLElement>('.details-resizer');
+        if (!divider || divider.parentElement !== dock) return;
         event.preventDefault();
-        const divider = event.currentTarget as HTMLElement;
+        const panel = divider.previousElementSibling as HTMLElement;
+        const followingPanels = [...dock.querySelectorAll<HTMLElement>('.panel-section')].slice(
+            [...dock.querySelectorAll<HTMLElement>('.panel-section')].indexOf(panel) + 1
+        );
         const startY = event.clientY;
-        const startHeight = sceneObjects.offsetHeight;
-        const direction = sceneObjects.offsetTop < divider.offsetTop ? 1 : -1;
+        const startHeight = panel.offsetHeight;
+        const minHeight = dock.clientHeight * 0.1;
+        const maxHeight = Math.max(minHeight, startHeight + followingPanels.reduce((height, item) => height + item.offsetHeight, 0) - minHeight * followingPanels.length);
         document.body.classList.add('resizing-details');
 
         const move = (moveEvent: MouseEvent): void => {
-            const availableHeight = dock.clientHeight - divider.offsetHeight;
-            const minHeight = availableHeight * 0.1;
-            const height = Math.max(minHeight, Math.min(availableHeight - minHeight, startHeight + direction * (moveEvent.clientY - startY)));
-            sceneObjects.style.flexBasis = `${height}px`;
+            const height = Math.max(minHeight, Math.min(maxHeight, startHeight + moveEvent.clientY - startY));
+            panel.style.flexBasis = `${height}px`;
         };
         const stop = (): void => {
             document.body.classList.remove('resizing-details');
             window.removeEventListener('mousemove', move);
             window.removeEventListener('mouseup', stop);
-            sceneHeight = sceneObjects.style.flexBasis;
-            localStorage.setItem('scene-objects-height', sceneHeight);
+            localStorage.setItem(`panel-height-${panel.id}`, panel.style.flexBasis);
         };
         window.addEventListener('mousemove', move);
         window.addEventListener('mouseup', stop);

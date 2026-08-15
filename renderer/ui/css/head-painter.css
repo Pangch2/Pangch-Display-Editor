@@ -58,6 +58,51 @@
   padding: 8px;
 }
 
+.head-painter-tool-settings,
+.head-painter-section {
+  display: grid;
+}
+
+.head-painter-panel > [data-head-painter-section] {
+  position: relative;
+}
+
+.head-painter-section-reordering {
+  user-select: none;
+}
+
+.head-painter-section-drag-preview {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  background: #252528;
+  color: #ccc;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.head-painter-section-drop-before::before,
+.head-painter-section-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  border-top: 2px solid #4ea6ff;
+  pointer-events: none;
+}
+
+.head-painter-section-drop-before::before {
+  top: -2px;
+}
+
+.head-painter-section-drop-after::after {
+  bottom: -2px;
+}
+
 .head-painter-panel fieldset > label,
 .head-painter-color-area > label {
   display: grid;
@@ -96,6 +141,10 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+}
+
+.head-painter-checks {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .head-painter-inline label {
