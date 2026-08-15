@@ -23,7 +23,9 @@ interface DeleteUserData {
     objectDisplayTypes?: Map<string, string>;
     objectBlockProps?: Map<string, unknown>;
     objectTextDisplayOptions?: Map<string, unknown>;
+    objectTextures?: Map<string, string>;
     sceneOrder?: SceneOrderEntry[];
+    cleanupUnusedPlayerHeadAtlasSlots?: () => void;
 }
 
 type InstancedGeometryAttribute = BufferAttribute | InterleavedBufferAttribute;
@@ -59,6 +61,7 @@ function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, inst
     ud.objectDisplayTypes?.delete(objectUuid);
     ud.objectBlockProps?.delete(objectUuid);
     ud.objectTextDisplayOptions?.delete(objectUuid);
+    ud.objectTextures?.delete(objectUuid);
 
     return objectUuid;
 }
@@ -108,6 +111,8 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
         if (Array.isArray(hasHatArray)) {
             hasHatArray[dstIdx] = hasHatArray[srcIdx];
         }
+        const imageHeadTilePositions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
+        if (imageHeadTilePositions?.[srcIdx]) imageHeadTilePositions[dstIdx] = imageHeadTilePositions[srcIdx];
         for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
             const values = mesh.userData[key] as Map<number, unknown> | undefined;
             if (values?.has(srcIdx)) values.set(dstIdx, values.get(srcIdx));
@@ -265,6 +270,8 @@ export function deleteSelectedItems(
             _deleteInstancedMeshInstances(loadedObjectGroup, mesh as InstancedMesh, sortedIds);
         }
     }
+
+    userData.cleanupUnusedPlayerHeadAtlasSlots?.();
 
     console.log('선택된 항목 제거됨 (Real Delete)');
 }

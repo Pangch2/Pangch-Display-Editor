@@ -39,7 +39,7 @@ const PLAYER_HEAD_PART_SIZE = 8;
 const PLAYER_HEAD_BLOCK_WIDTH = PLAYER_HEAD_PART_SIZE * 3;
 const PLAYER_HEAD_BLOCK_HEIGHT = PLAYER_HEAD_PART_SIZE * 4;
 const PLAYER_HEAD_BLOCKS_PER_ROW = Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH);
-const MAX_PLAYER_HEAD_SLOTS_PER_ATLAS = 2048;
+const MAX_PLAYER_HEAD_SLOTS_PER_ATLAS = PLAYER_HEAD_BLOCKS_PER_ROW * Math.floor(PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT);
 const PLAYER_HEAD_LAYER_SCALE = 1.0625;
 const playerHeadFaceParts = {
     right: [16, 8], left: [0, 8], top: [8, 0], bottom: [16, 0], front: [24, 8], back: [8, 8],
@@ -53,10 +53,34 @@ type PlayerHeadAtlas = {
     texture: THREE.Texture;
     material: THREE.Material;
     nextSlot: number;
+    freeSlots: number[];
+    imageHeadNextTile?: number;
+    imageHeadReservedSlots?: number;
+    imageHeadTiles?: Set<number>;
     skins: Map<string, PlayerHeadSkin>;
     slotUrls: Array<string | undefined>;
 };
+type PlayerHeadAtlasRegionSnapshot = {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    data: Uint8ClampedArray;
+};
+type PlayerHeadAtlasSnapshot = {
+    material: THREE.Material;
+    nextSlot: number;
+    freeSlots: number[];
+    imageHeadNextTile?: number;
+    imageHeadReservedSlots?: number;
+    imageHeadTiles?: number[];
+    skins: Map<string, PlayerHeadSkin>;
+    slotUrls: Array<string | undefined>;
+    regions: PlayerHeadAtlasRegionSnapshot[];
+};
 const playerHeadAtlases = new WeakMap<THREE.Material, PlayerHeadAtlas>();
+let imageHeadBlackMaterial: THREE.Material | null = null;
+export const deferredPlayerHeadTexture = 'pde:deferred-player-head-texture';
 
 export function getPlayerHeadRenderMatrix(displayType?: string): THREE.Matrix4 {
     return (getPlayerHeadDisplayMatrix(displayType) ?? new THREE.Matrix4())
@@ -101,6 +125,7 @@ export type PlayerHeadPaintSurface = {
     slot: number;
     x: number;
     y: number;
+    denseLayer?: 0 | 1;
 };
 
 const skyLightColors = [
@@ -879,6 +904,80 @@ function createHeadGeometries() {
     }
 }
 
+function createPlayerHeadAtlasGeometry(): THREE.BufferGeometry {
+    createHeadGeometries();
+    if (!headGeometries?.merged) throw new Error('Head geometries not available for instancing.');
+    const geometry = headGeometries.merged.clone();
+    const uvs = geometry.getAttribute('uv') as THREE.BufferAttribute;
+    const uvMirrorCenters = new Float32Array(uvs.count * 2);
+    const faceOrder = ['left', 'right', 'top', 'bottom', 'front', 'back'];
+
+    [...faceOrder, ...faceOrder.map(face => `layer_${face}`)].forEach((key, faceIndex) => {
+        const partIndex = playerHeadPartOrder.indexOf(key as keyof typeof playerHeadFaceParts);
+        const x = (partIndex % 3) * PLAYER_HEAD_PART_SIZE;
+        const y = Math.floor(partIndex / 3) * PLAYER_HEAD_PART_SIZE;
+        const u0 = x / PLAYER_HEAD_ATLAS_SIZE;
+        const u1 = (x + PLAYER_HEAD_PART_SIZE) / PLAYER_HEAD_ATLAS_SIZE;
+        const v0 = (PLAYER_HEAD_BLOCK_HEIGHT - y - PLAYER_HEAD_PART_SIZE) / PLAYER_HEAD_ATLAS_SIZE;
+        const v1 = (PLAYER_HEAD_BLOCK_HEIGHT - y) / PLAYER_HEAD_ATLAS_SIZE;
+        const offset = faceIndex * 4;
+        for (let vertex = 0; vertex < 4; vertex++) {
+            uvMirrorCenters[(offset + vertex) * 2] = (u0 + u1) / 2;
+            uvMirrorCenters[(offset + vertex) * 2 + 1] = (v0 + v1) / 2;
+        }
+        if (key.endsWith('top')) {
+            uvs.setXY(offset, u1, v0); uvs.setXY(offset + 1, u0, v0);
+            uvs.setXY(offset + 2, u1, v1); uvs.setXY(offset + 3, u0, v1);
+        } else if (key.endsWith('bottom')) {
+            uvs.setXY(offset, u1, v1); uvs.setXY(offset + 1, u0, v1);
+            uvs.setXY(offset + 2, u1, v0); uvs.setXY(offset + 3, u0, v0);
+        } else {
+            uvs.setXY(offset, u0, v1); uvs.setXY(offset + 1, u1, v1);
+            uvs.setXY(offset + 2, u0, v0); uvs.setXY(offset + 3, u1, v0);
+        }
+    });
+    geometry.setAttribute('uvMirrorCenter', new THREE.BufferAttribute(uvMirrorCenters, 2));
+    return geometry;
+}
+
+function createImageHeadAtlasGeometry(layer: 0 | 1): THREE.BufferGeometry {
+    const geometry = createPlayerHeadAtlasGeometry();
+    const blackUvs = geometry.getAttribute('uv') as THREE.BufferAttribute;
+    for (let vertex = 0; vertex < blackUvs.count; vertex++) blackUvs.setXY(vertex, 1 - 4 / PLAYER_HEAD_ATLAS_SIZE, 1 - 4 / PLAYER_HEAD_ATLAS_SIZE);
+    const scale = layer ? PLAYER_HEAD_LAYER_SCALE : 1;
+    const overlay = new THREE.PlaneGeometry(scale, scale);
+    overlay.translate(0, -0.5, scale / 2 + 0.0001);
+    const partIndex = layer ? 10 : 4;
+    const x = (partIndex % 3) * PLAYER_HEAD_PART_SIZE;
+    const y = Math.floor(partIndex / 3) * PLAYER_HEAD_PART_SIZE;
+    const u0 = x / PLAYER_HEAD_ATLAS_SIZE;
+    const u1 = (x + PLAYER_HEAD_PART_SIZE) / PLAYER_HEAD_ATLAS_SIZE;
+    const v0 = (PLAYER_HEAD_BLOCK_HEIGHT - y - PLAYER_HEAD_PART_SIZE) / PLAYER_HEAD_ATLAS_SIZE;
+    const v1 = (PLAYER_HEAD_BLOCK_HEIGHT - y) / PLAYER_HEAD_ATLAS_SIZE;
+    const uvs = overlay.getAttribute('uv') as THREE.BufferAttribute;
+    uvs.setXY(0, u0, v1); uvs.setXY(1, u1, v1);
+    uvs.setXY(2, u0, v0); uvs.setXY(3, u1, v0);
+    overlay.setAttribute('headLayer', new THREE.BufferAttribute(new Float32Array(4).fill(layer), 1));
+    const centers = new Float32Array(8);
+    for (let vertex = 0; vertex < 4; vertex++) centers.set([(u0 + u1) / 2, (v0 + v1) / 2], vertex * 2);
+    overlay.setAttribute('uvMirrorCenter', new THREE.BufferAttribute(centers, 2));
+
+    const merged = mergeIndexedGeometries([geometry, overlay]);
+    geometry.dispose();
+    overlay.dispose();
+    if (!merged) throw new Error('Image head geometry could not be created.');
+    merged.clearGroups();
+    merged.addGroup(0, 72, 1);
+    merged.addGroup(72, 6, 0);
+    return merged;
+}
+
+function getImageHeadBlackMaterial(texture: THREE.Texture): THREE.Material {
+    if (imageHeadBlackMaterial) return imageHeadBlackMaterial;
+    imageHeadBlackMaterial = createEntityMaterial(texture, 0xffffff, false, false, 1, 0, true, true).material;
+    return imageHeadBlackMaterial;
+}
+
 
 /**
  * 텍스처의 특정 UV 영역이 완전히 투명한지 확인합니다.
@@ -966,11 +1065,11 @@ export function notifyPlayerHeadAtlasesChanged(): void {
     }));
 }
 
-function findAvailablePlayerHeadAtlas<T extends { nextSlot: number }>(atlases: T[]): T | undefined {
-    return atlases.find(atlas => atlas.nextSlot < MAX_PLAYER_HEAD_SLOTS_PER_ATLAS);
+function findAvailablePlayerHeadAtlas<T extends { nextSlot: number; freeSlots?: number[] }>(atlases: T[]): T | undefined {
+    return atlases.find(atlas => !!atlas.freeSlots?.length || atlas.nextSlot < MAX_PLAYER_HEAD_SLOTS_PER_ATLAS);
 }
 
-function getOrCreatePlayerHeadAtlas<T extends { nextSlot: number }>(atlases: T[], create: () => T): T {
+function getOrCreatePlayerHeadAtlas<T extends { nextSlot: number; freeSlots?: number[] }>(atlases: T[], create: () => T): T {
     const atlas = findAvailablePlayerHeadAtlas(atlases) ?? create();
     if (!atlases.includes(atlas)) atlases.push(atlas);
     return atlas;
@@ -981,9 +1080,13 @@ if (import.meta.env.DEV) {
     const created = { nextSlot: 0 };
     const atlases = [full];
     console.assert(getOrCreatePlayerHeadAtlas(atlases, () => created) === created && atlases[1] === created, 'Player head atlas rollover is broken.');
+    const reusable = { nextSlot: MAX_PLAYER_HEAD_SLOTS_PER_ATLAS, freeSlots: [3] } as PlayerHeadAtlas;
+    console.assert(findAvailablePlayerHeadAtlas([reusable]) === reusable && takePlayerHeadSlot(reusable) === 3, 'Player head atlas slot reuse is broken.');
+    const dense = { imageHeadNextTile: 0, imageHeadReservedSlots: 1, imageHeadTiles: new Set([3]) } as PlayerHeadAtlas;
+    console.assert(takeImageHeadTile(dense, 256 * 256) === 4, 'Occupied image head atlas tiles must append after the used range.');
 }
 
-function createPlayerHeadAtlas(): PlayerHeadAtlas {
+function createPlayerHeadAtlas(notify = true): PlayerHeadAtlas {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = PLAYER_HEAD_ATLAS_SIZE;
     const context = canvas.getContext('2d', { willReadFrequently: true });
@@ -1002,11 +1105,141 @@ function createPlayerHeadAtlas(): PlayerHeadAtlas {
     material.flatShading = true;
     material.side = THREE.DoubleSide;
 
-    const atlas: PlayerHeadAtlas = { context, texture, material, nextSlot: 0, skins: new Map(), slotUrls: [] };
+    const atlas: PlayerHeadAtlas = { context, texture, material, nextSlot: 0, freeSlots: [], skins: new Map(), slotUrls: [] };
     playerHeadAtlases.set(material, atlas);
     (loadedObjectGroup.userData.playerHeadAtlasMaterials as THREE.Material[]).push(material);
-    notifyPlayerHeadAtlasesChanged();
+    loadedObjectGroup.userData.cleanupUnusedPlayerHeadAtlasSlots = cleanupUnusedPlayerHeadAtlasSlots;
+    loadedObjectGroup.userData.capturePlayerHeadAtlasState = capturePlayerHeadAtlasState;
+    loadedObjectGroup.userData.restorePlayerHeadAtlasState = restorePlayerHeadAtlasState;
+    if (notify) notifyPlayerHeadAtlasesChanged();
     return atlas;
+}
+
+function takePlayerHeadSlot(atlas: PlayerHeadAtlas): number | undefined {
+    let slot: number | undefined;
+    while ((slot = atlas.freeSlots.pop()) !== undefined) {
+        if (!atlas.slotUrls?.[slot]) return slot;
+    }
+    while (atlas.nextSlot < MAX_PLAYER_HEAD_SLOTS_PER_ATLAS && atlas.slotUrls[atlas.nextSlot]) atlas.nextSlot++;
+    return atlas.nextSlot < MAX_PLAYER_HEAD_SLOTS_PER_ATLAS ? atlas.nextSlot++ : undefined;
+}
+
+function takeImageHeadTile(atlas: PlayerHeadAtlas, tilesPerAtlas: number): number | undefined {
+    const allocated = atlas.imageHeadTiles ??= new Set<number>();
+    let tile = atlas.imageHeadNextTile ?? 0;
+    while (tile < tilesPerAtlas && (allocated.has(tile) || isReservedImageHeadTile(atlas, tile))) tile++;
+    if (tile >= tilesPerAtlas) {
+        atlas.imageHeadNextTile = tilesPerAtlas;
+        return undefined;
+    }
+    allocated.add(tile);
+    atlas.imageHeadNextTile = tile + 1;
+    return tile;
+}
+
+// ponytail: generated image heads keep only their editable front tile; promote one to a regular head before replacing all six faces.
+export function createImageHeadAtlasMeshes(
+    source: CanvasImageSource,
+    columns: number,
+    rows: number,
+    layer: 0 | 1
+): THREE.InstancedMesh[] {
+    const meshes: THREE.InstancedMesh[] = [];
+    const total = columns * rows;
+    const spacing = layer ? 0.5 * PLAYER_HEAD_LAYER_SCALE : 0.5;
+    const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
+    const tilesPerAtlas = tilesPerRow * tilesPerRow;
+    const matrix = new THREE.Matrix4();
+    const atlases = getProjectPlayerHeadAtlases();
+    let blackMaterial = imageHeadBlackMaterial;
+    let start = 0;
+
+    while (start < total) {
+        let atlas = atlases.find(candidate => candidate.imageHeadNextTile !== undefined && candidate.imageHeadNextTile < tilesPerAtlas)
+            ?? atlases.find(candidate => candidate.imageHeadNextTile === undefined
+                && (!!candidate.freeSlots.length || candidate.nextSlot < MAX_PLAYER_HEAD_SLOTS_PER_ATLAS));
+        if (!atlas) {
+            atlas = createPlayerHeadAtlas(false);
+            atlases.push(atlas);
+        }
+        atlas.imageHeadReservedSlots ??= atlas.nextSlot;
+        atlas.imageHeadNextTile ??= 0;
+        atlas.nextSlot = MAX_PLAYER_HEAD_SLOTS_PER_ATLAS;
+        if (!blackMaterial) {
+            atlas.context.fillRect(PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE, 0, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
+            blackMaterial = getImageHeadBlackMaterial(atlas.texture);
+        }
+        const tilePositions: Array<[number, number]> = [];
+        while (start + tilePositions.length < total) {
+            const tile = takeImageHeadTile(atlas, tilesPerAtlas);
+            if (tile === undefined) break;
+            const tileColumn = tile % tilesPerRow;
+            const tileRow = Math.floor(tile / tilesPerRow);
+            tilePositions.push([tileColumn * PLAYER_HEAD_PART_SIZE, tileRow * PLAYER_HEAD_PART_SIZE]);
+        }
+        if (!tilePositions.length) continue;
+        const count = tilePositions.length;
+        const geometry = createImageHeadAtlasGeometry(layer);
+        const uvData = new Float32Array(count * 11);
+        const interleaved = new THREE.InstancedInterleavedBuffer(uvData, 11);
+        const uvOffsets = new THREE.InterleavedBufferAttribute(interleaved, 2, 0);
+        geometry.setAttribute('instancedUvOffset', uvOffsets);
+        geometry.setAttribute('instancedUvFlip', new THREE.InterleavedBufferAttribute(interleaved, 2, 2));
+        const knifeUvScales = new THREE.InterleavedBufferAttribute(interleaved, 3, 4);
+        geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
+        geometry.setAttribute('instancedKnifeUvOffset', new THREE.InterleavedBufferAttribute(interleaved, 3, 7));
+        const layerVisible = new THREE.InterleavedBufferAttribute(interleaved, 1, 10);
+        geometry.setAttribute('headLayerVisible', layerVisible);
+        setEntityStateAttributes(geometry, count);
+
+        const matrices = new Float32Array(count * 16);
+        for (let localIndex = 0; localIndex < count; localIndex++) {
+            const index = start + localIndex;
+            const x = index % columns;
+            const y = Math.floor(index / columns);
+            const [tileX, tileY] = tilePositions[localIndex];
+            const partY = layer ? 24 : 8;
+            atlas.context.drawImage(source, x * 8, y * 8, 8, 8, tileX, tileY, 8, 8);
+            uvOffsets.setXY(localIndex,
+                (tileX - 8) / PLAYER_HEAD_ATLAS_SIZE,
+                1 - (tileY + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
+            );
+            knifeUvScales.setXYZ(localIndex, 1, 1, 1);
+            layerVisible.setX(localIndex, layer);
+            matrix.makeTranslation(x * spacing, (rows - y) * spacing, 0)
+                .multiply(getPlayerHeadRenderMatrix('none')).toArray(matrices, localIndex * 16);
+        }
+        atlas.texture.needsUpdate = true;
+
+        const mesh = new THREE.InstancedMesh(geometry, [atlas.material, blackMaterial], count);
+        mesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
+        mesh.name = 'player_head[display=none]';
+        mesh.userData.displayType = 'item_display';
+        mesh.userData.hasHat = new Array(count).fill(layer === 1);
+        mesh.userData.imageHeadLayer = layer;
+        mesh.userData.imageHeadTilePositions = tilePositions;
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.frustumCulled = false;
+        mesh.layers.enable(2);
+        mesh.computeBoundingBox();
+        mesh.computeBoundingSphere();
+        meshes.push(mesh);
+        if (import.meta.env.DEV) console.assert(tilePositions.every(([x, y]) =>
+            !(x === PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE && y === 0)
+            && (x >= PLAYER_HEAD_BLOCKS_PER_ROW * PLAYER_HEAD_BLOCK_WIDTH
+                || Math.floor(y / PLAYER_HEAD_BLOCK_HEIGHT) * PLAYER_HEAD_BLOCKS_PER_ROW
+                    + Math.floor(x / PLAYER_HEAD_BLOCK_WIDTH) >= atlas.imageHeadReservedSlots!)
+        ), 'Image heads overlapped reserved player head atlas slots.');
+        if (import.meta.env.DEV && tilePositions.length > 1) console.assert(
+            tilePositions[1][0] === tilePositions[0][0] + 8 || tilePositions[1][1] === tilePositions[0][1] + 8,
+            'Image head atlas tiles are not tightly packed.'
+        );
+        start += count;
+    }
+
+    notifyPlayerHeadAtlasesChanged();
+    if (import.meta.env.DEV) console.assert(meshes.reduce((sum, mesh) => sum + mesh.count, 0) === total, 'Image head atlas count failed.');
+    return meshes;
 }
 
 function mirroredPlayerHeadFace(key: keyof typeof playerHeadFaceParts): keyof typeof playerHeadFaceParts {
@@ -1094,6 +1327,7 @@ function _clearSceneAndCaches(): void {
     });
 
     // 1-3. 그룹에서 모든 자식 객체 제거
+    imageHeadBlackMaterial = null;
     while (loadedObjectGroup.children.length > 0) {
         loadedObjectGroup.remove(loadedObjectGroup.children[0]);
     }
@@ -1809,7 +2043,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             const loadedSkins = await Promise.all(missingUrls.map(async url => ({ url, image: await loadPlayerHeadImage(url) })));
                             for (const { url, image } of loadedSkins) {
                                 const atlas = getOrCreatePlayerHeadAtlas(atlases, createPlayerHeadAtlas);
-                                const slot = atlas.nextSlot++;
+                                const slot = takePlayerHeadSlot(atlas)!;
                                 const skin = { slot, hasHat: drawPlayerHeadSlot(atlas.context, image, slot) };
                                 atlas.skins.set(url, skin);
                                 atlas.slotUrls[slot] = url;
@@ -1826,55 +2060,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 items.push({ item, skin: assignment.skin });
                             }
                             
-                            const sharedGeometry = (headGeometries.merged as THREE.BufferGeometry).clone();
-                            const newUvAttr = sharedGeometry.getAttribute('uv') as THREE.BufferAttribute;
-                            const uvMirrorCenters = new Float32Array(newUvAttr.count * 2);
-
-                            const baseFaceOrder = ['left', 'right', 'top', 'bottom', 'front', 'back']; // BoxGeometry order
-                            const allFaceKeys = [...baseFaceOrder, ...baseFaceOrder.map(k => `layer_${k}`)];
-
-                            for (let faceIdx = 0; faceIdx < 12; faceIdx++) {
-                                const partKey = allFaceKeys[faceIdx];
-                                const partIndex = playerHeadPartOrder.indexOf(partKey as keyof typeof playerHeadFaceParts);
-
-                                if (partIndex === -1) continue;
-
-                                const dx = (partIndex % 3) * PLAYER_HEAD_PART_SIZE;
-                                const dy = Math.floor(partIndex / 3) * PLAYER_HEAD_PART_SIZE;
-                                
-                                const inset = 0;
-                                const u0 = (dx + inset) / PLAYER_HEAD_ATLAS_SIZE;
-                                const u1 = (dx + PLAYER_HEAD_PART_SIZE - inset) / PLAYER_HEAD_ATLAS_SIZE;
-
-                                const v1 = (PLAYER_HEAD_BLOCK_HEIGHT - dy - inset) / PLAYER_HEAD_ATLAS_SIZE;
-                                const v0 = (PLAYER_HEAD_BLOCK_HEIGHT - (dy + PLAYER_HEAD_PART_SIZE) - inset) / PLAYER_HEAD_ATLAS_SIZE;
-                                
-                                const baseFaceName = baseFaceOrder[faceIdx % 6];
-                                const uvWriteIndex = faceIdx * 4;
-                                for (let vertex = 0; vertex < 4; vertex++) {
-                                    uvMirrorCenters[(uvWriteIndex + vertex) * 2] = (u0 + u1) / 2;
-                                    uvMirrorCenters[(uvWriteIndex + vertex) * 2 + 1] = (v0 + v1) / 2;
-                                }
-                                
-                                if (baseFaceName === 'top') {
-                                    newUvAttr.setXY(uvWriteIndex + 0, u1, v0);
-                                    newUvAttr.setXY(uvWriteIndex + 1, u0, v0);
-                                    newUvAttr.setXY(uvWriteIndex + 2, u1, v1);
-                                    newUvAttr.setXY(uvWriteIndex + 3, u0, v1);
-                                } else if (baseFaceName === 'bottom') {
-                                    newUvAttr.setXY(uvWriteIndex + 0, u1, v1);
-                                    newUvAttr.setXY(uvWriteIndex + 1, u0, v1);
-                                    newUvAttr.setXY(uvWriteIndex + 2, u1, v0);
-                                    newUvAttr.setXY(uvWriteIndex + 3, u0, v0);
-                                } else {
-                                    newUvAttr.setXY(uvWriteIndex + 0, u0, v1);
-                                    newUvAttr.setXY(uvWriteIndex + 1, u1, v1);
-                                    newUvAttr.setXY(uvWriteIndex + 2, u0, v0);
-                                    newUvAttr.setXY(uvWriteIndex + 3, u1, v0);
-                                }
-                            }
-                            newUvAttr.needsUpdate = true;
-                            sharedGeometry.setAttribute('uvMirrorCenter', new THREE.BufferAttribute(uvMirrorCenters, 2));
+                            const sharedGeometry = createPlayerHeadAtlasGeometry();
 
                             let firstAtlas = true;
                             for (const [atlas, entries] of atlasItems) {
@@ -1986,6 +2172,157 @@ function getPlayerHeadSlotUsage(material: THREE.Material, slot: number): number 
     return count;
 }
 
+function collectPlayerHeadAtlasUsage(): {
+    slots: Map<THREE.Material, Set<number>>;
+    imageTiles: Map<THREE.Material, Set<number>>;
+} {
+    const slots = new Map<THREE.Material, Set<number>>();
+    const imageTiles = new Map<THREE.Material, Set<number>>();
+    loadedObjectGroup.traverse(object => {
+        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
+        const mesh = object as THREE.InstancedMesh;
+        const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+        if (!playerHeadAtlases.has(material)) return;
+        const tilePositions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
+        if (tilePositions) {
+            const used = imageTiles.get(material) ?? new Set<number>();
+            for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
+                const tile = tilePositions[instanceId];
+                if (tile) used.add(tile[1] / PLAYER_HEAD_PART_SIZE * (PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE)
+                    + tile[0] / PLAYER_HEAD_PART_SIZE);
+            }
+            imageTiles.set(material, used);
+            return;
+        }
+        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
+        if (!offsets) return;
+        const used = slots.get(material) ?? new Set<number>();
+        for (let instanceId = 0; instanceId < mesh.count; instanceId++) used.add(getPlayerHeadSlot(offsets, instanceId));
+        slots.set(material, used);
+    });
+    return { slots, imageTiles };
+}
+
+function isReservedImageHeadTile(atlas: PlayerHeadAtlas, tile: number): boolean {
+    const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
+    if (tile === tilesPerRow - 1) return true;
+    const column = tile % tilesPerRow;
+    const row = Math.floor(tile / tilesPerRow);
+    return column < PLAYER_HEAD_BLOCKS_PER_ROW * 3
+        && Math.floor(row / 4) * PLAYER_HEAD_BLOCKS_PER_ROW + Math.floor(column / 3) < (atlas.imageHeadReservedSlots ?? 0);
+}
+
+function capturePlayerHeadAtlasState(): PlayerHeadAtlasSnapshot[] {
+    const usage = collectPlayerHeadAtlasUsage();
+    return getProjectPlayerHeadAtlases().map(atlas => {
+        const regions: PlayerHeadAtlasRegionSnapshot[] = [];
+        const addRegion = (x: number, y: number, width: number, height: number): void => {
+            regions.push({ x, y, width, height, data: atlas.context.getImageData(x, y, width, height).data.slice() });
+        };
+        [...(usage.slots.get(atlas.material) ?? [])].sort((a, b) => a - b).forEach(slot => addRegion(
+            (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH,
+            Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT,
+            PLAYER_HEAD_BLOCK_WIDTH,
+            PLAYER_HEAD_BLOCK_HEIGHT
+        ));
+        const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
+        const imageTiles = [...(usage.imageTiles.get(atlas.material) ?? [])].sort((a, b) => a - b);
+        imageTiles.forEach(tile => addRegion(
+            tile % tilesPerRow * PLAYER_HEAD_PART_SIZE,
+            Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE,
+            PLAYER_HEAD_PART_SIZE,
+            PLAYER_HEAD_PART_SIZE
+        ));
+        if (imageTiles.length > 0) addRegion(
+            PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE,
+            0,
+            PLAYER_HEAD_PART_SIZE,
+            PLAYER_HEAD_PART_SIZE
+        );
+        return {
+            material: atlas.material,
+            nextSlot: atlas.nextSlot,
+            freeSlots: [...atlas.freeSlots],
+            imageHeadNextTile: atlas.imageHeadNextTile,
+            imageHeadReservedSlots: atlas.imageHeadReservedSlots,
+            imageHeadTiles: imageTiles,
+            skins: new Map(Array.from(atlas.skins, ([url, skin]) => [url, { ...skin }])),
+            slotUrls: [...atlas.slotUrls],
+            regions
+        };
+    });
+}
+
+function restorePlayerHeadAtlasState(value: unknown): void {
+    const states = Array.isArray(value) ? value as PlayerHeadAtlasSnapshot[] : [];
+    for (const state of states) {
+        const atlas = playerHeadAtlases.get(state.material);
+        if (!atlas) continue;
+        atlas.context.clearRect(0, 0, PLAYER_HEAD_ATLAS_SIZE, PLAYER_HEAD_ATLAS_SIZE);
+        state.regions.forEach(region => atlas.context.putImageData(
+            new ImageData(new Uint8ClampedArray(region.data), region.width, region.height),
+            region.x,
+            region.y
+        ));
+        atlas.nextSlot = state.nextSlot;
+        atlas.freeSlots = [...state.freeSlots].sort((a, b) => b - a);
+        atlas.imageHeadNextTile = state.imageHeadNextTile;
+        atlas.imageHeadReservedSlots = state.imageHeadReservedSlots;
+        atlas.imageHeadTiles = new Set(state.imageHeadTiles);
+        atlas.skins = new Map(Array.from(state.skins, ([url, skin]) => [url, { ...skin }]));
+        atlas.slotUrls = [...state.slotUrls];
+        atlas.texture.needsUpdate = true;
+    }
+    notifyPlayerHeadAtlasesChanged();
+}
+
+function cleanupUnusedPlayerHeadAtlasSlots(): void {
+    let changed = false;
+    const usage = collectPlayerHeadAtlasUsage();
+    for (const atlas of getProjectPlayerHeadAtlases()) {
+        for (let slot = 0; slot < atlas.slotUrls.length; slot++) {
+            const url = atlas.slotUrls[slot];
+            if (!url || usage.slots.get(atlas.material)?.has(slot)) continue;
+            if (atlas.skins.get(url)?.slot === slot) atlas.skins.delete(url);
+            atlas.slotUrls[slot] = undefined;
+            if (!atlas.freeSlots.includes(slot)) atlas.freeSlots.push(slot);
+            atlas.context.clearRect(
+                (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH,
+                Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT,
+                PLAYER_HEAD_BLOCK_WIDTH,
+                PLAYER_HEAD_BLOCK_HEIGHT
+            );
+            atlas.texture.needsUpdate = true;
+            changed = true;
+        }
+        atlas.freeSlots.sort((a, b) => b - a);
+
+        if (atlas.imageHeadNextTile === undefined) continue;
+        const allocated = atlas.imageHeadTiles ??= new Set(Array.from(
+            { length: atlas.imageHeadNextTile },
+            (_, tile) => tile
+        ).filter(tile => !isReservedImageHeadTile(atlas, tile)));
+        const used = usage.imageTiles.get(atlas.material) ?? new Set<number>();
+        const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
+        for (const tile of allocated) {
+            if (used.has(tile)) continue;
+            atlas.context.clearRect(
+                tile % tilesPerRow * PLAYER_HEAD_PART_SIZE,
+                Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE,
+                PLAYER_HEAD_PART_SIZE,
+                PLAYER_HEAD_PART_SIZE
+            );
+            allocated.delete(tile);
+            atlas.texture.needsUpdate = true;
+            changed = true;
+        }
+        let nextTile = 0;
+        allocated.forEach(tile => { nextTile = Math.max(nextTile, tile + 1); });
+        atlas.imageHeadNextTile = nextTile;
+    }
+    if (changed) notifyPlayerHeadAtlasesChanged();
+}
+
 export function getPlayerHeadPaintSurface(
     mesh: THREE.InstancedMesh,
     instanceId: number,
@@ -1996,11 +2333,17 @@ export function getPlayerHeadPaintSurface(
     const uvOffsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
     const objectUuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(`${mesh.uuid}_${instanceId}`);
     if (!atlas || !uvOffsets || !objectUuid || instanceId < 0 || instanceId >= mesh.count) return null;
+    const denseLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
+    const denseTile = (mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined)?.[instanceId];
+    if (denseLayer !== undefined && denseTile) return {
+        mesh, instanceId, objectUuid, context: atlas.context, texture: atlas.texture,
+        slot: -1, x: denseTile[0], y: denseTile[1], denseLayer
+    };
 
     let slot = getPlayerHeadSlot(uvOffsets, instanceId);
     if (exclusive && getPlayerHeadSlotUsage(material, slot) > 1) {
-        if (atlas.nextSlot >= MAX_PLAYER_HEAD_SLOTS_PER_ATLAS) throw new Error('Player head paint atlas is full.');
-        const nextSlot = atlas.nextSlot++;
+        const nextSlot = takePlayerHeadSlot(atlas);
+        if (nextSlot === undefined) throw new Error('Player head paint atlas is full.');
         const oldX = (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
         const oldY = Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
         const nextX = (nextSlot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
@@ -2023,8 +2366,31 @@ export function getPlayerHeadPaintSurface(
     };
 }
 
+export function readPlayerHeadPaint(surface: PlayerHeadPaintSurface): ImageData {
+    if (surface.denseLayer === undefined) return surface.context.getImageData(surface.x, surface.y, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT);
+    const packed = new ImageData(PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT);
+    const blackRows = PLAYER_HEAD_BLOCK_HEIGHT / 2;
+    for (let pixel = 0; pixel < PLAYER_HEAD_BLOCK_WIDTH * blackRows; pixel++) packed.data[pixel * 4 + 3] = 255;
+    const tile = surface.context.getImageData(surface.x, surface.y, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
+    const partY = surface.denseLayer ? 24 : 8;
+    for (let y = 0; y < 8; y++) {
+        const sourceStart = y * 8 * 4;
+        packed.data.set(tile.data.subarray(sourceStart, sourceStart + 32), ((partY + y) * PLAYER_HEAD_BLOCK_WIDTH + 8) * 4);
+    }
+    return packed;
+}
+
+export function writePlayerHeadPaint(surface: PlayerHeadPaintSurface, packed: ImageData, updateTexture = true): void {
+    if (surface.denseLayer === undefined) surface.context.putImageData(packed, surface.x, surface.y);
+    else {
+        const partY = surface.denseLayer ? 24 : 8;
+        surface.context.putImageData(packed, surface.x - 8, surface.y - partY, 8, partY, 8, 8);
+    }
+    if (updateTexture) surface.texture.needsUpdate = true;
+}
+
 export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface): void {
-    const packed = surface.context.getImageData(surface.x, surface.y, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT);
+    const packed = readPlayerHeadPaint(surface);
     let hasHat = false;
     for (let y = PLAYER_HEAD_PART_SIZE * 2; y < PLAYER_HEAD_BLOCK_HEIGHT && !hasHat; y++) {
         for (let x = 0; x < PLAYER_HEAD_BLOCK_WIDTH; x++) {
@@ -2044,23 +2410,32 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface): void {
     context.imageSmoothingEnabled = false;
     playerHeadPartOrder.forEach((key, index) => {
         const [dx, dy] = playerHeadFaceParts[key];
-        context.putImageData(surface.context.getImageData(
-            surface.x + (index % 3) * PLAYER_HEAD_PART_SIZE,
-            surface.y + Math.floor(index / 3) * PLAYER_HEAD_PART_SIZE,
-            PLAYER_HEAD_PART_SIZE,
-            PLAYER_HEAD_PART_SIZE
-        ), dx, dy);
+        const sourceX = (index % 3) * PLAYER_HEAD_PART_SIZE;
+        const sourceY = Math.floor(index / 3) * PLAYER_HEAD_PART_SIZE;
+        context.putImageData(packed, dx - sourceX, dy - sourceY, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
     });
     const dataUrl = skin.toDataURL('image/png');
     const material = (Array.isArray(surface.mesh.material) ? surface.mesh.material[0] : surface.mesh.material) as THREE.Material;
     const atlas = playerHeadAtlases.get(material);
     const oldUrl = atlas?.slotUrls[surface.slot];
-    if (atlas) {
+    if (atlas && surface.denseLayer === undefined) {
         if (oldUrl && atlas.skins.get(oldUrl)?.slot === surface.slot) atlas.skins.delete(oldUrl);
         atlas.skins.set(dataUrl, { slot: surface.slot, hasHat });
         atlas.slotUrls[surface.slot] = dataUrl;
     }
     (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.set(surface.objectUuid, dataUrl);
+}
+
+export function getPlayerHeadTexture(objectUuid: string): string | undefined {
+    const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
+    const texture = textures?.get(objectUuid);
+    if (texture !== deferredPlayerHeadTexture) return texture;
+    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    if (!ref) return undefined;
+    const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId);
+    if (!surface) return undefined;
+    commitPlayerHeadPaint(surface);
+    return textures?.get(objectUuid);
 }
 
 export function setPlayerHeadLayerVisible(visible: boolean): void {
@@ -2107,8 +2482,9 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
     let hasHat = existing?.hasHat;
     if (!existing) {
         if (usageCount > 1) {
-            if (atlas.nextSlot >= MAX_PLAYER_HEAD_SLOTS_PER_ATLAS) throw new Error('플레이어 헤드 아틀라스 슬롯이 부족합니다.');
-            slot = atlas.nextSlot++;
+            const nextSlot = takePlayerHeadSlot(atlas);
+            if (nextSlot === undefined) throw new Error('플레이어 헤드 아틀라스 슬롯이 부족합니다.');
+            slot = nextSlot;
         } else {
             const oldUrl = atlas.slotUrls[oldSlot];
             if (oldUrl && atlas.skins.get(oldUrl)?.slot === oldSlot) atlas.skins.delete(oldUrl);
@@ -2141,7 +2517,7 @@ export async function flipPlayerHeadTextures(objectUuids: string[]): Promise<voi
         const ref = refs?.get(objectUuid);
         const flips = ref?.mesh.geometry.getAttribute('instancedUvFlip') as THREE.InstancedBufferAttribute | undefined;
         if (!ref || !flips) return null;
-        const texture = (userData.objectTextures as Map<string, string> | undefined)?.get(objectUuid) ?? DEFAULT_PLAYER_HEAD_TEXTURE;
+        const texture = getPlayerHeadTexture(objectUuid) ?? DEFAULT_PLAYER_HEAD_TEXTURE;
         const image = await loadPlayerHeadImage(texture);
         const dataUrl = playerHeadTextureDataUrl(image, flips.getX(ref.instanceId) < 0.5);
         return { objectUuid, ref, flips, dataUrl, image: dataUrl ? await loadPlayerHeadImage(dataUrl) : null };
@@ -2438,7 +2814,7 @@ export async function replaceDisplayObjects(requests: Array<{
             ?? pivotParent?.clone().applyMatrix4(oldRef.mesh.matrixWorld);
         const replacementUuid = THREE.MathUtils.generateUUID();
         const label = (ud.objectLabels as Map<string, string> | undefined)?.get(objectUuid);
-        const texture = (ud.objectTextures as Map<string, string> | undefined)?.get(objectUuid);
+        const texture = getPlayerHeadTexture(objectUuid);
         return {
             objectUuid, replacementUuid, label, groupId, oldMesh: oldRef.mesh, oldInstanceId: oldRef.instanceId,
             sceneIndex: sceneIndexes.get(objectUuid) ?? -1,

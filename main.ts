@@ -98,6 +98,26 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+type MinecraftProfile = { id: string; name: string };
+
+async function fetchMinecraftSkin(username: string): Promise<{ png: Uint8Array; username: string; model: 'classic' | 'slim' } | null> {
+  const lookup = await fetch(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(username)}`);
+  if (lookup.status === 204 || lookup.status === 404) return null;
+  if (!lookup.ok) throw new Error(`Mojang 이름 조회 실패 (${lookup.status})`);
+  const account = await lookup.json() as MinecraftProfile;
+  const profileResponse = await fetch(`https://sessionserver.mojang.com/session/minecraft/profile/${account.id}`);
+  if (!profileResponse.ok) throw new Error(`Mojang 프로필 조회 실패 (${profileResponse.status})`);
+  const profile = await profileResponse.json() as { properties?: Array<{ name: string; value: string }> };
+  const encoded = profile.properties?.find(property => property.name === 'textures')?.value;
+  if (!encoded) throw new Error('Minecraft 스킨 정보를 찾을 수 없습니다.');
+  const texture = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as { textures?: { SKIN?: { url?: string; metadata?: { model?: string } } } };
+  const skin = texture.textures?.SKIN;
+  if (!skin?.url) throw new Error('Minecraft 스킨 URL을 찾을 수 없습니다.');
+  const image = await fetch(skin.url.replace(/^http:/, 'https:'));
+  if (!image.ok) throw new Error(`Minecraft 스킨 다운로드 실패 (${image.status})`);
+  return { png: new Uint8Array(await image.arrayBuffer()), username: account.name, model: skin.metadata?.model === 'slim' ? 'slim' : 'classic' };
+}
+
 function keyMappingPresetPath(name: string): string {
   const normalized = name.trim();
   if (!normalized || normalized.length > 100 || /[<>:"/\\|?*\u0000-\u001f]|[. ]$/u.test(normalized)
@@ -449,6 +469,20 @@ function createWindow() {
       }
       const content = await fs.readFile(fullPath);
       return { success: true, content };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('get-minecraft-skin', async (_event, username: string) => {
+    try {
+      const normalized = typeof username === 'string' ? username.trim() : '';
+      if (!/^[A-Za-z0-9_]{3,16}$/.test(normalized)) throw new Error('닉네임은 영문, 숫자, 밑줄 3–16자여야 합니다.');
+      const direct = await fetchMinecraftSkin(normalized);
+      const usedFallback = !direct && normalized.toLowerCase() !== 'pangch';
+      const result = direct ?? (usedFallback ? await fetchMinecraftSkin('Pangch') : null);
+      if (!result) throw new Error('Minecraft 닉네임을 찾을 수 없습니다.');
+      return { success: true, ...result, usedFallback };
     } catch (error) {
       return { success: false, error: errorMessage(error) };
     }

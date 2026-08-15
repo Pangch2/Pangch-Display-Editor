@@ -351,6 +351,13 @@ function copyUserDataForInstance(sourceMesh: InstancedMesh, sourceId: number, ta
         targetMesh.userData.hasHat[targetId] = sourceMesh.userData.hasHat[sourceId];
     }
 
+    const imageHeadTile = sourceMesh.userData.imageHeadTilePositions?.[sourceId] as [number, number] | undefined;
+    if (imageHeadTile) {
+        targetMesh.userData.imageHeadLayer = sourceMesh.userData.imageHeadLayer;
+        targetMesh.userData.imageHeadTilePositions ??= [];
+        targetMesh.userData.imageHeadTilePositions[targetId] = [...imageHeadTile];
+    }
+
     const customPivot = sourceMesh.userData?.customPivots?.get(sourceId) ?? sourceMesh.userData?.customPivot;
     if (customPivot) {
         if (!targetMesh.userData.customPivots) targetMesh.userData.customPivots = new Map();
@@ -392,6 +399,10 @@ function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMes
     chunk.userData.displayType = sourceMesh.userData?.displayType;
     chunk.userData.displayTypes = new Map<number, string>();
     if (sourceMesh.userData?.hasHat) chunk.userData.hasHat = [];
+    if (sourceMesh.userData.imageHeadLayer !== undefined) {
+        chunk.userData.imageHeadLayer = sourceMesh.userData.imageHeadLayer;
+        chunk.userData.imageHeadTilePositions = [];
+    }
     chunk.frustumCulled = sourceMesh.frustumCulled;
     chunk.renderOrder = sourceMesh.renderOrder;
     chunk.visible = false;

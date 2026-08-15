@@ -1,6 +1,7 @@
 import {
   Camera,
   InstancedMesh,
+  Matrix3,
   Matrix4,
   Raycaster,
   RenderTarget,
@@ -14,8 +15,11 @@ import {
 import {
   commitPlayerHeadPaint,
   getPlayerHeadPaintSurface,
+  loadAndRenderPbde,
   loadedObjectGroup,
+  readPlayerHeadPaint,
   setPlayerHeadLayerVisible,
+  writePlayerHeadPaint,
   type PlayerHeadPaintSurface
 } from '../load-project/mesh-builder';
 import { currentSelection } from '../controls/selection/select';
@@ -33,6 +37,12 @@ import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
 import { oklchToRgb, openColorPicker, rgbToOklch } from './color-picker';
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { isSceneObjectVisible } from '../controls/scene-visibility';
+import { intersectSceneInstances } from '../controls/selection/instance-raycast';
+import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history';
+import { addImageHeadGrid, createHeadProject, createPlayerProject, isSlimSkin, type PlayerModel, type SkinModel } from './player-generator';
+import playerHeadIcon from '../../resources/player_head.svg?raw';
+
+const generatorPlayerHeadIcon = playerHeadIcon.replace(/stroke="[^"]+"/, 'stroke="currentColor"');
 
 type Tool = 'brush' | 'bucket' | 'eraser' | 'picker' | 'stamp' | 'select';
 type LayerMode = 'auto' | 'layer' | 'base';
@@ -64,7 +74,6 @@ type WorkSurface = {
   image: ImageData;
   changed: boolean;
 };
-
 const atlasSize = 2048;
 const blockWidth = 24;
 const blockHeight = 32;
@@ -77,10 +86,12 @@ const brushOrderKey = 'pdeHeadPainterBrushOrder';
 const paletteOrderKey = 'pdeHeadPainterPaletteOrder';
 const sectionOrderKey = 'pdeHeadPainterSectionOrder';
 const gridColorKey = 'pdeHeadPainterGridColor';
-const sectionIds = ['grid', 'brush', 'palette'] as const;
+const sectionIds = ['grid', 'brush', 'palette', 'model-generator', 'texture-generator'] as const;
 const gridOverrides = new Map<string, Partial<{ horizontal: number; vertical: number }>>();
 const raycaster = new Raycaster();
 const pointer = new Vector2();
+const paintTextureUpdateIntervalMs = 1000 / 30;
+const paintTextureUpdateTimes = new WeakMap<object, number>();
 
 let painterContext: PainterContext | null = null;
 let active = false;
@@ -117,6 +128,7 @@ let stampPixels: Array<Rgba | null> = Array(64).fill(null);
 let stroke: Map<string, WorkSurface> | null = null;
 let lastStrokeHit: PaintHit | null = null;
 let paintPointerId: number | null = null;
+let paintHeadUuid: string | null = null;
 let deferredPaint: { pointerId: number; x: number; y: number } | null = null;
 let restoreCameraControls: (() => void) | null = null;
 let altPicking = false;
@@ -132,6 +144,8 @@ let brushSelectionAnchor: { x: number; y: number } | null = null;
 let brushSelectionActive = false;
 let brushUndo: BrushAsset[] = [];
 let brushRedo: BrushAsset[] = [];
+let pointerMoveFrame = 0;
+let pendingPointerMove: PointerEvent | null = null;
 
 const clampByte = (value: number): number => Math.round(Math.min(255, Math.max(0, value)));
 const clampGrid = (value: number): number => Math.round(Math.min(8, Math.max(0, Number.isFinite(value) ? value : 0)));
@@ -211,10 +225,9 @@ function sourceOver(destination: Rgba, source: Rgba, coverage: number): Rgba {
 function getRaycastHit(deselectOnMiss = false): PaintHit | null {
   if (!painterContext) return null;
   loadedObjectGroup.updateMatrixWorld(true);
-  const intersection = raycaster.intersectObject(loadedObjectGroup, true).find(hit => {
-    if (!(hit.object as InstancedMesh).isInstancedMesh || hit.instanceId === undefined) return true;
+  const intersection = intersectSceneInstances(raycaster, loadedObjectGroup, (mesh, instanceId) => {
     const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
-      ?.get(`${hit.object.uuid}_${hit.instanceId}`);
+      ?.get(`${mesh.uuid}_${instanceId}`);
     return !uuid || isSceneObjectVisible(loadedObjectGroup, uuid);
   });
   if (!intersection) {
@@ -225,9 +238,12 @@ function getRaycastHit(deselectOnMiss = false): PaintHit | null {
   const mesh = intersection.object as InstancedMesh;
   const surface = getPlayerHeadPaintSurface(mesh, intersection.instanceId);
   if (!surface) return null;
+  const imageLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
+  const imageOverlay = imageLayer !== undefined && intersection.faceIndex >= 24;
+  if (imageLayer !== undefined && !imageOverlay) return null;
   const triangle = intersection.faceIndex % 24;
-  const actualLayer = triangle >= 12 ? 1 : 0;
-  const face = Math.floor((triangle % 12) / 2);
+  const actualLayer = imageOverlay ? imageLayer : triangle >= 12 ? 1 : 0;
+  const face = imageOverlay ? 4 : Math.floor((triangle % 12) / 2);
   const actualPart = facePartIndexes[face] + actualLayer * 6;
   const partX = (actualPart % 3) * partSize;
   const partY = Math.floor(actualPart / 3) * partSize;
@@ -239,8 +255,8 @@ function getRaycastHit(deselectOnMiss = false): PaintHit | null {
   const rows = Math.max(1, vertical);
   const x = Math.min(columns - 1, Math.floor((pixelX + 0.5) * columns / partSize));
   const y = Math.min(rows - 1, Math.floor((pixelY + 0.5) * rows / partSize));
-  const packed = surface.context.getImageData(surface.x, surface.y, blockWidth, blockHeight);
-  const layer = layerMode === 'layer' ? 1 : layerMode === 'base' ? 0
+  const packed = readPlayerHeadPaint(surface);
+  const layer = imageOverlay ? imageLayer : layerMode === 'layer' ? 1 : layerMode === 'base' ? 0
     : readPixel(packed, facePartIndexes[face] + 6, gridCellPixel(x, columns), gridCellPixel(y, rows))[3] > 0 ? 1 : 0;
   return { mesh, instanceId: intersection.instanceId, surface, face, layer, x, y, columns, rows };
 }
@@ -259,7 +275,7 @@ function getWork(hit: PaintHit): WorkSurface {
   let work = stroke.get(hit.surface.objectUuid);
   if (!work) {
     const surface = getPlayerHeadPaintSurface(hit.mesh, hit.instanceId, true)!;
-    const image = surface.context.getImageData(surface.x, surface.y, blockWidth, blockHeight);
+    const image = readPlayerHeadPaint(surface);
     const beforeTexture = (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.get(surface.objectUuid);
     work = { surface, before: cloneImage(image), beforeTexture, image, changed: false };
     stroke.set(surface.objectUuid, work);
@@ -268,8 +284,12 @@ function getWork(hit: PaintHit): WorkSurface {
 }
 
 function flushWork(work: WorkSurface): void {
-  work.surface.context.putImageData(work.image, work.surface.x, work.surface.y);
+  writePlayerHeadPaint(work.surface, work.image, false);
+  const now = performance.now();
+  const lastUpdate = paintTextureUpdateTimes.get(work.surface.texture) ?? -Infinity;
+  if (now - lastUpdate < paintTextureUpdateIntervalMs) return;
   work.surface.texture.needsUpdate = true;
+  paintTextureUpdateTimes.set(work.surface.texture, now);
 }
 
 function finishStroke(): void {
@@ -287,7 +307,7 @@ function finishStroke(): void {
   window.dispatchEvent(new CustomEvent('pde:scene-updated'));
   const apply = (key: 'before' | 'after') => {
     changes.forEach(change => {
-      change.surface.context.putImageData(change[key], change.surface.x, change.surface.y);
+      writePlayerHeadPaint(change.surface, change[key]);
       commitPlayerHeadPaint(change.surface);
       if (key === 'before') {
         const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
@@ -307,6 +327,7 @@ function endPaintPointer(): void {
   restoreCameraControls?.();
   restoreCameraControls = null;
   paintPointerId = null;
+  paintHeadUuid = null;
   deferredPaint = null;
 }
 
@@ -319,22 +340,36 @@ function brushCoverage(dx: number, dy: number, width: number, height: number, ha
   return distance <= inner || inner >= 1 ? 1 : (1 - distance) / (1 - inner);
 }
 
+function canPaintHead(sourceUuid: string | null, targetUuid: string, allowAdjacent: boolean): boolean {
+  return sourceUuid === null || sourceUuid === targetUuid || allowAdjacent;
+}
+
+const isSamePaintFace = (sourceFace: number, targetFace: number): boolean => sourceFace === targetFace;
+
 function adjacentBrushHit(hit: PaintHit, x: number, y: number): PaintHit | null {
   if (x >= 0 && x < hit.columns && y >= 0 && y < hit.rows) return { ...hit, x, y };
   if (!paintAdjacentHeads || !painterContext) return null;
 
   const scale = hit.layer ? 1.0625 : 1;
   const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(hit.face, scale);
-  const horizontal = gridCellCenter(x, hit.columns);
-  const vertical = 1 - gridCellCenter(y, hit.rows);
-  pointer.copy(origin.clone()
-    .addScaledVector(horizontalAxis, horizontal)
-    .addScaledVector(verticalAxis, vertical)
-    .applyMatrix4(getInstanceWorldMatrix(hit.mesh, hit.instanceId, new Matrix4()))
-    .project(painterContext.getCamera()));
-  raycaster.setFromCamera(pointer, painterContext.getCamera());
+  const matrix = getInstanceWorldMatrix(hit.mesh, hit.instanceId, new Matrix4());
+  const target = origin.clone()
+    .addScaledVector(horizontalAxis, gridCellCenter(x, hit.columns))
+    .addScaledVector(verticalAxis, 1 - gridCellCenter(y, hit.rows))
+    .applyMatrix4(matrix);
+  const normal = origin.clone()
+    .addScaledVector(horizontalAxis, 0.5)
+    .addScaledVector(verticalAxis, 0.5)
+    .sub(new Vector3(0, -0.5, 0))
+    .applyNormalMatrix(new Matrix3().getNormalMatrix(matrix));
+  const rayLength = Math.max(matrix.getMaxScaleOnAxis() * 1e-4, Number.EPSILON);
+  raycaster.ray.set(target.addScaledVector(normal, rayLength), normal.negate());
+  const previousFar = raycaster.far;
+  raycaster.far = rayLength * 2;
   const adjacentHit = getRaycastHit();
-  return adjacentHit?.surface.objectUuid === hit.surface.objectUuid ? null : adjacentHit;
+  raycaster.far = previousFar;
+  if (!adjacentHit || adjacentHit.surface.objectUuid === hit.surface.objectUuid || !isSamePaintFace(hit.face, adjacentHit.face)) return null;
+  return adjacentHit;
 }
 
 function centeredOffsets(width: number, height: number): Array<{ index: number; x: number; y: number }> {
@@ -483,7 +518,7 @@ function fillAt(hit: PaintHit): void {
 }
 
 function copyStamp(hit: PaintHit): void {
-  const image = hit.surface.context.getImageData(hit.surface.x, hit.surface.y, blockWidth, blockHeight);
+  const image = readPlayerHeadPaint(hit.surface);
   const part = facePartIndexes[hit.face] + hit.layer * 6;
   stampPixels = centeredOffsets(stampWidth, stampHeight).map(({ x: offsetX, y: offsetY }) => {
     const x = hit.x + offsetX;
@@ -605,6 +640,7 @@ function onPointerDown(event: PointerEvent): void {
   const hit = getHit(event, true);
   if (!hit) return;
   paintPointerId = event.pointerId;
+  paintHeadUuid = hit.surface.objectUuid;
   restoreCameraControls = painterContext.suspendCameraControls();
   paintAt(hit);
 }
@@ -635,14 +671,15 @@ function paintAt(hit: PaintHit): void {
   else continueStroke(hit);
 }
 
-function onPointerMove(event: PointerEvent): void {
+function processPointerMove(event: PointerEvent): void {
   if (!active || !painterContext) return;
   if (event.target !== painterContext.renderer.domElement || painterContext.isGizmoHovered()) {
     removeHeadPainterStampPreview();
     finishStroke();
     return;
   }
-  const hit = getHit(event);
+  const candidate = getHit(event);
+  const hit = candidate && canPaintHead(paintHeadUuid, candidate.surface.objectUuid, paintAdjacentHeads) ? candidate : null;
   if (lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp') && hit) {
     updateHeadPainterStampPreview(painterContext.scene, getStampCells(hit, true).map(cell => cell.hit), gridBoundary);
   } else if (lastTool === 'stamp' && hit) {
@@ -659,7 +696,28 @@ function onPointerMove(event: PointerEvent): void {
   paintAt(hit);
 }
 
+function flushPointerMove(): void {
+  if (pointerMoveFrame) cancelAnimationFrame(pointerMoveFrame);
+  pointerMoveFrame = 0;
+  const event = pendingPointerMove;
+  pendingPointerMove = null;
+  if (event) processPointerMove(event);
+}
+
+function onPointerMove(event: PointerEvent): void {
+  if (!active) return;
+  pendingPointerMove = event;
+  if (pointerMoveFrame) return;
+  pointerMoveFrame = requestAnimationFrame(() => {
+    pointerMoveFrame = 0;
+    const next = pendingPointerMove;
+    pendingPointerMove = null;
+    if (next) processPointerMove(next);
+  });
+}
+
 function onPointerUp(event: PointerEvent): void {
+  flushPointerMove();
   if (event.pointerId === deferredPaint?.pointerId) {
     const click = event.type === 'pointerup' && Math.hypot(event.clientX - deferredPaint.x, event.clientY - deferredPaint.y) < 6;
     deferredPaint = null;
@@ -1378,13 +1436,16 @@ function initSectionReordering(): void {
   if (!root) return;
   const sections = () => [...root!.querySelectorAll<HTMLElement>(':scope > [data-head-painter-section]')];
   const clearPreview = () => sections().forEach(section => section.classList.remove('head-painter-section-drop-before', 'head-painter-section-drop-after'));
-  const isCompleteOrder = (value: unknown): value is string[] => Array.isArray(value)
-    && value.length === sectionIds.length
-    && sectionIds.every(id => value.includes(id));
+  const completeOrder = (value: unknown): string[] | null => {
+    if (!Array.isArray(value) || value.some(id => !sectionIds.includes(id))) return null;
+    const known = value.filter((id): id is typeof sectionIds[number] => sectionIds.includes(id));
+    return [...new Set([...known, ...sectionIds])];
+  };
   try {
     const savedOrder: unknown = JSON.parse(localStorage.getItem(sectionOrderKey) ?? 'null');
-    if (isCompleteOrder(savedOrder)) sections()
-      .sort((a, b) => savedOrder.indexOf(a.dataset.headPainterSection!) - savedOrder.indexOf(b.dataset.headPainterSection!))
+    const order = completeOrder(savedOrder);
+    if (order) sections()
+      .sort((a, b) => order.indexOf(a.dataset.headPainterSection!) - order.indexOf(b.dataset.headPainterSection!))
       .forEach(section => root!.append(section));
   } catch {
     // Ignore invalid saved order.
@@ -1471,7 +1532,127 @@ function initSectionReordering(): void {
       window.addEventListener('keydown', cancelWithEscape);
     };
   }));
-  if (import.meta.env.DEV) console.assert(isCompleteOrder([...sectionIds]) && !isCompleteOrder(['grid']), 'Head Painter section order validation failed.');
+  if (import.meta.env.DEV) console.assert(completeOrder(['grid', 'brush', 'palette'])?.join() === sectionIds.join(), 'Head Painter section order migration failed.');
+}
+
+function initPlayerGenerator(): void {
+  if (!root) return;
+  const section = root.querySelector<HTMLElement>('[data-head-painter-section="model-generator"]')!;
+  const skinInput = section.querySelector<HTMLInputElement>('[data-skin-file]')!;
+  const imageInput = section.querySelector<HTMLInputElement>('[data-image-file]')!;
+  const slimInput = section.querySelector<HTMLInputElement>('[data-slim]')!;
+  const status = section.querySelector<HTMLElement>('[data-generator-status]')!;
+  let target: 'player' | 'head' | 'image' = 'player';
+  let playerModel: PlayerModel | null = null;
+  let imageLayer: 0 | 1 = 0;
+  let busy = false;
+
+  const sync = () => {
+    section.querySelectorAll<HTMLButtonElement>('[data-generator-target]').forEach(button => {
+      const selected = button.dataset.generatorTarget === target;
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-pressed', String(selected));
+    });
+    section.querySelectorAll<HTMLButtonElement>('[data-player-model]').forEach(button => {
+      const selected = button.dataset.playerModel === playerModel;
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-pressed', String(selected));
+    });
+    section.querySelector<HTMLElement>('[data-player-options]')!.hidden = target !== 'player';
+    section.querySelector<HTMLElement>('[data-skin-controls]')!.hidden = target === 'image' || (target === 'player' && !playerModel);
+    section.querySelector<HTMLElement>('[data-image-controls]')!.hidden = target !== 'image';
+  };
+  const setBusy = (value: boolean) => {
+    busy = value;
+    section.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input').forEach(control => { control.disabled = value; });
+  };
+  const decodePng = async (value: Blob): Promise<HTMLCanvasElement> => {
+    const bitmap = await createImageBitmap(value);
+    try {
+      if (bitmap.width !== 64 || bitmap.height !== 64) throw new Error('64×64 PNG만 사용할 수 있습니다.');
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 64;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) throw new Error('스킨 캔버스를 만들 수 없습니다.');
+      context.imageSmoothingEnabled = false;
+      context.drawImage(bitmap, 0, 0);
+      return canvas;
+    } finally {
+      bitmap.close();
+    }
+  };
+  const merge = async (file: File, message: string) => {
+    const before = captureSceneState(loadedObjectGroup);
+    await loadAndRenderPbde(file, true);
+    recordSceneChange(loadedObjectGroup, before);
+    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    status.textContent = message;
+  };
+  const run = async (action: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    status.textContent = '생성 중…';
+    try {
+      await action();
+    } catch (error) {
+      status.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const generateFromSkin = async (canvas: HTMLCanvasElement, skinModel: SkinModel, suffix = '') => {
+    slimInput.checked = skinModel === 'slim';
+    const file = target === 'head' ? createHeadProject(canvas) : createPlayerProject(canvas, playerModel!, skinModel);
+    await merge(file, `${target === 'head' ? 'Head' : 'Player'} 생성 완료${suffix}`);
+  };
+
+  section.querySelectorAll<HTMLButtonElement>('[data-generator-target]').forEach(button => button.onclick = () => {
+    target = button.dataset.generatorTarget as typeof target;
+    sync();
+  });
+  section.querySelectorAll<HTMLButtonElement>('[data-player-model]').forEach(button => button.onclick = () => {
+    playerModel = button.dataset.playerModel as PlayerModel;
+    sync();
+  });
+  section.querySelector<HTMLButtonElement>('[data-load-skin]')!.onclick = () => skinInput.click();
+  skinInput.onchange = () => void run(async () => {
+    const file = skinInput.files?.[0];
+    skinInput.value = '';
+    if (!file || file.type !== 'image/png') throw new Error('PNG 파일을 선택해 주세요.');
+    const canvas = await decodePng(file);
+    const pixels = canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, 64, 64).data;
+    await generateFromSkin(canvas, isSlimSkin(pixels) ? 'slim' : 'classic');
+  });
+  section.querySelector<HTMLButtonElement>('[data-load-username]')!.onclick = () => void run(async () => {
+    const input = section.querySelector<HTMLInputElement>('[data-username]')!;
+    if (!input.reportValidity()) throw new Error('닉네임은 영문, 숫자, 밑줄 3–16자로 입력해 주세요.');
+    const result = await window.ipcApi.getMinecraftSkin(input.value);
+    if (!result.success || !result.png || !result.model) throw new Error(result.error ?? '스킨을 불러오지 못했습니다.');
+    input.value = result.username ?? input.value;
+    const png = new Uint8Array(result.png.byteLength);
+    png.set(result.png);
+    await generateFromSkin(await decodePng(new Blob([png], { type: 'image/png' })), result.model, result.usedFallback ? ' · Pangch 대체' : '');
+  });
+  section.querySelectorAll<HTMLButtonElement>('[data-image-layer]').forEach(button => button.onclick = () => {
+    imageLayer = Number(button.dataset.imageLayer) as 0 | 1;
+    imageInput.click();
+  });
+  imageInput.onchange = () => void run(async () => {
+    const file = imageInput.files?.[0];
+    imageInput.value = '';
+    if (!file || file.type !== 'image/png') throw new Error('PNG 파일을 선택해 주세요.');
+    const bitmap = await createImageBitmap(file);
+    try {
+      const before = captureSceneState(loadedObjectGroup);
+      const count = addImageHeadGrid(bitmap, imageLayer, file.name);
+      recordSceneChange(loadedObjectGroup, before);
+      window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+      status.textContent = `이미지 ${imageLayer + 1}번 레이어 · ${count.toLocaleString()}개 생성 완료`;
+    } finally {
+      bitmap.close();
+    }
+  });
+  sync();
 }
 
 function createPanel(): void {
@@ -1526,9 +1707,37 @@ function createPanel(): void {
       <div class="head-painter-palette-actions"><button type="button" data-sort>색 정렬</button><button type="button" data-clear>지우기</button></div>
       <div class="head-painter-preset"><button class="head-painter-preset-button" type="button">팔레트 목록</button><div class="head-painter-preset-menu" hidden></div></div>
     </fieldset>
+    </div>
+    <div class="head-painter-section" data-head-painter-section="model-generator">
+      <fieldset class="head-painter-generator">
+        <legend>모델 생성</legend>
+        <div class="head-painter-generator-tabs">
+          <button type="button" data-generator-target="player"><span class="lucide-icon">\uE19F</span> Player</button>
+          <button type="button" data-generator-target="head" aria-label="Head">${generatorPlayerHeadIcon}</button>
+          <button type="button" data-generator-target="image"><span class="lucide-icon">\uE0F6</span> 이미지</button>
+        </div>
+        <div data-player-options>
+          <div class="head-painter-generator-tabs"><button type="button" data-player-model="default"><span class="lucide-icon">\uE19F</span> 기본</button><button type="button" data-player-model="animation"><span class="lucide-icon">\uE1A2</span> 애니메이션</button></div>
+          <label class="head-painter-generator-check"><input type="checkbox" data-slim> 슬림</label>
+        </div>
+        <div class="head-painter-generator-load" data-skin-controls hidden>
+          <button type="button" data-load-skin><span class="lucide-icon">\uE091</span> 텍스쳐 기반 불러오기</button>
+          <div><input data-username required pattern="[A-Za-z0-9_]{3,16}" minlength="3" maxlength="16" placeholder="닉네임" aria-label="Minecraft 닉네임"><button type="button" data-load-username><span class="lucide-icon">\uE19E</span> 닉네임으로 불러오기</button></div>
+          <input data-skin-file type="file" accept="image/png" hidden>
+        </div>
+        <div class="head-painter-generator-tabs" data-image-controls hidden>
+          <button type="button" data-image-layer="0"><span class="lucide-icon">\uE0F6</span> 1번 레이어</button><button type="button" data-image-layer="1"><span class="lucide-icon">\uE5C4</span> 2번 레이어</button>
+          <input data-image-file type="file" accept="image/png" hidden>
+        </div>
+        <small data-generator-status role="status" aria-live="polite"></small>
+      </fieldset>
+    </div>
+    <div class="head-painter-section" data-head-painter-section="texture-generator">
+      <fieldset><legend>텍스쳐 생성</legend><button type="button"><span class="lucide-icon">\uE1D3</span> 텍스쳐 생성</button></fieldset>
     </div>`;
   document.getElementById('head-painter')!.append(root);
   initSectionReordering();
+  initPlayerGenerator();
   createBrushEditor();
 
   root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.onclick = () => setTool(button.dataset.tool as Tool));
@@ -1719,6 +1928,8 @@ if (import.meta.env.DEV) {
   console.assert(smartHorizontal === 2 && smartVertical === 8 && partSize % smartHorizontal === 0 && partSize % smartVertical === 0 && smartCounts(0, 8, 1, 3)[0] === 0, 'Smart grid limits failed.');
   console.assert(gridBoundary(1, 4) === 2 && gridBoundary(2, 4) === 4, 'Grid paint boundaries failed.');
   console.assert(gridCellCenter(-1, 8) === -0.0625 && gridCellCenter(8, 8) === 1.0625, 'Adjacent head brush projection failed.');
+  console.assert(canPaintHead('first', 'first', false) && !canPaintHead('first', 'second', false) && canPaintHead('first', 'second', true), 'Adjacent head paint restriction failed.');
+  console.assert(isSamePaintFace(2, 2) && !isSamePaintFace(2, 0), 'Adjacent head brush changed faces.');
   console.assert(centeredOffsets(2, 1).map(offset => offset.x).join() === '-1,0' && centeredOffsets(3, 1).map(offset => offset.x).join() === '-1,0,1', 'Centered paint offsets failed.');
   const [sideOrigin, sideHorizontal] = getHeadPainterFaceAxes(0, 1);
   const [topOrigin, topHorizontal, topVertical] = getHeadPainterFaceAxes(2, 1);

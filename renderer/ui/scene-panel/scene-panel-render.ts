@@ -88,7 +88,11 @@ function makeObjectRow(row: ScenePanelRow): HTMLElement {
 
     const leftIcon = document.createElement('span');
     leftIcon.className = `scene-icon ${isTextDisplay ? 'icon-text' : isItemDisplay ? 'icon-item' : 'icon-box'}`;
-    leftIcon.innerHTML = isTextDisplay ? '&#xE198;' : rawName.startsWith('player_head') && ud.objectTextures?.get(uuid)?.startsWith('data:image/png;base64') ? '&#xE1D3;' : isItemDisplay ? '&#xE5C6;' : '&#xE061;';
+    const isPaintedHead = rawName.startsWith('player_head') && (
+        ud.objectTextures?.get(uuid)?.startsWith('data:image/png;base64')
+        || ud.objectUuidToInstance?.get(uuid)?.mesh.userData.imageHeadLayer !== undefined
+    );
+    leftIcon.innerHTML = isTextDisplay ? '&#xE198;' : isPaintedHead ? '&#xE1D3;' : isItemDisplay ? '&#xE5C6;' : '&#xE061;';
 
     const nameEl = document.createElement('span');
     nameEl.className = 'scene-name';

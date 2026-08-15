@@ -124,9 +124,61 @@
 
 .head-painter-tool.active,
 .head-painter-custom-brush button.active,
-.head-painter-basic-brushes button.active {
+.head-painter-basic-brushes button.active,
+.head-painter-generator button.active {
   border-color: #70c7ff;
   color: #70c7ff;
+}
+
+.head-painter-generator > div {
+  display: grid;
+  gap: 5px;
+}
+
+.head-painter-generator-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+[data-player-options] .head-painter-generator-tabs,
+[data-image-controls] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.head-painter-generator-tabs button,
+.head-painter-generator-load > button {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.head-painter-generator-tabs svg {
+  width: 18px;
+  height: 18px;
+}
+
+.head-painter-generator-check {
+  display: flex !important;
+  margin-top: 5px;
+  gap: 5px;
+}
+
+.head-painter-generator-load {
+  display: grid;
+  gap: 5px;
+}
+
+.head-painter-generator-load > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+}
+
+.head-painter-generator [role="status"]:not(:empty) {
+  min-height: 1.2em;
 }
 
 .head-painter-inline,

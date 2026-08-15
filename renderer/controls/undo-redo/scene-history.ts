@@ -115,6 +115,7 @@ export interface SceneSnapshot {
     children: Object3D[];
     objects: ObjectSnapshot[];
     userData: Record<string, unknown>;
+    playerHeadAtlases?: unknown;
     selection: HistorySelection | null;
     gizmo: HistoryGizmoState | null;
     metadataOnly: boolean;
@@ -378,10 +379,12 @@ if (import.meta.env.DEV) {
 export function captureSceneState(root: Group, metadataOnly = false): SceneSnapshot {
     const objects: ObjectSnapshot[] = [];
     if (!metadataOnly) root.traverse(object => { if (object !== root) objects.push(captureObject(object)); });
+    const capturePlayerHeadAtlases = root.userData.capturePlayerHeadAtlasState as (() => unknown) | undefined;
     return {
         children: metadataOnly ? [] : [...root.children],
         objects,
         userData: cloneValue(root.userData),
+        playerHeadAtlases: metadataOnly ? undefined : capturePlayerHeadAtlases?.(),
         selection: captureSelection(),
         gizmo: captureGizmoState ? cloneValue(captureGizmoState()) : null,
         metadataOnly
@@ -389,6 +392,7 @@ export function captureSceneState(root: Group, metadataOnly = false): SceneSnaps
 }
 
 export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
+    const currentPlayerHeadAtlasRestore = root.userData.restorePlayerHeadAtlasState as ((state: unknown) => void) | undefined;
     if (snapshot.transform) {
         restoreTransformState(root, snapshot.transform);
     } else if (!snapshot.metadataOnly) {
@@ -422,6 +426,10 @@ export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
         }
     }
     if (!snapshot.transform) root.userData = cloneValue(snapshot.userData);
+    if (!snapshot.transform && !snapshot.metadataOnly) {
+        const restorePlayerHeadAtlases = root.userData.restorePlayerHeadAtlasState as ((state: unknown) => void) | undefined;
+        (restorePlayerHeadAtlases ?? currentPlayerHeadAtlasRestore)?.(snapshot.playerHeadAtlases);
+    }
     if (currentSelection && snapshot.selection) {
         currentSelection.groups = new Set(snapshot.selection.groups);
         currentSelection.objects = new Map(Array.from(snapshot.selection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));

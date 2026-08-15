@@ -1,7 +1,7 @@
 import { Euler, InstancedMesh, Matrix4, Mesh, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectedItem, SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
+import { getPlayerHeadTexture, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
 import type { TextDisplayOptions } from '../load-project/text-display';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel/scene-panel-types';
@@ -1129,7 +1129,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         metadataSection.firstElementChild!.className = 'object-metadata-title';
         section.append(metadataSection);
         const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
-        const texture = textures?.get(uuid);
+        const texture = name.startsWith('player_head') ? getPlayerHeadTexture(uuid) : textures?.get(uuid);
         if (name.startsWith('player_head')) {
             const input = document.createElement('input');
             input.value = texture ?? '';
@@ -1139,7 +1139,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 const next = input.value;
                 await updatePlayerHeadTexture(uuid, next);
                 const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
-                const partnerPrevious = partnerUuid ? textures?.get(partnerUuid) ?? '' : '';
+                const partnerPrevious = partnerUuid ? getPlayerHeadTexture(partnerUuid) ?? '' : '';
                 if (partnerUuid) await updatePlayerHeadTexture(partnerUuid, next);
                 const apply = async (value: string, partnerValue = value) => {
                     await updatePlayerHeadTexture(uuid, value);

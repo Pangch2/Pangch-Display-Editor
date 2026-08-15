@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('ipcApi', {
   loadPainterAsset: (kind: PainterAssetType, name: string) => ipcRenderer.invoke('load-painter-asset', kind, name),
   savePainterAsset: (kind: PainterAssetType, name: string, data: unknown) => ipcRenderer.invoke('save-painter-asset', kind, name, data),
   deletePainterAsset: (kind: PainterAssetType, name: string) => ipcRenderer.invoke('delete-painter-asset', kind, name),
+  getMinecraftSkin: (username: string) => ipcRenderer.invoke('get-minecraft-skin', username),
   // 리스너 정리 (메모리 누수 방지)
   removeAllListeners: (channel: AssetEventChannel) => {
     const validChannels = ['assets-downloaded', 'assets-download-failed'];

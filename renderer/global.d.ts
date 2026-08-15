@@ -18,6 +18,15 @@ declare interface LoadingIconResult {
 
 declare type PainterAssetKind = 'brush' | 'palette';
 
+declare interface MinecraftSkinResult {
+  success: boolean;
+  png?: Uint8Array;
+  username?: string;
+  model?: 'classic' | 'slim';
+  usedFallback?: boolean;
+  error?: string;
+}
+
 declare interface IpcApi {
   getAssetContent(path: string): Promise<AssetContentResult>;
   saveIconAtlas(name: 'block-atlas.png' | 'item-atlas.png', data: Uint8Array): Promise<{ success: boolean; error?: string }>;
@@ -35,6 +44,7 @@ deleteKeyMappingPreset(name: string): Promise<{ success: boolean; error?: string
   loadPainterAsset(kind: PainterAssetKind, name: string): Promise<{ success: boolean; data?: unknown; error?: string }>;
   savePainterAsset(kind: PainterAssetKind, name: string, data: unknown): Promise<{ success: boolean; error?: string }>;
   deletePainterAsset(kind: PainterAssetKind, name: string): Promise<{ success: boolean; error?: string }>;
+  getMinecraftSkin(username: string): Promise<MinecraftSkinResult>;
   on?: (channel: string, listener: (...args: unknown[]) => void) => void;
   removeAllListeners?: (channel: string) => void;
   send?: (channel: string, ...args: unknown[]) => void;
