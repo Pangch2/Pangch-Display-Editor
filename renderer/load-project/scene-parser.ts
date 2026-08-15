@@ -275,6 +275,13 @@ function isHardcodedModelId(modelId) {
     return !/^item\/.*sign$/i.test(path) && isHardcodedModelPath(path);
 }
 
+function specialItemGeometryModelId(model: any): string | null {
+    const type = model?.model?.type;
+    if (typeof type !== 'string') return null;
+    const { ns, path } = nsAndPathFromId(type);
+    return isHardcodedModelPath(path) ? `${ns}:item/${path}` : null;
+}
+
 // 주어진 모델 ID에서 가능한 하드코딩 파일 경로 후보를 생성한다.
 function getHardcodedModelCandidates(modelId) {
     const { path } = nsAndPathFromId(modelId);
@@ -347,6 +354,10 @@ if (import.meta.env.DEV) {
     console.assert(
         !isHardcodedModelId('minecraft:item/oak_sign') && isHardcodedModelId('minecraft:block/oak_sign'),
         'Sign item models must remain generated sprites.'
+    );
+    console.assert(
+        specialItemGeometryModelId({ model: { type: 'minecraft:banner' } }) === 'minecraft:item/banner',
+        'Special item geometry lookup failed.'
     );
 }
 
@@ -961,6 +972,25 @@ function processBlockDisplay(item: any): RenderItem | null {
     return template ? cloneBlockDisplayTemplate(template) : null;
 }
 
+const bannerDyeColors: Record<string, number> = {
+    white: 0xf9fffe, orange: 0xf9801d, magenta: 0xc74ebd, light_blue: 0x3ab3da,
+    yellow: 0xfed83d, lime: 0x80c71f, pink: 0xf38baa, gray: 0x474f52,
+    light_gray: 0x9d9d97, cyan: 0x169c9c, purple: 0x8932b8, blue: 0x3c44aa,
+    brown: 0x835432, green: 0x5e7c16, red: 0xb02e26, black: 0x1d1d21,
+};
+
+function getBannerColorHex(name: unknown): number | null {
+    const color = String(name ?? '').toLowerCase().match(/(?:^|\W)(white|orange|magenta|light_blue|yellow|lime|pink|gray|light_gray|cyan|purple|blue|brown|green|red|black)_(?:wall_)?banner(?:$|\W)/)?.[1];
+    return color ? bannerDyeColors[color] : null;
+}
+
+if (import.meta.env.DEV) {
+    console.assert(
+        getBannerColorHex('red_banner') === 0xb02e26 && getBannerColorHex('minecraft:light_blue_banner') === 0x3ab3da,
+        'Banner dye color lookup failed.'
+    );
+}
+
 async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplate | null> {
     try {
         const { baseName, props } = blockNameToBaseAndProps(item.name);
@@ -1031,34 +1061,7 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
         const allGeometryData = [];
         const volumes: BlockDisplayTemplate['volumes'] = [];
         let fromHardcoded = false;
-        // 항목명에서 "red_banner" 형태의 문자열을 분석해 틴트 색상을 추출한다.
-        let bannerColorHex = null;
-        try {
-            const nameLower = String(item.name || '').toLowerCase();
-            const m = nameLower.match(/(?:^|\W)(white|orange|magenta|light_blue|yellow|lime|pink|gray|light_gray|cyan|purple|blue|brown|green|red|black)_(?:wall_)?banner(?:$|\W)/);
-            if (m) {
-                const colorName = m[1];
-                const dyeMap = {
-                    white: 0xf9fffe,
-                    orange: 0xf9801d,
-                    magenta: 0xc74ebd,
-                    light_blue: 0x3ab3da,
-                    yellow: 0xfed83d,
-                    lime: 0x80c71f,
-                    pink: 0xf38baa,
-                    gray: 0x474f52,
-                    light_gray: 0x9d9d97,
-                    cyan: 0x169c9c,
-                    purple: 0x8932b8,
-                    blue: 0x3c44aa,
-                    brown: 0x835432,
-                    green: 0x5e7c16,
-                    red: 0xb02e26,
-                    black: 0x1d1d21,
-                };
-                bannerColorHex = dyeMap[colorName] ?? null;
-            }
-        } catch { /* ignore */ }
+        const bannerColorHex = getBannerColorHex(item.name);
         for (const apply of modelsToBuild) {
             if (!apply?.model) continue;
             const resolved = await resolveModelTree(apply.model, modelCache);
@@ -1643,11 +1646,11 @@ export async function buildItemIconModels(name: string, provider: PbdeAssetProvi
     }] : null;
 }
 
-async function buildItemModelGeometryData(resolved) {
+async function buildItemModelGeometryData(resolved, name: string) {
     if (!resolved) return null;
     if (resolved.elements && resolved.elements.length > 0) {
         // 큐브 요소가 존재하면 블록 모델 경로를 재사용한다.
-        return await buildBlockModelGeometryData(resolved);
+        return await buildBlockModelGeometryData(resolved, { bannerColorHex: getBannerColorHex(name) });
     }
     // generated 또는 builtin 계열은 단순 평면 지오메트리로 처리한다.
     const layer0 = extractLayer0Texture(resolved);
@@ -1668,14 +1671,17 @@ async function buildItemModelGeometryData(resolved) {
     return buildGeneratedPlaneGeometry(layer0, tintHex);
 }
 
-async function buildItemModelTemplate(baseName: string, displayType: string | null, modelId: string, tintList: number[] | null): Promise<ItemModelTemplate | null> {
+async function buildItemModelTemplate(baseName: string, displayType: string | null, modelId: string, displayModelId: string | null, tintList: number[] | null): Promise<ItemModelTemplate | null> {
     let resolved = await resolveModelTree(modelId, modelTreeCache);
     if (!resolved) {
         return null;
     }
+    const displayResolved = displayModelId && displayModelId !== modelId
+        ? await resolveModelTree(displayModelId, modelTreeCache) ?? resolved
+        : resolved;
 
     const hasElements = !!(resolved.elements && resolved.elements.length > 0);
-    const geomData = await buildItemModelGeometryData(resolved);
+    const geomData = await buildItemModelGeometryData(resolved, baseName);
     if (!geomData || geomData.length === 0) {
         return null;
     }
@@ -1695,7 +1701,7 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
         const displayModelMatrix = modelMatrix.clone();
         if (type) {
             try {
-                const displayTransform = await getDisplayTransformForItem(resolved, type, modelTreeCache);
+                const displayTransform = await getDisplayTransformForItem(displayResolved, type, modelTreeCache);
                 const displayMatrix = buildDisplayTransformMatrix(displayTransform);
                 if (displayMatrix) displayModelMatrix.premultiply(displayMatrix);
             } catch { /* Display lookup failures keep the base model matrix. */ }
@@ -1744,6 +1750,7 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
         //try { console.log('[ItemModel] start', node.name, 'base', baseName); } catch {}
         const definition = await loadItemDefinition(baseName);
         let modelId;
+        let displayModelId = null;
         let tintList = null;
         if (definition && definition.model) {
             if (typeof definition.model === 'string') {
@@ -1752,6 +1759,9 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
                 // 예상 구조: { type: 'minecraft:model', model: 'minecraft:block/grass_block', tints: [...] }
                 if (typeof definition.model.model === 'string') {
                     modelId = definition.model.model;
+                } else if (typeof definition.model.base === 'string') {
+                    displayModelId = definition.model.base;
+                    modelId = specialItemGeometryModelId(definition.model) ?? displayModelId;
                 }
                 if (Array.isArray(definition.model.tints)) tintList = definition.model.tints.slice();
             }
@@ -1762,7 +1772,7 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
         }
 
         const tintKey = tintList ? JSON.stringify(tintList) : '';
-        const cacheKey = `${baseName}|${modelId}|${displayType || ''}|${tintKey}`;
+        const cacheKey = `${baseName}|${modelId}|${displayModelId ?? ''}|${displayType || ''}|${tintKey}`;
         itemModelTemplateKeyByName.set(rawName, cacheKey);
 
         if (itemModelTemplateCache.has(cacheKey)) {
@@ -1771,7 +1781,7 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
 
         let templatePromise = itemModelTemplatePromiseCache.get(cacheKey);
         if (!templatePromise) {
-            templatePromise = buildItemModelTemplate(baseName, displayType || null, modelId, tintList);
+            templatePromise = buildItemModelTemplate(baseName, displayType || null, modelId, displayModelId, tintList);
             itemModelTemplatePromiseCache.set(cacheKey, templatePromise);
         }
         const template = await templatePromise;

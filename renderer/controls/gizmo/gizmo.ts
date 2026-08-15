@@ -35,7 +35,7 @@ import { initDrag, applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState } from '../input/handle-key';
 import { isShortcutPressed } from '../input/shortcuts';
-import { captureSceneState, captureTransformState, recordSceneChange, restoreSceneState, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
+import { captureSceneState, captureSelectionTransformState, recordSceneChange, restoreSceneState, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
 import type { DragInterface } from '../selection/drag';
 import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
@@ -478,6 +478,29 @@ let dragHistoryBefore: SceneSnapshot | null = null;
 let _dragPreviewActive = false;
 let _dragSelectedIdsByMesh = new Map<InstancedMesh, Set<number>>();
 
+function captureDragHistoryBefore(): void {
+    if (dragHistoryBefore) return;
+    if (isVertexMode || (transformControls!.mode === 'scale' && isSmartScaleEnabled())) {
+        dragHistoryBefore = captureSceneState(loadedObjectGroup);
+        return;
+    }
+
+    const objects = new Map<Mesh | InstancedMesh, Set<number>>(
+        Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)])
+    );
+    const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
+    linked.objects.forEach((ids, mesh) => {
+        const affectedIds = objects.get(mesh) ?? new Set<number>();
+        ids.forEach(id => affectedIds.add(id));
+        objects.set(mesh, affectedIds);
+    });
+    dragHistoryBefore = captureSelectionTransformState(
+        loadedObjectGroup,
+        objects,
+        new Set([...currentSelection.groups, ...linked.groups])
+    );
+}
+
 function snapFromStart(current: number, start: number, step: number): number {
     return start + Math.round((current - start) / step) * step;
 }
@@ -591,6 +614,7 @@ function flushSelectionTransform(): void {
     if (!selectionTransformDirty) return;
     selectionTransformDirty = false;
     if (_pendingHelperMatrix.equals(previousHelperMatrix)) return;
+    captureDragHistoryBefore();
 
     _tmpPrevInvMatrix.copy(previousHelperMatrix).invert();
     _tmpDeltaMatrix.multiplyMatrices(_pendingHelperMatrix, _tmpPrevInvMatrix);
@@ -1236,6 +1260,7 @@ export function initGizmo({
     transformControls.addEventListener('dragging-changed', (event: { value: boolean }) => {
         controls.enabled = !event.value;
         if (event.value) {
+            dragHistoryBefore = null;
             const items = getSelectedItems();
             const meshToInstanceIds = new Map<Object3D, number[]>();
             for (const { mesh, instanceId } of items) {
@@ -1251,44 +1276,6 @@ export function initGizmo({
             for (const [mesh, instanceIds] of meshToInstanceIds) {
                 _meshToInstanceRanges.set(mesh, mergeInstanceIds(instanceIds));
             }
-
-            const needsFullHistory = isVertexMode || isPivotEditMode
-                || (transformControls!.mode === 'scale' && isSmartScaleEnabled())
-                || items.some(({ mesh }) => !(mesh as InstancedMesh).isInstancedMesh);
-            if (needsFullHistory) {
-                dragHistoryBefore = captureSceneState(loadedObjectGroup);
-            } else {
-                const affectedObjects = new Map<InstancedMesh, Set<number>>();
-                const addObject = (mesh: InstancedMesh, instanceId: number): void => {
-                    const ids = affectedObjects.get(mesh) ?? new Set<number>();
-                    ids.add(instanceId);
-                    affectedObjects.set(mesh, ids);
-                };
-                items.forEach(({ mesh, instanceId }) => addObject(mesh as InstancedMesh, instanceId));
-
-                const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
-                for (const [mesh, ids] of linked.objects) {
-                    if (!(mesh as InstancedMesh).isInstancedMesh) continue;
-                    ids.forEach(instanceId => addObject(mesh as InstancedMesh, instanceId));
-                }
-                for (const groupId of linked.groups) {
-                    GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId).forEach(({ mesh, instanceId }) => {
-                        if ((mesh as InstancedMesh).isInstancedMesh) addObject(mesh as InstancedMesh, instanceId);
-                    });
-                }
-
-                const affectedGroupIds = new Set<string>();
-                for (const groupId of [...currentSelection.groups, ...linked.groups]) {
-                    affectedGroupIds.add(groupId);
-                    GroupUtils.getAllDescendantGroups(loadedObjectGroup, groupId).forEach(id => affectedGroupIds.add(id));
-                }
-                dragHistoryBefore = captureTransformState(
-                    loadedObjectGroup,
-                    affectedObjects,
-                    affectedGroupIds
-                );
-            }
-
             Overlay.prepareMultiSelectionDrag(currentSelection);
             draggingMode = transformControls!.mode;
             selectionTransformDirty = false;
@@ -1355,8 +1342,6 @@ export function initGizmo({
             }
 
         } else {
-            const historyBefore = dragHistoryBefore;
-            dragHistoryBefore = null;
             selectionHelper!.updateMatrixWorld();
             const changed = !selectionHelper!.matrixWorld.equals(dragInitialMatrix);
             const smartScaleExtruded = endSmartScaleDrag();
@@ -1436,6 +1421,8 @@ export function initGizmo({
                     }
                 }));
             }
+            const historyBefore = dragHistoryBefore;
+            dragHistoryBefore = null;
             if (changed && historyBefore) recordSceneChange(loadedObjectGroup, historyBefore);
         }
     });
@@ -1544,6 +1531,8 @@ export function initGizmo({
                     selectionHelper!.position.copy(snapTarget);
                 }
 
+                selectionHelper!.updateMatrixWorld();
+                if (!selectionHelper!.matrixWorld.equals(previousHelperMatrix)) captureDragHistoryBefore();
                 pivotOffset.subVectors(selectionHelper!.position, dragStartPivotBaseWorld);
                 isCustomPivot = true;
 
@@ -1575,6 +1564,7 @@ export function initGizmo({
             }
 
             selectionHelper!.updateMatrixWorld();
+            if (isSmartScaleEnabled() && !selectionHelper!.matrixWorld.equals(previousHelperMatrix)) captureDragHistoryBefore();
             if (isSmartScaleEnabled() && updateSmartScaleDuringDrag(
                 selectionHelper!, scaleDirections, currentSelection, loadedObjectGroup, smartScaleCallbacks
             )) {

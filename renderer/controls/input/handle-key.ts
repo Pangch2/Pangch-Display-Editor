@@ -16,13 +16,13 @@ import { removeShearFromSelection } from '../pivot/shear-remove';
 import { focusCameraOnSelection } from './camera';
 import { toggleBlockbenchScaleMode } from '../gizmo/blockbench-scale';
 import { toggleShading } from '../../entity-material';
-import type { SelectionState, SelectedItem } from '../selection/select';
+import { isInstanceRendered, type SelectionState, type SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 import * as GroupUtils from '../grouping/group';
 import { getLinkedMirrorSelection } from '../transform/mirroring';
 import { redo, undo } from '../undo-redo/undo-redo';
-import { captureSceneState, recordSceneChange } from '../undo-redo/scene-history';
+import { captureSelectionTransformState, recordSceneChange } from '../undo-redo/scene-history';
 import { matchesShortcut, type ShortcutId } from './shortcuts';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
@@ -250,7 +250,6 @@ export function initHandleKey(p: HandleKeyParams): void {
             case 'removeShear': {
                 const items = p.getSelectedItems();
                 if (items.length > 0) {
-                    const before = captureSceneState(p.loadedObjectGroup);
                     const linked = getLinkedMirrorSelection(p.loadedObjectGroup, getDirectSelectedItems(), p.currentSelection.groups);
                     const mirrorItems = new Map<string, SelectedItem>();
                     linked.objects.forEach((ids, mesh) => ids.forEach(instanceId => mirrorItems.set(`${mesh.uuid}_${instanceId}`, { type: 'object', mesh, instanceId })));
@@ -265,12 +264,14 @@ export function initHandleKey(p: HandleKeyParams): void {
                         ids.forEach(id => selectedIds.add(id));
                         mirrorSelectionObjects.set(mesh, selectedIds);
                     });
+                    const affectedGroupIds = new Set([...p.currentSelection.groups, ...linked.groups]);
+                    const before = captureSelectionTransformState(p.loadedObjectGroup, mirrorSelectionObjects, affectedGroupIds);
                     removeShearFromSelection(
                         [...items, ...mirrorItems.values()],
                         p.getSelectionHelper(),
                         {
                             ...p.currentSelection,
-                            groups: new Set([...p.currentSelection.groups, ...linked.groups]),
+                            groups: affectedGroupIds,
                             objects: mirrorSelectionObjects
                         },
                         p.loadedObjectGroup,
@@ -382,6 +383,7 @@ export function initHandleKey(p: HandleKeyParams): void {
 
                     for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
                         if (!p.isInstanceValid(obj as PdeMesh, instanceId)) continue;
+                        if (!isInstanceRendered(obj as PdeMesh, instanceId)) continue;
 
                         const key = p.getGroupKey(obj, instanceId);
                         const immediateGroupId = objectToGroup.get(key);
@@ -435,8 +437,6 @@ export function initHandleKey(p: HandleKeyParams): void {
 
         if (matchesShortcut(event, 'resetPivot')) {
             event.preventDefault();
-                const before = p.hasAnySelection() ? captureSceneState(p.loadedObjectGroup) : null;
-
                 const _pivotResetFlags: PivotResetFlags = {
                     isCustomPivot:               p.state.isCustomPivot,
                     multiExplicitPivot:          p.state.multiSelectionExplicitPivot,
@@ -458,6 +458,9 @@ export function initHandleKey(p: HandleKeyParams): void {
                     ids.forEach(id => selectedIds.add(id));
                     resetSelection.objects.set(mesh, selectedIds);
                 });
+                const before = p.hasAnySelection()
+                    ? captureSelectionTransformState(p.loadedObjectGroup, resetSelection.objects, resetSelection.groups)
+                    : null;
 
                 resetCustomPivot(
                     resetSelection,

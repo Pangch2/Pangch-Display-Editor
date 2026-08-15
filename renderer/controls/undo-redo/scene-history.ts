@@ -13,7 +13,7 @@ import {
 } from 'three/webgpu';
 
 import { record } from './undo-redo.js';
-import type { GroupData } from '../grouping/group';
+import { getAllDescendantGroups, getAllGroupChildren, normalizePivotToVector3, type GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 
 interface HistorySelection {
@@ -80,9 +80,19 @@ interface ObjectSnapshot {
 }
 
 interface TransformObjectSnapshot {
-    mesh: InstancedMesh;
+    mesh: Mesh | InstancedMesh;
     instanceIds: number[];
-    matrices: Float32Array;
+    matrices?: Float32Array;
+    position?: Vector3;
+    quaternion?: Quaternion;
+    scale?: Vector3;
+    matrix?: Matrix4;
+    hadCustomPivots: boolean;
+    customPivots: Array<{ key: number | string; value?: Vector3 }>;
+    hadCustomPivot: boolean;
+    customPivot?: Vector3;
+    hadIsCustomPivot: boolean;
+    isCustomPivot?: boolean;
 }
 
 interface TransformGroupSnapshot {
@@ -92,6 +102,8 @@ interface TransformGroupSnapshot {
     scale?: Vector3;
     matrix?: Matrix4;
     pivot?: Vector3;
+    hadIsCustomPivot: boolean;
+    isCustomPivot?: boolean;
 }
 
 interface TransformSnapshot {
@@ -199,15 +211,38 @@ function captureObject(object: Object3D): ObjectSnapshot {
     };
 }
 
-function captureTransformObject(mesh: InstancedMesh, instanceIds: Iterable<number>): TransformObjectSnapshot {
-    const ids = [...new Set(instanceIds)].filter(id => id >= 0 && id < mesh.count).sort((a, b) => a - b);
-    const matrices = new Float32Array(ids.length * 16);
-    const matrix = new Matrix4();
-    ids.forEach((instanceId, index) => {
-        mesh.getMatrixAt(instanceId, matrix);
-        matrix.toArray(matrices, index * 16);
-    });
-    return { mesh, instanceIds: ids, matrices };
+function captureTransformObject(mesh: Mesh | InstancedMesh, instanceIds: Iterable<number>): TransformObjectSnapshot {
+    const isInstanced = (mesh as InstancedMesh).isInstancedMesh;
+    const ids = [...new Set(instanceIds)]
+        .filter(id => Number.isInteger(id) && (!isInstanced || (id >= 0 && id < (mesh as InstancedMesh).count)))
+        .sort((a, b) => a - b);
+    const pivotMap = mesh.userData.customPivots as Map<number | string, Vector3> | undefined;
+    const customPivots = ids.flatMap(id => ([id, String(id)] as const)
+        .map(key => ({ key, value: pivotMap?.get(key)?.clone() })));
+    const snapshot: TransformObjectSnapshot = {
+        mesh,
+        instanceIds: ids,
+        hadCustomPivots: Object.prototype.hasOwnProperty.call(mesh.userData, 'customPivots'),
+        customPivots,
+        hadCustomPivot: Object.prototype.hasOwnProperty.call(mesh.userData, 'customPivot'),
+        customPivot: (mesh.userData.customPivot as Vector3 | undefined)?.clone(),
+        hadIsCustomPivot: Object.prototype.hasOwnProperty.call(mesh.userData, 'isCustomPivot'),
+        isCustomPivot: mesh.userData.isCustomPivot as boolean | undefined
+    };
+    if (isInstanced) {
+        snapshot.matrices = new Float32Array(ids.length * 16);
+        const matrix = new Matrix4();
+        ids.forEach((instanceId, index) => {
+            (mesh as InstancedMesh).getMatrixAt(instanceId, matrix);
+            matrix.toArray(snapshot.matrices!, index * 16);
+        });
+    } else {
+        snapshot.position = mesh.position.clone();
+        snapshot.quaternion = mesh.quaternion.clone();
+        snapshot.scale = mesh.scale.clone();
+        snapshot.matrix = mesh.matrix.clone();
+    }
+    return snapshot;
 }
 
 function captureTransformGroup(group: GroupData): TransformGroupSnapshot {
@@ -217,13 +252,15 @@ function captureTransformGroup(group: GroupData): TransformGroupSnapshot {
         quaternion: group.quaternion?.clone(),
         scale: group.scale?.clone(),
         matrix: group.matrix?.clone(),
-        pivot: group.pivot?.clone()
+        pivot: normalizePivotToVector3(group.pivot)?.clone(),
+        hadIsCustomPivot: Object.prototype.hasOwnProperty.call(group, 'isCustomPivot'),
+        isCustomPivot: group.isCustomPivot
     };
 }
 
 export function captureTransformState(
     root: Group,
-    meshToInstanceIds: Map<InstancedMesh, Iterable<number>>,
+    meshToInstanceIds: Map<Mesh | InstancedMesh, Iterable<number>>,
     groupIds: Iterable<string>
 ): SceneSnapshot {
     const groups = root.userData.groups as Map<string, GroupData> | undefined;
@@ -241,15 +278,60 @@ export function captureTransformState(
     };
 }
 
+export function captureSelectionTransformState(
+    root: Group,
+    meshToInstanceIds: Map<Mesh | InstancedMesh, Iterable<number>>,
+    groupIds: Iterable<string>
+): SceneSnapshot {
+    const objects = new Map<Mesh | InstancedMesh, Set<number>>();
+    const add = (mesh: Mesh | InstancedMesh, instanceId: number): void => {
+        const ids = objects.get(mesh) ?? new Set<number>();
+        ids.add(instanceId);
+        objects.set(mesh, ids);
+    };
+    meshToInstanceIds.forEach((ids, mesh) => { for (const id of ids) add(mesh, id); });
+
+    const groups = new Set<string>();
+    for (const groupId of new Set(groupIds)) {
+        groups.add(groupId);
+        getAllDescendantGroups(root, groupId).forEach(id => groups.add(id));
+        getAllGroupChildren(root, groupId).forEach(({ mesh, instanceId }) => add(mesh, instanceId));
+    }
+    return captureTransformState(root, objects, groups);
+}
+
 function restoreTransformState(root: Group, transform: TransformSnapshot): void {
     const matrix = new Matrix4();
     for (const state of transform.objects) {
-        state.instanceIds.forEach((instanceId, index) => {
-            matrix.fromArray(state.matrices, index * 16);
-            state.mesh.setMatrixAt(instanceId, matrix);
-            state.mesh.instanceMatrix.addUpdateRange(instanceId * 16, 16);
+        if ((state.mesh as InstancedMesh).isInstancedMesh) {
+            const mesh = state.mesh as InstancedMesh;
+            state.instanceIds.forEach((instanceId, index) => {
+                matrix.fromArray(state.matrices!, index * 16);
+                mesh.setMatrixAt(instanceId, matrix);
+                mesh.instanceMatrix.addUpdateRange(instanceId * 16, 16);
+            });
+            mesh.instanceMatrix.needsUpdate = true;
+        } else {
+            state.mesh.position.copy(state.position!);
+            state.mesh.quaternion.copy(state.quaternion!);
+            state.mesh.scale.copy(state.scale!);
+            state.mesh.matrix.copy(state.matrix!);
+        }
+        let pivotMap = state.mesh.userData.customPivots as Map<number | string, Vector3> | undefined;
+        if (state.hadCustomPivots && !pivotMap) state.mesh.userData.customPivots = pivotMap = new Map();
+        state.customPivots.forEach(({ key, value }) => {
+            if (value) {
+                if (!pivotMap) state.mesh.userData.customPivots = pivotMap = new Map();
+                pivotMap.set(key, value.clone());
+            } else {
+                pivotMap?.delete(key);
+            }
         });
-        state.mesh.instanceMatrix.needsUpdate = true;
+        if (!state.hadCustomPivots && pivotMap?.size === 0) delete state.mesh.userData.customPivots;
+        if (state.hadCustomPivot) state.mesh.userData.customPivot = state.customPivot?.clone();
+        else delete state.mesh.userData.customPivot;
+        if (state.hadIsCustomPivot) state.mesh.userData.isCustomPivot = state.isCustomPivot;
+        else delete state.mesh.userData.isCustomPivot;
         state.mesh.boundingBox = null;
         state.mesh.boundingSphere = null;
     }
@@ -262,6 +344,8 @@ function restoreTransformState(root: Group, transform: TransformSnapshot): void 
         group.scale = state.scale?.clone();
         group.matrix = state.matrix?.clone();
         group.pivot = state.pivot?.clone();
+        if (state.hadIsCustomPivot) group.isCustomPivot = state.isCustomPivot;
+        else delete group.isCustomPivot;
     }
 }
 
@@ -269,13 +353,26 @@ if (import.meta.env.DEV) {
     const mesh = new InstancedMesh(new BufferGeometry(), undefined!, 2);
     mesh.setMatrixAt(0, new Matrix4().makeTranslation(1, 0, 0));
     mesh.setMatrixAt(1, new Matrix4().makeTranslation(2, 0, 0));
+    mesh.userData.customPivots = new Map([[0, new Vector3(1, 0, 0)], [1, new Vector3(2, 0, 0)]]);
     const selectedOnly = captureTransformObject(mesh, [0]);
     mesh.setMatrixAt(0, new Matrix4().makeTranslation(3, 0, 0));
     mesh.setMatrixAt(1, new Matrix4().makeTranslation(4, 0, 0));
+    mesh.userData.customPivots.set(0, new Vector3(3, 0, 0));
+    mesh.userData.customPivots.set(1, new Vector3(4, 0, 0));
     restoreTransformState(new Group(), { objects: [selectedOnly], groups: [] });
     const restored = mesh.getMatrixAt(0, new Matrix4());
     const untouched = mesh.getMatrixAt(1, new Matrix4());
     console.assert(restored.elements[12] === 1 && untouched.elements[12] === 4, 'Transform history must restore only selected instances.');
+    console.assert(mesh.userData.customPivots.get(0).x === 1 && mesh.userData.customPivots.get(1).x === 4, 'Transform history must restore only selected pivots.');
+
+    const object = new Mesh();
+    object.position.x = 1;
+    object.updateMatrix();
+    const objectState = captureTransformObject(object, [0]);
+    object.position.x = 3;
+    object.updateMatrix();
+    restoreTransformState(new Group(), { objects: [objectState], groups: [] });
+    console.assert(object.position.x === 1, 'Transform history must restore a regular mesh without a scene snapshot.');
 }
 
 export function captureSceneState(root: Group, metadataOnly = false): SceneSnapshot {

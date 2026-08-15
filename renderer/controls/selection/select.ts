@@ -4,11 +4,14 @@ import {
     Group,
     Vector3,
     Matrix4,
-    Raycaster
+    Raycaster,
+    Sphere,
+    type Intersection
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from './overlay';
 import { entityVisibleAttributeName } from '../../entity-material';
+import { getVisibleInstanceIds } from '../scene-visibility';
 
 // --- Types ---
 
@@ -54,6 +57,10 @@ export const currentSelection: SelectionState = {
 let loadedObjectGroupForSelect: Group | null = null;
 let _selectedItemsCacheKey: string | null = null;
 let _selectedItemsCache: SelectedItem[] | null = null;
+const _pickMesh = new Mesh();
+const _pickLocalMatrix = new Matrix4();
+const _pickIntersections: Intersection[] = [];
+const _pickSphere = new Sphere();
 
 // --- Internal Helpers ---
 
@@ -150,11 +157,28 @@ export function pickInstance(
     raycaster: Raycaster, 
     rootGroup: Group
 ): { mesh: Mesh | InstancedMesh; instanceId: number } | null {
-    const hit = raycaster.intersectObject(rootGroup, true).find(({ object, instanceId }) =>
-        object instanceof InstancedMesh && instanceId !== undefined && Overlay.isInstanceValid(object, instanceId)
-        && object.geometry.getAttribute(entityVisibleAttributeName)?.getX(instanceId) !== 0
-    );
-    return hit ? { mesh: hit.object as InstancedMesh, instanceId: hit.instanceId! } : null;
+    let picked: { mesh: InstancedMesh; instanceId: number; distance: number } | null = null;
+    rootGroup.traverse((object) => {
+        if (!(object instanceof InstancedMesh) || object.visible === false || !object.layers.test(raycaster.layers)) return;
+        if (object.boundingSphere && !raycaster.ray.intersectsSphere(_pickSphere.copy(object.boundingSphere).applyMatrix4(object.matrixWorld))) return;
+
+        _pickMesh.geometry = object.geometry;
+        _pickMesh.material = object.material;
+        for (const instanceId of getVisibleInstanceIds(object)) {
+            object.getMatrixAt(instanceId, _pickLocalMatrix);
+            _pickMesh.matrixWorld.multiplyMatrices(object.matrixWorld, _pickLocalMatrix);
+            _pickMesh.raycast(raycaster, _pickIntersections);
+            for (const hit of _pickIntersections) {
+                if (!picked || hit.distance < picked.distance) picked = { mesh: object, instanceId, distance: hit.distance };
+            }
+            _pickIntersections.length = 0;
+        }
+    });
+    return picked ? { mesh: picked.mesh, instanceId: picked.instanceId } : null;
+}
+
+export function isInstanceRendered(mesh: Mesh | InstancedMesh, instanceId: number): boolean {
+    return mesh.geometry.getAttribute(entityVisibleAttributeName)?.getX(instanceId) !== 0;
 }
 
 export function getSingleSelectedGroupId(): string | null {
@@ -340,13 +364,7 @@ export function selectAllObjectsVisibleInScene(loadedObjectGroup: Group): Map<Me
         const instanceCount = Overlay.getInstanceCount(mesh);
         if (instanceCount <= 0) return;
 
-        const ids = new Set<number>();
-        const visibility = mesh.geometry.getAttribute(entityVisibleAttributeName);
-        for (let i = 0; i < instanceCount; i++) {
-            if (Overlay.isInstanceValid(mesh, i) && visibility?.getX(i) !== 0) {
-                ids.add(i);
-            }
-        }
+        const ids = new Set(getVisibleInstanceIds(mesh));
         if (ids.size > 0) {
             meshToIds.set(mesh, ids);
         }

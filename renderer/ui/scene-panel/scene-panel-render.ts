@@ -20,11 +20,15 @@ import {
 } from './scene-panel-model';
 import { isSceneItemEnabled, setSceneItemEnabled } from '../../controls/scene-visibility';
 
-function bindVisibilityToggle(icon: HTMLElement, type: 'group' | 'object', id: string): void {
+function updateVisibilityToggle(icon: HTMLElement, type: 'group' | 'object', id: string): void {
     const enabled = isSceneItemEnabled(loadedObjectGroup, type, id);
     icon.innerHTML = enabled ? '&#xE0BA;' : '&#xE0BB;';
     icon.style.color = enabled ? '' : '#666';
     icon.title = enabled ? '숨기기' : '보이기';
+}
+
+function bindVisibilityToggle(icon: HTMLElement, type: 'group' | 'object', id: string): void {
+    updateVisibilityToggle(icon, type, id);
     icon.addEventListener('pointerdown', event => event.stopPropagation());
     icon.addEventListener('click', event => {
         event.stopPropagation();
@@ -34,6 +38,16 @@ function bindVisibilityToggle(icon: HTMLElement, type: 'group' | 'object', id: s
         record({ undo: () => apply(!next), redo: () => apply(next) });
     });
 }
+
+window.addEventListener('pde:scene-visibility-changed', event => {
+    const { type, id } = (event as CustomEvent<{ type: 'group' | 'object'; id: string }>).detail;
+    for (const row of scenePanelState.renderedRowEls.values()) {
+        if ((type === 'group' ? row.dataset.groupId : row.dataset.uuid) !== id) continue;
+        const icon = row.querySelector<HTMLElement>('.scene-icon-right');
+        if (icon) updateVisibilityToggle(icon, type, id);
+        break;
+    }
+});
 
 function getRowKey(row: ScenePanelRow): string {
     return `${row.type}:${row.id}:${row.type === 'group' && scenePanelState.expandedGroupIds.has(row.id)}`;

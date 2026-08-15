@@ -13,11 +13,12 @@ import * as Select from './select';
 import type { SelectionCallbacks } from './select';
 import * as Overlay from './overlay';
 import * as GroupUtils from '../grouping/group';
+import { getVisibleInstanceIds } from '../scene-visibility';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import type { InstanceIdRange } from './instance-ranges';
 
 // Helper aliases
-const { getInstanceCount, isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled, getInstanceLocalBox } = Overlay;
+const { isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled, getInstanceLocalBox } = Overlay;
 const { getGroupKey, getGroupChain, getObjectToGroup } = GroupUtils;
 
 interface OrbitControlsLike {
@@ -347,10 +348,8 @@ export function initDrag({
                     if (!obj || !(obj as InstancedMesh).isInstancedMesh) return;
                     if (obj.visible === false) return;
 
-                    const instanceCount = getInstanceCount(obj as InstancedMesh);
-                    if (instanceCount <= 0) return;
-
-                    for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
+                    const mesh = obj as InstancedMesh;
+                    for (const instanceId of getVisibleInstanceIds(mesh)) {
                         if (!isInstanceValid(obj as InstancedMesh, instanceId)) continue;
 
                         const bbox = getInstanceLocalBox(obj as InstancedMesh, instanceId);

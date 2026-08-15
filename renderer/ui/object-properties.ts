@@ -1,5 +1,5 @@
-import { Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
-import type { SelectionState } from '../controls/selection/select';
+import { Euler, InstancedMesh, Matrix4, Mesh, Quaternion, Vector3 } from 'three/webgpu';
+import type { SelectedItem, SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
 import type { TextDisplayOptions } from '../load-project/text-display';
@@ -12,13 +12,14 @@ import { applyDeltaToSelection } from '../controls/selection/drag';
 import { blockbenchScaleMode } from '../controls/gizmo/blockbench-scale';
 import {
     applyLinkedMirrorDelta,
+    getLinkedMirrorSelection,
     getLinkedMirrorUuid,
     getMirrorPairs,
     isMirrorModelingEnabled,
     syncLinkedMirrorGroupPivot,
     syncLinkedMirrorPivot
 } from '../controls/transform/mirroring';
-import { captureSceneState, recordSceneChange, type SceneSnapshot } from '../controls/undo-redo/scene-history';
+import { captureSceneState, captureSelectionTransformState, recordSceneChange, type SceneSnapshot } from '../controls/undo-redo/scene-history';
 import { record } from '../controls/undo-redo/undo-redo';
 import { getHeadGridValue, setHeadGridOverride } from './head-painter';
 import { hexToRgb, openColorPicker, rgbToHex } from './color-picker';
@@ -103,19 +104,38 @@ function format(value: number): string {
     return Number(value.toFixed(6)).toString();
 }
 
-function trackHistoryInput(input: HTMLInputElement | HTMLTextAreaElement, settle?: () => Promise<void>): void {
+function trackHistoryInput(
+    input: HTMLInputElement | HTMLTextAreaElement,
+    settle?: () => Promise<void>,
+    capture: () => SceneSnapshot = () => captureSceneState(loadedObjectGroup)
+): void {
     let before: SceneSnapshot | null = null;
-    let initialValue = '';
+    const read = () => input instanceof HTMLInputElement && input.type === 'checkbox' ? String(input.checked) : input.value;
+    let initialValue = read();
+    const captureBeforeChange = () => {
+        if (before) return;
+        initialValue = read();
+        before = capture();
+    };
     input.addEventListener('focus', () => {
-        before = captureSceneState(loadedObjectGroup);
-        initialValue = input.value;
+        if (input instanceof HTMLInputElement && (input.type === 'range' || input.type === 'checkbox')) captureBeforeChange();
+        else if (!before) initialValue = read();
+    });
+    input.addEventListener('beforeinput', captureBeforeChange);
+    input.addEventListener('pointerdown', () => {
+        if (input instanceof HTMLInputElement && (input.type === 'range' || input.type === 'checkbox')) captureBeforeChange();
+    });
+    input.addEventListener('keydown', event => {
+        if (!(input instanceof HTMLInputElement)) return;
+        if ((input.type === 'number' || input.type === 'range') && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) captureBeforeChange();
+        if (input.type === 'checkbox' && (event.key === ' ' || event.key === 'Enter')) captureBeforeChange();
     });
     input.addEventListener('blur', () => {
         const changeBefore = before;
         const changeInitialValue = initialValue;
         before = null;
         void (settle?.() ?? Promise.resolve()).then(() => {
-            if (changeBefore && input.value !== changeInitialValue) recordSceneChange(loadedObjectGroup, changeBefore);
+            if (changeBefore && read() !== changeInitialValue) recordSceneChange(loadedObjectGroup, changeBefore);
         });
     });
 }
@@ -126,7 +146,7 @@ function updateInputValue(input: HTMLInputElement, value: number, activeElement:
     if (input.value !== next) input.value = next;
 }
 
-function numberInput(value: number, onChange: (value: number) => void): HTMLInputElement {
+function numberInput(value: number, onChange: (value: number) => void, capture?: () => SceneSnapshot): HTMLInputElement {
     const input = document.createElement('input');
     input.type = 'number';
     input.step = 'any';
@@ -135,18 +155,18 @@ function numberInput(value: number, onChange: (value: number) => void): HTMLInpu
         const next = input.valueAsNumber;
         if (Number.isFinite(next)) onChange(next);
     };
-    trackHistoryInput(input);
+    trackHistoryInput(input, undefined, capture);
     return input;
 }
 
-function scaleNumberInput(value: number, onChange: (value: number) => void): HTMLInputElement {
+function scaleNumberInput(value: number, onChange: (value: number) => void, capture?: () => SceneSnapshot): HTMLInputElement {
     const input = numberInput(value, next => {
         onChange(next === 0 ? 0.0001 : next);
-    });
+    }, capture);
     return input;
 }
 
-function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTMLElement[] {
+function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4, capture?: () => SceneSnapshot): HTMLElement[] {
     let current = value.clone();
     const heading = document.createElement('h3');
     heading.className = 'object-matrix-heading';
@@ -172,7 +192,7 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTM
                     nextMatrix.elements[(index % 4) * 4 + Math.floor(index / 4)] = gridInput.valueAsNumber;
                 });
                 current = onChange(nextMatrix);
-            });
+            }, capture);
             input.disabled = rowIndex === 3;
             gridInputs.push(input);
             row.append(input);
@@ -185,7 +205,7 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4): HTM
     textRow.className = 'object-matrix-text';
     textRow.hidden = !compactMatrixInput;
     const text = document.createElement('input');
-    trackHistoryInput(text);
+    trackHistoryInput(text, undefined, capture);
     text.setAttribute('aria-label', '행렬 한 줄 입력');
     const fixedText = document.createElement('span');
     fixedText.style.whiteSpace = 'pre';
@@ -503,11 +523,15 @@ function nameHeading(index: number, value: string, key: string, onChange: (value
     return heading;
 }
 
-function scaleInput(value: number, onChange: (value: number, direction: '+' | '-') => void): HTMLElement {
+function scaleInput(
+    value: number,
+    onChange: (value: number, direction: '+' | '-') => void,
+    capture?: () => SceneSnapshot
+): HTMLElement {
     let direction: '+' | '-' = '+';
     const wrapper = document.createElement('span');
     wrapper.className = 'object-scale-input';
-    const input = scaleNumberInput(value, next => onChange(next, direction));
+    const input = scaleNumberInput(value, next => onChange(next, direction), capture);
     const arrow = document.createElement('button');
     arrow.type = 'button';
     arrow.className = 'object-scale-direction';
@@ -521,6 +545,26 @@ function scaleInput(value: number, onChange: (value: number, direction: '+' | '-
     };
     wrapper.append(input, arrow);
     return wrapper;
+}
+
+function capturePropertyTransformState(items: SelectedItem[], groupIds: Set<string>): SceneSnapshot {
+    const objects = new Map<Mesh | InstancedMesh, Set<number>>();
+    items.forEach(({ mesh, instanceId }) => {
+        const ids = objects.get(mesh) ?? new Set<number>();
+        ids.add(instanceId);
+        objects.set(mesh, ids);
+    });
+    const linked = getLinkedMirrorSelection(loadedObjectGroup, items, groupIds);
+    linked.objects.forEach((ids, mesh) => {
+        const affectedIds = objects.get(mesh) ?? new Set<number>();
+        ids.forEach(id => affectedIds.add(id));
+        objects.set(mesh, affectedIds);
+    });
+    return captureSelectionTransformState(
+        loadedObjectGroup,
+        objects,
+        new Set([...groupIds, ...linked.groups])
+    );
 }
 
 function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?: Vector3, pivotLocal?: Vector3): void {
@@ -561,6 +605,10 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
         ...Array.from(selection.objects, ([mesh, ids]) => `${mesh.uuid}:${[...ids].sort((a, b) => a - b).join(',')}`)
     ].sort().join('|');
     const pivot = pivotWorld?.clone() ?? pivotLocal.clone();
+    const directItems = Array.from(selection.objects, ([mesh, ids]) =>
+        [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))
+    ).flat();
+    const captureTransformHistory = () => capturePropertyTransformState(directItems, new Set(selection.groups));
     if (multiSelectionKey === key && multiSelectionPivot.contains(document.activeElement)) return;
     if (multiSelectionKey !== key) {
         multiSelectionKey = key;
@@ -593,7 +641,7 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
                 else if (rowIndex === 1) rotation[axis] = next * Math.PI / 180;
                 else scale[axis] = next;
                 applyMatrix(new Matrix4().compose(position, quaternion.setFromEuler(rotation), scale));
-            }));
+            }, captureTransformHistory));
         });
         transformSection.append(row);
     });
@@ -624,11 +672,11 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
             window.dispatchEvent(new CustomEvent('pde:multi-selection-pivot-change', {
                 detail: pivotLocal.clone().applyMatrix4(primaryMatrix)
             }));
-        });
+        }, captureTransformHistory);
         row.append(input);
     });
     const pivotSection = propertySection('pivot', '다중 선택', row);
-    const matrixParts = matrixInput(selectionMatrix, applyMatrix);
+    const matrixParts = matrixInput(selectionMatrix, applyMatrix, captureTransformHistory);
     multiSelectionPivot.replaceChildren(pivotSection, transformSection, propertySection('matrix', matrixParts[0], ...matrixParts.slice(1)));
     sortPropertySections(multiSelectionPivot);
     multiSelectionInputs = {
@@ -721,6 +769,10 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     mesh.getMatrixAt(instanceId, matrix);
     matrix.decompose(position, quaternion, scale);
     rotation.setFromQuaternion(quaternion);
+    const captureTransformHistory = () => capturePropertyTransformState(
+        [{ type: 'object', mesh, instanceId }],
+        new Set()
+    );
 
     const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
         ?.get(`${mesh.uuid}_${instanceId}`) ?? `${mesh.name || '오브젝트'} ${instanceId}`;
@@ -778,7 +830,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
                 applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
             };
-            row.append(rowIndex === 2 ? scaleInput(value, change) : numberInput(value, change));
+            row.append(rowIndex === 2
+                ? scaleInput(value, change, captureTransformHistory)
+                : numberInput(value, change, captureTransformHistory));
         });
         transformSection.append(row);
     });
@@ -796,7 +850,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         (mesh.userData.customPivots as Map<number, Vector3>).set(instanceId, localPivot.clone());
         syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
         window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
-    })));
+    }, captureTransformHistory)));
     transformSection.append(pivotRow);
     section.append(transformSection);
 
@@ -811,7 +865,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
         applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
         return nextMatrix;
-    });
+    }, captureTransformHistory);
     section.append(propertySection('matrix', matrixParts[0] as HTMLElement, ...matrixParts.slice(1)));
 
     const nbt = document.createElement('input');
@@ -1163,6 +1217,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     const groupMatrix = group.matrix?.clone() ?? new Matrix4().compose(groupPosition, groupQuaternion, groupScale);
     const worldPivot = pivotWorld?.clone() ?? GroupUtils.normalizePivotToVector3(group.pivot) ?? new Vector3();
     const localPivot = worldPivot.clone().applyMatrix4(groupMatrix.clone().invert());
+    const captureTransformHistory = () => capturePropertyTransformState([], new Set([groupId]));
     const commitMatrix = (next: Matrix4): void => {
         const deltaMatrix = next.clone().multiply(groupMatrix.clone().invert());
         applySelectionDelta(deltaMatrix, { key: '', groupId, group });
@@ -1200,7 +1255,9 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
                 if (rowIndex === 2) transformPivot = getScalePivot(transformPivot, Overlay.getGroupLocalBoundingBox(groupId), axis, direction);
                 commitMatrix(rowIndex === 0 ? nextMatrix : keepPivotFixed(groupMatrix, nextMatrix, transformPivot));
             };
-            row.append(rowIndex === 2 ? scaleInput(value, change) : numberInput(value, change));
+            row.append(rowIndex === 2
+                ? scaleInput(value, change, captureTransformHistory)
+                : numberInput(value, change, captureTransformHistory));
         });
         transformSection.append(row);
     });
@@ -1217,7 +1274,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
         localPivot.copy(pivot).applyMatrix4(groupMatrix.clone().invert());
         syncLinkedMirrorGroupPivot(loadedObjectGroup, groupId, pivot);
         window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
-    })));
+    }, captureTransformHistory)));
     transformSection.append(pivotRow);
     section.append(transformSection);
 
@@ -1225,7 +1282,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
         const transformPivot = currentPivotWorld?.clone().applyMatrix4(groupMatrix.clone().invert()) ?? localPivot;
         commitMatrix(keepPivotFixed(groupMatrix, nextMatrix, transformPivot, true));
         return groupMatrix.clone();
-    });
+    }, captureTransformHistory);
     section.append(propertySection('matrix', matrixParts[0] as HTMLElement, ...matrixParts.slice(1)));
 
     const nbt = document.createElement('input');
@@ -1468,35 +1525,6 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
             ? Array.from(ids, instanceId => ({ key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId }))
             : [])
     ];
-    if (current.length > 1) {
-        const sceneOrder = new Map<string, number>();
-        const addObject = (uuid: string): void => {
-            const key = `object:${uuid}`;
-            if (!sceneOrder.has(key)) sceneOrder.set(key, sceneOrder.size);
-        };
-        const addGroup = (groupId: string): void => {
-            const key = `group:${groupId}`;
-            if (sceneOrder.has(key)) return;
-            sceneOrder.set(key, sceneOrder.size);
-            for (const child of groups?.get(groupId)?.children ?? []) {
-                if (child.type === 'group') addGroup(child.id);
-                else addObject(child.id);
-            }
-        };
-        for (const entry of (loadedObjectGroup.userData.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined) ?? []) {
-            if (entry.type === 'group') addGroup(entry.id);
-            else addObject(entry.id);
-        }
-        groups?.forEach(group => { if (group.parent === null) addGroup(group.id); });
-        (loadedObjectGroup.userData.objectNames as Map<string, string> | undefined)?.forEach((_, uuid) => addObject(uuid));
-        const keyToUuid = loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
-        const rank = (item: PropertySelection): number => {
-            if ('group' in item) return sceneOrder.get(`group:${item.groupId}`) ?? Number.MAX_SAFE_INTEGER;
-            const uuid = keyToUuid?.get(GroupUtils.getGroupKey(item.mesh, item.instanceId));
-            return uuid ? sceneOrder.get(`object:${uuid}`) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
-        };
-        current.sort((a, b) => rank(a) - rank(b));
-    }
     if (renderMulti) renderMultiSelectionProperties(selection, pivotWorld, current.length > 1 ? multiCustomPivotLocal ?? new Vector3() : undefined);
     const propertyPivotWorld = current.length === 1 ? pivotWorld : undefined;
     selectionOrder = current;
