@@ -25,7 +25,6 @@ import { getHeadGridValue, setHeadGridOverride } from './head-painter';
 import { hexToRgb, openColorPicker, rgbToHex } from './color-picker';
 
 const title = document.getElementById('details-title')!;
-const headPainterDetailsTitle = document.getElementById('head-painter-details-title')!;
 const tabs = document.getElementById('project-tabs')!;
 const projectProperties = document.getElementById('project-properties')!;
 const multiSelectionPivot = document.getElementById('multi-selection-pivot')!;
@@ -1531,7 +1530,7 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
     selectionOrder = current;
     const selected = selectionOrder.length > 0;
     currentPivotWorld = propertyPivotWorld;
-    title.textContent = headPainterDetailsTitle.textContent = selected ? '오브젝트 속성' : '프로젝트 세부 정보';
+    title.textContent = selected ? '오브젝트 속성' : '프로젝트 세부 정보';
     tabs.hidden = selected;
     projectProperties.hidden = selected;
     objectProperties.hidden = !selected;

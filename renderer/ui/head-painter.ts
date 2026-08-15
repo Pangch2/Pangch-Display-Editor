@@ -76,20 +76,6 @@ const brushOrderKey = 'pdeHeadPainterBrushOrder';
 const paletteOrderKey = 'pdeHeadPainterPaletteOrder';
 const sectionOrderKey = 'pdeHeadPainterSectionOrder';
 const gridColorKey = 'pdeHeadPainterGridColor';
-const panelOrderKey = 'pdeHeadPainterPanelOrder';
-type PainterPanelId = 'painter' | 'details';
-const painterPanelIds: PainterPanelId[] = ['painter', 'details'];
-let painterPanelOrder = [...painterPanelIds];
-
-const isPainterPanelOrder = (value: unknown): value is PainterPanelId[] => Array.isArray(value)
-  && value.length === painterPanelIds.length
-  && painterPanelIds.every(id => value.includes(id));
-try {
-  const savedOrder: unknown = JSON.parse(localStorage.getItem(panelOrderKey) ?? 'null');
-  if (isPainterPanelOrder(savedOrder)) painterPanelOrder = savedOrder;
-} catch {
-  // Ignore invalid saved order.
-}
 const sectionIds = ['grid', 'brush', 'palette'] as const;
 const gridOverrides = new Map<string, Partial<{ horizontal: number; vertical: number }>>();
 const raycaster = new Raycaster();
@@ -1447,110 +1433,6 @@ function initSectionReordering(): void {
   if (import.meta.env.DEV) console.assert(isCompleteOrder([...sectionIds]) && !isCompleteOrder(['grid']), 'Head Painter section order validation failed.');
 }
 
-function renderPainterPanelOrder(order = painterPanelOrder): void {
-  const details = document.getElementById('project-details')!;
-  const groups: Record<PainterPanelId, HTMLElement[]> = {
-    painter: [document.getElementById('project-details-header')!, root!],
-    details: [
-      document.getElementById('head-painter-project-details-header')!,
-      document.getElementById('project-properties')!,
-      document.getElementById('multi-selection-pivot')!,
-      document.getElementById('object-properties')!
-    ]
-  };
-  details.append(...order.flatMap(id => groups[id]));
-}
-
-function initPainterPanelReordering(): void {
-  const details = document.getElementById('project-details')!;
-  const headers: Record<PainterPanelId, HTMLElement> = {
-    painter: document.getElementById('project-details-header')!,
-    details: document.getElementById('head-painter-project-details-header')!
-  };
-  const clearPreview = () => Object.values(headers).forEach(header => header.classList.remove('head-painter-panel-drop-target'));
-  const panelAt = (target: EventTarget | null): PainterPanelId | null => {
-    if (!(target instanceof Node)) return null;
-    if (headers.painter.contains(target) || root!.contains(target)) return 'painter';
-    return details.contains(target) ? 'details' : null;
-  };
-
-  for (const [id, header] of Object.entries(headers) as [PainterPanelId, HTMLElement][]) {
-    header.addEventListener('pointerdown', event => {
-      if (!active || !event.isPrimary || event.button !== 0 || (event.target instanceof Element && event.target.closest('#project-tabs'))) return;
-      const pointerId = event.pointerId;
-      const startX = event.clientX;
-      const startY = event.clientY;
-      let clientX = startX;
-      let clientY = startY;
-      let dragging = false;
-      let dropTarget: PainterPanelId | null = null;
-      let dragPreview: HTMLElement | null = null;
-      const positionDragPreview = () => {
-        if (!dragPreview) return;
-        dragPreview.style.left = `${Math.min(clientX + 12, window.innerWidth - dragPreview.offsetWidth - 8)}px`;
-        dragPreview.style.top = `${Math.min(clientY + 12, window.innerHeight - dragPreview.offsetHeight - 8)}px`;
-      };
-      const updatePreview = () => {
-        clearPreview();
-        const target = panelAt(document.elementFromPoint(clientX, clientY));
-        dropTarget = target === id ? null : target;
-        if (dropTarget) headers[dropTarget].classList.add('head-painter-panel-drop-target');
-      };
-      const cleanup = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', stop);
-        window.removeEventListener('pointercancel', cancel);
-        window.removeEventListener('keydown', cancelWithEscape);
-        details.removeEventListener('scroll', updatePreview);
-        if (header.hasPointerCapture(pointerId)) header.releasePointerCapture(pointerId);
-        dragPreview?.remove();
-        dragPreview = null;
-        clearPreview();
-      };
-      const move = (moveEvent: PointerEvent) => {
-        if (moveEvent.pointerId !== pointerId) return;
-        clientX = moveEvent.clientX;
-        clientY = moveEvent.clientY;
-        if (!dragging) {
-          if (Math.hypot(clientX - startX, clientY - startY) < 4) return;
-          dragging = true;
-          header.setPointerCapture(pointerId);
-          details.addEventListener('scroll', updatePreview, { passive: true });
-          dragPreview = document.createElement('div');
-          dragPreview.className = 'head-painter-section-drag-preview';
-          dragPreview.textContent = header.querySelector(':scope > span')?.textContent?.trim() ?? '';
-          document.body.append(dragPreview);
-        }
-        moveEvent.preventDefault();
-        positionDragPreview();
-        updatePreview();
-      };
-      const stop = (upEvent: PointerEvent) => {
-        if (upEvent.pointerId !== pointerId) return;
-        if (dragging && dropTarget) {
-          painterPanelOrder = [dropTarget, id];
-          localStorage.setItem(panelOrderKey, JSON.stringify(painterPanelOrder));
-          renderPainterPanelOrder();
-        }
-        cleanup();
-      };
-      const cancel = (cancelEvent: PointerEvent) => {
-        if (cancelEvent.pointerId === pointerId) cleanup();
-      };
-      const cancelWithEscape = (keyEvent: KeyboardEvent) => {
-        if (keyEvent.key !== 'Escape') return;
-        keyEvent.preventDefault();
-        cleanup();
-      };
-      window.addEventListener('pointermove', move, { passive: false });
-      window.addEventListener('pointerup', stop);
-      window.addEventListener('pointercancel', cancel);
-      window.addEventListener('keydown', cancelWithEscape);
-    });
-  }
-  if (import.meta.env.DEV) console.assert(isPainterPanelOrder([...painterPanelIds]) && !isPainterPanelOrder(['painter']), 'Head Painter panel order validation failed.');
-}
-
 function createPanel(): void {
   root = document.createElement('section');
   root.className = 'head-painter-panel';
@@ -1604,9 +1486,8 @@ function createPanel(): void {
       <div class="head-painter-preset"><button class="head-painter-preset-button" type="button">팔레트 목록</button><div class="head-painter-preset-menu" hidden></div></div>
     </fieldset>
     </div>`;
-  document.getElementById('head-painter-project-details-header')!.before(root);
+  document.getElementById('head-painter')!.append(root);
   initSectionReordering();
-  initPainterPanelReordering();
   createBrushEditor();
 
   root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.onclick = () => setTool(button.dataset.tool as Tool));
@@ -1726,22 +1607,16 @@ function createPanel(): void {
   void loadPainterAssets();
 }
 
-function syncPanelTitle(): void {
-  if (active) document.getElementById('details-title')!.textContent = '헤드 페인터';
-}
-
 export function setHeadPainterEnabled(enabled: boolean): void {
   if (active === enabled) return;
   active = enabled;
   if (!root) createPanel();
-  const details = document.getElementById('project-details')!;
-  const tabs = document.getElementById('project-tabs')!;
-  document.getElementById('project-details-header')!.draggable = !enabled;
+  document.getElementById('head-painter')!.hidden = !enabled;
   const toolbarButton = document.querySelectorAll<HTMLElement>('#scene-toolbar i')[4];
   toolbarButton?.classList.toggle('head-painter-active', enabled);
   toolbarButton?.setAttribute('aria-pressed', String(enabled));
-  details.classList.toggle('head-painter-mode', enabled);
   root!.hidden = !enabled;
+  window.dispatchEvent(new Event('pde:panel-visibility-changed'));
   if (painterContext) {
     if (enabled) painterContext.renderer.domElement.dataset.headPainterTool = lastTool;
     else delete painterContext.renderer.domElement.dataset.headPainterTool;
@@ -1749,16 +1624,10 @@ export function setHeadPainterEnabled(enabled: boolean): void {
   loadedObjectGroup.userData.headPainterActive = enabled;
   if (enabled) {
     (loadedObjectGroup.userData.resetSelection as (() => void) | undefined)?.();
-    document.getElementById('head-painter-project-details-header')!.append(tabs);
-    renderPainterPanelOrder();
-    tabs.hidden = false;
-    syncPanelTitle();
     setPlayerHeadLayerVisible(layerMode !== 'base');
     invalidateHeadPainterGridOverlay();
     updateHeadPainter();
   } else {
-    document.getElementById('project-details-header')!.append(tabs);
-    renderPainterPanelOrder(painterPanelIds);
     endPaintPointer();
     setAltPicking(false);
     setPlayerHeadLayerVisible(true);
@@ -1787,7 +1656,6 @@ export function initHeadPainter(context: PainterContext): void {
   }
 }
 
-window.addEventListener('pde:selection-changed', () => queueMicrotask(syncPanelTitle));
 window.addEventListener('pde:scene-updated', () => {
   if (active) setPlayerHeadLayerVisible(layerMode !== 'base');
   invalidateHeadPainterGridOverlay();
