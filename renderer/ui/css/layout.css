@@ -81,6 +81,7 @@
 #player-head-atlas {
   display: flex;
   min-height: 0;
+  overflow: hidden;
   flex-direction: column;
 }
 

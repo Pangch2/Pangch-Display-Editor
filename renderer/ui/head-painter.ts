@@ -99,6 +99,7 @@ let eraserSize = 1;
 let eraserHardness = 100;
 let eraserStrength = 100;
 let overwrite = false;
+let paintAdjacentHeads = false;
 let colorMode: 'rgb' | 'oklch' = 'rgb';
 let currentColor: Rgba = [0, 0, 0, 255];
 let palette: Array<Rgba | null> = Array(64).fill(null);
@@ -172,6 +173,7 @@ function pixelOffset(part: number, x: number, y: number): number {
 }
 
 const gridBoundary = (index: number, count: number): number => Math.round(index * partSize / count);
+const gridCellCenter = (index: number, count: number): number => (gridBoundary(index, count) + gridBoundary(index + 1, count)) / (partSize * 2);
 
 function forEachGridPixel(columns: number, rows: number, x: number, y: number, visit: (pixelX: number, pixelY: number) => void): void {
   for (let pixelY = gridBoundary(y, rows); pixelY < gridBoundary(y + 1, rows); pixelY++) {
@@ -205,12 +207,8 @@ function sourceOver(destination: Rgba, source: Rgba, coverage: number): Rgba {
   )).concat(Math.round(alpha * 255)) as Rgba;
 }
 
-function getHit(event: PointerEvent, deselectOnMiss = false): PaintHit | null {
+function getRaycastHit(deselectOnMiss = false): PaintHit | null {
   if (!painterContext) return null;
-  const rect = painterContext.renderer.domElement.getBoundingClientRect();
-  pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
-  raycaster.layers.enable(2);
-  raycaster.setFromCamera(pointer, painterContext.getCamera());
   loadedObjectGroup.updateMatrixWorld(true);
   const intersection = raycaster.intersectObject(loadedObjectGroup, true).find(hit => {
     if (!(hit.object as InstancedMesh).isInstancedMesh || hit.instanceId === undefined) return true;
@@ -244,6 +242,15 @@ function getHit(event: PointerEvent, deselectOnMiss = false): PaintHit | null {
   const layer = layerMode === 'layer' ? 1 : layerMode === 'base' ? 0
     : readPixel(packed, facePartIndexes[face] + 6, gridCellPixel(x, columns), gridCellPixel(y, rows))[3] > 0 ? 1 : 0;
   return { mesh, instanceId: intersection.instanceId, surface, face, layer, x, y, columns, rows };
+}
+
+function getHit(event: PointerEvent, deselectOnMiss = false): PaintHit | null {
+  if (!painterContext) return null;
+  const rect = painterContext.renderer.domElement.getBoundingClientRect();
+  pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
+  raycaster.layers.enable(2);
+  raycaster.setFromCamera(pointer, painterContext.getCamera());
+  return getRaycastHit(deselectOnMiss);
 }
 
 function getWork(hit: PaintHit): WorkSurface {
@@ -311,9 +318,36 @@ function brushCoverage(dx: number, dy: number, width: number, height: number, ha
   return distance <= inner || inner >= 1 ? 1 : (1 - distance) / (1 - inner);
 }
 
+function adjacentBrushHit(hit: PaintHit, x: number, y: number): PaintHit | null {
+  if (x >= 0 && x < hit.columns && y >= 0 && y < hit.rows) return { ...hit, x, y };
+  if (!paintAdjacentHeads || !painterContext) return null;
+
+  const scale = hit.layer ? 1.0625 : 1;
+  const half = scale / 2;
+  const bottom = -0.5 - half;
+  const top = -0.5 + half;
+  const [origin, horizontalAxis, verticalAxis] = [
+    [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)],
+    [new Vector3(half, bottom, half), new Vector3(0, 0, -scale), new Vector3(0, scale, 0)],
+    [new Vector3(-half, top, half), new Vector3(scale, 0, 0), new Vector3(0, 0, -scale)],
+    [new Vector3(-half, bottom, -half), new Vector3(scale, 0, 0), new Vector3(0, 0, scale)],
+    [new Vector3(-half, bottom, half), new Vector3(scale, 0, 0), new Vector3(0, scale, 0)],
+    [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, scale, 0)]
+  ][hit.face];
+  const horizontal = gridCellCenter(x, hit.columns);
+  const vertical = 1 - gridCellCenter(y, hit.rows);
+  pointer.copy(origin.clone()
+    .addScaledVector(horizontalAxis, horizontal)
+    .addScaledVector(verticalAxis, vertical)
+    .applyMatrix4(getInstanceWorldMatrix(hit.mesh, hit.instanceId, new Matrix4()))
+    .project(painterContext.getCamera()));
+  raycaster.setFromCamera(pointer, painterContext.getCamera());
+  const adjacentHit = getRaycastHit();
+  return adjacentHit?.surface.objectUuid === hit.surface.objectUuid ? null : adjacentHit;
+}
+
 function stampBrush(hit: PaintHit): void {
-  const work = getWork(hit);
-  const part = facePartIndexes[hit.face] + hit.layer * 6;
+  const touched = new Set<WorkSurface>();
   const custom = brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
   const width = custom?.width ?? brushWidth;
   const height = custom?.height ?? brushHeight;
@@ -323,7 +357,8 @@ function stampBrush(hit: PaintHit): void {
     for (let column = 0; column < width; column++) {
       const x = hit.x + startX + column;
       const y = hit.y + startY + row;
-      if (x < 0 || x >= hit.columns || y < 0 || y >= hit.rows) continue;
+      const target = adjacentBrushHit(hit, x, y);
+      if (!target) continue;
       const source = custom ? custom.pixels[row * width + column] : currentColor;
       if (!source) continue;
       const coverage = custom ? (custom.strength ?? 100) / 100 : brushCoverage(
@@ -335,13 +370,16 @@ function stampBrush(hit: PaintHit): void {
         brushShape === 'circle'
       ) * brushStrength / 100;
       if (coverage <= 0) continue;
-      forEachGridPixel(hit.columns, hit.rows, x, y, (pixelX, pixelY) => {
-        const next = colorForLayer(overwrite && coverage === 1 ? source : sourceOver(readPixel(work.image, part, pixelX, pixelY), source, coverage), hit.layer);
+      const work = getWork(target);
+      const part = facePartIndexes[target.face] + target.layer * 6;
+      touched.add(work);
+      forEachGridPixel(target.columns, target.rows, target.x, target.y, (pixelX, pixelY) => {
+        const next = colorForLayer(overwrite && coverage === 1 ? source : sourceOver(readPixel(work.image, part, pixelX, pixelY), source, coverage), target.layer);
         work.changed = writePixel(work.image, part, pixelX, pixelY, next) || work.changed;
       });
     }
   }
-  flushWork(work);
+  touched.forEach(flushWork);
 }
 
 function eraseAt(hit: PaintHit): void {
@@ -608,6 +646,9 @@ function onPointerMove(event: PointerEvent): void {
   const hit = getHit(event);
   if (lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp') && hit) {
     updateHeadPainterStampPreview(painterContext.scene, hit, stampWidth, stampHeight, gridBoundary);
+  } else if (lastTool === 'brush' && hit) {
+    const brush = brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
+    updateHeadPainterStampPreview(painterContext.scene, hit, brush?.width ?? brushWidth, brush?.height ?? brushHeight, gridBoundary);
   } else {
     removeHeadPainterStampPreview();
   }
@@ -1447,7 +1488,7 @@ function createPanel(): void {
       <label>2번 레이어 <select id="head-painter-layer"><option value="auto">기본</option><option value="layer">켜기</option><option value="base">끄기</option></select></label>
       <div class="head-painter-inline"><label>가로 <input id="head-painter-grid-horizontal" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-grid-vertical" type="number" min="0" max="8" value="8"></label></div>
       <label>그리드 색상 <span class="head-painter-brush-color"><button id="head-painter-grid-color-picker" class="head-painter-color-preview" type="button" aria-label="그리드 색상 선택"></button><input id="head-painter-grid-color" value="#70C7FF" aria-label="그리드 색상 코드"></span></label>
-      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label><label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label></div>
+      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label><label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label><label><input id="head-painter-adjacent" type="checkbox"> 인접 헤드 페인트</label></div>
     </fieldset>
     </div>
     <div class="head-painter-tool-settings" data-head-painter-section="brush">
@@ -1550,6 +1591,7 @@ function createPanel(): void {
   bindRangePair('head-painter-eraser-hardness', 0, 100, value => { eraserHardness = value; });
   bindRangePair('head-painter-eraser-strength', 0, 100, value => { eraserStrength = value; });
   root.querySelector<HTMLInputElement>('#head-painter-overwrite')!.onchange = event => { overwrite = (event.target as HTMLInputElement).checked; };
+  root.querySelector<HTMLInputElement>('#head-painter-adjacent')!.onchange = event => { paintAdjacentHeads = (event.target as HTMLInputElement).checked; };
   root.querySelector<HTMLInputElement>('#head-painter-stamp-width')!.oninput = event => resizeStamp(Number((event.target as HTMLInputElement).value), stampHeight);
   root.querySelector<HTMLInputElement>('#head-painter-stamp-height')!.oninput = event => resizeStamp(stampWidth, Number((event.target as HTMLInputElement).value));
   root.querySelectorAll<HTMLButtonElement>('[data-stamp]').forEach(button => button.onclick = () => transformStamp(button.dataset.stamp as 'left' | 'right' | 'vertical' | 'horizontal'));
@@ -1676,6 +1718,7 @@ if (import.meta.env.DEV) {
   const [smartHorizontal, smartVertical] = smartCounts(8, 8, 1, 3);
   console.assert(smartHorizontal === 2 && smartVertical === 8 && partSize % smartHorizontal === 0 && partSize % smartVertical === 0 && smartCounts(0, 8, 1, 3)[0] === 0, 'Smart grid limits failed.');
   console.assert(gridBoundary(1, 4) === 2 && gridBoundary(2, 4) === 4, 'Grid paint boundaries failed.');
+  console.assert(gridCellCenter(-1, 8) === -0.0625 && gridCellCenter(8, 8) === 1.0625, 'Adjacent head brush projection failed.');
   gridOverrides.set('__grid_override_check__', { horizontal: 3, vertical: 5 });
   const [manualHorizontal, manualVertical] = getFaceGridCounts('__grid_override_check__', 0, new Matrix4());
   gridOverrides.delete('__grid_override_check__');

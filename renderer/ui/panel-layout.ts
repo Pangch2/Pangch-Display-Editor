@@ -68,17 +68,17 @@ function renderLayout(): void {
         const dockPanels = layout[side].map(id => panels[id]);
         const visiblePanels = dockPanels.filter(panel => !panel.hidden);
         const children = dockPanels.flatMap(panel => {
-            if (panel.hidden) return [panel];
+            if (panel.hidden) return [];
             const index = visiblePanels.indexOf(panel);
             const flexBasis = getPanelFlexBasis(panel.id as PanelId, index, visiblePanels.length);
             panel.style.flex = index === visiblePanels.length - 1 ? '1 1 0' : flexBasis ? `0 1 ${flexBasis}` : '';
-            panel.style.minHeight = visiblePanels.length > 1 ? '10%' : '';
+            panel.style.minHeight = visiblePanels.length > 1 ? '0' : '';
             if (!index) return [panel];
             const divider = document.createElement('div');
             divider.className = 'details-resizer';
             return [divider, panel];
         });
-        dock.replaceChildren(resizer, ...children);
+        dock.replaceChildren(resizer, ...children, ...dockPanels.filter(panel => panel.hidden));
         dock.classList.toggle('empty', visiblePanels.length === 0);
         dock.classList.toggle('single-panel', visiblePanels.length === 1);
     }
@@ -136,12 +136,17 @@ for (const side of ['left', 'right'] as DockSide[]) {
         if (!divider || divider.parentElement !== dock) return;
         event.preventDefault();
         const panel = divider.previousElementSibling as HTMLElement;
-        if (panel.classList.contains('collapsed')) return;
+        for (const adjacentPanel of [panel, divider.nextElementSibling as HTMLElement]) {
+            if (!adjacentPanel.classList.contains('collapsed')) continue;
+            adjacentPanel.classList.remove('collapsed');
+            adjacentPanel.firstElementChild?.setAttribute('aria-expanded', 'true');
+            localStorage.setItem(`panel-collapsed-${adjacentPanel.id}`, 'false');
+        }
         const visiblePanels = [...dock.querySelectorAll<HTMLElement>('.panel-section:not([hidden])')];
         const followingPanels = visiblePanels.slice(visiblePanels.indexOf(panel) + 1);
         const startY = event.clientY;
         const startHeight = panel.offsetHeight;
-        const minHeight = dock.clientHeight * 0.1;
+        const minHeight = 0;
         const maxHeight = Math.max(minHeight, startHeight + followingPanels.reduce(
             (height, item) => height + item.offsetHeight - (item.classList.contains('collapsed') ? item.offsetHeight : minHeight), 0
         ));
@@ -283,7 +288,7 @@ function measureDropRect(side: DockSide, panelOrder: PanelId[], panelId: PanelId
         panel.hidden = false;
         const flexBasis = getPanelFlexBasis(id, index, panelOrder.length);
         panel.style.flex = index === panelOrder.length - 1 ? '1 1 0' : flexBasis ? `0 1 ${flexBasis}` : '';
-        panel.style.minHeight = panelOrder.length > 1 ? '10%' : '';
+        panel.style.minHeight = panelOrder.length > 1 ? '0' : '';
         if (!index) return [panel];
         const divider = document.createElement('div');
         divider.className = 'details-resizer';

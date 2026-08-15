@@ -131,6 +131,7 @@
 #scene-objects {
   flex: 0 0 30%;
   min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
