@@ -18,6 +18,7 @@ import {
   loadAndRenderPbde,
   loadedObjectGroup,
   readPlayerHeadPaint,
+  replaceDisplayObjects,
   setPlayerHeadLayerVisible,
   writePlayerHeadPaint,
   type PlayerHeadPaintSurface
@@ -66,6 +67,7 @@ type PaintHit = {
   y: number;
   columns: number;
   rows: number;
+  promote: boolean;
 };
 type WorkSurface = {
   surface: PlayerHeadPaintSurface;
@@ -133,6 +135,7 @@ let deferredPaint: { pointerId: number; x: number; y: number } | null = null;
 let restoreCameraControls: (() => void) | null = null;
 let altPicking = false;
 let pickingColor = false;
+let promotingImageHead = false;
 let pickerCursorBefore: string | null = null;
 let colorTarget: RenderTarget | null = null;
 let root: HTMLElement | null = null;
@@ -240,7 +243,6 @@ function getRaycastHit(deselectOnMiss = false): PaintHit | null {
   if (!surface) return null;
   const imageLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
   const imageOverlay = imageLayer !== undefined && intersection.faceIndex >= 24;
-  if (imageLayer !== undefined && !imageOverlay) return null;
   const triangle = intersection.faceIndex % 24;
   const actualLayer = imageOverlay ? imageLayer : triangle >= 12 ? 1 : 0;
   const face = imageOverlay ? 4 : Math.floor((triangle % 12) / 2);
@@ -258,7 +260,7 @@ function getRaycastHit(deselectOnMiss = false): PaintHit | null {
   const packed = readPlayerHeadPaint(surface);
   const layer = imageOverlay ? imageLayer : layerMode === 'layer' ? 1 : layerMode === 'base' ? 0
     : readPixel(packed, facePartIndexes[face] + 6, gridCellPixel(x, columns), gridCellPixel(y, rows))[3] > 0 ? 1 : 0;
-  return { mesh, instanceId: intersection.instanceId, surface, face, layer, x, y, columns, rows };
+  return { mesh, instanceId: intersection.instanceId, surface, face, layer, x, y, columns, rows, promote: imageLayer !== undefined && !imageOverlay };
 }
 
 function getHit(event: PointerEvent, deselectOnMiss = false): PaintHit | null {
@@ -368,7 +370,7 @@ function adjacentBrushHit(hit: PaintHit, x: number, y: number): PaintHit | null 
   raycaster.far = rayLength * 2;
   const adjacentHit = getRaycastHit();
   raycaster.far = previousFar;
-  if (!adjacentHit || adjacentHit.surface.objectUuid === hit.surface.objectUuid || !isSamePaintFace(hit.face, adjacentHit.face)) return null;
+  if (!adjacentHit || adjacentHit.promote || adjacentHit.surface.objectUuid === hit.surface.objectUuid || !isSamePaintFace(hit.face, adjacentHit.face)) return null;
   return adjacentHit;
 }
 
@@ -620,6 +622,26 @@ function setAltPicking(enabled: boolean): void {
   }
 }
 
+function promoteImageHeadAndPaint(event: PointerEvent, hit: PaintHit): boolean {
+  if (!hit.promote) return false;
+  if (promotingImageHead) return true;
+  promotingImageHead = true;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const name = (loadedObjectGroup.userData.objectNames as Map<string, string> | undefined)?.get(hit.surface.objectUuid)
+    ?? 'player_head[display=none]';
+  void replaceDisplayObjects([{ objectUuid: hit.surface.objectUuid, name }], false).then(() => {
+    const promotedHit = getHit(event, true);
+    if (promotedHit) {
+      paintAt(promotedHit);
+      finishStroke();
+    }
+  }).catch(error => console.error('Image head promotion failed:', error)).finally(() => {
+    promotingImageHead = false;
+  });
+  return true;
+}
+
 function onPointerDown(event: PointerEvent): void {
   if (!active || !painterContext || event.button !== 0 || event.target !== painterContext.renderer.domElement) return;
   finishStroke();
@@ -638,7 +660,7 @@ function onPointerDown(event: PointerEvent): void {
   }
   if (painterContext.isGizmoHovered()) return;
   const hit = getHit(event, true);
-  if (!hit) return;
+  if (!hit || promoteImageHeadAndPaint(event, hit)) return;
   paintPointerId = event.pointerId;
   paintHeadUuid = hit.surface.objectUuid;
   restoreCameraControls = painterContext.suspendCameraControls();
@@ -724,6 +746,7 @@ function onPointerUp(event: PointerEvent): void {
     if (click) {
       const hit = getHit(event, true);
       if (hit) {
+        if (promoteImageHeadAndPaint(event, hit)) return;
         paintAt(hit);
         finishStroke();
       }
@@ -1712,9 +1735,9 @@ function createPanel(): void {
       <fieldset class="head-painter-generator">
         <legend>모델 생성</legend>
         <div class="head-painter-generator-tabs">
-          <button type="button" data-generator-target="player"><span class="lucide-icon">\uE19F</span> Player</button>
-          <button type="button" data-generator-target="head" aria-label="Head">${generatorPlayerHeadIcon}</button>
-          <button type="button" data-generator-target="image"><span class="lucide-icon">\uE0F6</span> 이미지</button>
+          <button type="button" data-generator-target="player" aria-label="플레이어 모델" title="플레이어 모델"><span class="lucide-icon">\uE19F</span></button>
+          <button type="button" data-generator-target="head" aria-label="플레이어 머리 모델" title="플레이어 머리 모델">${generatorPlayerHeadIcon}</button>
+          <button type="button" data-generator-target="image" aria-label="이미지 모델" title="이미지 모델"><span class="lucide-icon">\uE0F6</span></button>
         </div>
         <div data-player-options>
           <div class="head-painter-generator-tabs"><button type="button" data-player-model="default"><span class="lucide-icon">\uE19F</span> 기본</button><button type="button" data-player-model="animation"><span class="lucide-icon">\uE1A2</span> 애니메이션</button></div>

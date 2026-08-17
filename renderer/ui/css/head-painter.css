@@ -160,6 +160,10 @@
   height: 18px;
 }
 
+.head-painter-generator-tabs button[data-generator-target] .lucide-icon {
+  font-size: 18px;
+}
+
 .head-painter-generator-check {
   display: flex !important;
   margin-top: 5px;

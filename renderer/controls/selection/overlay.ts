@@ -477,7 +477,8 @@ export function prepareMultiSelectionDrag(_currentSelection: SelectionState): vo
 // --- Overlay State ---
 
 const _headGridDragMatrix = new Matrix4();
-let headPainterGridOverlay: LineSegments | null = null;
+const HEAD_GRID_INSTANCES_PER_CHUNK = 32768;
+let headPainterGridOverlay: Group | null = null;
 let headPainterStampPreview: LineSegments | null = null;
 let headPainterGridDirty = true;
 
@@ -496,11 +497,9 @@ export function updateHeadPainterGridOverlay(
 ): void {
     if (!headPainterGridDirty && _headGridDragMatrix.equals(dragDeltaMatrix)) return;
 
-    const positions: number[] = [];
     const worldMatrix = new Matrix4();
-    const addLine = (a: Vector3, b: Vector3, matrix: Matrix4) => {
-        a.applyMatrix4(matrix);
-        b.applyMatrix4(matrix);
+    const batches = new Map<string, { positions: number[]; matrices: number[] }>();
+    const addLine = (positions: number[], a: Vector3, b: Vector3) => {
         positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
     };
 
@@ -519,40 +518,58 @@ export function updateHeadPainterGridOverlay(
             mesh.getMatrixAt(instanceId, worldMatrix);
             worldMatrix.premultiply(mesh.matrixWorld);
             if (mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(instanceId)) worldMatrix.premultiply(dragDeltaMatrix);
-            for (let face = 0; face < 6; face++) {
-                const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(face, scale);
-                const [horizontal, vertical] = getFaceGridCounts(uuid, face, worldMatrix);
-                addLine(origin.clone(), origin.clone().add(horizontalAxis), worldMatrix);
-                addLine(origin.clone().add(verticalAxis), origin.clone().add(horizontalAxis).add(verticalAxis), worldMatrix);
-                addLine(origin.clone(), origin.clone().add(verticalAxis), worldMatrix);
-                addLine(origin.clone().add(horizontalAxis), origin.clone().add(horizontalAxis).add(verticalAxis), worldMatrix);
-                for (let line = 1; line < horizontal; line++) {
-                    const start = origin.clone().addScaledVector(horizontalAxis, getGridBoundary(line, horizontal) / 8);
-                    addLine(start, start.clone().add(verticalAxis), worldMatrix);
-                }
-                for (let line = 1; line < vertical; line++) {
-                    const start = origin.clone().addScaledVector(verticalAxis, getGridBoundary(line, vertical) / 8);
-                    addLine(start, start.clone().add(horizontalAxis), worldMatrix);
-                }
+            const counts = Array.from({ length: 6 }, (_, face) => getFaceGridCounts(uuid, face, worldMatrix));
+            const key = `${scale}|${counts.flat().join(',')}`;
+            let batch = batches.get(key);
+            if (!batch) {
+                const positions: number[] = [];
+                counts.forEach(([horizontal, vertical], face) => {
+                    const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(face, scale);
+                    addLine(positions, origin.clone(), origin.clone().add(horizontalAxis));
+                    addLine(positions, origin.clone().add(verticalAxis), origin.clone().add(horizontalAxis).add(verticalAxis));
+                    addLine(positions, origin.clone(), origin.clone().add(verticalAxis));
+                    addLine(positions, origin.clone().add(horizontalAxis), origin.clone().add(horizontalAxis).add(verticalAxis));
+                    for (let line = 1; line < horizontal; line++) {
+                        const start = origin.clone().addScaledVector(horizontalAxis, getGridBoundary(line, horizontal) / 8);
+                        addLine(positions, start, start.clone().add(verticalAxis));
+                    }
+                    for (let line = 1; line < vertical; line++) {
+                        const start = origin.clone().addScaledVector(verticalAxis, getGridBoundary(line, vertical) / 8);
+                        addLine(positions, start, start.clone().add(horizontalAxis));
+                    }
+                });
+                if (import.meta.env.DEV) console.assert(positions.length === counts.reduce((sum, [horizontal, vertical]) =>
+                    sum + (4 + Math.max(0, horizontal - 1) + Math.max(0, vertical - 1)) * 6, 0), 'Head painter grid face geometry is incomplete.');
+                batches.set(key, batch = { positions, matrices: [] });
             }
+            worldMatrix.toArray(batch.matrices, batch.matrices.length);
         }
     });
 
-    if (positions.length) {
-        const geometry = new BufferGeometry();
-        geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
-        if (!headPainterGridOverlay) {
-            headPainterGridOverlay = new LineSegments(geometry, new LineBasicNodeMaterial({ color, transparent: true, opacity: 0.9, depthTest: true, depthWrite: false }));
-            headPainterGridOverlay.name = 'head-painter-grid';
-            headPainterGridOverlay.renderOrder = 1000;
-            scene.add(headPainterGridOverlay);
-        } else {
-            headPainterGridOverlay.geometry.dispose();
-            headPainterGridOverlay.geometry = geometry;
-            (headPainterGridOverlay.material as LineBasicNodeMaterial).color.setHex(color);
+    removeHeadPainterGridOverlay();
+    if (batches.size) {
+        headPainterGridOverlay = new Group();
+        headPainterGridOverlay.name = 'head-painter-grid';
+        const material = new LineBasicNodeMaterial({ color, transparent: true, opacity: 0.9, depthTest: true, depthWrite: false });
+        for (const { positions, matrices } of batches.values()) {
+            const geometry = new BufferGeometry();
+            geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+            const total = matrices.length / 16;
+            for (let start = 0; start < total; start += HEAD_GRID_INSTANCES_PER_CHUNK) {
+                const count = Math.min(HEAD_GRID_INSTANCES_PER_CHUNK, total - start);
+                const lines = new InstancedMesh(geometry, material, count) as InstancedMesh & { isLineSegments: true };
+                lines.isLineSegments = true;
+                lines.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(matrices.slice(start * 16, (start + count) * 16)), 16);
+                lines.instanceMatrix.needsUpdate = true;
+                lines.frustumCulled = false;
+                lines.renderOrder = 1000;
+                headPainterGridOverlay.add(lines);
+            }
         }
-    } else {
-        removeHeadPainterGridOverlay();
+        scene.add(headPainterGridOverlay);
+        if (import.meta.env.DEV) console.assert(headPainterGridOverlay.children.every(object =>
+            (object as InstancedMesh).count <= HEAD_GRID_INSTANCES_PER_CHUNK
+            && !!(object as InstancedMesh & { isLineSegments?: boolean }).isLineSegments), 'Head painter grid chunking failed.');
     }
     headPainterGridDirty = false;
     _headGridDragMatrix.copy(dragDeltaMatrix);
@@ -561,8 +578,17 @@ export function updateHeadPainterGridOverlay(
 export function removeHeadPainterGridOverlay(): void {
     if (headPainterGridOverlay) {
         headPainterGridOverlay.removeFromParent();
-        headPainterGridOverlay.geometry.dispose();
-        (headPainterGridOverlay.material as LineBasicNodeMaterial).dispose();
+        const geometries = new Set<BufferGeometry>();
+        const materials = new Set<Material>();
+        headPainterGridOverlay.traverse(object => {
+            const mesh = object as InstancedMesh;
+            if (!mesh.isInstancedMesh) return;
+            geometries.add(mesh.geometry);
+            const meshMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            meshMaterials.forEach(material => materials.add(material));
+        });
+        geometries.forEach(geometry => geometry.dispose());
+        materials.forEach(material => material.dispose());
         headPainterGridOverlay = null;
     }
     headPainterGridDirty = true;

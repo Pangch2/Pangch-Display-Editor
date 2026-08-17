@@ -163,7 +163,7 @@ export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupN
   const canvas = document.createElement('canvas');
   canvas.width = columns * 8;
   canvas.height = rows * 8;
-  const context = canvas.getContext('2d');
+  const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('이미지 캔버스를 만들 수 없습니다.');
   context.imageSmoothingEnabled = false;
   if (!layer) {

@@ -57,6 +57,7 @@ type PlayerHeadAtlas = {
     imageHeadNextTile?: number;
     imageHeadReservedSlots?: number;
     imageHeadTiles?: Set<number>;
+    imageHeadTileKeys?: Map<string, number>;
     skins: Map<string, PlayerHeadSkin>;
     slotUrls: Array<string | undefined>;
 };
@@ -74,6 +75,7 @@ type PlayerHeadAtlasSnapshot = {
     imageHeadNextTile?: number;
     imageHeadReservedSlots?: number;
     imageHeadTiles?: number[];
+    imageHeadTileKeys?: Array<[string, number]>;
     skins: Map<string, PlayerHeadSkin>;
     slotUrls: Array<string | undefined>;
     regions: PlayerHeadAtlasRegionSnapshot[];
@@ -1084,6 +1086,13 @@ if (import.meta.env.DEV) {
     console.assert(findAvailablePlayerHeadAtlas([reusable]) === reusable && takePlayerHeadSlot(reusable) === 3, 'Player head atlas slot reuse is broken.');
     const dense = { imageHeadNextTile: 0, imageHeadReservedSlots: 1, imageHeadTiles: new Set([3]) } as PlayerHeadAtlas;
     console.assert(takeImageHeadTile(dense, 256 * 256) === 4, 'Occupied image head atlas tiles must append after the used range.');
+    const tile = new Uint8ClampedArray(PLAYER_HEAD_PART_SIZE * PLAYER_HEAD_PART_SIZE * 4);
+    tile[0] = 255;
+    const tileCopy = tile.slice();
+    console.assert(getImageHeadTileHash(tile, PLAYER_HEAD_PART_SIZE, 0, 0) === getImageHeadTileHash(tileCopy, PLAYER_HEAD_PART_SIZE, 0, 0)
+        && imageHeadTileMatches(tile, PLAYER_HEAD_PART_SIZE, 0, 0, tileCopy), 'Image head tile deduplication failed.');
+    tileCopy[0] = 0;
+    console.assert(!imageHeadTileMatches(tile, PLAYER_HEAD_PART_SIZE, 0, 0, tileCopy), 'Different image head tiles were deduplicated.');
 }
 
 function createPlayerHeadAtlas(notify = true): PlayerHeadAtlas {
@@ -1137,9 +1146,39 @@ function takeImageHeadTile(atlas: PlayerHeadAtlas, tilesPerAtlas: number): numbe
     return tile;
 }
 
+function getImageHeadTileHash(pixels: Uint8ClampedArray, width: number, x: number, y: number): string {
+    let hashA = 2166136261;
+    let hashB = 0x9e3779b9;
+    for (let row = 0; row < PLAYER_HEAD_PART_SIZE; row++) {
+        let offset = ((y + row) * width + x) * 4;
+        for (let byte = 0; byte < PLAYER_HEAD_PART_SIZE * 4; byte++, offset++) {
+            hashA = Math.imul(hashA ^ pixels[offset], 16777619);
+            hashB = Math.imul(hashB ^ pixels[offset], 2246822519);
+        }
+    }
+    return `${hashA >>> 0}:${hashB >>> 0}`;
+}
+
+function imageHeadTileMatches(
+    source: Uint8ClampedArray,
+    sourceWidth: number,
+    sourceX: number,
+    sourceY: number,
+    candidate: Uint8ClampedArray
+): boolean {
+    for (let row = 0; row < PLAYER_HEAD_PART_SIZE; row++) {
+        const sourceOffset = ((sourceY + row) * sourceWidth + sourceX) * 4;
+        const candidateOffset = row * PLAYER_HEAD_PART_SIZE * 4;
+        for (let byte = 0; byte < PLAYER_HEAD_PART_SIZE * 4; byte++) {
+            if (source[sourceOffset + byte] !== candidate[candidateOffset + byte]) return false;
+        }
+    }
+    return true;
+}
+
 // ponytail: generated image heads keep only their editable front tile; promote one to a regular head before replacing all six faces.
 export function createImageHeadAtlasMeshes(
-    source: CanvasImageSource,
+    source: HTMLCanvasElement,
     columns: number,
     rows: number,
     layer: 0 | 1
@@ -1151,10 +1190,26 @@ export function createImageHeadAtlasMeshes(
     const tilesPerAtlas = tilesPerRow * tilesPerRow;
     const matrix = new THREE.Matrix4();
     const atlases = getProjectPlayerHeadAtlases();
+    const sourceContext = source.getContext('2d', { willReadFrequently: true });
+    if (!sourceContext) throw new Error('Image head source canvas is unavailable.');
+    const sourcePixels = sourceContext.getImageData(0, 0, source.width, source.height).data;
+    const tilePixelCache = new WeakMap<PlayerHeadAtlas, Map<number, Uint8ClampedArray>>();
+    const atlasEntries = new Map<PlayerHeadAtlas, Array<{ index: number; tile: number }>>();
+    const keyedTiles = new Map<string, Array<{ atlas: PlayerHeadAtlas; tile: number }>>();
+    for (const atlas of atlases) for (const [key, tile] of atlas.imageHeadTileKeys ?? []) {
+        const candidates = keyedTiles.get(key) ?? [];
+        candidates.push({ atlas, tile });
+        keyedTiles.set(key, candidates);
+    }
     let blackMaterial = imageHeadBlackMaterial;
-    let start = 0;
 
-    while (start < total) {
+    const prepareAtlas = (atlas: PlayerHeadAtlas): void => {
+        atlas.imageHeadReservedSlots ??= atlas.nextSlot;
+        atlas.imageHeadNextTile ??= 0;
+        atlas.imageHeadTileKeys ??= new Map();
+        atlas.nextSlot = MAX_PLAYER_HEAD_SLOTS_PER_ATLAS;
+    };
+    const allocateTile = (): { atlas: PlayerHeadAtlas; tile: number } => {
         let atlas = atlases.find(candidate => candidate.imageHeadNextTile !== undefined && candidate.imageHeadNextTile < tilesPerAtlas)
             ?? atlases.find(candidate => candidate.imageHeadNextTile === undefined
                 && (!!candidate.freeSlots.length || candidate.nextSlot < MAX_PLAYER_HEAD_SLOTS_PER_ATLAS));
@@ -1162,79 +1217,125 @@ export function createImageHeadAtlasMeshes(
             atlas = createPlayerHeadAtlas(false);
             atlases.push(atlas);
         }
-        atlas.imageHeadReservedSlots ??= atlas.nextSlot;
-        atlas.imageHeadNextTile ??= 0;
-        atlas.nextSlot = MAX_PLAYER_HEAD_SLOTS_PER_ATLAS;
+        prepareAtlas(atlas);
+        const tile = takeImageHeadTile(atlas, tilesPerAtlas);
+        if (tile === undefined) return allocateTile();
+        return { atlas, tile };
+    };
+    const candidatePixels = (atlas: PlayerHeadAtlas, tile: number): Uint8ClampedArray => {
+        let cache = tilePixelCache.get(atlas);
+        if (!cache) tilePixelCache.set(atlas, cache = new Map());
+        let pixels = cache.get(tile);
+        if (!pixels) {
+            pixels = atlas.context.getImageData(
+                tile % tilesPerRow * PLAYER_HEAD_PART_SIZE,
+                Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE,
+                PLAYER_HEAD_PART_SIZE,
+                PLAYER_HEAD_PART_SIZE
+            ).data;
+            cache.set(tile, pixels);
+        }
+        return pixels;
+    };
+
+    for (let index = 0; index < total; index++) {
+        const x = index % columns;
+        const y = Math.floor(index / columns);
+        const sourceX = x * PLAYER_HEAD_PART_SIZE;
+        const sourceY = y * PLAYER_HEAD_PART_SIZE;
+        const hash = getImageHeadTileHash(sourcePixels, source.width, sourceX, sourceY);
+        let collision = 0;
+        let assignment: { atlas: PlayerHeadAtlas; tile: number } | undefined;
+        while (!assignment) {
+            const key = collision ? `${hash}:${collision}` : hash;
+            const candidates = keyedTiles.get(key) ?? [];
+            for (const { atlas, tile } of candidates) {
+                if (imageHeadTileMatches(sourcePixels, source.width, sourceX, sourceY, candidatePixels(atlas, tile))) {
+                    assignment = { atlas, tile };
+                    break;
+                }
+            }
+            if (!assignment && candidates.length === 0) {
+                const { atlas, tile } = allocateTile();
+                atlas.imageHeadTileKeys!.set(key, tile);
+                keyedTiles.set(key, [{ atlas, tile }]);
+                atlas.context.drawImage(source, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE,
+                    tile % tilesPerRow * PLAYER_HEAD_PART_SIZE, Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE,
+                    PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
+                atlas.texture.needsUpdate = true;
+                assignment = { atlas, tile };
+            }
+            collision++;
+        }
+        const entries = atlasEntries.get(assignment.atlas) ?? [];
+        entries.push({ index, tile: assignment.tile });
+        atlasEntries.set(assignment.atlas, entries);
+    }
+
+    for (const [atlas, entries] of atlasEntries) {
+        prepareAtlas(atlas);
         if (!blackMaterial) {
             atlas.context.fillRect(PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE, 0, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
             blackMaterial = getImageHeadBlackMaterial(atlas.texture);
         }
-        const tilePositions: Array<[number, number]> = [];
-        while (start + tilePositions.length < total) {
-            const tile = takeImageHeadTile(atlas, tilesPerAtlas);
-            if (tile === undefined) break;
-            const tileColumn = tile % tilesPerRow;
-            const tileRow = Math.floor(tile / tilesPerRow);
-            tilePositions.push([tileColumn * PLAYER_HEAD_PART_SIZE, tileRow * PLAYER_HEAD_PART_SIZE]);
-        }
-        if (!tilePositions.length) continue;
-        const count = tilePositions.length;
-        const geometry = createImageHeadAtlasGeometry(layer);
-        const uvData = new Float32Array(count * 11);
-        const interleaved = new THREE.InstancedInterleavedBuffer(uvData, 11);
-        const uvOffsets = new THREE.InterleavedBufferAttribute(interleaved, 2, 0);
-        geometry.setAttribute('instancedUvOffset', uvOffsets);
-        geometry.setAttribute('instancedUvFlip', new THREE.InterleavedBufferAttribute(interleaved, 2, 2));
-        const knifeUvScales = new THREE.InterleavedBufferAttribute(interleaved, 3, 4);
-        geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
-        geometry.setAttribute('instancedKnifeUvOffset', new THREE.InterleavedBufferAttribute(interleaved, 3, 7));
-        const layerVisible = new THREE.InterleavedBufferAttribute(interleaved, 1, 10);
-        geometry.setAttribute('headLayerVisible', layerVisible);
-        setEntityStateAttributes(geometry, count);
+        for (let start = 0; start < entries.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
+            const chunk = entries.slice(start, start + MAX_INSTANCES_PER_INSTANCED_MESH);
+            const count = chunk.length;
+            const tilePositions = chunk.map(({ tile }) => [
+                tile % tilesPerRow * PLAYER_HEAD_PART_SIZE,
+                Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE
+            ] as [number, number]);
+            const geometry = createImageHeadAtlasGeometry(layer);
+            const uvData = new Float32Array(count * 11);
+            const interleaved = new THREE.InstancedInterleavedBuffer(uvData, 11);
+            const uvOffsets = new THREE.InterleavedBufferAttribute(interleaved, 2, 0);
+            geometry.setAttribute('instancedUvOffset', uvOffsets);
+            geometry.setAttribute('instancedUvFlip', new THREE.InterleavedBufferAttribute(interleaved, 2, 2));
+            const knifeUvScales = new THREE.InterleavedBufferAttribute(interleaved, 3, 4);
+            geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
+            geometry.setAttribute('instancedKnifeUvOffset', new THREE.InterleavedBufferAttribute(interleaved, 3, 7));
+            const layerVisible = new THREE.InterleavedBufferAttribute(interleaved, 1, 10);
+            geometry.setAttribute('headLayerVisible', layerVisible);
+            setEntityStateAttributes(geometry, count);
 
-        const matrices = new Float32Array(count * 16);
-        for (let localIndex = 0; localIndex < count; localIndex++) {
-            const index = start + localIndex;
-            const x = index % columns;
-            const y = Math.floor(index / columns);
-            const [tileX, tileY] = tilePositions[localIndex];
-            const partY = layer ? 24 : 8;
-            atlas.context.drawImage(source, x * 8, y * 8, 8, 8, tileX, tileY, 8, 8);
-            uvOffsets.setXY(localIndex,
-                (tileX - 8) / PLAYER_HEAD_ATLAS_SIZE,
-                1 - (tileY + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
-            );
-            knifeUvScales.setXYZ(localIndex, 1, 1, 1);
-            layerVisible.setX(localIndex, layer);
-            matrix.makeTranslation(x * spacing, (rows - y) * spacing, 0)
-                .multiply(getPlayerHeadRenderMatrix('none')).toArray(matrices, localIndex * 16);
-        }
-        atlas.texture.needsUpdate = true;
+            const matrices = new Float32Array(count * 16);
+            for (let localIndex = 0; localIndex < count; localIndex++) {
+                const index = chunk[localIndex].index;
+                const x = index % columns;
+                const y = Math.floor(index / columns);
+                const [tileX, tileY] = tilePositions[localIndex];
+                const partY = layer ? 24 : 8;
+                uvOffsets.setXY(localIndex,
+                    (tileX - 8) / PLAYER_HEAD_ATLAS_SIZE,
+                    1 - (tileY + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
+                );
+                knifeUvScales.setXYZ(localIndex, 1, 1, 1);
+                layerVisible.setX(localIndex, layer);
+                matrix.makeTranslation(x * spacing, (rows - y) * spacing, 0)
+                    .multiply(getPlayerHeadRenderMatrix('none')).toArray(matrices, localIndex * 16);
+            }
+            atlas.texture.needsUpdate = true;
 
-        const mesh = new THREE.InstancedMesh(geometry, [atlas.material, blackMaterial], count);
-        mesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
-        mesh.name = 'player_head[display=none]';
-        mesh.userData.displayType = 'item_display';
-        mesh.userData.hasHat = new Array(count).fill(layer === 1);
-        mesh.userData.imageHeadLayer = layer;
-        mesh.userData.imageHeadTilePositions = tilePositions;
-        mesh.instanceMatrix.needsUpdate = true;
-        mesh.frustumCulled = false;
-        mesh.layers.enable(2);
-        mesh.computeBoundingBox();
-        mesh.computeBoundingSphere();
-        meshes.push(mesh);
-        if (import.meta.env.DEV) console.assert(tilePositions.every(([x, y]) =>
-            !(x === PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE && y === 0)
-            && (x >= PLAYER_HEAD_BLOCKS_PER_ROW * PLAYER_HEAD_BLOCK_WIDTH
-                || Math.floor(y / PLAYER_HEAD_BLOCK_HEIGHT) * PLAYER_HEAD_BLOCKS_PER_ROW
-                    + Math.floor(x / PLAYER_HEAD_BLOCK_WIDTH) >= atlas.imageHeadReservedSlots!)
-        ), 'Image heads overlapped reserved player head atlas slots.');
-        if (import.meta.env.DEV && tilePositions.length > 1) console.assert(
-            tilePositions[1][0] === tilePositions[0][0] + 8 || tilePositions[1][1] === tilePositions[0][1] + 8,
-            'Image head atlas tiles are not tightly packed.'
-        );
-        start += count;
+            const mesh = new THREE.InstancedMesh(geometry, [atlas.material, blackMaterial], count);
+            mesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
+            mesh.name = 'player_head[display=none]';
+            mesh.userData.displayType = 'item_display';
+            mesh.userData.hasHat = new Array(count).fill(layer === 1);
+            mesh.userData.imageHeadLayer = layer;
+            mesh.userData.imageHeadTilePositions = tilePositions;
+            mesh.instanceMatrix.needsUpdate = true;
+            mesh.frustumCulled = false;
+            mesh.layers.enable(2);
+            mesh.computeBoundingBox();
+            mesh.computeBoundingSphere();
+            meshes.push(mesh);
+            if (import.meta.env.DEV) console.assert(tilePositions.every(([x, y]) =>
+                !(x === PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE && y === 0)
+                && (x >= PLAYER_HEAD_BLOCKS_PER_ROW * PLAYER_HEAD_BLOCK_WIDTH
+                    || Math.floor(y / PLAYER_HEAD_BLOCK_HEIGHT) * PLAYER_HEAD_BLOCKS_PER_ROW
+                        + Math.floor(x / PLAYER_HEAD_BLOCK_WIDTH) >= atlas.imageHeadReservedSlots!)
+            ), 'Image heads overlapped reserved player head atlas slots.');
+        }
     }
 
     notifyPlayerHeadAtlasesChanged();
@@ -2172,6 +2273,24 @@ function getPlayerHeadSlotUsage(material: THREE.Material, slot: number): number 
     return count;
 }
 
+function getImageHeadTileUsage(material: THREE.Material, tile: number): number {
+    const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
+    let count = 0;
+    loadedObjectGroup.traverse(object => {
+        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
+        const mesh = object as THREE.InstancedMesh;
+        const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+        if (meshMaterial !== material) return;
+        const positions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
+        if (!positions) return;
+        for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
+            const position = positions[instanceId];
+            if (position && position[1] / PLAYER_HEAD_PART_SIZE * tilesPerRow + position[0] / PLAYER_HEAD_PART_SIZE === tile) count++;
+        }
+    });
+    return count;
+}
+
 function collectPlayerHeadAtlasUsage(): {
     slots: Map<THREE.Material, Set<number>>;
     imageTiles: Map<THREE.Material, Set<number>>;
@@ -2226,7 +2345,8 @@ function capturePlayerHeadAtlasState(): PlayerHeadAtlasSnapshot[] {
             PLAYER_HEAD_BLOCK_HEIGHT
         ));
         const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
-        const imageTiles = [...(usage.imageTiles.get(atlas.material) ?? [])].sort((a, b) => a - b);
+        const usedImageTiles = usage.imageTiles.get(atlas.material) ?? new Set<number>();
+        const imageTiles = [...usedImageTiles].sort((a, b) => a - b);
         imageTiles.forEach(tile => addRegion(
             tile % tilesPerRow * PLAYER_HEAD_PART_SIZE,
             Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE,
@@ -2246,6 +2366,7 @@ function capturePlayerHeadAtlasState(): PlayerHeadAtlasSnapshot[] {
             imageHeadNextTile: atlas.imageHeadNextTile,
             imageHeadReservedSlots: atlas.imageHeadReservedSlots,
             imageHeadTiles: imageTiles,
+            imageHeadTileKeys: [...(atlas.imageHeadTileKeys ?? [])].filter(([, tile]) => usedImageTiles.has(tile)),
             skins: new Map(Array.from(atlas.skins, ([url, skin]) => [url, { ...skin }])),
             slotUrls: [...atlas.slotUrls],
             regions
@@ -2269,6 +2390,7 @@ function restorePlayerHeadAtlasState(value: unknown): void {
         atlas.imageHeadNextTile = state.imageHeadNextTile;
         atlas.imageHeadReservedSlots = state.imageHeadReservedSlots;
         atlas.imageHeadTiles = new Set(state.imageHeadTiles);
+        atlas.imageHeadTileKeys = new Map(state.imageHeadTileKeys);
         atlas.skins = new Map(Array.from(state.skins, ([url, skin]) => [url, { ...skin }]));
         atlas.slotUrls = [...state.slotUrls];
         atlas.texture.needsUpdate = true;
@@ -2313,6 +2435,9 @@ function cleanupUnusedPlayerHeadAtlasSlots(): void {
                 PLAYER_HEAD_PART_SIZE
             );
             allocated.delete(tile);
+            for (const [key, mappedTile] of atlas.imageHeadTileKeys ?? []) {
+                if (mappedTile === tile) atlas.imageHeadTileKeys!.delete(key);
+            }
             atlas.texture.needsUpdate = true;
             changed = true;
         }
@@ -2335,10 +2460,39 @@ export function getPlayerHeadPaintSurface(
     if (!atlas || !uvOffsets || !objectUuid || instanceId < 0 || instanceId >= mesh.count) return null;
     const denseLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
     const denseTile = (mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined)?.[instanceId];
-    if (denseLayer !== undefined && denseTile) return {
-        mesh, instanceId, objectUuid, context: atlas.context, texture: atlas.texture,
-        slot: -1, x: denseTile[0], y: denseTile[1], denseLayer
-    };
+    if (denseLayer !== undefined && denseTile) {
+        let [x, y] = denseTile;
+        if (exclusive) {
+            const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
+            const oldTile = y / PLAYER_HEAD_PART_SIZE * tilesPerRow + x / PLAYER_HEAD_PART_SIZE;
+            const usage = getImageHeadTileUsage(material, oldTile);
+            if (usage > 1) {
+                const nextTile = takeImageHeadTile(atlas, tilesPerRow * tilesPerRow);
+                if (nextTile === undefined) throw new Error('Player head paint atlas is full.');
+                const nextX = nextTile % tilesPerRow * PLAYER_HEAD_PART_SIZE;
+                const nextY = Math.floor(nextTile / tilesPerRow) * PLAYER_HEAD_PART_SIZE;
+                atlas.context.putImageData(atlas.context.getImageData(x, y, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE), nextX, nextY);
+                x = nextX;
+                y = nextY;
+                (mesh.userData.imageHeadTilePositions as Array<[number, number]>)[instanceId] = [x, y];
+                const partY = denseLayer ? 24 : 8;
+                uvOffsets.setXY(instanceId,
+                    (x - 8) / PLAYER_HEAD_ATLAS_SIZE,
+                    1 - (y + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
+                );
+                uvOffsets.needsUpdate = true;
+                atlas.texture.needsUpdate = true;
+            } else {
+                for (const [key, tile] of atlas.imageHeadTileKeys ?? []) {
+                    if (tile === oldTile) atlas.imageHeadTileKeys!.delete(key);
+                }
+            }
+        }
+        return {
+            mesh, instanceId, objectUuid, context: atlas.context, texture: atlas.texture,
+            slot: -1, x, y, denseLayer
+        };
+    }
 
     let slot = getPlayerHeadSlot(uvOffsets, instanceId);
     if (exclusive && getPlayerHeadSlotUsage(material, slot) > 1) {
