@@ -514,7 +514,7 @@ export function updateHeadPainterGridOverlay(
             const uuid = keyToUuid?.get(`${mesh.uuid}_${instanceId}`);
             if (!uuid) continue;
             const showLayer = layerMode === 'layer' || (layerMode === 'auto' && !!mesh.userData.hasHat?.[instanceId]);
-            const scale = (showLayer ? 1.0625 : 1) * 1.003;
+            const scale = showLayer ? 1.0625 : 1;
             mesh.getMatrixAt(instanceId, worldMatrix);
             worldMatrix.premultiply(mesh.matrixWorld);
             if (mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(instanceId)) worldMatrix.premultiply(dragDeltaMatrix);
@@ -525,6 +525,7 @@ export function updateHeadPainterGridOverlay(
                 const positions: number[] = [];
                 counts.forEach(([horizontal, vertical], face) => {
                     const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(face, scale);
+                    origin.addScaledVector(horizontalAxis.clone().cross(verticalAxis).normalize(), 0.001);
                     addLine(positions, origin.clone(), origin.clone().add(horizontalAxis));
                     addLine(positions, origin.clone().add(verticalAxis), origin.clone().add(horizontalAxis).add(verticalAxis));
                     addLine(positions, origin.clone(), origin.clone().add(verticalAxis));

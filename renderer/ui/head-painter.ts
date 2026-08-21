@@ -17,6 +17,7 @@ import {
   getPlayerHeadPaintSurface,
   loadAndRenderPbde,
   loadedObjectGroup,
+  mirrorPlayerHeadPaint,
   readPlayerHeadPaint,
   replaceDisplayObjects,
   setPlayerHeadLayerVisible,
@@ -40,6 +41,7 @@ import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { isSceneObjectVisible } from '../controls/scene-visibility';
 import { intersectSceneInstances } from '../controls/selection/instance-raycast';
 import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history';
+import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../controls/transform/mirroring';
 import { addImageHeadGrid, createHeadProject, createPlayerProject, isSlimSkin, type PlayerModel, type SkinModel } from './player-generator';
 import playerHeadIcon from '../../resources/player_head.svg?raw';
 
@@ -113,7 +115,7 @@ let eraserSize = 1;
 let eraserHardness = 100;
 let eraserStrength = 100;
 let overwrite = false;
-let paintAdjacentHeads = false;
+let paintAdjacentHeads = true;
 let colorMode: 'rgb' | 'oklch' = 'rgb';
 let currentColor: Rgba = [0, 0, 0, 255];
 let palette: Array<Rgba | null> = Array(64).fill(null);
@@ -281,17 +283,45 @@ function getWork(hit: PaintHit): WorkSurface {
     const beforeTexture = (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.get(surface.objectUuid);
     work = { surface, before: cloneImage(image), beforeTexture, image, changed: false };
     stroke.set(surface.objectUuid, work);
+    if (isMirrorModelingEnabled()) {
+      const partnerUuid = getLinkedMirrorUuid(loadedObjectGroup, surface.objectUuid);
+      const partner = partnerUuid
+        ? (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(partnerUuid)
+        : undefined;
+      const partnerSurface = partner ? getPlayerHeadPaintSurface(partner.mesh, partner.instanceId, true) : null;
+      if (partnerSurface && !stroke.has(partnerSurface.objectUuid)) {
+        const partnerImage = readPlayerHeadPaint(partnerSurface);
+        const partnerTexture = (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.get(partnerSurface.objectUuid);
+        stroke.set(partnerSurface.objectUuid, {
+          surface: partnerSurface,
+          before: cloneImage(partnerImage),
+          beforeTexture: partnerTexture,
+          image: partnerImage,
+          changed: false
+        });
+      }
+    }
   }
   return work;
 }
 
 function flushWork(work: WorkSurface): void {
-  writePlayerHeadPaint(work.surface, work.image, false);
+  const flushed = [work];
+  const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, work.surface.objectUuid) : undefined;
+  const partner = partnerUuid ? stroke?.get(partnerUuid) : undefined;
+  if (work.changed && partner) {
+    partner.image = mirrorPlayerHeadPaint(work.image, 'x');
+    partner.changed = true;
+    flushed.push(partner);
+  }
+  flushed.forEach(target => writePlayerHeadPaint(target.surface, target.image, false));
   const now = performance.now();
-  const lastUpdate = paintTextureUpdateTimes.get(work.surface.texture) ?? -Infinity;
-  if (now - lastUpdate < paintTextureUpdateIntervalMs) return;
-  work.surface.texture.needsUpdate = true;
-  paintTextureUpdateTimes.set(work.surface.texture, now);
+  flushed.forEach(target => {
+    const lastUpdate = paintTextureUpdateTimes.get(target.surface.texture) ?? -Infinity;
+    if (now - lastUpdate < paintTextureUpdateIntervalMs) return;
+    target.surface.texture.needsUpdate = true;
+    paintTextureUpdateTimes.set(target.surface.texture, now);
+  });
 }
 
 function finishStroke(): void {
@@ -1692,7 +1722,7 @@ function createPanel(): void {
       <label>2번 레이어 <select id="head-painter-layer"><option value="auto">기본</option><option value="layer">켜기</option><option value="base">끄기</option></select></label>
       <div class="head-painter-inline"><label>가로 <input id="head-painter-grid-horizontal" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-grid-vertical" type="number" min="0" max="8" value="8"></label></div>
       <label>그리드 색상 <span class="head-painter-brush-color"><button id="head-painter-grid-color-picker" class="head-painter-color-preview" type="button" aria-label="그리드 색상 선택"></button><input id="head-painter-grid-color" value="#70C7FF" aria-label="그리드 색상 코드"></span></label>
-      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label><label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label><label><input id="head-painter-adjacent" type="checkbox"> 인접 헤드 페인트</label></div>
+      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label><label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label><label><input id="head-painter-adjacent" type="checkbox" checked> 인접 헤드 페인트</label></div>
     </fieldset>
     </div>
     <div class="head-painter-tool-settings" data-head-painter-section="brush">

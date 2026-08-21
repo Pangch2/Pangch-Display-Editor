@@ -1343,12 +1343,41 @@ export function createImageHeadAtlasMeshes(
     return meshes;
 }
 
-function mirroredPlayerHeadFace(key: keyof typeof playerHeadFaceParts): keyof typeof playerHeadFaceParts {
-    return (key.endsWith('right') ? key.replace('right', 'left')
-        : key.endsWith('left') ? key.replace('left', 'right') : key) as keyof typeof playerHeadFaceParts;
+type PlayerHeadMirrorAxis = 'x' | 'y' | 'z';
+
+function mirroredPlayerHeadFace(key: keyof typeof playerHeadFaceParts, axis: PlayerHeadMirrorAxis): keyof typeof playerHeadFaceParts {
+    const [negative, positive] = axis === 'x' ? ['right', 'left']
+        : axis === 'y' ? ['top', 'bottom'] : ['front', 'back'];
+    return (key.endsWith(negative) ? key.replace(negative, positive)
+        : key.endsWith(positive) ? key.replace(positive, negative) : key) as keyof typeof playerHeadFaceParts;
 }
 
-function playerHeadTextureDataUrl(image: HTMLImageElement, mirrored: boolean): string | null {
+function playerHeadFaceFlip(key: keyof typeof playerHeadFaceParts, axis: PlayerHeadMirrorAxis): [boolean, boolean] {
+    if (axis === 'x') return [true, false];
+    const horizontalFace = key.endsWith('top') || key.endsWith('bottom');
+    return axis === 'y' ? [false, !horizontalFace] : [!horizontalFace, horizontalFace];
+}
+
+export function mirrorPlayerHeadPaint(packed: ImageData, axis: PlayerHeadMirrorAxis): ImageData {
+    const mirrored = new ImageData(packed.width, packed.height);
+    playerHeadPartOrder.forEach((key, targetPart) => {
+        const sourcePart = playerHeadPartOrder.indexOf(mirroredPlayerHeadFace(key, axis));
+        const [flipX, flipY] = playerHeadFaceFlip(key, axis);
+        for (let y = 0; y < PLAYER_HEAD_PART_SIZE; y++) {
+            for (let x = 0; x < PLAYER_HEAD_PART_SIZE; x++) {
+                const sourceX = sourcePart % 3 * PLAYER_HEAD_PART_SIZE + (flipX ? PLAYER_HEAD_PART_SIZE - 1 - x : x);
+                const sourceY = Math.floor(sourcePart / 3) * PLAYER_HEAD_PART_SIZE + (flipY ? PLAYER_HEAD_PART_SIZE - 1 - y : y);
+                const targetX = targetPart % 3 * PLAYER_HEAD_PART_SIZE + x;
+                const targetY = Math.floor(targetPart / 3) * PLAYER_HEAD_PART_SIZE + y;
+                const sourceOffset = (sourceY * packed.width + sourceX) * 4;
+                mirrored.data.set(packed.data.subarray(sourceOffset, sourceOffset + 4), (targetY * packed.width + targetX) * 4);
+            }
+        }
+    });
+    return mirrored;
+}
+
+function playerHeadTextureDataUrl(image: HTMLImageElement, axis: PlayerHeadMirrorAxis | null): string | null {
     const canvas = document.createElement('canvas');
     canvas.width = image.naturalWidth;
     canvas.height = image.naturalHeight;
@@ -1356,29 +1385,39 @@ function playerHeadTextureDataUrl(image: HTMLImageElement, mirrored: boolean): s
     if (!context) throw new Error('플레이어 헤드 텍스처 캔버스를 만들 수 없습니다.');
     context.imageSmoothingEnabled = false;
     context.drawImage(image, 0, 0);
-    const originalPixels = mirrored ? context.getImageData(0, 0, canvas.width, canvas.height).data : null;
-    if (mirrored) {
+    const originalPixels = axis ? context.getImageData(0, 0, canvas.width, canvas.height).data : null;
+    if (axis) {
         for (const [key, [x, y]] of Object.entries(playerHeadFaceParts)) {
-            const sourceKey = mirroredPlayerHeadFace(key as keyof typeof playerHeadFaceParts);
+            const face = key as keyof typeof playerHeadFaceParts;
+            const sourceKey = mirroredPlayerHeadFace(face, axis);
             const [sourceX, sourceY] = playerHeadFaceParts[sourceKey];
+            const [flipX, flipY] = playerHeadFaceFlip(face, axis);
             context.save();
-            context.translate(2 * x + PLAYER_HEAD_PART_SIZE, 0);
-            context.scale(-1, 1);
-            context.drawImage(image, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE, x, y, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
+            context.translate(x + (flipX ? PLAYER_HEAD_PART_SIZE : 0), y + (flipY ? PLAYER_HEAD_PART_SIZE : 0));
+            context.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+            context.drawImage(image, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE, 0, 0, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
             context.restore();
         }
     }
-    const mirroredPixels = mirrored ? context.getImageData(0, 0, canvas.width, canvas.height).data : null;
-    if (!mirrored || originalPixels?.every((value, index) => value === mirroredPixels![index])) return null;
+    const mirroredPixels = axis ? context.getImageData(0, 0, canvas.width, canvas.height).data : null;
+    if (!axis || originalPixels?.every((value, index) => value === mirroredPixels![index])) return null;
     const dataUrl = canvas.toDataURL('image/png');
     if (import.meta.env.DEV) console.assert(dataUrl.startsWith('data:image/png;base64,'), 'Player head reflection did not produce a PNG data URL.');
     return dataUrl;
 }
 
 if (import.meta.env.DEV) {
-    console.assert(mirroredPlayerHeadFace('right') === 'left'
-        && mirroredPlayerHeadFace('layer_left') === 'layer_right'
-        && mirroredPlayerHeadFace('front') === 'front', 'Player head reflection mapped a face to the wrong texture region.');
+    console.assert(mirroredPlayerHeadFace('right', 'x') === 'left'
+        && mirroredPlayerHeadFace('top', 'y') === 'bottom'
+        && mirroredPlayerHeadFace('front', 'z') === 'back'
+        && playerHeadFaceFlip('front', 'y').join() === 'false,true'
+        && playerHeadFaceFlip('top', 'z').join() === 'false,true', 'Player head reflection used the wrong axis face mapping.');
+    const paint = new ImageData(PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT);
+    paint.data.forEach((_, index) => { paint.data[index] = index % 251; });
+    for (const axis of ['x', 'y', 'z'] as const) {
+        const restored = mirrorPlayerHeadPaint(mirrorPlayerHeadPaint(paint, axis), axis);
+        console.assert(restored.data.every((value, index) => value === paint.data[index]), `${axis.toUpperCase()}-axis player head reflection is not reversible.`);
+    }
 }
 
 /**
@@ -2664,7 +2703,7 @@ export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: st
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
-export async function flipPlayerHeadTextures(objectUuids: string[]): Promise<void> {
+export async function flipPlayerHeadTextures(objectUuids: string[], axis: PlayerHeadMirrorAxis): Promise<void> {
     const userData = loadedObjectGroup.userData;
     const refs = userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
     const prepared = (await Promise.all(objectUuids.map(async objectUuid => {
@@ -2673,7 +2712,7 @@ export async function flipPlayerHeadTextures(objectUuids: string[]): Promise<voi
         if (!ref || !flips) return null;
         const texture = getPlayerHeadTexture(objectUuid) ?? DEFAULT_PLAYER_HEAD_TEXTURE;
         const image = await loadPlayerHeadImage(texture);
-        const dataUrl = playerHeadTextureDataUrl(image, flips.getX(ref.instanceId) < 0.5);
+        const dataUrl = playerHeadTextureDataUrl(image, flips.getX(ref.instanceId) < 0.5 ? axis : null);
         return { objectUuid, ref, flips, dataUrl, image: dataUrl ? await loadPlayerHeadImage(dataUrl) : null };
     }))).filter(prepared => prepared !== null);
     for (const { objectUuid, ref, flips, dataUrl, image } of prepared) {
@@ -2881,8 +2920,18 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
         replacementMaterial.map.dispose();
         replacementMaterial.dispose();
     } else {
-        replacement.geometry.setAttribute(dragSelectedAttributeName, ref.mesh.geometry.getAttribute(dragSelectedAttributeName));
-        replacement.geometry.setAttribute(entityVisibleAttributeName, ref.mesh.geometry.getAttribute(entityVisibleAttributeName));
+        setEntityStateAttributes(replacement.geometry, 1, [
+            oldGeometry.getAttribute(entityVisibleAttributeName)?.getX(ref.instanceId) ?? 1
+        ]);
+        replacement.geometry.getAttribute(dragSelectedAttributeName).setX(
+            0,
+            oldGeometry.getAttribute(dragSelectedAttributeName)?.getX(ref.instanceId) ?? 0
+        );
+        if (import.meta.env.DEV) console.assert(
+            replacement.geometry.getAttribute(dragSelectedAttributeName) !== oldGeometry.getAttribute(dragSelectedAttributeName)
+            && replacement.geometry.getAttribute(entityVisibleAttributeName) !== oldGeometry.getAttribute(entityVisibleAttributeName),
+            'Text display replacement must own its entity state attributes.'
+        );
         ref.mesh.geometry = replacement.geometry;
         ref.mesh.material = replacementMaterial;
         ref.mesh.userData.textDisplayMaterialOwned = true;
@@ -3040,7 +3089,19 @@ export async function replaceDisplayObjects(requests: Array<{
         raw.set(strToU8('scene.json'), 4);
         new DataView(raw.buffer).setUint32(14, json.length, true);
         raw.set(json, 18);
-        await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
+        const added = await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
+        if (replacements.some(state => !refs.has(state.replacementUuid))) {
+            deleteSelectedItems(loadedObjectGroup, {
+                groups: new Set(),
+                objects: new Map([...added].filter(([object]) => (object as THREE.Mesh).isMesh)) as Map<THREE.Mesh, Set<number>>
+            }, { resetSelectionAndDeselect: () => {} });
+            if (previousSceneOrder) ud.sceneOrder = previousSceneOrder;
+            if (import.meta.env.DEV) console.assert(
+                replacements.every(state => refs.has(state.objectUuid) && !refs.has(state.replacementUuid)),
+                'Failed display replacement must preserve the original objects.'
+            );
+            throw new Error('선택한 속성 조합은 표시할 모델이 없어 적용할 수 없습니다.');
+        }
     }
     const deletionStates = new Map<THREE.InstancedMesh, typeof replacements>();
     const boundsDirtyMeshes = new Set<THREE.InstancedMesh>();

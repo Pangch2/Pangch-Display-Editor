@@ -91,10 +91,12 @@ function defaultBlockProperties(blockstate: any): Record<string, string> {
         }
     };
     blockstate?.multipart?.forEach((part: any) => collect(part.when));
-    return Object.fromEntries([...values].flatMap(([key, options]) => {
+    const properties = Object.fromEntries([...values].flatMap(([key, options]) => {
         const value = preferredBlockProperty(key, [...options]);
         return value ? [[key, value]] : [];
     }));
+    if ([...values.values()].some(options => options.has('low') && options.has('tall'))) properties.up = 'true';
+    return properties;
 }
 
 const blockIconNamePromises = new Map<string, Promise<string>>();
@@ -251,6 +253,14 @@ if (import.meta.env.DEV) {
     console.assert(
         defaultBlockProperties({ variants: { 'age=0': {}, 'age=7': {} } }).age === '7',
         'Block icons must prefer the fully-grown age.'
+    );
+    console.assert(
+        defaultBlockProperties({ multipart: [
+            { when: { up: 'true' } },
+            { when: { east: 'low' } },
+            { when: { east: 'tall' } }
+        ]}).up === 'true',
+        'Wall block icons must include the default center post.'
     );
     console.assert(
         findDisplayModelId({ type: 'minecraft:select', fallback: { type: 'minecraft:special', base: 'minecraft:item/chest' } })
@@ -442,9 +452,6 @@ async function renderIcon(
 
     renderer.render(scene, camera);
     scene.remove(group);
-    group.traverse(object => {
-        if ((object as THREE.Mesh).isMesh) (object as THREE.Mesh).geometry.dispose();
-    });
 }
 
 async function buildAtlases(

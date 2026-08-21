@@ -134,8 +134,10 @@ function setSurfaceColor(event: PointerEvent): void {
 function positionPicker(): void {
   if (!picker || !anchor) return;
   const rect = anchor.getBoundingClientRect();
-  picker.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - picker.offsetWidth - 8))}px`;
-  picker.style.top = `${Math.max(8, Math.min(rect.bottom + 5, innerHeight - picker.offsetHeight - 8))}px`;
+  const savedLeft = localStorage.getItem('pdeColorPickerLeft');
+  const savedTop = localStorage.getItem('pdeColorPickerTop');
+  picker.style.left = `${Math.max(8, Math.min(savedLeft === null ? rect.left : Number(savedLeft), innerWidth - picker.offsetWidth - 8))}px`;
+  picker.style.top = `${Math.max(8, Math.min(savedTop === null ? rect.bottom + 5 : Number(savedTop), innerHeight - picker.offsetHeight - 8))}px`;
 }
 
 function closePicker(): void {
@@ -171,6 +173,23 @@ function createPicker(): HTMLElement {
   if (savedHeight > 0) element.style.height = `${Math.min(savedHeight, innerHeight - 16)}px`;
   document.body.append(element);
 
+  const header = element.querySelector<HTMLElement>('header')!;
+  header.onpointerdown = event => {
+    if ((event.target as HTMLElement).closest('button')) return;
+    header.setPointerCapture(event.pointerId);
+    const start = element.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    header.onpointermove = moveEvent => {
+      if (!header.hasPointerCapture(moveEvent.pointerId)) return;
+      element.style.left = `${Math.max(8, Math.min(start.left + moveEvent.clientX - startX, innerWidth - element.offsetWidth - 8))}px`;
+      element.style.top = `${Math.max(8, Math.min(start.top + moveEvent.clientY - startY, innerHeight - element.offsetHeight - 8))}px`;
+    };
+    header.onpointerup = () => {
+      localStorage.setItem('pdeColorPickerLeft', String(element.offsetLeft));
+      localStorage.setItem('pdeColorPickerTop', String(element.offsetTop));
+    };
+  };
   const surface = element.querySelector<HTMLElement>('.color-picker-surface')!;
   surface.onpointerdown = event => {
     surface.setPointerCapture(event.pointerId);

@@ -10,24 +10,54 @@ import * as GroupUtils from '../grouping/group';
 type PdeMesh = InstancedMesh | Mesh;
 export type FlipAxis = 'x' | 'y' | 'z';
 
-function getWorldReflection(axis: FlipAxis, pivot: Vector3): Matrix4 {
-    const axisIndex = { x: 0, y: 1, z: 2 }[axis];
-    const scale = new Vector3(1, 1, 1).setComponent(axisIndex, -1);
-    const reflection = new Matrix4().makeScale(scale.x, scale.y, scale.z);
-    reflection.elements[12 + axisIndex] = 2 * pivot.getComponent(axisIndex);
-    return reflection;
+export function resolveMirroredBlockNames(
+    loadedObjectGroup: Group,
+    uuids: Array<string | undefined>,
+    axis: FlipAxis
+): Promise<Array<string | null | undefined>> {
+    const userData = loadedObjectGroup.userData;
+    const isItemDisplay = userData.objectIsItemDisplay as Set<string> | undefined;
+    const names = userData.objectNames as Map<string, string> | undefined;
+    const blockProps = userData.objectBlockProps as Map<string, Record<string, string>> | undefined;
+    const byName = new Map<string, Promise<string | null>>();
+    return Promise.all(uuids.map(uuid => {
+        if (!uuid || isItemDisplay?.has(uuid) || !blockProps?.get(uuid)) return undefined;
+        const name = names?.get(uuid) ?? '';
+        let result = byName.get(name);
+        if (!result) {
+            result = findMirroredBlockName(name, axis, mainThreadAssetProvider);
+            byName.set(name, result);
+        }
+        return result;
+    }));
 }
 
-function reflectDisplayMatrix(matrix: Matrix4, mesh: PdeMesh, instanceId: number, axis: FlipAxis, pivotWorld?: Vector3, center = false): void {
-    const worldMatrix = mesh.matrixWorld.clone().multiply(matrix);
-    const pivot = pivotWorld ?? new Vector3().setFromMatrixPosition(worldMatrix);
-    worldMatrix.premultiply(getWorldReflection(axis, pivot));
+function getWorldReflection(axis: FlipAxis, pivot: Vector3, target = new Matrix4()): Matrix4 {
+    const axisIndex = { x: 0, y: 1, z: 2 }[axis];
+    target.identity().elements[axisIndex * 5] = -1;
+    target.elements[12 + axisIndex] = 2 * pivot.getComponent(axisIndex);
+    return target;
+}
+
+function reflectDisplayMatrix(
+    matrix: Matrix4,
+    mesh: PdeMesh,
+    instanceId: number,
+    axis: FlipAxis,
+    pivotWorld?: Vector3,
+    center = false,
+    inverseMeshWorld?: Matrix4
+): void {
+    matrix.premultiply(mesh.matrixWorld);
+    const pivot = pivotWorld ?? new Vector3().setFromMatrixPosition(matrix);
+    const reflection = new Matrix4();
+    matrix.premultiply(getWorldReflection(axis, pivot, reflection));
     const isBlock = Overlay.getDisplayType(mesh, instanceId) === 'block_display';
-    const localPivot = isBlock && (center || (mesh.userData.customPivots as Map<number, Vector3> | undefined)?.has(instanceId))
+    const localPivot = center || isBlock && (mesh.userData.customPivots as Map<number, Vector3> | undefined)?.has(instanceId)
         ? Overlay.getInstanceLocalBox(mesh, instanceId)?.getCenter(new Vector3())
         : isBlock ? Overlay.getInstanceLocalBoxMin(mesh, instanceId) : null;
-    worldMatrix.multiply(getWorldReflection(axis, localPivot ?? new Vector3()));
-    matrix.copy(mesh.matrixWorld.clone().invert().multiply(worldMatrix));
+    matrix.multiply(getWorldReflection(axis, localPivot ?? new Vector3(), reflection));
+    matrix.premultiply(inverseMeshWorld ?? mesh.matrixWorld.clone().invert());
 }
 
 function reflectCustomPivot(
@@ -83,21 +113,20 @@ export async function flipObjectUuids(
     activePivotMode = 'origin',
     onPreviewApplied?: () => void,
     centeredPivotWorld?: Vector3,
-    previewSynchronously = false
+    previewSynchronously = false,
+    resolvedNextNames?: Array<string | null | undefined>
 ): Promise<Array<string | undefined>> {
     const userData = loadedObjectGroup.userData;
     const isItemDisplay = userData.objectIsItemDisplay as Set<string> | undefined;
     const names = userData.objectNames as Map<string, string> | undefined;
-    const blockProps = userData.objectBlockProps as Map<string, Record<string, string>> | undefined;
     const refs = userData.objectUuidToInstance as Map<string, { mesh: PdeMesh; instanceId: number }> | undefined;
     const result = [...uuids];
-    const nextNamesPromise = Promise.all(uuids.map(uuid => {
-        if (!uuid || isItemDisplay?.has(uuid) || !blockProps?.get(uuid)) return undefined;
-        return findMirroredBlockName(names?.get(uuid) ?? '', axis, mainThreadAssetProvider);
-    }));
+    const nextNamesPromise = resolvedNextNames
+        ? Promise.resolve(resolvedNextNames)
+        : resolveMirroredBlockNames(loadedObjectGroup, uuids, axis);
     const playerHeadTextures = flipPlayerHeadTextures(uuids.filter((uuid): uuid is string =>
         !!uuid && (names?.get(uuid) ?? '').startsWith('player_head')
-    ));
+    ), axis);
     const reflected: Array<{
         index: number;
         uuid: string;
@@ -106,6 +135,8 @@ export async function flipObjectUuids(
         previousCustomPivot?: Vector3;
     }> = [];
     const applyPreview = (): void => {
+        const inverseWorldMatrices = new Map<PdeMesh, Matrix4>();
+        const dirtyMeshes = new Set<PdeMesh>();
         for (let index = 0; index < uuids.length; index++) {
             const uuid = uuids[index];
             if (!uuid) continue;
@@ -117,13 +148,17 @@ export async function flipObjectUuids(
                 ref.mesh.getMatrixAt(ref.instanceId, matrix);
                 const previousMatrix = matrix.clone();
                 const renderMatrix = getPlayerHeadRenderMatrix((userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid));
-                matrix.multiply(renderMatrix.clone().invert());
                 const headPivotWorld = centeredPivotWorld ?? pivotWorld;
-                reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, headPivotWorld, !centeredPivotWorld && activePivotMode === 'center');
-                matrix.multiply(renderMatrix);
+                const center = !centeredPivotWorld && activePivotMode === 'center';
+                const reflectRenderedMatrix = axis === 'y' && center;
+                if (!reflectRenderedMatrix) matrix.multiply(renderMatrix.clone().invert());
+                const inverseWorld = inverseWorldMatrices.get(ref.mesh) ?? ref.mesh.matrixWorld.clone().invert();
+                inverseWorldMatrices.set(ref.mesh, inverseWorld);
+                reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, headPivotWorld, center, inverseWorld);
+                if (!reflectRenderedMatrix) matrix.multiply(renderMatrix);
                 reflectCustomPivot(ref.mesh, ref.instanceId, axis, headPivotWorld, previousMatrix, matrix);
                 ref.mesh.setMatrixAt(ref.instanceId, matrix);
-                ref.mesh.instanceMatrix.needsUpdate = true;
+                dirtyMeshes.add(ref.mesh);
                 continue;
             }
 
@@ -136,13 +171,16 @@ export async function flipObjectUuids(
             const objectPivotWorld = isItemDisplay?.has(uuid) || Overlay.getDisplayType(ref.mesh, ref.instanceId) === 'text_display'
                 ? centeredPivotWorld ?? pivotWorld
                 : pivotWorld;
-            reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, objectPivotWorld, activePivotMode === 'center');
+            const inverseWorld = inverseWorldMatrices.get(ref.mesh) ?? ref.mesh.matrixWorld.clone().invert();
+            inverseWorldMatrices.set(ref.mesh, inverseWorld);
+            reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, objectPivotWorld, activePivotMode === 'center', inverseWorld);
             reflectCustomPivot(ref.mesh, ref.instanceId, axis, objectPivotWorld, previousMatrix, matrix);
             ref.mesh.setMatrixAt(ref.instanceId, matrix);
-            ref.mesh.instanceMatrix.needsUpdate = true;
+            dirtyMeshes.add(ref.mesh);
 
             reflected.push({ index, uuid, ref, previousMatrix, previousCustomPivot });
         }
+        dirtyMeshes.forEach(mesh => { mesh.instanceMatrix.needsUpdate = true; });
         onPreviewApplied?.();
     };
     if (previewSynchronously) applyPreview();
@@ -197,6 +235,11 @@ if (import.meta.env.DEV) {
     const centered = new Matrix4().makeTranslation(-9.9, 0, 0);
     reflectDisplayMatrix(centered, centeredMesh, 0, 'x', new Vector3(-9.4, 0, 0), true);
     console.assert(Math.abs(centered.elements[12] + 9.9) < 1e-9, 'Center display reflection moved the block origin.');
+    const offsetItem = new Mesh(new BoxGeometry(1, 1, 1).translate(0, -0.5, 0));
+    offsetItem.userData.displayType = 'item_display';
+    const offsetItemMatrix = new Matrix4().makeTranslation(0, 2, 0);
+    reflectDisplayMatrix(offsetItemMatrix, offsetItem, 0, 'y', new Vector3(), true);
+    console.assert(Math.abs(offsetItemMatrix.elements[13] + 1) < 1e-9, 'Y-axis item reflection ignored its local center.');
     const item = new InstancedMesh(new BoxGeometry(1, 1, 1), undefined!, 1);
     item.setMatrixAt(0, new Matrix4());
     const itemGroup = new Group();

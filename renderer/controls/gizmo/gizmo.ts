@@ -46,7 +46,7 @@ import type { SelectionState } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 import * as VertexQueue from '../vertex/vertex-queue';
-import { flipObjectUuids, reflectGroups, type FlipAxis } from '../transform/flip';
+import { flipObjectUuids, reflectGroups, resolveMirroredBlockNames, type FlipAxis } from '../transform/flip';
 import {
     applyLinkedMirrorDelta,
     getLinkedMirrorSelection,
@@ -1121,10 +1121,10 @@ function knifeSelected(): void {
 
 async function flipSelected(axis: FlipAxis): Promise<void> {
     if (!_hasAnySelection() || !selectionHelper) return;
-    const before = captureSceneState(loadedObjectGroup);
     const isMulti = _isMultiSelection();
     const activePivotMode = pivotMode;
-    const preserveGroupBounds = currentSelection.groups.size > 0;
+    const selectedGroupIds = new Set(currentSelection.groups);
+    const preserveGroupBounds = selectedGroupIds.size > 0;
     updateHelperPosition();
     const pivotWorld = activePivotMode === 'center' || preserveGroupBounds
         ? _getSelectionCenterWorld()
@@ -1139,9 +1139,33 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     const selected = new Set(selectedUuids);
     const pairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
     const linkedUuids = selectedUuids.map(uuid => uuid && !selected.has(pairs.get(uuid)) ? pairs.get(uuid) : undefined);
-    reflectGroups(loadedObjectGroup, currentSelection.groups, axis, pivotWorld);
-    await flipObjectUuids(loadedObjectGroup, selectedUuids, axis, pivotWorld, preserveGroupBounds ? 'center' : activePivotMode, updateSelectionOverlay);
-    await flipObjectUuids(loadedObjectGroup, linkedUuids, axis, undefined, activePivotMode);
+    const allUuids = [...selectedUuids, ...linkedUuids];
+    const resolvedNextNames = await resolveMirroredBlockNames(loadedObjectGroup, allUuids, axis);
+    const names = loadedObjectGroup.userData.objectNames as Map<string, string> | undefined;
+    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }> | undefined;
+    const hasPlayerHeads = allUuids.some(uuid => !!uuid && (names?.get(uuid) ?? '').startsWith('player_head'));
+    const affectedObjects = new Map<Mesh | InstancedMesh, Set<number>>();
+    for (const uuid of allUuids) {
+        const ref = uuid ? refs?.get(uuid) : undefined;
+        if (!ref) continue;
+        const ids = affectedObjects.get(ref.mesh) ?? new Set<number>();
+        ids.add(ref.instanceId);
+        affectedObjects.set(ref.mesh, ids);
+    }
+    const requiresSceneSnapshot = resolvedNextNames.some(Boolean) || hasPlayerHeads;
+    const before = requiresSceneSnapshot
+        ? captureSceneState(loadedObjectGroup)
+        : captureSelectionTransformState(loadedObjectGroup, affectedObjects, selectedGroupIds);
+    reflectGroups(loadedObjectGroup, selectedGroupIds, axis, pivotWorld);
+    await flipObjectUuids(
+        loadedObjectGroup, selectedUuids, axis, pivotWorld,
+        preserveGroupBounds ? 'center' : activePivotMode,
+        updateSelectionOverlay, undefined, false, resolvedNextNames.slice(0, selectedUuids.length)
+    );
+    await flipObjectUuids(
+        loadedObjectGroup, linkedUuids, axis, undefined, activePivotMode,
+        undefined, undefined, false, resolvedNextNames.slice(selectedUuids.length)
+    );
     if (multiPivotState) {
         isCustomPivot = multiPivotState.isCustomPivot;
         pivotOffset.copy(multiPivotState.pivotOffset);
@@ -1401,12 +1425,6 @@ export function initGizmo({
             }
 
             if (smartScaleExtruded) updateHelperPosition();
-
-            if (currentSelection.objects && currentSelection.objects.size > 0) {
-                for (const [mesh] of currentSelection.objects) {
-                    if (mesh) (mesh as Mesh).boundingSphere = null;
-                }
-            }
 
             if (selectionHelper) {
                 selectionHelper.scale.set(1, 1, 1);

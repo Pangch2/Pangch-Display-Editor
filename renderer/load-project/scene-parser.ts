@@ -226,7 +226,7 @@ async function readJsonAsset(assetPath) {
 function blockNameToBaseAndProps(fullName) {
     const name = fullName || '';
     const base = name.split('[')[0];
-    const props = {};
+    const props: Record<string, string> = {};
     const m = name.match(/\[(.*)\]/);
     if (m && m[1]) {
         m[1].split(',').forEach(pair => {

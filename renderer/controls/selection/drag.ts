@@ -19,7 +19,7 @@ import type { InstanceIdRange } from './instance-ranges';
 
 // Helper aliases
 const { isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled, getInstanceLocalBox } = Overlay;
-const { getGroupKey, getGroupChain, getObjectToGroup } = GroupUtils;
+const { getGroupKey, getObjectToGroup } = GroupUtils;
 
 interface OrbitControlsLike {
     enabled: boolean;
@@ -141,13 +141,15 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
         }
 
         if ((mesh as InstancedMesh).isInstancedMesh) {
-            const instanceMatrix = (mesh as InstancedMesh).instanceMatrix;
+            const instancedMesh = mesh as InstancedMesh;
+            const instanceMatrix = instancedMesh.instanceMatrix;
             if (meshToInstanceRanges) {
                 for (const { start, count } of ranges) {
                     instanceMatrix.addUpdateRange(start * instanceMatrix.itemSize, count * instanceMatrix.itemSize);
                 }
             }
             instanceMatrix.needsUpdate = true;
+            instancedMesh.boundingSphere = null;
         }
     }
 
@@ -398,9 +400,7 @@ export function initDrag({
                             const key = getGroupKey(obj as InstancedMesh, instanceId);
                             const immediateGroupId = objectToGroup.get(key);
                             if (immediateGroupId) {
-                                const chain = getGroupChain(loadedObjectGroup, immediateGroupId) as string[];
-                                const root = chain && chain.length > 0 ? chain[0] : immediateGroupId;
-                                if (root && groupIds) groupIds.add(root);
+                                if (groupIds) groupIds.add(immediateGroupId);
                                 continue;
                             }
                         }
