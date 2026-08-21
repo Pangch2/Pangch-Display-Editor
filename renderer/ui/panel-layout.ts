@@ -2,6 +2,7 @@ import './head-atlas-panel';
 
 type DockSide = 'left' | 'right';
 type PanelId = 'player-head-atlas' | 'scene-objects' | 'project-details' | 'head-painter';
+type DropPlacement = { side: DockSide; index: number };
 
 const panelIds: PanelId[] = ['player-head-atlas', 'scene-objects', 'project-details', 'head-painter'];
 const panels = Object.fromEntries(panelIds.map(id => [id, document.getElementById(id)!])) as Record<PanelId, HTMLElement>;
@@ -13,9 +14,13 @@ const docks: Record<DockSide, HTMLElement> = {
 let dropPreview: HTMLElement | null = null;
 let dropMeasureDock: HTMLElement | null = null;
 let dropMeasurePanels: Record<PanelId, HTMLElement> | null = null;
+let dropPreviewPlacement: DropPlacement | null = null;
 let draggedPanelId: PanelId | null = null;
 let dropPreviewPlacementKey = '';
 let resizeFrame = 0;
+let dragClientX = 0;
+let dragClientY = 0;
+let suppressPanelHeaderClickUntil = 0;
 
 const oldSide: DockSide = localStorage.getItem('scene-panel-dock') === 'left' ? 'left' : 'right';
 const headPainterAfterDetails = localStorage.getItem('pdeHeadPainterPanelOrder') === '["details","painter"]';
@@ -180,62 +185,96 @@ document.querySelectorAll<HTMLElement>('#player-head-atlas-header, #scene-panel-
     };
     panel.classList.toggle('collapsed', localStorage.getItem(`panel-collapsed-${panel.id}`) === 'true');
     header.setAttribute('aria-expanded', String(!panel.classList.contains('collapsed')));
+    header.draggable = false;
     header.addEventListener('click', event => {
-        if (!(event.target as Element).closest('button, input, select, a')) toggleCollapsed();
+        if (Date.now() >= suppressPanelHeaderClickUntil && !(event.target as Element).closest('button, input, select, a')) toggleCollapsed();
     });
-    header.addEventListener('dragstart', event => {
-        draggedPanelId = panel.id as PanelId;
-        event.dataTransfer?.setData('text/pde-panel', panel.id);
-        if (event.dataTransfer) {
+    header.addEventListener('pointerdown', event => {
+        if (!event.isPrimary || event.button !== 0 || (event.target as Element).closest('button, input, select, a')) return;
+        const pointerId = event.pointerId;
+        const startX = event.clientX;
+        const startY = event.clientY;
+        let preview: HTMLElement | null = null;
+        let offsetX = 0;
+        let offsetY = 0;
+
+        const startDrag = (): void => {
+            draggedPanelId = panel.id as PanelId;
             const rect = panel.getBoundingClientRect();
-            const offsetX = event.clientX - rect.left;
-            const offsetY = event.clientY - rect.top;
-            const preview = panel.cloneNode(true) as HTMLElement;
-            const emptyDragImage = document.createElement('div');
+            offsetX = startX - rect.left;
+            offsetY = startY - rect.top;
+            preview = panel.cloneNode(true) as HTMLElement;
             dropPreview = document.createElement('div');
             dropPreview.className = 'panel-drop-preview';
             dropMeasureDock = document.createElement('div');
             dropMeasureDock.className = 'panel-dock';
             dropMeasureDock.style.visibility = 'hidden';
             dropMeasureDock.style.pointerEvents = 'none';
-            dropMeasurePanels = Object.fromEntries(panelIds.map(id => {
-                const measurePanel = panels[id].cloneNode(false) as HTMLElement;
-                if (panels[id].firstElementChild) measurePanel.append(panels[id].firstElementChild!.cloneNode(true));
-                return [id, measurePanel];
-            })) as Record<PanelId, HTMLElement>;
+            dropMeasurePanels = Object.fromEntries(panelIds.map(id => [id, panels[id].cloneNode(true)])) as Record<PanelId, HTMLElement>;
+            dropPreviewPlacement = null;
             dropPreviewPlacementKey = '';
             preview.className += ' panel-drag-preview';
             preview.style.width = `${rect.width}px`;
             preview.style.height = `${rect.height}px`;
-            document.body.append(preview, emptyDragImage, dropPreview, dropMeasureDock);
-            event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setDragImage(emptyDragImage, 0, 0);
+            document.body.append(preview, dropPreview, dropMeasureDock);
+        };
+        const move = (moveEvent: PointerEvent): void => {
+            if (moveEvent.pointerId !== pointerId) return;
+            dragClientX = moveEvent.clientX;
+            dragClientY = moveEvent.clientY;
+            if (!preview && Math.hypot(dragClientX - startX, dragClientY - startY) < 4) return;
+            if (!preview) startDrag();
+            preview!.style.transform = `translate(${dragClientX - offsetX}px, ${dragClientY - offsetY}px)`;
+            updateDropPreview(dragClientX, dragClientY);
+            moveEvent.preventDefault();
+        };
+        const cleanup = (): void => {
+            header.removeEventListener('pointermove', move);
+            header.removeEventListener('pointerup', finish);
+            header.removeEventListener('pointercancel', cancel);
+            if (header.hasPointerCapture(pointerId)) header.releasePointerCapture(pointerId);
+            preview?.remove();
+            dropPreview?.remove();
+            dropMeasureDock?.remove();
+            dropPreview = null;
+            dropMeasureDock = null;
+            dropMeasurePanels = null;
+            dropPreviewPlacement = null;
+            draggedPanelId = null;
+            dropPreviewPlacementKey = '';
+        };
+        const finish = (upEvent: PointerEvent): void => {
+            if (upEvent.pointerId !== pointerId) return;
+            if (preview) {
+                upEvent.preventDefault();
+                movePanel(panel.id as PanelId);
+                suppressPanelHeaderClickUntil = Date.now() + 100;
+            }
+            cleanup();
+        };
+        const cancel = (cancelEvent: PointerEvent): void => {
+            if (cancelEvent.pointerId === pointerId) cleanup();
+        };
 
-            const movePreview = (dragEvent: DragEvent): void => {
-                if (dragEvent.clientX || dragEvent.clientY) preview.style.transform = `translate(${dragEvent.clientX - offsetX}px, ${dragEvent.clientY - offsetY}px)`;
-            };
-            const removePreview = (): void => {
-                preview.remove();
-                emptyDragImage.remove();
-                dropPreview?.remove();
-                dropMeasureDock?.remove();
-                dropPreview = null;
-                dropMeasureDock = null;
-                dropMeasurePanels = null;
-                draggedPanelId = null;
-                dropPreviewPlacementKey = '';
-                header.removeEventListener('drag', movePreview);
-            };
-            header.addEventListener('drag', movePreview);
-            header.addEventListener('dragend', removePreview, { once: true });
-            movePreview(event);
-        }
+        dragClientX = startX;
+        dragClientY = startY;
+        header.setPointerCapture(pointerId);
+        header.addEventListener('pointermove', move);
+        header.addEventListener('pointerup', finish);
+        header.addEventListener('pointercancel', cancel);
     });
 });
 
-function getDropPlacement(x: number, y: number): { side: DockSide; index: number } | null {
+function getDockSideAtPoint(x: number, y: number): DockSide | undefined {
+    return (['left', 'right'] as DockSide[]).find(side => {
+        const rect = docks[side].getBoundingClientRect();
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    });
+}
+
+function getDropPlacement(x: number, y: number): DropPlacement | null {
     const edgeWidth = window.innerWidth * 0.05;
-    let side: DockSide | undefined = x <= edgeWidth ? 'left' : x >= window.innerWidth - edgeWidth ? 'right' : undefined;
+    let side = getDockSideAtPoint(x, y) ?? (x <= edgeWidth ? 'left' : x >= window.innerWidth - edgeWidth ? 'right' : undefined);
     const targetId = panelIds.find(id => !panels[id].hidden && (() => {
         const rect = panels[id].getBoundingClientRect();
         return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
@@ -261,7 +300,7 @@ function getDropPlacement(x: number, y: number): { side: DockSide; index: number
     return { side, index };
 }
 
-function getDropIndex(panelId: PanelId, placement: { side: DockSide; index: number }): number {
+function getDropIndex(panelId: PanelId, placement: DropPlacement): number {
     const oldIndex = layout[placement.side].indexOf(panelId);
     return Math.min(
         oldIndex >= 0 && oldIndex < placement.index ? placement.index - 1 : placement.index,
@@ -269,15 +308,14 @@ function getDropIndex(panelId: PanelId, placement: { side: DockSide; index: numb
     );
 }
 
-function measureDropRect(side: DockSide, panelOrder: PanelId[], panelId: PanelId): DOMRect | null {
-    if (!dropMeasureDock || !dropMeasurePanels) return null;
+function measureDropRect(side: DockSide, panelOrder: PanelId[], panelId: PanelId): { top: number; height: number } | null {
+    if (!dropMeasureDock || !dropMeasurePanels || !panelOrder.includes(panelId)) return null;
     const dock = docks[side];
     const dockRect = dock.getBoundingClientRect();
-    const dockWidth = dockRect.width || parseFloat(getComputedStyle(dock).width);
+    const dockWidth = dockRect.width || parseFloat(getComputedStyle(dock).width) || 280;
     const dockHeight = dock.clientHeight || window.innerHeight;
     const children = panelOrder.flatMap((id, index) => {
         const panel = dropMeasurePanels![id];
-        panel.hidden = false;
         const flexBasis = getPanelFlexBasis(id, index, panelOrder.length);
         panel.style.flex = index === panelOrder.length - 1 ? '1 1 0' : flexBasis ? `0 0 ${flexBasis}` : '';
         panel.style.minHeight = panelOrder.length > 1 ? '0' : '';
@@ -289,61 +327,82 @@ function measureDropRect(side: DockSide, panelOrder: PanelId[], panelId: PanelId
     dropMeasureDock.classList.toggle('single-panel', panelOrder.length === 1);
     Object.assign(dropMeasureDock.style, {
         position: 'fixed',
-        top: '0',
+        top: `${dockRect.height ? dockRect.top : 0}px`,
         right: 'auto',
         bottom: 'auto',
-        left: `${side === 'left' ? 0 : window.innerWidth - dockWidth}px`,
+        left: `${dockRect.width ? dockRect.left : side === 'left' ? 0 : window.innerWidth - dockWidth}px`,
         width: `${dockWidth}px`,
-        height: `${dockHeight}px`,
-        visibility: 'hidden',
-        pointerEvents: 'none'
+        height: `${dockHeight}px`
     });
     dropMeasureDock.replaceChildren(...children);
-    return dropMeasurePanels[panelId].getBoundingClientRect();
+    dropMeasureDock.scrollTop = dock.scrollTop;
+    const rect = dropMeasurePanels[panelId].getBoundingClientRect();
+    return { top: rect.top, height: rect.height };
 }
 
-window.addEventListener('dragover', event => {
-    if (!event.dataTransfer?.types.includes('text/pde-panel')) return;
-    const placement = getDropPlacement(event.clientX, event.clientY);
+function updateDropPreview(x: number, y: number): void {
+    const placement = getDropPlacement(x, y);
     if (!placement) {
         if (dropPreview) dropPreview.hidden = true;
+        dropPreviewPlacement = null;
         dropPreviewPlacementKey = '';
         return;
     }
-    event.preventDefault();
     if (!dropPreview || !draggedPanelId) return;
 
     const dropIndex = getDropIndex(draggedPanelId, placement);
     const placementKey = `${placement.side}:${dropIndex}`;
     if (placementKey === dropPreviewPlacementKey) return;
+    dropPreviewPlacement = null;
     dropPreviewPlacementKey = placementKey;
 
     const dock = docks[placement.side];
-    const dockWidth = parseFloat(getComputedStyle(dock).width);
+    const dockWidth = dock.offsetWidth || parseFloat(getComputedStyle(dock).width) || 280;
     const previewLayout = layout[placement.side].filter(id => id !== draggedPanelId);
     previewLayout.splice(dropIndex, 0, draggedPanelId);
     const visibleLayout = previewLayout.filter(id => !panels[id].hidden);
     const previewRect = measureDropRect(placement.side, visibleLayout, draggedPanelId);
-    if (!previewRect) return;
+    if (!previewRect || previewRect.height <= 0) {
+        dropPreview.hidden = true;
+        dropPreviewPlacementKey = '';
+        return;
+    }
+    dropPreviewPlacement = { side: placement.side, index: dropIndex };
     dropPreview.hidden = false;
     dropPreview.style.left = `${placement.side === 'left' ? 0 : window.innerWidth - dockWidth}px`;
     dropPreview.style.width = `${dockWidth}px`;
     dropPreview.style.top = `${previewRect.top}px`;
     dropPreview.style.height = `${previewRect.height}px`;
-});
+}
 
-window.addEventListener('drop', event => {
-    const panelId = event.dataTransfer?.getData('text/pde-panel') as PanelId | undefined;
-    if (!panelId || !panelIds.includes(panelId)) return;
-    const placement = getDropPlacement(event.clientX, event.clientY);
-    if (!placement) return;
+window.addEventListener('wheel', event => {
+    if (!draggedPanelId) return;
+    const side = getDockSideAtPoint(dragClientX, dragClientY);
+    if (!side) return;
+    const dock = docks[side];
+    const delta = event.deltaY * (event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? dock.clientHeight : 1);
+    const previousScrollTop = dock.scrollTop;
+    dock.scrollTop += delta;
+    if (dock.scrollTop === previousScrollTop) return;
     event.preventDefault();
-    const index = getDropIndex(panelId, placement);
+    dropPreviewPlacementKey = '';
+    updateDropPreview(dragClientX, dragClientY);
+}, { passive: false });
+
+function movePanel(panelId: PanelId): void {
+    const placement = dropPreviewPlacement;
+    if (!placement) return;
+    const dock = docks[placement.side];
+    if (dock.classList.contains('minimized')) {
+        dock.classList.remove('minimized');
+        dock.style.width = '280px';
+        localStorage.setItem(`panel-width-${placement.side}`, dock.style.width);
+    }
     layout.left = layout.left.filter(id => id !== panelId);
     layout.right = layout.right.filter(id => id !== panelId);
-    layout[placement.side].splice(Math.min(index, layout[placement.side].length), 0, panelId);
+    layout[placement.side].splice(Math.min(placement.index, layout[placement.side].length), 0, panelId);
     renderLayout();
-});
+}
 
 window.addEventListener('pde:panel-visibility-changed', renderLayout);
 renderLayout();
