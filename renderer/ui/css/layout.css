@@ -11,6 +11,11 @@
   z-index: 10;
 }
 
+.panel-dock:not(.single-panel) {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .panel-dock.dock-left {
   left: 0;
   border-right: 1px solid #3a3a3e;

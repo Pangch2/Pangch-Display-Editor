@@ -191,6 +191,22 @@
   font-size: 12px;
 }
 
+.panel-dock:not(.single-panel) .panel-section:not(#scene-objects) {
+  min-height: auto !important;
+  overflow: visible;
+}
+
+.panel-dock:not(.single-panel) #player-head-atlas-scroll,
+.panel-dock:not(.single-panel) #project-details,
+.panel-dock:not(.single-panel) #head-painter {
+  overflow: visible;
+}
+
+.panel-dock:not(.single-panel) #player-head-atlas-list {
+  max-height: none;
+  overflow: visible;
+}
+
 .panel-section.collapsed {
   flex: 0 0 auto !important;
   min-height: 0 !important;

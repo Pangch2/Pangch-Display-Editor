@@ -61,7 +61,7 @@ function getPanelFlexBasis(id: PanelId, index: number, panelCount: number): stri
 }
 
 function renderLayout(): void {
-    const scrollPositions = new Map<HTMLElement, number>(Object.values(panels).flatMap(panel =>
+    const scrollPositions = new Map<HTMLElement, number>([...Object.values(docks), ...Object.values(panels)].flatMap(panel =>
         [panel, ...panel.querySelectorAll<HTMLElement>('#player-head-atlas-scroll, #scene-object-list, .head-painter-color-area')]
             .map(element => [element, element.scrollTop] as const)
     ));

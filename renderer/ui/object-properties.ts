@@ -88,17 +88,24 @@ propertySectionContent.className = 'object-properties-content';
 objectProperties.replaceChildren(propertySectionSpacer, propertySectionContent);
 propertySectionResizeObserver.observe(propertyDetails);
 propertySectionResizeObserver.observe(multiSelectionPivot);
-propertyDetails.addEventListener('scroll', () => {
+const getPropertyScroller = (): HTMLElement => propertyDetails.closest<HTMLElement>('.panel-dock:not(.single-panel)') ?? propertyDetails;
+const handlePropertyScroll = (event: Event): void => {
+    if (event.currentTarget !== getPropertyScroller()) return;
     propertyDetailsScrolling = true;
     schedulePropertySectionRender();
-}, { passive: true });
-propertyDetails.addEventListener('scrollend', () => {
+};
+const handlePropertyScrollEnd = (event: Event): void => {
+    if (event.currentTarget !== getPropertyScroller()) return;
     propertyDetailsScrolling = false;
     if (!propertySectionOffsetsDirty) return;
     propertySectionOffsetsDirty = false;
     syncPropertySectionOffsets(getPropertyViewportAnchorIndex());
     schedulePropertySectionRender();
-}, { passive: true });
+};
+[propertyDetails, ...document.querySelectorAll<HTMLElement>('.panel-dock')].forEach(scroller => {
+    scroller.addEventListener('scroll', handlePropertyScroll, { passive: true });
+    scroller.addEventListener('scrollend', handlePropertyScrollEnd, { passive: true });
+});
 
 function format(value: number): string {
     return Number(value.toFixed(6)).toString();
@@ -1387,7 +1394,7 @@ if (import.meta.env.DEV) {
 function getPropertyViewportAnchorIndex(): number | null {
     const totalHeight = propertySectionOffsets[propertySectionOffsets.length - 1] ?? 0;
     if (objectProperties.hidden || totalHeight <= 0) return null;
-    const rootRect = propertyDetails.getBoundingClientRect();
+    const rootRect = getPropertyScroller().getBoundingClientRect();
     const listRect = objectProperties.getBoundingClientRect();
     const offset = Math.min(totalHeight - 1, Math.max(0, rootRect.top - listRect.top));
     return findPropertySectionIndex(propertySectionOffsets, offset);
@@ -1410,7 +1417,7 @@ function syncPropertySectionOffsets(anchorIndex: number | null = null): void {
     });
     if (anchorIndex !== null) {
         const offsetDelta = (offsets[anchorIndex] ?? 0) - previousAnchorOffset;
-        if (Math.abs(offsetDelta) > 0.5) propertyDetails.scrollTop += offsetDelta;
+        if (Math.abs(offsetDelta) > 0.5) getPropertyScroller().scrollTop += offsetDelta;
     }
 }
 
@@ -1433,10 +1440,11 @@ function renderVisiblePropertySections(): void {
         return;
     }
 
-    const rootRect = propertyDetails.getBoundingClientRect();
+    const scroller = getPropertyScroller();
+    const rootRect = scroller.getBoundingClientRect();
     const listRect = objectProperties.getBoundingClientRect();
     const totalHeight = propertySectionOffsets[propertySectionOffsets.length - 1] ?? 0;
-    const overscan = propertyDetails.clientHeight;
+    const overscan = scroller.clientHeight;
     const startOffset = rootRect.top - listRect.top - overscan;
     const endOffset = rootRect.bottom - listRect.top + overscan;
     const wanted = new Set<number>();
