@@ -74,7 +74,7 @@ function renderLayout(): void {
             if (panel.hidden) return [];
             const index = visiblePanels.indexOf(panel);
             const flexBasis = getPanelFlexBasis(panel.id as PanelId, index, visiblePanels.length);
-            panel.style.flex = index === visiblePanels.length - 1 ? '1 1 0' : flexBasis ? `0 1 ${flexBasis}` : '';
+            panel.style.flex = index === visiblePanels.length - 1 ? '1 1 0' : flexBasis ? `0 0 ${flexBasis}` : '';
             panel.style.minHeight = visiblePanels.length > 1 ? '0' : '';
             if (!index) return [panel];
             const divider = document.createElement('div');
@@ -279,7 +279,7 @@ function measureDropRect(side: DockSide, panelOrder: PanelId[], panelId: PanelId
         const panel = dropMeasurePanels![id];
         panel.hidden = false;
         const flexBasis = getPanelFlexBasis(id, index, panelOrder.length);
-        panel.style.flex = index === panelOrder.length - 1 ? '1 1 0' : flexBasis ? `0 1 ${flexBasis}` : '';
+        panel.style.flex = index === panelOrder.length - 1 ? '1 1 0' : flexBasis ? `0 0 ${flexBasis}` : '';
         panel.style.minHeight = panelOrder.length > 1 ? '0' : '';
         if (!index) return [panel];
         const divider = document.createElement('div');
