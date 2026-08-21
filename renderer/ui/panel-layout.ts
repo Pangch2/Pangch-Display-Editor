@@ -53,10 +53,17 @@ if (import.meta.env.DEV) {
 function applyLayout(): void {
     mainContent.style.left = docks.left.classList.contains('empty') ? '0' : `${docks.left.offsetWidth}px`;
     mainContent.style.right = docks.right.classList.contains('empty') ? '0' : `${docks.right.offsetWidth}px`;
+    Object.values(docks).forEach(syncDockResizer);
     if (!resizeFrame) resizeFrame = requestAnimationFrame(() => {
         resizeFrame = 0;
         window.dispatchEvent(new Event('resize'));
     });
+}
+
+function syncDockResizer(dock: HTMLElement): void {
+    const resizer = dock.querySelector<HTMLElement>('.scene-resizer')!;
+    const rect = dock.getBoundingClientRect();
+    resizer.style.left = `${dock.classList.contains('dock-left') ? rect.right : rect.left - 7}px`;
 }
 
 function getPanelFlexBasis(id: PanelId, index: number, panelCount: number): string {
@@ -175,6 +182,8 @@ for (const side of ['left', 'right'] as DockSide[]) {
     });
 }
 
+window.addEventListener('resize', () => Object.values(docks).forEach(syncDockResizer));
+
 document.querySelectorAll<HTMLElement>('#player-head-atlas-header, #scene-panel-header, #project-details-header, #head-painter-header').forEach(header => {
     const panel = header.parentElement!;
     const toggleCollapsed = (): void => {
@@ -210,7 +219,11 @@ document.querySelectorAll<HTMLElement>('#player-head-atlas-header, #scene-panel-
             dropMeasureDock.className = 'panel-dock';
             dropMeasureDock.style.visibility = 'hidden';
             dropMeasureDock.style.pointerEvents = 'none';
-            dropMeasurePanels = Object.fromEntries(panelIds.map(id => [id, panels[id].cloneNode(true)])) as Record<PanelId, HTMLElement>;
+            dropMeasurePanels = Object.fromEntries(panelIds.map(id => {
+                const measurePanel = panels[id].cloneNode(false) as HTMLElement;
+                measurePanel.append(panels[id].firstElementChild!.cloneNode(true));
+                return [id, measurePanel];
+            })) as Record<PanelId, HTMLElement>;
             dropPreviewPlacement = null;
             dropPreviewPlacementKey = '';
             preview.className += ' panel-drag-preview';

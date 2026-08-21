@@ -270,9 +270,9 @@
 
 /* Scene 패널 리사이저 */
 .scene-resizer {
-  position: absolute;
+  position: fixed;
   top: calc(50% - 24px);
-  left: -7px;
+  left: auto;
   width: 7px;
   height: 48px;
   cursor: w-resize;
@@ -282,7 +282,7 @@
 }
 
 .panel-dock.dock-left .scene-resizer {
-  right: -7px;
+  right: auto;
   left: auto;
   cursor: e-resize;
   border-radius: 0 3px 3px 0;

@@ -19,7 +19,7 @@ import type { InstanceIdRange } from './instance-ranges';
 
 // Helper aliases
 const { isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled, getInstanceLocalBox } = Overlay;
-const { getGroupKey, getObjectToGroup } = GroupUtils;
+const { getGroupKey, getGroupChain, getObjectToGroup } = GroupUtils;
 
 interface OrbitControlsLike {
     enabled: boolean;
@@ -400,7 +400,8 @@ export function initDrag({
                             const key = getGroupKey(obj as InstancedMesh, instanceId);
                             const immediateGroupId = objectToGroup.get(key);
                             if (immediateGroupId) {
-                                if (groupIds) groupIds.add(immediateGroupId);
+                                const chain = getGroupChain(loadedObjectGroup, immediateGroupId);
+                                if (groupIds) groupIds.add(chain[0] ?? immediateGroupId);
                                 continue;
                             }
                         }
