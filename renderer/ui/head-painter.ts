@@ -42,7 +42,7 @@ import { isSceneObjectVisible } from '../controls/scene-visibility';
 import { intersectSceneInstances } from '../controls/selection/instance-raycast';
 import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../controls/transform/mirroring';
-import { addImageHeadGrid, createHeadProject, createPlayerProject, isSlimSkin, type PlayerModel, type SkinModel } from './player-generator';
+import { addImageHeadGrid, createHeadProject, createPlayerProject, type PlayerModel } from './player-generator';
 import playerHeadIcon from '../../resources/player_head.svg?raw';
 
 const generatorPlayerHeadIcon = playerHeadIcon.replace(/stroke="[^"]+"/, 'stroke="currentColor"');
@@ -1653,9 +1653,8 @@ function initPlayerGenerator(): void {
       setBusy(false);
     }
   };
-  const generateFromSkin = async (canvas: HTMLCanvasElement, skinModel: SkinModel, suffix = '') => {
-    slimInput.checked = skinModel === 'slim';
-    const file = target === 'head' ? createHeadProject(canvas) : createPlayerProject(canvas, playerModel!, skinModel);
+  const generateFromSkin = async (canvas: HTMLCanvasElement, suffix = '') => {
+    const file = target === 'head' ? createHeadProject(canvas) : createPlayerProject(canvas, playerModel!, slimInput.checked ? 'slim' : 'classic');
     await merge(file, `${target === 'head' ? 'Head' : 'Player'} 생성 완료${suffix}`);
   };
 
@@ -1673,18 +1672,17 @@ function initPlayerGenerator(): void {
     skinInput.value = '';
     if (!file || file.type !== 'image/png') throw new Error('PNG 파일을 선택해 주세요.');
     const canvas = await decodePng(file);
-    const pixels = canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, 64, 64).data;
-    await generateFromSkin(canvas, isSlimSkin(pixels) ? 'slim' : 'classic');
+    await generateFromSkin(canvas);
   });
   section.querySelector<HTMLButtonElement>('[data-load-username]')!.onclick = () => void run(async () => {
     const input = section.querySelector<HTMLInputElement>('[data-username]')!;
     if (!input.reportValidity()) throw new Error('닉네임은 영문, 숫자, 밑줄 3–16자로 입력해 주세요.');
     const result = await window.ipcApi.getMinecraftSkin(input.value);
-    if (!result.success || !result.png || !result.model) throw new Error(result.error ?? '스킨을 불러오지 못했습니다.');
+    if (!result.success || !result.png) throw new Error(result.error ?? '스킨을 불러오지 못했습니다.');
     input.value = result.username ?? input.value;
     const png = new Uint8Array(result.png.byteLength);
     png.set(result.png);
-    await generateFromSkin(await decodePng(new Blob([png], { type: 'image/png' })), result.model, result.usedFallback ? ' · Pangch 대체' : '');
+    await generateFromSkin(await decodePng(new Blob([png], { type: 'image/png' })), result.usedFallback ? ' · Pangch 대체' : '');
   });
   section.querySelectorAll<HTMLButtonElement>('[data-image-layer]').forEach(button => button.onclick = () => {
     imageLayer = Number(button.dataset.imageLayer) as 0 | 1;

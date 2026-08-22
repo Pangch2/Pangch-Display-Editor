@@ -20,6 +20,16 @@ function getItemUuid(loadedObjectGroup: Group, item: KnifeItem): string | undefi
     return (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(getItemKey(item));
 }
 
+function groupItemsByMesh(items: KnifeItem[]): Map<Mesh | InstancedMesh, KnifeItem[]> {
+    const groups = new Map<Mesh | InstancedMesh, KnifeItem[]>();
+    for (const item of items) {
+        const group = groups.get(item.mesh) ?? [];
+        group.push(item);
+        groups.set(item.mesh, group);
+    }
+    return groups;
+}
+
 function collectKnifeItems(loadedObjectGroup: Group, selection: SelectionState, includeMirrors: boolean): KnifeItem[] {
     const items = new Map<string, KnifeItem>();
     const add = (item: KnifeItem): void => { items.set(getItemKey(item), item); };
@@ -72,9 +82,16 @@ function getCellMatrix(bounds: Box3, x: number, y: number, z: number, index: num
     );
 }
 
-function duplicateItems(loadedObjectGroup: Group, source: KnifeItem, count: number): KnifeItem[] {
-    const duplicated = duplicateGroupsAndObjects(loadedObjectGroup, null, Array(count).fill(source));
-    return Array.from(duplicated.objects, ([mesh, ids]) => [...ids].map(instanceId => ({ mesh, instanceId }))).flat();
+function duplicateItems(loadedObjectGroup: Group, sources: KnifeItem[], count: number): Map<string, KnifeItem[]> {
+    const copies = new Map<string, KnifeItem[]>();
+
+    for (const meshSources of groupItemsByMesh(sources).values()) {
+        const duplicated = duplicateGroupsAndObjects(loadedObjectGroup, null, meshSources.flatMap(source => Array(count).fill(source)));
+        const items = Array.from(duplicated.objects, ([mesh, ids]) => [...ids].map(instanceId => ({ mesh, instanceId }))).flat();
+        meshSources.forEach((source, index) => copies.set(getItemKey(source), items.slice(index * count, (index + 1) * count)));
+    }
+
+    return copies;
 }
 
 export function knifeSelection(
@@ -109,13 +126,16 @@ export function knifeSelection(
     const pieceMatrix = new Matrix4();
     const modelInverse = new Matrix4();
     const cellMatrix = new Matrix4();
+    const boundsByItem = new Map(items.map(item => {
+        const bounds = Overlay.getInstanceLocalBox(item.mesh, item.instanceId);
+        if (!bounds) throw new Error('나눌 수 없는 오브젝트가 선택되어 있습니다.');
+        return [getItemKey(item), bounds] as const;
+    }));
+    const duplicatedItems = duplicateItems(loadedObjectGroup, items, pieceCount - 1);
 
     for (const source of items) {
-        const geometryBounds = Overlay.getInstanceLocalBox(source.mesh, source.instanceId);
-        if (!geometryBounds) throw new Error('나눌 수 없는 오브젝트가 선택되어 있습니다.');
-
         const modelMatrix = (source.mesh.userData.localMatrices as Map<number, Matrix4> | undefined)?.get(source.instanceId);
-        const bounds = geometryBounds.clone();
+        const bounds = boundsByItem.get(getItemKey(source))!.clone();
         if (modelMatrix) bounds.applyMatrix4(modelMatrix);
         getObjectMatrix(source, originalMatrix);
 
@@ -128,7 +148,7 @@ export function knifeSelection(
             ? new Vector3(sourceUvOffset.getX(source.instanceId), sourceUvOffset.getY(source.instanceId), sourceUvOffset.getZ(source.instanceId))
             : null;
 
-        const pieces = [source, ...duplicateItems(loadedObjectGroup, source, pieceCount - 1)];
+        const pieces = [source, ...(duplicatedItems.get(getItemKey(source)) ?? [])];
         if (pieces.length !== pieceCount) throw new Error('오브젝트 복제에 실패했습니다.');
 
         const uuids = pieces.map(item => getItemUuid(loadedObjectGroup, item));
@@ -204,4 +224,6 @@ if (import.meta.env.DEV) {
     const union = new Box3();
     for (let index = 0; index < 8; index++) union.union(bounds.clone().applyMatrix4(getCellMatrix(bounds, 2, 2, 2, index)));
     console.assert(union.min.equals(bounds.min) && union.max.equals(bounds.max), 'Knife cells must preserve the original bounds.');
+    const mesh = new Mesh();
+    console.assert(groupItemsByMesh([{ mesh, instanceId: 0 }, { mesh, instanceId: 1 }]).get(mesh)?.length === 2, 'Knife copies from one mesh must stay in one batch.');
 }

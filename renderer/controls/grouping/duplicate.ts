@@ -87,9 +87,7 @@ export interface DuplicationSelection {
 
 const tmpTargetLocal = new Matrix4();
 const tmpColor = new Color();
-const PREWARM_CHUNK_REMAINING_RATIO = 0.25;
-const spareInstancedChunks = new WeakMap<InstancedMesh, InstancedMesh[]>();
-const pendingChunkPrewarms = new WeakSet<InstancedMesh>();
+const appendableInstancedChunks = new WeakMap<InstancedMesh, InstancedMesh>();
 
 function cloneData<T>(value: T): T {
     if (value === null || value === undefined) return value;
@@ -411,41 +409,13 @@ function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMes
     return chunk;
 }
 
-function takeSpareInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMesh): InstancedMesh {
-    return spareInstancedChunks.get(sourceMesh)?.pop() ?? createInstancedChunk(loadedObjectGroup, sourceMesh);
-}
+function takeAppendableInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMesh): InstancedMesh {
+    const chunk = appendableInstancedChunks.get(sourceMesh);
+    if (chunk?.parent === loadedObjectGroup && chunk.count < getInstancedCapacity(chunk)) return chunk;
 
-function scheduleInstancedChunkPrewarm(loadedObjectGroup: Group, sourceMesh: InstancedMesh): void {
-    if (pendingChunkPrewarms.has(sourceMesh)) return;
-    if ((spareInstancedChunks.get(sourceMesh)?.length ?? 0) > 0) return;
-
-    pendingChunkPrewarms.add(sourceMesh);
-    const prewarm = () => {
-        pendingChunkPrewarms.delete(sourceMesh);
-        if (sourceMesh.parent !== loadedObjectGroup) return;
-        if ((spareInstancedChunks.get(sourceMesh)?.length ?? 0) > 0) return;
-        const chunk = createInstancedChunk(loadedObjectGroup, sourceMesh);
-        const chunks = spareInstancedChunks.get(sourceMesh) ?? [];
-        chunks.push(chunk);
-        spareInstancedChunks.set(sourceMesh, chunks);
-    };
-
-    const requestIdle = (globalThis as {
-        requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
-    }).requestIdleCallback;
-    if (requestIdle) {
-        requestIdle(prewarm, { timeout: 250 });
-    } else {
-        setTimeout(prewarm, 0);
-    }
-}
-
-function maybePrewarmNextInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMesh, targetMesh: InstancedMesh, targetCapacity: number): void {
-    if (targetCapacity <= 0) return;
-    const remaining = targetCapacity - targetMesh.count;
-    if (remaining <= Math.max(1, Math.floor(targetCapacity * PREWARM_CHUNK_REMAINING_RATIO))) {
-        scheduleInstancedChunkPrewarm(loadedObjectGroup, sourceMesh);
-    }
+    const created = createInstancedChunk(loadedObjectGroup, sourceMesh);
+    appendableInstancedChunks.set(sourceMesh, created);
+    return created;
 }
 
 function cloneInstancedBatch(
@@ -466,10 +436,9 @@ function cloneInstancedBatch(
 
     for (const job of jobs) {
         if (targetMesh.count >= targetCapacity) {
-            targetMesh = takeSpareInstancedChunk(loadedObjectGroup, sourceMesh);
+            targetMesh = takeAppendableInstancedChunk(loadedObjectGroup, sourceMesh);
             targetCapacity = getInstancedCapacity(targetMesh);
-            scheduleInstancedChunkPrewarm(loadedObjectGroup, sourceMesh);
-            if (timings) timings.chunks++;
+            if (timings && targetMesh.count === 0) timings.chunks++;
         }
 
         const targetId = targetMesh.count;
@@ -504,7 +473,6 @@ function cloneInstancedBatch(
         results.push({ mesh: targetMesh, instanceId: targetId, objectUuid, coveredByGroup: job.coveredByGroup });
         targetMesh.count++;
         updatedMeshes.add(targetMesh);
-        maybePrewarmNextInstancedChunk(loadedObjectGroup, sourceMesh, targetMesh, targetCapacity);
     }
 
     for (const mesh of updatedMeshes) mesh.instanceMatrix.needsUpdate = true;
@@ -639,4 +607,14 @@ export function duplicateGroupsAndObjects(
     }
 
     return newSelection;
+}
+
+if (import.meta.env.DEV) {
+    const root = new Group();
+    const source = new InstancedMesh(undefined, undefined, 2);
+    source.count = 2;
+    root.add(source);
+    const chunk = takeAppendableInstancedChunk(root, source);
+    chunk.count = 1;
+    console.assert(takeAppendableInstancedChunk(root, source) === chunk && root.children.length === 2, 'Duplicate must reuse a partially filled chunk.');
 }

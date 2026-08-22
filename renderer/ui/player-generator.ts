@@ -37,8 +37,8 @@ const group = (name: string, transforms: Matrix, pivotCustom: number[], children
 
 function skinBox(x: number, y: number, width: number, height: number, depth: number, layerX: number, layerY: number): SkinBox {
   const faces = (ox: number, oy: number): Face[] => [
-    [ox, oy + depth, depth, height],
     [ox + depth + width, oy + depth, depth, height],
+    [ox, oy + depth, depth, height],
     [ox + depth, oy, width, depth],
     [ox + depth + width, oy, width, depth],
     [ox + depth + width + depth, oy + depth, width, height],
@@ -59,11 +59,13 @@ function drawPart(source: CanvasImageSource, box: SkinBox, startY: number, heigh
   const context = canvas.getContext('2d');
   if (!context) throw new Error('텍스처 캔버스를 만들 수 없습니다.');
   context.imageSmoothingEnabled = false;
-  for (const [faces, destinations] of [[box.base, destinationFaces], [box.layer, destinationLayers]] as const) {
+  context.fillStyle = '#000';
+  for (const [layer, [faces, destinations]] of [[0, [box.base, destinationFaces]], [1, [box.layer, destinationLayers]]] as const) {
     faces.forEach(([x, y, width, faceHeight], index) => {
       const verticalFace = index < 2 || index > 3;
       const sy = verticalFace ? y + startY : y;
       const sh = verticalFace ? height : faceHeight;
+      if (!layer) context.fillRect(...destinations[index]);
       context.drawImage(source, x, sy, width, sh, ...destinations[index]);
     });
   }
@@ -137,11 +139,6 @@ function projectFile(children: SceneNode[], paintTextures: string[], name: strin
   new DataView(raw.buffer).setUint32(14, json.length, true);
   raw.set(json, 18);
   return new File([compressSync(raw)], `${name}.pbde`);
-}
-
-export function isSlimSkin(pixels: Uint8ClampedArray): boolean {
-  for (let y = 20; y < 32; y++) for (let x = 54; x < 56; x++) if (pixels[(y * 64 + x) * 4 + 3]) return false;
-  return true;
 }
 
 export function createPlayerProject(source: HTMLCanvasElement, model: PlayerModel, skinModel: SkinModel): File {
@@ -229,10 +226,8 @@ function countItems(node: SceneNode): number {
 }
 
 if (import.meta.env.DEV) {
-  const classic = new Uint8ClampedArray(64 * 64 * 4);
-  classic[(20 * 64 + 54) * 4 + 3] = 255;
-  console.assert(!isSlimSkin(classic) && isSlimSkin(new Uint8ClampedArray(64 * 64 * 4)), 'Skin model detection failed.');
   console.assert(countItems(defaultTemplate(false)) === 11 && countItems(animationTemplate(false)) === 27, 'Player template head count failed.');
   console.assert(['default', 'animation'].flatMap(model => [false, true].map(slim => countItems(model === 'default' ? defaultTemplate(slim) : animationTemplate(slim)))).join() === '11,11,27,27', 'Player model combinations failed.');
+  console.assert(skinBox(0, 0, 8, 8, 8, 0, 0).base.flat().join() === destinationFaces.flat().join(), 'Player skin face mapping failed.');
   console.assert(0.5 * 1.0625 === 0.53125, 'Player head layer spacing failed.');
 }

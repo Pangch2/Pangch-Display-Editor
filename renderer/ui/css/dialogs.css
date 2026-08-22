@@ -12,8 +12,8 @@
 }
 
 .settings-window {
-  width: min(680px, calc(100vw - 80px));
-  height: min(440px, calc(100vh - 80px));
+  width: 55%;
+  height: 60%;
   border: 1px solid #45454a;
   border-radius: 8px;
   background: #252528;

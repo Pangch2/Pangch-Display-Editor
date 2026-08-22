@@ -673,6 +673,7 @@ function createWindow() {
     'assets/minecraft/items/',
     'assets/minecraft/blockstates/',
     'assets/minecraft/models/',
+    'assets/minecraft/atlases/',
     'assets/minecraft/font/',
     'assets/minecraft/textures/item/',
     'assets/minecraft/textures/font/',

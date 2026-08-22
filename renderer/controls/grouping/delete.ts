@@ -43,6 +43,13 @@ function isInstancedGeometryAttribute(attribute: unknown): attribute is Instance
 // 성능을 위한 임시 변수
 const _TMP_MAT4_A = new Matrix4();
 
+function removeDeletedMesh(mesh: Mesh | InstancedMesh): void {
+    mesh.removeFromParent();
+    if (!mesh.isInstancedMesh || !mesh.userData.pdeDuplicateChunk) return;
+    mesh.dispose();
+    mesh.geometry.dispose();
+}
+
 function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, instanceId: number): string | undefined {
     const ud = loadedObjectGroup.userData as DeleteUserData;
     const keyToUuid = ud.instanceKeyToObjectUuid;
@@ -136,11 +143,7 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     if (uvAttr) uvAttr.needsUpdate = true;
-    if (mesh.count === 0 && mesh.userData.pdeDuplicateChunk) {
-        mesh.removeFromParent();
-        mesh.dispose();
-        mesh.geometry.dispose();
-    }
+    if (mesh.count === 0) removeDeletedMesh(mesh);
 }
 
 export interface DeleteSelectionCallbacks {
@@ -268,10 +271,21 @@ export function deleteSelectedItems(
         if ((mesh as InstancedMesh).isInstancedMesh) {
             const sortedIds = Array.from(idSet).sort((a, b) => b - a);
             _deleteInstancedMeshInstances(loadedObjectGroup, mesh as InstancedMesh, sortedIds);
-        }
+        } else removeDeletedMesh(mesh);
     }
 
     userData.cleanupUnusedPlayerHeadAtlasSlots?.();
 
     console.log('선택된 항목 제거됨 (Real Delete)');
+}
+
+if (import.meta.env.DEV) {
+    const root = new Group();
+    const plain = new Mesh();
+    const instanced = new InstancedMesh(undefined, undefined, 1);
+    instanced.count = 1;
+    root.add(plain, instanced);
+    removeDeletedMesh(plain);
+    _deleteInstancedMeshInstances(root, instanced, [0]);
+    console.assert(root.children.length === 0, 'Deleted meshes must leave the scene.');
 }

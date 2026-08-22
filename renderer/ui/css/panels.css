@@ -219,8 +219,8 @@
 
 .details-resizer {
   position: relative;
-  height: 12px;
-  flex: 0 0 12px;
+  height: 9px;
+  flex: 0 0 9px;
   cursor: ns-resize;
   background: #202023;
   border-block: 1px solid #3a3a3e;
