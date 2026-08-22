@@ -52,6 +52,14 @@ const rightLegBox = skinBox(0, 16, 4, 12, 4, 0, 32);
 const leftLegBox = skinBox(16, 48, 4, 12, 4, 0, 48);
 const rightArmBox = (slim: boolean) => skinBox(40, 16, slim ? 3 : 4, 12, 4, 40, 32);
 const leftArmBox = (slim: boolean) => skinBox(32, 48, slim ? 3 : 4, 12, 4, 48, 48);
+const defaultSections = [[0, 4], [4, 8]] as const;
+const animationSections = [[0, 4], [4, 2], [6, 2], [8, 4]] as const;
+const slimArmSlices = [[[1, 2], [0, 1]], [[0, 2], [2, 1]]] as const;
+
+function sliceSkinBox(box: SkinBox, start: number, width: number): SkinBox {
+  const slice = (faces: Face[]): Face[] => faces.map((face, index) => index < 2 ? face : [face[0] + (index === 4 ? face[2] - start - width : start), face[1], width, face[3]]);
+  return { base: slice(box.base), layer: slice(box.layer) };
+}
 
 function drawPart(source: CanvasImageSource, box: SkinBox, startY: number, height: number): string {
   const canvas = document.createElement('canvas');
@@ -73,25 +81,42 @@ function drawPart(source: CanvasImageSource, box: SkinBox, startY: number, heigh
 }
 
 function skinTextures(source: HTMLCanvasElement, model: PlayerModel, slim: boolean): string[] {
-  const textures = [source.toDataURL('image/png'), drawPart(source, bodyBox, 0, 6), drawPart(source, bodyBox, 6, 6)];
-  const limbs = [leftLegBox, rightLegBox, rightArmBox(slim), leftArmBox(slim)];
-  for (const box of limbs) {
-    if (model === 'default') textures.push(drawPart(source, box, 0, 6), drawPart(source, box, 6, 6));
-    else for (let y = 0; y < 12; y += 3) textures.push(drawPart(source, box, y, 3));
+  const textures = [source.toDataURL('image/png'), ...defaultSections.map(([start, height]) => drawPart(source, bodyBox, start, height))];
+  const sections = model === 'default' ? defaultSections : animationSections;
+  for (const box of [leftLegBox, rightLegBox]) {
+    for (const [start, height] of sections) textures.push(drawPart(source, box, start, height));
+  }
+  for (const [arm, box] of [rightArmBox(slim), leftArmBox(slim)].entries()) {
+    if (model === 'default' && slim) {
+      for (const [start, height] of sections) for (const [sliceStart, sliceWidth] of slimArmSlices[arm]) textures.push(drawPart(source, sliceSkinBox(box, sliceStart, sliceWidth), start, height));
+    } else for (const [start, height] of sections) textures.push(drawPart(source, box, start, height));
   }
   return textures;
 }
 
+function defaultSlimArm(name: string, x: number, pivotX: number, firstX: number, secondX: number, texture: number): SceneNode {
+  return group(name, matrix(1, 1, 1, x, 0.75, 0.1328125), [pivotX, 0.640625, 0.1325], [
+    item(texture, matrix(0.25, 0.5, 0.5, firstX, 0.765625, 0.1328125)),
+    item(texture + 1, matrix(0.125, 0.5, 0.5, secondX, 0.765625, 0.1328125)),
+    item(texture + 2, matrix(0.25, 1, 0.5, firstX, 0.515625, 0.1328125)),
+    item(texture + 3, matrix(0.125, 1, 0.5, secondX, 0.515625, 0.1328125))
+  ]);
+}
+
 function defaultTemplate(slim: boolean): SceneNode {
-  const armScale = slim ? 0.375 : 0.5;
-  const armShift = slim ? 0.0625 : 0;
-  return group('Generated model', matrix(0.937, 0.937, 0.937, -0.47625, -0.015625, -0.265625), [0.5, 0.77, 0.2656], [
-    group('Head', matrix(1, 1, 1, 0.2421875, 1.5, 0), [0.265625, 0.015625, 0.265625], [item(0, matrix(1, 1, 1, 0.265625, 0.515625, 0.265625))]),
-    group('Body', matrix(1, 1, 1, 0.2421875, 0.75, 0.1328125), [0.265625, 0, 0.1325], [item(1, matrix(1, 0.5, 0.5, 0.265625, 0.765625, 0.1328125)), item(2, matrix(1, 1, 0.5, 0.265625, 0.515625, 0.1328125))]),
-    group('Left leg', matrix(1, 1, 1, 0.25, 0, 0.1328125), [0.1325, 0.734375, 0.1325], [item(3, matrix(0.5, 0.5, 0.5, 0.1328125, 0.765625, 0.1328125)), item(4, matrix(0.5, 1, 0.5, 0.1328125, 0.515625, 0.1328125))]),
-    group('Right leg', matrix(1, 1, 1, 0.5, 0, 0.1328125), [0.1325, 0.734375, 0.1325], [item(5, matrix(0.5, 0.5, 0.5, 0.1328125, 0.765625, 0.1328125)), item(6, matrix(0.5, 1, 0.5, 0.1328125, 0.515625, 0.1328125))]),
-    group('Right hand', matrix(1, 1, 1, 0.75 - armShift, 0.75, 0.1328125), [0.06625 + armShift, 0.640625, 0.1325], [item(7, matrix(armScale, 0.5, 0.5, 0.1328125, 0.765625, 0.1328125)), item(8, matrix(armScale, 1, 0.5, 0.1328125, 0.515625, 0.1328125))]),
-    group('Left hand', matrix(1, 1, 1, armShift, 0.75, 0.1328125), [0.19875 - armShift, 0.640625, 0.1325], [item(9, matrix(armScale, 0.5, 0.5, 0.1328125, 0.765625, 0.1328125)), item(10, matrix(armScale, 1, 0.5, 0.1328125, 0.515625, 0.1328125))])
+  const shift = slim ? -0.069609375 : 0;
+  return group('Generated model', matrix(0.937, 0.937, 0.937, slim ? -0.410625 : -0.47625, -0.015625, -0.265625), [0.5, 0.77, 0.2656], [
+    group('Head', matrix(1, 1, 1, 0.2421875 + shift, 1.5, 0), [0.265625, 0.015625, 0.265625], [item(0, matrix(1, 1, 1, 0.265625, 0.515625, 0.265625))]),
+    group('Body', matrix(1, 1, 1, 0.2421875 + shift, 0.75, 0.1328125), [0.265625, 0, 0.1325], [item(1, matrix(1, 0.5, 0.5, 0.265625, 0.765625, 0.1328125)), item(2, matrix(1, 1, 0.5, 0.265625, 0.515625, 0.1328125))]),
+    group('Left leg', matrix(1, 1, 1, 0.25 + shift, 0, 0.1328125), [0.1325, 0.734375, 0.1325], [item(3, matrix(0.5, 0.5, 0.5, 0.1328125, 0.765625, 0.1328125)), item(4, matrix(0.5, 1, 0.5, 0.1328125, 0.515625, 0.1328125))]),
+    group('Right leg', matrix(1, 1, 1, 0.5 + shift, 0, 0.1328125), [0.1325, 0.734375, 0.1325], [item(5, matrix(0.5, 0.5, 0.5, 0.1328125, 0.765625, 0.1328125)), item(6, matrix(0.5, 1, 0.5, 0.1328125, 0.515625, 0.1328125))]),
+    ...(slim ? [
+      defaultSlimArm('Right hand', 0.684296875, 0.06625, 0.06640625, 0.15890625, 7),
+      defaultSlimArm('Left hand', 0, 0.19875, 0.125703125, 0.033203125, 11)
+    ] : [
+      group('Right hand', matrix(1, 1, 1, 0.75, 0.75, 0.1328125), [0.06625, 0.640625, 0.1325], [item(7, matrix(0.5, 0.5, 0.5, 0.1328125, 0.765625, 0.1328125)), item(8, matrix(0.5, 1, 0.5, 0.1328125, 0.515625, 0.1328125))]),
+      group('Left hand', matrix(1, 1, 1, 0, 0.75, 0.1328125), [0.19875, 0.640625, 0.1325], [item(9, matrix(0.5, 0.5, 0.5, 0.1328125, 0.765625, 0.1328125)), item(10, matrix(0.5, 1, 0.5, 0.1328125, 0.515625, 0.1328125))])
+    ])
   ]);
 }
 
@@ -109,14 +134,14 @@ function animationLimb(name: string, x: number, z: number, pivotX: number, textu
     ? [thinWidth, 0, 0, left ? 0.1340625 : 0.13415625, 0, 0.18561553006146872, -0.3146625176280137, 0.4590625, 0, 0.18561553006146878, 0.3146625176280136, 0.1803125, 0, 0, 0, 1]
     : [0.498, 0, 0, left ? 0.1340625 : 0.13415625, 0, 0.18561553006146872, 0.3146625176280137, 0.4590625, 0, -0.18561553006146878, 0.3146625176280136, 0.08648247390215157, 0, 0, 0, 1];
   const bend = group(`${name} Bend`, matrix(1, 1, 1, 0, 0, arm ? 0 : 0.00009039226880497298), [0.133125, 0.383125, 0.1325], [
-    item(texture, bendRotation),
-    item(texture, matrix(width, 0.25, 0.5, left ? 0.1328125 : 0.13540625, 0.3828125, arm ? 0.1328125 : 0.1338920816333466)),
-    item(texture + 1, matrix(width, 0.5, 0.5, left ? 0.1328125 : 0.13540625, 0.2578125, arm ? 0.1328125 : 0.1338920816333466))
+    item(texture + 2, bendRotation),
+    item(texture + 2, matrix(width, 0.25, 0.5, left ? 0.1328125 : 0.13540625, 0.3828125, arm ? 0.1328125 : 0.1338920816333466)),
+    item(texture + 3, matrix(width, 0.5, 0.5, left ? 0.1328125 : 0.13540625, 0.2578125, arm ? 0.1328125 : 0.1338920816333466))
   ]);
   return group(name, matrix(1, 1, 1, x, arm ? 0.75 : 0, z), [pivotX, arm ? 0.640625 : 0.734375, 0.1325], [bend,
-    item(texture + 2, matrix(width, 0.5, 0.5, left ? 0.1340625 : 0.13415625, 0.7578125, arm ? 0.1328125 : 0.13398247390215157)),
-    item(texture + 3, matrix(width, 0.25, 0.5, left ? 0.1340625 : 0.13415625, 0.5078125, arm ? 0.1328125 : 0.13398247390215157)),
-    item(texture + 3, endRotation)
+    item(texture, matrix(width, 0.5, 0.5, left ? 0.1340625 : 0.13415625, 0.7578125, arm ? 0.1328125 : 0.13398247390215157)),
+    item(texture + 1, matrix(width, 0.25, 0.5, left ? 0.1340625 : 0.13415625, 0.5078125, arm ? 0.1328125 : 0.13398247390215157)),
+    item(texture + 1, endRotation)
   ]);
 }
 
@@ -226,8 +251,14 @@ function countItems(node: SceneNode): number {
 }
 
 if (import.meta.env.DEV) {
+  const slimTemplate = defaultTemplate(true);
+  const animatedLeg = animationLimb('Leg', 0, 0, 0, 3, false, true, false);
   console.assert(countItems(defaultTemplate(false)) === 11 && countItems(animationTemplate(false)) === 27, 'Player template head count failed.');
-  console.assert(['default', 'animation'].flatMap(model => [false, true].map(slim => countItems(model === 'default' ? defaultTemplate(slim) : animationTemplate(slim)))).join() === '11,11,27,27', 'Player model combinations failed.');
+  console.assert(['default', 'animation'].flatMap(model => [false, true].map(slim => countItems(model === 'default' ? defaultTemplate(slim) : animationTemplate(slim)))).join() === '11,15,27,27', 'Player model combinations failed.');
+  console.assert(slimTemplate.transforms[3] === -0.410625 && slimTemplate.children?.[4].transforms[3] === 0.684296875 && slimTemplate.children[5].children?.length === 4, 'Slim player layout failed.');
+  console.assert(animatedLeg.children?.map(child => child.paintTexture ?? child.children?.[0].paintTexture).join() === '5,3,4,4', 'Animated limb skin order failed.');
+  console.assert(defaultSections.flat().join() === '0,4,4,8' && animationSections.flat().join() === '0,4,4,2,6,2,8,4', 'Player skin pixel sections failed.');
+  console.assert(slimArmSlices.flat(2).join() === '1,2,0,1,0,2,2,1' && sliceSkinBox(skinBox(0, 0, 3, 12, 4, 0, 0), 0, 2).base.slice(2).map(face => face[0]).join() === '4,7,12,4', 'Slim arm skin mapping failed.');
   console.assert(skinBox(0, 0, 8, 8, 8, 0, 0).base.flat().join() === destinationFaces.flat().join(), 'Player skin face mapping failed.');
   console.assert(0.5 * 1.0625 === 0.53125, 'Player head layer spacing failed.');
 }
