@@ -11,11 +11,12 @@ const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
 const ASSET_CACHE_READY_PATH = path.join(CACHE_DIR, '.assets-complete');
+const SPRITE_ATLAS_DIR = path.join(CACHE_DIR, 'sprite-atlases');
 const KEY_MAPPING_DIR = path.join(CACHE_DIR, 'key-mapping');
 const KEY_MAPPING_ORDER_PATH = path.join(KEY_MAPPING_DIR, '.order');
 const BRUSH_DIR = path.join(CACHE_DIR, 'brush');
-const clientUrl = 'https://piston-data.mojang.com/v1/objects/16169fc68cc553b82f495bb2896bde6170aa51a7/client.jar';
-const serverUrl = 'https://piston-data.mojang.com/v1/objects/06157fedd67ff4dd6e0e6fa4a9dd0af296f0dd61/server.jar';
+const clientUrl = 'https://piston-data.mojang.com/v1/objects/4815359f45cf77c9042296d98acb22a95df6a58a/client.jar';
+const serverUrl = 'https://piston-data.mojang.com/v1/objects/9580afcd37c63cb01e81d5d9f836f21b4d21c540/server.jar';
 // When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
 // For reading hardcoded JSON at runtime, prefer resolved path within the asar; when unpacked dev, use __dirname.
 const APP_ROOT = path.dirname(__dirname);
@@ -500,7 +501,8 @@ function createWindow() {
           fs.rm(ASSET_CACHE_READY_PATH, { force: true }),
           fs.rm(path.join(CACHE_DIR, 'item-block-list.json'), { force: true }),
           fs.rm(path.join(CACHE_DIR, 'block-atlas.png'), { force: true }),
-          fs.rm(path.join(CACHE_DIR, 'item-atlas.png'), { force: true })
+          fs.rm(path.join(CACHE_DIR, 'item-atlas.png'), { force: true }),
+          fs.rm(SPRITE_ATLAS_DIR, { recursive: true, force: true })
         ]);
       } else if (scope === 'cache') {
         await Promise.all([
@@ -648,6 +650,76 @@ function createWindow() {
     }
   });
 
+  const validateSpriteAtlasName = (name: unknown): string => {
+    if (typeof name !== 'string' || !/^[a-z0-9_]+$/.test(name)) throw new Error('Invalid sprite atlas name.');
+    return name;
+  };
+
+  ipcMain.handle('has-sprite-atlas', async (_event, name: unknown) => {
+    try {
+      const safeName = validateSpriteAtlasName(name);
+      const [hasImage, hasManifest] = await Promise.all([
+        pathExists(path.join(SPRITE_ATLAS_DIR, `${safeName}.png`)),
+        pathExists(path.join(SPRITE_ATLAS_DIR, `${safeName}.json`))
+      ]);
+      return { success: true, exists: hasImage && hasManifest };
+    } catch (error) {
+      return { success: false, exists: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('save-sprite-atlas', async (_event, name: unknown, data: Uint8Array, manifest: unknown) => {
+    try {
+      const safeName = validateSpriteAtlasName(name);
+      if (!(data instanceof Uint8Array)) throw new TypeError('Sprite atlas data must be a Uint8Array.');
+      if (!manifest || typeof manifest !== 'object') throw new TypeError('Sprite atlas manifest must be an object.');
+      await fs.mkdir(SPRITE_ATLAS_DIR, { recursive: true });
+      await Promise.all([
+        fs.writeFile(path.join(SPRITE_ATLAS_DIR, `${safeName}.png`), data),
+        fs.writeFile(path.join(SPRITE_ATLAS_DIR, `${safeName}.json`), JSON.stringify(manifest), 'utf8')
+      ]);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('list-sprite-atlases', async () => {
+    try {
+      await fs.mkdir(SPRITE_ATLAS_DIR, { recursive: true });
+      const files = await fs.readdir(SPRITE_ATLAS_DIR);
+      const fileSet = new Set(files);
+      const atlases = files
+        .filter(file => file.endsWith('.png') && fileSet.has(`${file.slice(0, -4)}.json`))
+        .map(file => file.slice(0, -4))
+        .sort((left, right) => left.localeCompare(right));
+      return { success: true, atlases };
+    } catch (error) {
+      return { success: false, atlases: [], error: errorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('list-asset-files', async (_event, assetPath: unknown) => {
+    try {
+      if (typeof assetPath !== 'string') throw new TypeError('Asset path must be a string.');
+      const safePath = assetPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      if (!/^assets\/minecraft\/(?:atlases|textures)(?:\/|$)/.test(safePath) || safePath.split('/').includes('..')) {
+        throw new Error('Invalid asset directory.');
+      }
+      const fullPath = path.resolve(CACHE_DIR, safePath);
+      const assetRoot = path.resolve(CACHE_DIR, 'assets', 'minecraft');
+      const relative = path.relative(assetRoot, fullPath);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Asset directory is outside the cache.');
+      const entries = await fs.readdir(fullPath, { recursive: true });
+      return {
+        success: true,
+        files: entries.map(entry => path.relative(CACHE_DIR, path.join(fullPath, entry)).replace(/\\/g, '/'))
+      };
+    } catch (error) {
+      return { success: false, files: [], error: errorMessage(error) };
+    }
+  });
+
   ipcMain.on('log-atlas-generation-time', (_event, duration: number) => {
     if (Number.isFinite(duration)) console.log(`Icon atlases generated in ${Math.round(duration)}ms`);
   });
@@ -680,7 +752,13 @@ function createWindow() {
     'assets/minecraft/textures/particle/',
     'assets/minecraft/textures/block/',
     'assets/minecraft/textures/environment/end_sky.png',
-
+    'assets/minecraft/textures/environment/celestial/',
+    'assets/minecraft/textures/gui/sprites/',
+    'assets/minecraft/textures/map/decorations/',
+    'assets/minecraft/textures/mob_effect/',
+    'assets/minecraft/textures/painting/',
+    'assets/minecraft/textures/palettes/',
+    'assets/minecraft/textures/trims/items/',
     'assets/minecraft/textures/entity/'
   ];
 
@@ -694,12 +772,13 @@ function createWindow() {
     try {
       await fs.mkdir(CACHE_DIR, { recursive: true });
       const startTime = Date.now();
-      const [hasAssetsMarker, hasFontAssets, hasRegistry] = await Promise.all([
+      const [hasAssetsMarker, hasFontAssets, hasRegistry, requiredAssetsReady] = await Promise.all([
         pathExists(ASSET_CACHE_READY_PATH),
         pathExists(path.join(CACHE_DIR, 'assets/minecraft/font/include/default.json')),
-        pathExists(registryPath)
+        pathExists(registryPath),
+        Promise.all(requiredPrefixes.map(prefix => pathExists(path.join(CACHE_DIR, prefix)))).then(results => results.every(Boolean))
       ]);
-      const hasAssets = hasAssetsMarker && hasFontAssets;
+      const hasAssets = hasAssetsMarker && hasFontAssets && requiredAssetsReady;
       if (!hasAssets || !hasRegistry) event.sender.send('assets-progress', '팽치가 모장에서 뛰어오는중');
       const [clientResponse, serverResponse] = await Promise.all([
         hasAssets ? null : axios<ArrayBuffer>({ url: clientUrl, method: 'GET', responseType: 'arraybuffer' }),

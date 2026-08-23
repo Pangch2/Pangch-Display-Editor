@@ -2,7 +2,7 @@ import { Euler, InstancedMesh, Matrix4, Mesh, Quaternion, Vector3 } from 'three/
 import type { SelectedItem, SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { getPlayerHeadTexture, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
-import type { TextDisplayOptions } from '../load-project/text-display';
+import type { TextDisplayContentType, TextDisplayOptions } from '../load-project/text-display';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel/scene-panel-types';
 import { cleanLabel } from './scene-panel/scene-panel-model';
@@ -23,6 +23,7 @@ import { captureSceneState, captureSelectionTransformState, recordSceneChange, t
 import { record } from '../controls/undo-redo/undo-redo';
 import { getHeadGridValue, setHeadGridOverride } from './head-painter';
 import { hexToRgb, openColorPicker, rgbToHex } from './color-picker';
+import { openSpriteAtlasPicker, openSpritePicker } from './sprite-atlas-picker';
 
 const title = document.getElementById('details-title')!;
 const tabs = document.getElementById('project-tabs')!;
@@ -40,8 +41,9 @@ const quaternion = new Quaternion();
 const scale = new Vector3();
 const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
 const textAlignValues = ['left', 'center', 'right'];
+const textDisplayContentTypes: TextDisplayContentType[] = ['text', 'sprite', 'player', 'translate', 'keybind', 'score', 'selector', 'nbt'];
 const defaultTextDisplayOptions: Required<TextDisplayOptions> = {
-    color: '#FFFFFF', pageColors: [], pageAlphas: [], pageEffects: [], pageAligns: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
+    color: '#FFFFFF', pageColors: [], pageAlphas: [], pageEffects: [], pageAligns: [], pageTypes: [], pageAtlases: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
     bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
     lineLength: 50, align: 'center', font: 'minecraft:default'
 };
@@ -909,6 +911,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const effectKeys = ['bold', 'italic', 'underline', 'strikeThrough', 'obfuscated'] as const;
         const pageEffects = pages.map((_, index) => Object.fromEntries(effectKeys.map(key => [key, options.pageEffects?.[index]?.[key] ?? options[key] ?? false])) as Record<typeof effectKeys[number], boolean>);
         const pageAligns = pages.map((_, index) => options.pageAligns?.[index] ?? options.align ?? defaultTextDisplayOptions.align);
+        const pageTypes = pages.map((_, index) => options.pageTypes?.[index] ?? 'text');
+        const pageAtlases = pages.map((_, index) => options.pageAtlases?.[index] ?? 'minecraft:blocks');
         let pageIndex = Math.min(Math.max(options.pageIndex ?? 0, 0), pages.length - 1);
         options.color = pageColors[pageIndex];
         options.alpha = pageAlphas[pageIndex];
@@ -921,6 +925,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             options.pageAlphas = pageAlphas;
             options.pageEffects = pageEffects;
             options.pageAligns = pageAligns;
+            options.pageTypes = pageTypes;
+            options.pageAtlases = pageAtlases;
             options.pageIndex = pageIndex;
             const sceneText = pages.join('');
             await updateTextDisplay(uuid, sceneText, options);
@@ -936,8 +942,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             }
         };
 
-        const textInput = document.createElement('textarea');
-        textInput.rows = 3;
+        const contentType = pageTypes[pageIndex];
+        const textInput = contentType === 'sprite' ? document.createElement('input') : document.createElement('textarea');
+        if (textInput instanceof HTMLTextAreaElement) textInput.rows = 3;
         textInput.value = text;
         const pageControls = document.createElement('div');
         pageControls.className = 'text-display-pages';
@@ -963,30 +970,61 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             button.onclick = () => void onClick();
             return button;
         };
+        const typeSelect = propertySelect(contentType, textDisplayContentTypes, async value => {
+            const previousType = pageTypes[pageIndex];
+            const previousText = pages[pageIndex];
+            pageTypes[pageIndex] = value as TextDisplayContentType;
+            if (value === 'sprite' && pages[pageIndex] === '텍스트 입력') text = pages[pageIndex] = '';
+            try {
+                await update();
+                clearRenderedPropertySections();
+                schedulePropertySectionRender();
+            } catch (error) {
+                pageTypes[pageIndex] = previousType;
+                text = pages[pageIndex] = previousText;
+                throw error;
+            }
+        });
+        typeSelect.className = 'text-display-type';
+        const typeSelectWrap = document.createElement('span');
+        typeSelectWrap.className = 'settings-select';
+        const typeSelectIcon = document.createElement('span');
+        typeSelectIcon.className = 'lucide-icon';
+        typeSelectIcon.textContent = '\uE06D';
+        typeSelectWrap.append(typeSelect, typeSelectIcon);
         pageControls.append(
+            typeSelectWrap,
             pageButton('<', '이전 페이지', () => changePage(Math.max(0, pageIndex - 1)), pageIndex === 0),
             pageButton('>', '다음 페이지', () => changePage(Math.min(pages.length - 1, pageIndex + 1)), pageIndex === pages.length - 1),
-            pageButton('+', '새 페이지', () => {
+            pageButton('+', '새 페이지', async () => {
+                const before = captureSceneState(loadedObjectGroup);
                 pages.splice(pageIndex + 1, 0, '');
                 pageColors.splice(pageIndex + 1, 0, options.color ?? defaultTextDisplayOptions.color);
                 pageAlphas.splice(pageIndex + 1, 0, options.alpha ?? defaultTextDisplayOptions.alpha);
                 pageEffects.splice(pageIndex + 1, 0, { ...pageEffects[pageIndex] });
                 pageAligns.splice(pageIndex + 1, 0, options.align ?? defaultTextDisplayOptions.align);
-                return changePage(pageIndex + 1, false);
+                pageTypes.splice(pageIndex + 1, 0, 'text');
+                pageAtlases.splice(pageIndex + 1, 0, 'minecraft:blocks');
+                await changePage(pageIndex + 1, false);
+                recordSceneChange(loadedObjectGroup, before);
             }),
             pageButton('-', '현재 페이지 삭제', async () => {
                 if (pages.length === 1) return;
+                const before = captureSceneState(loadedObjectGroup);
                 pages.splice(pageIndex, 1);
                 pageColors.splice(pageIndex, 1);
                 pageAlphas.splice(pageIndex, 1);
                 pageEffects.splice(pageIndex, 1);
                 pageAligns.splice(pageIndex, 1);
-                return changePage(Math.min(pageIndex, pages.length - 1), true);
+                pageTypes.splice(pageIndex, 1);
+                pageAtlases.splice(pageIndex, 1);
+                await changePage(Math.min(pageIndex, pages.length - 1), true);
+                recordSceneChange(loadedObjectGroup, before);
             }, pages.length === 1)
         );
         const textControls = document.createElement('div');
         textControls.className = 'text-display-text';
-        textControls.append(pageControls, propertyValueControl(textInput, async value => {
+        const valueInput = propertyValueControl(textInput, async value => {
             const previous = text;
             text = value;
             pages[pageIndex] = value;
@@ -995,8 +1033,63 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 pages[pageIndex] = previous;
                 throw error;
             }
-        }, true));
-        metadataSection.append(metadataProperty('text', '텍스트', textControls));
+        }, true);
+        if (contentType === 'sprite') {
+            const valueControls = document.createElement('span');
+            valueControls.className = 'text-display-value';
+            const valueButton = document.createElement('button');
+            valueButton.type = 'button';
+            valueButton.className = 'lucide-icon';
+            valueButton.textContent = '\uE0F6';
+            valueButton.title = valueButton.ariaLabel = '스프라이트 선택';
+            valueButton.onclick = () => openSpritePicker(pageAtlases[pageIndex], pages[pageIndex], async value => {
+                const before = captureSceneState(loadedObjectGroup);
+                const previous = text;
+                text = pages[pageIndex] = value;
+                try {
+                    await update();
+                    valueInput.value = value;
+                    recordSceneChange(loadedObjectGroup, before);
+                } catch (error) {
+                    text = pages[pageIndex] = previous;
+                    throw error;
+                }
+            });
+            valueControls.append(valueButton, valueInput);
+            textControls.append(pageControls, valueControls);
+        } else {
+            textControls.append(pageControls, valueInput);
+        }
+        const textProperty = metadataProperty('text', contentType === 'sprite' ? '값' : '텍스트', textControls);
+        if (contentType === 'sprite') textProperty.classList.add('text-display-sprite-value');
+        metadataSection.append(textProperty);
+        if (contentType === 'sprite') {
+            const atlasControls = document.createElement('span');
+            atlasControls.className = 'text-display-atlas';
+            const atlasInput = document.createElement('input');
+            atlasInput.readOnly = true;
+            atlasInput.value = pageAtlases[pageIndex];
+            const atlasButton = document.createElement('button');
+            atlasButton.type = 'button';
+            atlasButton.className = 'lucide-icon';
+            atlasButton.textContent = '\uE0F6';
+            atlasButton.title = atlasButton.ariaLabel = '아틀라스 선택';
+            atlasButton.onclick = () => openSpriteAtlasPicker(pageAtlases[pageIndex], async atlas => {
+                const before = captureSceneState(loadedObjectGroup);
+                const previous = pageAtlases[pageIndex];
+                pageAtlases[pageIndex] = atlas;
+                try {
+                    await update();
+                    atlasInput.value = atlas;
+                    recordSceneChange(loadedObjectGroup, before);
+                } catch (error) {
+                    pageAtlases[pageIndex] = previous;
+                    throw error;
+                }
+            });
+            atlasControls.append(atlasButton, atlasInput);
+            metadataSection.append(metadataProperty('atlas', '아틀라스', atlasControls));
+        }
 
         const lineLength = document.createElement('input');
         lineLength.type = 'number';

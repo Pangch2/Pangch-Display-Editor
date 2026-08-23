@@ -45,6 +45,11 @@ export interface HistoryGizmoState {
 
 let captureGizmoState: (() => HistoryGizmoState) | null = null;
 let restoreGizmoState: ((state: HistoryGizmoState) => void) | null = null;
+const retainedSceneResources = new WeakSet<object>();
+
+export function isSceneHistoryResourceRetained(resource: object): boolean {
+    return retainedSceneResources.has(resource);
+}
 
 type TypedArray = Exclude<BufferAttribute['array'], number[]>;
 type HistoryAttribute = BufferAttribute | InterleavedBufferAttribute;
@@ -53,6 +58,15 @@ interface AttributeSnapshot {
     attribute: HistoryAttribute;
     array: TypedArray;
 }
+
+type TextMaterial = Material & { map?: { image: unknown; needsUpdate: boolean } | null };
+type TextMaterialSnapshot = {
+    material: TextMaterial;
+    mapImage: unknown;
+    depthWrite: boolean;
+    alphaTest: number;
+    visible: boolean;
+};
 
 function isInstancedGeometryAttribute(attribute: unknown): attribute is HistoryAttribute {
     const candidate = attribute as BufferAttribute & {
@@ -75,6 +89,7 @@ interface ObjectSnapshot {
     userData: Record<string, unknown>;
     geometry?: BufferGeometry;
     material?: Material | Material[];
+    textMaterials?: TextMaterialSnapshot[];
     count?: number;
     attributes: AttributeSnapshot[];
 }
@@ -183,6 +198,29 @@ function cloneValue<T>(value: T, seen = new Map<object, unknown>()): T {
     return copy as T;
 }
 
+function captureTextMaterial(material: Material): TextMaterialSnapshot {
+    const textMaterial = material as TextMaterial;
+    return {
+        material: textMaterial,
+        mapImage: textMaterial.map?.image,
+        depthWrite: material.depthWrite,
+        alphaTest: material.alphaTest,
+        visible: material.visible
+    };
+}
+
+function restoreTextMaterial(state: TextMaterialSnapshot): void {
+    const { material } = state;
+    material.depthWrite = state.depthWrite;
+    material.alphaTest = state.alphaTest;
+    material.visible = state.visible;
+    material.needsUpdate = true;
+    if (material.map) {
+        material.map.image = state.mapImage;
+        material.map.needsUpdate = true;
+    }
+}
+
 function captureObject(object: Object3D): ObjectSnapshot {
     const attributes: AttributeSnapshot[] = [];
     if ((object as InstancedMesh).isInstancedMesh) {
@@ -196,6 +234,16 @@ function captureObject(object: Object3D): ObjectSnapshot {
             attributes.push({ attribute, array: attribute.array.slice() as TypedArray });
         });
     }
+    const geometry = (object as Mesh).isMesh ? (object as Mesh).geometry : undefined;
+    const material = (object as Mesh).isMesh ? (object as Mesh).material : undefined;
+    if (object.userData.displayType === 'text_display') {
+        if (geometry) retainedSceneResources.add(geometry);
+        for (const entry of material ? (Array.isArray(material) ? material : [material]) : []) {
+            retainedSceneResources.add(entry);
+            const map = (entry as TextMaterial).map;
+            if (map) retainedSceneResources.add(map);
+        }
+    }
     return {
         object,
         children: [...object.children],
@@ -205,8 +253,11 @@ function captureObject(object: Object3D): ObjectSnapshot {
         matrix: object.matrix.clone(),
         visible: object.visible,
         userData: cloneValue(object.userData),
-        geometry: (object as Mesh).isMesh ? (object as Mesh).geometry : undefined,
-        material: (object as Mesh).isMesh ? (object as Mesh).material : undefined,
+        geometry,
+        material,
+        textMaterials: object.userData.displayType === 'text_display' && material
+            ? (Array.isArray(material) ? material : [material]).map(captureTextMaterial)
+            : undefined,
         count: (object as InstancedMesh).isInstancedMesh ? (object as InstancedMesh).count : undefined,
         attributes
     };
@@ -351,6 +402,15 @@ function restoreTransformState(root: Group, transform: TransformSnapshot): void 
 }
 
 if (import.meta.env.DEV) {
+    const textMaterial = new Material() as TextMaterial;
+    const textImage = {};
+    textMaterial.map = { image: textImage, needsUpdate: false };
+    const textMaterialState = captureTextMaterial(textMaterial);
+    textMaterial.map.image = {};
+    textMaterial.depthWrite = false;
+    restoreTextMaterial(textMaterialState);
+    console.assert(textMaterial.map.image === textImage && textMaterial.depthWrite, 'Text display history must restore its texture.');
+
     const mesh = new InstancedMesh(new BufferGeometry(), undefined!, 2);
     mesh.setMatrixAt(0, new Matrix4().makeTranslation(1, 0, 0));
     mesh.setMatrixAt(1, new Matrix4().makeTranslation(2, 0, 0));
@@ -412,6 +472,7 @@ export function restoreSceneState(root: Group, snapshot: SceneSnapshot): void {
             if ((object as Mesh).isMesh) {
                 (object as Mesh).geometry = state.geometry!;
                 (object as Mesh).material = state.material!;
+                state.textMaterials?.forEach(restoreTextMaterial);
             }
             if ((object as InstancedMesh).isInstancedMesh) (object as InstancedMesh).count = state.count ?? 0;
             state.attributes.forEach(({ attribute, array }) => {

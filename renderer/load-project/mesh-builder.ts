@@ -8,8 +8,9 @@ import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject
 import { isNodeBufferLike, mainThreadAssetProvider, toUint8Array } from './pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupData, HeadGeometrySet, OtherItem, TypedArrayConstructor, WorkerMetadata } from './pbde-types';
-import { createTextDisplayMesh, createTextDisplayTemplates, getTextDisplayTemplateKey, type TextDisplayOptions } from './text-display';
+import { createTextDisplayTemplates, getTextDisplayTemplateKey, resetTextDisplayAtlases, textDisplayInstanceAttributeNames, type TextDisplayOptions } from './text-display';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../controls/transform/mirroring';
+import { isSceneHistoryResourceRetained } from '../controls/undo-redo/scene-history';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
 
@@ -160,28 +161,83 @@ async function addTextDisplayItems(
     selection?: LoadedSelection
 ): Promise<void> {
     const templates = await createTextDisplayTemplates(items);
-    const groups = new Map<string, OtherItem[]>();
+    const reusableByMaterial = new Map<THREE.Material, THREE.InstancedMesh>();
+    for (const child of loadedObjectGroup.children) {
+        const mesh = child as THREE.InstancedMesh;
+        if (!mesh.isInstancedMesh || !mesh.userData.textDisplayTemplateKeys || mesh.count >= getInstancedCapacity(mesh)) continue;
+        reusableByMaterial.set(mesh.material as THREE.Material, mesh);
+    }
+
+    const groups = new Map<THREE.Material, Array<{ item: OtherItem; template: THREE.InstancedMesh; key: string }>>();
+    const reusedMeshes = new Set<THREE.InstancedMesh>();
+    const usedMaterials = new Set<THREE.Material>();
     for (const item of items) {
         const key = getTextDisplayTemplateKey(item);
-        const group = groups.get(key) ?? [];
-        group.push(item);
-        groups.set(key, group);
+        const template = templates.get(key)!;
+        const material = template.material as THREE.Material;
+        const mesh = reusableByMaterial.get(material);
+        if (mesh && mesh.count < getInstancedCapacity(mesh)) {
+            const instanceId = mesh.count++;
+            mesh.setMatrixAt(instanceId, new THREE.Matrix4().fromArray(item.transform).transpose());
+            for (const attributeName of textDisplayInstanceAttributeNames) {
+                const attribute = mesh.geometry.getAttribute(attributeName);
+                const source = template.geometry.getAttribute(attributeName);
+                for (let component = 0; component < attribute.itemSize; component++) {
+                    attribute.setComponent(instanceId, component, source.getComponent(0, component));
+                }
+                attribute.needsUpdate = true;
+            }
+            setInstanceSkyBrightness(mesh, instanceId, item.brightness as Brightness | undefined);
+            (mesh.userData.textDisplayTemplateKeys as Map<number, string>).set(instanceId, key);
+            registerObject(mesh, instanceId, item.uuid, item.groupId);
+            if (selection) addLoadedInstance(selection, mesh, instanceId);
+            reusedMeshes.add(mesh);
+            usedMaterials.add(material);
+            continue;
+        }
+
+        const group = groups.get(material) ?? [];
+        group.push({ item, template, key });
+        groups.set(material, group);
     }
-    for (const [templateKey, group] of groups) {
-        const template = templates.get(templateKey)!;
+    const usedGeometries = new Set<THREE.BufferGeometry>();
+    for (const [material, group] of groups) {
+        usedMaterials.add(material);
+        const sourceGeometry = group[0].template.geometry;
         for (let start = 0; start < group.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
             const chunk = group.slice(start, start + MAX_INSTANCES_PER_INSTANCED_MESH);
-            const geometry = start === 0 ? template.geometry : template.geometry.clone();
-            setEntityStateAttributes(geometry, chunk.length);
-            const textMesh = new THREE.InstancedMesh(geometry, template.material, chunk.length);
-            textMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(chunk.length, 16);
+            const capacity = getAppendableInstanceCapacity(chunk.length);
+            const geometry = start === 0 ? sourceGeometry : sourceGeometry.clone();
+            usedGeometries.add(geometry);
+            for (const attributeName of textDisplayInstanceAttributeNames) {
+                const source = chunk[0].template.geometry.getAttribute(attributeName);
+                const values = new Float32Array(capacity * source.itemSize);
+                chunk.forEach(({ template }, instanceId) => {
+                    const attribute = template.geometry.getAttribute(attributeName);
+                    for (let component = 0; component < attribute.itemSize; component++) {
+                        values[instanceId * attribute.itemSize + component] = attribute.getComponent(0, component);
+                    }
+                });
+                geometry.setAttribute(attributeName, new THREE.InstancedBufferAttribute(values, source.itemSize));
+            }
+            geometry.boundingBox = chunk.reduce(
+                (bounds, { template }) => bounds.union(template.geometry.boundingBox!),
+                new THREE.Box3()
+            );
+            geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
+            setEntityStateAttributes(geometry, capacity);
+            const textMesh = new THREE.InstancedMesh(geometry, material, capacity);
+            textMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(capacity, 16);
+            textMesh.count = chunk.length;
             textMesh.userData.displayType = 'text_display';
+            textMesh.userData.textDisplayTemplateKeys = new Map<number, string>();
             textMesh.frustumCulled = false;
             textMesh.renderOrder = 1;
             textMesh.layers.enable(2);
-            chunk.forEach((item, instanceId) => {
+            chunk.forEach(({ item, key }, instanceId) => {
                 textMesh.setMatrixAt(instanceId, new THREE.Matrix4().fromArray(item.transform).transpose());
                 setInstanceSkyBrightness(textMesh, instanceId, item.brightness as Brightness | undefined);
+                textMesh.userData.textDisplayTemplateKeys.set(instanceId, key);
                 registerObject(textMesh, instanceId, item.uuid, item.groupId);
                 if (selection) addLoadedInstance(selection, textMesh, instanceId);
             });
@@ -190,6 +246,19 @@ async function addTextDisplayItems(
             textMesh.computeBoundingSphere();
             loadedObjectGroup.add(textMesh);
         }
+    }
+    for (const mesh of reusedMeshes) {
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.computeBoundingSphere();
+    }
+    for (const template of templates.values()) {
+        if (!usedGeometries.has(template.geometry)) template.geometry.dispose();
+    }
+    for (const material of new Set(Array.from(templates.values(), template => template.material as THREE.Material))) {
+        if (usedMaterials.has(material)) continue;
+        (material as THREE.MeshBasicNodeMaterial).map?.dispose();
+        material.dispose();
     }
 }
 
@@ -1560,6 +1629,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
 
         if (!isMerge) {
             _clearSceneAndCaches();
+            resetTextDisplayAtlases();
             loadedObjectGroup.userData.blockAtlasTextures = [];
         } else {
             blockMaterialPromiseCache.clear();
@@ -2784,9 +2854,10 @@ function disposeUnusedTextDisplayResources(geometry: THREE.BufferGeometry, mater
             candidate as THREE.Material & { map?: THREE.Texture | null }
         ).map === texture);
     });
-    if (!geometryUsed) geometry.dispose();
-    if (!materialUsed) material.dispose();
-    if (texture && !textureUsed) texture.dispose();
+    if (!geometryUsed && !isSceneHistoryResourceRetained(geometry)) geometry.dispose();
+    const atlasMaterial = !!material.userData.textDisplayAtlas;
+    if (!materialUsed && !atlasMaterial && !isSceneHistoryResourceRetained(material)) material.dispose();
+    if (texture && !textureUsed && !atlasMaterial && !isSceneHistoryResourceRetained(texture)) texture.dispose();
 }
 
 export function isolateTextDisplay(objectUuid: string): void {
@@ -2799,6 +2870,16 @@ export function isolateTextDisplay(objectUuid: string): void {
     const oldInstanceId = ref.instanceId;
     const oldLastInstanceId = oldMesh.count - 1;
     const geometry = oldMesh.geometry.clone();
+    for (const attributeName of textDisplayInstanceAttributeNames) {
+        const source = oldMesh.geometry.getAttribute(attributeName);
+        const values = new Float32Array(source.itemSize);
+        for (let component = 0; component < source.itemSize; component++) {
+            values[component] = source.getComponent(oldInstanceId, component);
+        }
+        geometry.setAttribute(attributeName, new THREE.InstancedBufferAttribute(values, source.itemSize));
+    }
+    geometry.boundingBox = Overlay.getInstanceLocalBox(oldMesh, oldInstanceId)?.clone() ?? geometry.boundingBox;
+    if (geometry.boundingBox) geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
     setEntityStateAttributes(geometry, 1, [oldMesh.geometry.getAttribute(entityVisibleAttributeName)?.getX(oldInstanceId) ?? 1]);
     const mesh = new THREE.InstancedMesh(geometry, oldMesh.material, 1);
     mesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(1, 16);
@@ -2815,7 +2896,7 @@ export function isolateTextDisplay(objectUuid: string): void {
     const brightness = (userData.objectBrightness as Map<string, Brightness> | undefined)?.get(objectUuid);
     setInstanceSkyBrightness(mesh, 0, brightness);
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
+    for (const key of ['customPivots', 'localMatrices', 'displayTypes', 'textDisplayTemplateKeys'] as const) {
         const values = oldMesh.userData[key] as Map<number, unknown> | undefined;
         const value = values?.get(oldInstanceId);
         if (value !== undefined) mesh.userData[key] = new Map([[0, value]]);
@@ -2862,7 +2943,7 @@ export function isolateTextDisplay(objectUuid: string): void {
             }
             instanced.needsUpdate = true;
         }
-        for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
+        for (const key of ['customPivots', 'localMatrices', 'displayTypes', 'textDisplayTemplateKeys'] as const) {
             const values = oldMesh.userData[key] as Map<number, unknown> | undefined;
             values?.delete(oldInstanceId);
             if (values?.has(oldLastInstanceId)) values.set(oldInstanceId, values.get(oldLastInstanceId));
@@ -2870,7 +2951,7 @@ export function isolateTextDisplay(objectUuid: string): void {
         }
         GroupUtils.updateGroupReferenceForMovedInstance(loadedObjectGroup, oldMesh, oldLastInstanceId, oldInstanceId);
     } else {
-        for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
+        for (const key of ['customPivots', 'localMatrices', 'displayTypes', 'textDisplayTemplateKeys'] as const) {
             (oldMesh.userData[key] as Map<number, unknown> | undefined)?.delete(oldInstanceId);
         }
     }
@@ -2893,21 +2974,57 @@ export function isolateTextDisplay(objectUuid: string): void {
 }
 
 export async function updateTextDisplay(objectUuid: string, name: string, options: TextDisplayOptions): Promise<void> {
-    isolateTextDisplay(objectUuid);
     const userData = loadedObjectGroup.userData;
-    const ref = (userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const refs = userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
+    let ref = refs?.get(objectUuid);
     if (!ref || Overlay.getDisplayType(ref.mesh, ref.instanceId) !== 'text_display') {
         throw new Error('변경할 텍스트 디스플레이를 찾을 수 없습니다.');
     }
 
-    const replacement = await createTextDisplayMesh({ name, options });
+    const templateKey = getTextDisplayTemplateKey({ name, options });
+    const replacement = (await createTextDisplayTemplates([{ name, options, atlasKey: objectUuid }])).get(templateKey)!;
+    const replacementMaterial = replacement.material as THREE.MeshBasicNodeMaterial;
+    if (ref.mesh.material === replacementMaterial) {
+        for (const attributeName of textDisplayInstanceAttributeNames) {
+            const target = ref.mesh.geometry.getAttribute(attributeName);
+            const source = replacement.geometry.getAttribute(attributeName);
+            for (let component = 0; component < target.itemSize; component++) {
+                target.setComponent(ref.instanceId, component, source.getComponent(0, component));
+            }
+            target.needsUpdate = true;
+        }
+        ref.mesh.geometry.boundingBox?.union(replacement.geometry.boundingBox!);
+        if (ref.mesh.geometry.boundingBox) ref.mesh.geometry.boundingSphere = ref.mesh.geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
+        ref.mesh.computeBoundingSphere();
+        replacement.geometry.dispose();
+        (userData.objectNames as Map<string, string>).set(objectUuid, name);
+        const optionMap = (userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)
+            ?? (userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>());
+        optionMap.set(objectUuid, { ...options });
+        const templateKeys = (ref.mesh.userData.textDisplayTemplateKeys as Map<number, string> | undefined)
+            ?? (ref.mesh.userData.textDisplayTemplateKeys = new Map<number, string>());
+        templateKeys.set(ref.instanceId, templateKey);
+        Overlay.updateSelectionOverlayObject(ref.mesh, ref.instanceId);
+        return;
+    }
+
+    isolateTextDisplay(objectUuid);
+    ref = refs?.get(objectUuid);
+    if (!ref) throw new Error('변경할 텍스트 디스플레이를 찾을 수 없습니다.');
     const oldGeometry = ref.mesh.geometry;
     const oldMaterial = ref.mesh.material as THREE.Material;
     const oldBounds = oldGeometry.boundingBox?.clone();
-    const replacementMaterial = replacement.material as THREE.MeshBasicNodeMaterial;
     const currentMaterial = oldMaterial as THREE.MeshBasicNodeMaterial;
     const boundsUnchanged = !!oldBounds?.equals(replacement.geometry.boundingBox!);
-    if (boundsUnchanged && ref.mesh.userData.textDisplayMaterialOwned && currentMaterial.map && replacementMaterial.map) {
+    if (
+        boundsUnchanged
+        && ref.mesh.userData.textDisplayMaterialOwned
+        && !replacementMaterial.userData.textDisplayAtlas
+        && currentMaterial.map
+        && replacementMaterial.map
+        && currentMaterial.map.image.width === replacementMaterial.map.image.width
+        && currentMaterial.map.image.height === replacementMaterial.map.image.height
+    ) {
         const pipelineChanged = currentMaterial.depthWrite !== replacementMaterial.depthWrite
             || currentMaterial.alphaTest !== replacementMaterial.alphaTest;
         currentMaterial.map.image = replacementMaterial.map.image;
@@ -2934,15 +3051,18 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
         );
         ref.mesh.geometry = replacement.geometry;
         ref.mesh.material = replacementMaterial;
-        ref.mesh.userData.textDisplayMaterialOwned = true;
+        ref.mesh.userData.textDisplayMaterialOwned = !replacementMaterial.userData.textDisplayAtlas;
         ref.mesh.computeBoundingBox();
         ref.mesh.computeBoundingSphere();
+        // ponytail: retained resources live with history; add command cleanup hooks if history GPU memory becomes measurable.
         disposeUnusedTextDisplayResources(oldGeometry, oldMaterial);
     }
     (userData.objectNames as Map<string, string>).set(objectUuid, name);
     const optionMap = (userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)
         ?? (userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>());
     optionMap.set(objectUuid, { ...options });
+    (ref.mesh.userData.textDisplayTemplateKeys as Map<number, string> | undefined)
+        ?.set(ref.instanceId, templateKey);
     Overlay.updateSelectionOverlayObject(ref.mesh, ref.instanceId);
 }
 

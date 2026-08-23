@@ -48,14 +48,19 @@ export function setEntityStateAttributes(geometry: BufferGeometry, count: number
 const tintNodeCache = new Map<number, ReturnType<typeof vec3>>();
 const shadingEnabled = uniform(1.0);
 const dragDeltaMatrixNode = uniform(dragDeltaMatrix).setGroup(renderGroup);
-const draggedPosition = modelWorldMatrixInverse
-  .mul(dragDeltaMatrixNode)
-  .mul(modelWorldMatrix)
-  .mul(vec4(positionLocal, 1.0)).xyz;
-export const dragPreviewPositionNode = mix(positionLocal, draggedPosition, attribute(dragSelectedAttributeName, 'float'));
-export const entityVisiblePositionNode = dragPreviewPositionNode.add(
+export const dragPreviewPosition = (basePosition = positionLocal) => mix(
+  basePosition,
+  modelWorldMatrixInverse
+    .mul(dragDeltaMatrixNode)
+    .mul(modelWorldMatrix)
+    .mul(vec4(basePosition, 1.0)).xyz,
+  attribute(dragSelectedAttributeName, 'float')
+);
+export const entityVisiblePosition = (basePosition = positionLocal) => dragPreviewPosition(basePosition).add(
   float(1).sub(attribute(entityVisibleAttributeName, 'float')).mul(1e10)
 );
+export const dragPreviewPositionNode = dragPreviewPosition();
+export const entityVisiblePositionNode = entityVisiblePosition();
 
 const srgbToLinear = (c: number): number => {
   const x = Math.min(1, Math.max(0, c));

@@ -30,6 +30,10 @@ declare interface MinecraftSkinResult {
 declare interface IpcApi {
   getAssetContent(path: string): Promise<AssetContentResult>;
   saveIconAtlas(name: 'block-atlas.png' | 'item-atlas.png', data: Uint8Array): Promise<{ success: boolean; error?: string }>;
+  hasSpriteAtlas(name: string): Promise<{ success: boolean; exists: boolean; error?: string }>;
+  saveSpriteAtlas(name: string, data: Uint8Array, manifest: unknown): Promise<{ success: boolean; error?: string }>;
+  listSpriteAtlases(): Promise<{ success: boolean; atlases: string[]; error?: string }>;
+  listAssetFiles(path: string): Promise<{ success: boolean; files: string[]; error?: string }>;
   getHardcodedContent(path: string): Promise<HardcodedContentResult>;
   getLoadingIcon?: () => Promise<LoadingIconResult>;
   getPdeMemoryUsage(): Promise<number>;

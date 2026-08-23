@@ -301,7 +301,7 @@
   margin-top: 0.5em;
 }
 
-.settings-row select,
+.settings-select select,
 .settings-row input[type='number'],
 .settings-row > input[type='text'] {
   min-width: 0;
@@ -317,6 +317,7 @@
 
 .settings-select {
   position: relative;
+  min-width: 0;
 }
 
 .settings-select select {
@@ -514,4 +515,40 @@
   height: auto;
   cursor: pointer;
   image-rendering: pixelated;
+}
+
+.sprite-atlas-search-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.block-item-search-window .sprite-atlas-search-grid button {
+  display: grid;
+  grid-template-rows: minmax(90px, 1fr) auto;
+  width: 100%;
+  height: 140px;
+  padding: 6px;
+  border: 1px solid #45454a;
+  background: #252528;
+  color: #f0f0f0;
+  font-size: 12px;
+}
+
+.block-item-search-window .sprite-atlas-search-grid button[aria-pressed="true"] {
+  border-color: #ef3751;
+}
+
+.sprite-atlas-search-grid img {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.sprite-atlas-search-grid span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

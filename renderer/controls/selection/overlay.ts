@@ -299,7 +299,12 @@ export function getInstanceLocalBox(mesh: PdeMesh, instanceId: number): Box3 | n
     if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
     if (!mesh.geometry.boundingBox) return null;
 
+    const textLayout = mesh.geometry.getAttribute('textDisplayLayout');
     let box = mesh.geometry.boundingBox.clone();
+    if (textLayout && instanceId < textLayout.count) {
+        box.min.set(textLayout.getX(instanceId), 0, mesh.geometry.boundingBox.min.z);
+        box.max.set(textLayout.getY(instanceId), textLayout.getZ(instanceId), mesh.geometry.boundingBox.max.z);
+    }
 
     if (getDisplayType(mesh, instanceId) === 'item_display' && mesh.userData?.hasHat && !mesh.userData.hasHat[instanceId]) {
         const center = new Vector3();

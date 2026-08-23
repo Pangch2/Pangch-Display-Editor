@@ -580,8 +580,13 @@
 
 .text-display-pages {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: minmax(64px, 1.5fr) repeat(4, 1fr);
   gap: 4px;
+}
+
+.object-metadata-row.text-display-sprite-value > label {
+  align-self: end;
+  margin-bottom: 4px;
 }
 
 .text-display-text {
@@ -604,6 +609,23 @@
   background: #18181a;
   color: #5f5f66;
   cursor: not-allowed;
+}
+
+.object-property .text-display-value,
+.object-property .text-display-atlas {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 4px;
+}
+
+.object-property .text-display-value button,
+.object-property .text-display-atlas button {
+  padding: 0;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  background: #1e1e21;
+  color: #f0f0f0;
+  cursor: pointer;
 }
 
 .object-property input[type="checkbox"] {

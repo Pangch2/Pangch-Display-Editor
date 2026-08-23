@@ -367,6 +367,12 @@ function copyUserDataForInstance(sourceMesh: InstancedMesh, sourceId: number, ta
         if (!targetMesh.userData.localMatrices) targetMesh.userData.localMatrices = new Map();
         targetMesh.userData.localMatrices.set(targetId, localMatrix.clone());
     }
+
+    const textDisplayTemplateKey = sourceMesh.userData?.textDisplayTemplateKeys?.get(sourceId);
+    if (textDisplayTemplateKey) {
+        targetMesh.userData.textDisplayTemplateKeys ??= new Map<number, string>();
+        targetMesh.userData.textDisplayTemplateKeys.set(targetId, textDisplayTemplateKey);
+    }
 }
 
 function clonePlainMesh(

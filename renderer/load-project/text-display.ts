@@ -1,7 +1,8 @@
 import * as THREE from 'three/webgpu';
+import { attribute, mix, positionGeometry, positionLocal, texture, uv, vec2, vec3 } from 'three/tsl';
 import { strFromU8 } from 'fflate';
 import { getAssetBytes } from '../asset-manager';
-import { entityVisiblePositionNode, setEntityStateAttributes } from '../entity-material';
+import { entityVisiblePosition, setEntityStateAttributes } from '../entity-material';
 
 export type TextDisplayOptions = {
     color?: string;
@@ -9,6 +10,8 @@ export type TextDisplayOptions = {
     pageAlphas?: number[];
     pageEffects?: TextDisplayEffects[];
     pageAligns?: Array<'left' | 'center' | 'right'>;
+    pageTypes?: TextDisplayContentType[];
+    pageAtlases?: string[];
     pages?: string[];
     pageIndex?: number;
     alpha?: number;
@@ -24,11 +27,13 @@ export type TextDisplayOptions = {
     font?: string;
 };
 
+export type TextDisplayContentType = 'text' | 'sprite' | 'player' | 'translate' | 'keybind' | 'score' | 'selector' | 'nbt';
 export type TextDisplayEffects = Pick<TextDisplayOptions, 'bold' | 'italic' | 'underline' | 'strikeThrough' | 'obfuscated'>;
 
 export type TextDisplayItem = {
     name?: string;
     options?: TextDisplayOptions;
+    atlasKey?: string;
 };
 
 export function getTextDisplayTemplateKey(item: TextDisplayItem): string {
@@ -54,6 +59,10 @@ type BitmapProvider = {
     chars: string[];
 };
 
+type AtlasSprite = { image: ImageBitmap; x: number; y: number; width: number; height: number };
+type AtlasSpriteSource = { image: ImageBitmap; sprites: Map<string, Omit<AtlasSprite, 'image'>> };
+type AtlasSpriteReference = { characterIndex: number; atlas: string; sprite: string };
+type SpriteColorSegment = { x: number; y: number; color: string; alpha: number };
 type UnihexFontSource = Map<number, string>;
 type UnihexSizeOverride = [from: number, to: number, left: number, right: number];
 
@@ -64,9 +73,22 @@ const textureScale = 2;
 const fontSize = 8;
 const horizontalGlyphOverflow = 1;
 const topGlyphOverflow = 2;
-const maxTextAtlasSize = 4096;
+const textDisplayAtlasSize = 2048;
+const maxTextCharacters = 16384;
+const objectReplacementCharacter = '\ufffc';
+export const textDisplayLayoutAttributeName = 'textDisplayLayout';
+export const textDisplayUvBoundsAttributeName = 'textDisplayUvBounds';
+export const textDisplayBackgroundUvAttributeName = 'textDisplayBackgroundUv';
+const textDisplayBackgroundAttributeName = 'textDisplayBackground';
+export const textDisplayInstanceAttributeNames = [
+    textDisplayLayoutAttributeName,
+    textDisplayUvBoundsAttributeName,
+    textDisplayBackgroundUvAttributeName
+] as const;
 let bitmapFontPromise: Promise<Map<string, BitmapGlyph>> | undefined;
 let unihexFontPromise: Promise<UnihexFontSource> | undefined;
+const atlasSpriteSources = new Map<string, Promise<AtlasSpriteSource | null>>();
+const cssColorChannels = new Map<string, Uint8ClampedArray>();
 const minecraftItalicOffset = (canvasY: number): number => 1.25 - canvasY * 0.25;
 const unihexSizeOverrides: UnihexSizeOverride[] = [
     [0x3001, 0x30ff, 0, 15],
@@ -80,9 +102,72 @@ const unihexSizeOverrides: UnihexSizeOverride[] = [
     [0xff01, 0xff5e, 0, 15]
 ];
 
-async function loadImage(assetPath: string): Promise<ImageBitmap> {
-    const bytes = await getAssetBytes(assetPath);
+async function loadImage(assetPath: string, reportError = true): Promise<ImageBitmap> {
+    const bytes = await getAssetBytes(assetPath, reportError);
     return createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
+}
+
+function loadAtlasSpriteSource(atlas: string): Promise<AtlasSpriteSource | null> {
+    const name = /^(?:minecraft:)?([a-z0-9_]+)$/u.exec(atlas)?.[1];
+    if (!name) return Promise.resolve(null);
+    const cached = atlasSpriteSources.get(name);
+    if (cached) return cached;
+    const promise = (async () => {
+        const [image, bytes] = await Promise.all([
+            loadImage(`sprite-atlases/${name}.png`, false),
+            getAssetBytes(`sprite-atlases/${name}.json`, false)
+        ]);
+        const manifest = JSON.parse(new TextDecoder().decode(bytes)) as {
+            sprites?: Array<{ id?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown }>;
+        };
+        if (!Array.isArray(manifest.sprites)) {
+            image.close();
+            return null;
+        }
+        const sprites = new Map<string, Omit<AtlasSprite, 'image'>>();
+        for (const sprite of manifest.sprites) {
+            if (typeof sprite.id !== 'string' || ![sprite.x, sprite.y, sprite.width, sprite.height].every(Number.isFinite)) continue;
+            const { x, y, width, height } = sprite as { x: number; y: number; width: number; height: number };
+            if (width > 0 && height > 0) sprites.set(sprite.id, { x, y, width, height });
+        }
+        return { image, sprites };
+    })().catch(error => {
+        console.warn(`Failed to load sprite atlas: ${atlas}`, error);
+        return null;
+    });
+    atlasSpriteSources.set(name, promise);
+    return promise;
+}
+
+function prepareTextContent(sourceText: string, options: TextDisplayOptions): {
+    text: string;
+    pageEnds: number[];
+    spriteReferences: AtlasSpriteReference[];
+} {
+    const pages = options.pages?.length ? options.pages : [sourceText];
+    const characters: string[] = [];
+    const pageEnds: number[] = [];
+    const spriteReferences: AtlasSpriteReference[] = [];
+    pages.forEach((page, pageIndex) => {
+        if (characters.length < maxTextCharacters && options.pageTypes?.[pageIndex] === 'sprite') {
+            spriteReferences.push({
+                characterIndex: characters.length,
+                atlas: options.pageAtlases?.[pageIndex] ?? 'minecraft:blocks',
+                sprite: page.includes(':') ? page : `minecraft:${page}`
+            });
+            characters.push(objectReplacementCharacter);
+        } else {
+            characters.push(...Array.from(page).slice(0, maxTextCharacters - characters.length));
+        }
+        pageEnds.push(characters.length);
+    });
+    return { text: characters.join(''), pageEnds, spriteReferences };
+}
+
+function spriteTextureScale(sprites: Iterable<Pick<AtlasSprite, 'width' | 'height'>>): number {
+    let scale = textureScale;
+    for (const sprite of sprites) scale = Math.max(scale, Math.ceil(Math.max(sprite.width, sprite.height) / fontSize));
+    return scale;
 }
 
 function loadBitmapFont(): Promise<Map<string, BitmapGlyph>> {
@@ -248,12 +333,42 @@ function validColor(value: unknown, fallback: string): string {
     return typeof value === 'string' && CSS.supports('color', value) ? value : fallback;
 }
 
+function colorChannels(color: string): Uint8ClampedArray {
+    const cached = cssColorChannels.get(color);
+    if (cached) return cached;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = color;
+    context.fillRect(0, 0, 1, 1);
+    const channels = context.getImageData(0, 0, 1, 1).data;
+    cssColorChannels.set(color, channels);
+    return channels;
+}
+
+function tintSpriteSegments(data: Uint8ClampedArray, canvasWidth: number, scale: number, segments: SpriteColorSegment[]): void {
+    for (const segment of segments) {
+        const color = colorChannels(segment.color);
+        const left = Math.round(segment.x * scale);
+        const top = Math.round(segment.y * scale);
+        for (let y = top; y < top + fontSize * scale; y++) for (let x = left; x < left + fontSize * scale; x++) {
+            const offset = (y * canvasWidth + x) * 4;
+            data[offset] = Math.round(data[offset] * color[0] / 255);
+            data[offset + 1] = Math.round(data[offset + 1] * color[1] / 255);
+            data[offset + 2] = Math.round(data[offset + 2] * color[2] / 255);
+            data[offset + 3] = Math.round(data[offset + 3] * segment.alpha);
+        }
+    }
+}
+
 function glyphAdvance(
     character: string,
     _context: CanvasRenderingContext2D,
     bitmapFont: Map<string, BitmapGlyph>,
-    bold: boolean
+    bold: boolean,
+    atlasSprite = false
 ): number {
+    if (atlasSprite) return fontSize + (bold ? 1 : 0);
     if (character === '\u200c') return 0;
     if (character === ' ') return 4;
     const bitmapGlyph = bitmapFont.get(character);
@@ -286,12 +401,18 @@ function drawText(
     bitmapFont: Map<string, BitmapGlyph>,
     start: number,
     effect: (index: number, key: keyof TextDisplayEffects) => boolean,
+    spriteCharacterIndices: Set<number>,
     obfuscatedGlyphs?: Map<number, string[]>
 ): void {
     Array.from(text).forEach((sourceCharacter, offset) => {
-        const bold = effect(start + offset, 'bold');
-        const italic = effect(start + offset, 'italic');
-        const glyphs = effect(start + offset, 'obfuscated') && sourceCharacter !== ' '
+        const characterIndex = start + offset;
+        const bold = effect(characterIndex, 'bold');
+        if (spriteCharacterIndices.has(characterIndex)) {
+            x += glyphAdvance(sourceCharacter, context, bitmapFont, bold, true);
+            return;
+        }
+        const italic = effect(characterIndex, 'italic');
+        const glyphs = effect(characterIndex, 'obfuscated') && sourceCharacter !== ' '
             ? obfuscatedGlyphs?.get(glyphAdvance(sourceCharacter, context, bitmapFont, false))
             : undefined;
         const character = glyphs?.[Math.floor(Math.random() * glyphs.length)] ?? sourceCharacter;
@@ -356,30 +477,70 @@ if (import.meta.env.DEV) {
     console.assert(alphaCheck[3] === 128 && alphaCheck[7] === 255, 'Page alpha must not erase adjacent text.');
 }
 
-function createTextDisplayMaterial(texture: THREE.Texture, opaqueBackground: boolean): THREE.MeshBasicNodeMaterial {
-    const material = new THREE.MeshBasicNodeMaterial({
-        map: texture,
+class TextDisplayMaterial extends THREE.MeshBasicNodeMaterial {
+    declare positionNode: ReturnType<typeof entityVisiblePosition>;
+    declare colorNode: ReturnType<typeof texture>;
+
+    constructor(parameters: Record<string, unknown>) {
+        super(parameters);
+    }
+
+    setupPosition(builder: unknown) {
+        const layout = attribute(textDisplayLayoutAttributeName, 'vec4');
+        const background = attribute(textDisplayBackgroundAttributeName, 'float');
+        const centerX = layout.x.add(layout.y).mul(0.5);
+        const backgroundHalfWidth = layout.w.mul(0.5);
+        const textX = mix(layout.x, layout.y, positionGeometry.x);
+        const backgroundX = mix(centerX.sub(backgroundHalfWidth), centerX.add(backgroundHalfWidth), positionGeometry.x);
+        positionLocal.assign(vec3(
+            mix(textX, backgroundX, background),
+            positionGeometry.y.mul(layout.z),
+            background.mul(textBackgroundOffset)
+        ));
+        return super.setupPosition(builder);
+    }
+}
+
+function createTextDisplayMaterial(textTexture: THREE.Texture, opaqueBackground: boolean): THREE.MeshBasicNodeMaterial {
+    const material = new TextDisplayMaterial({
+        map: textTexture,
         transparent: true,
         depthWrite: opaqueBackground,
-        alphaTest: opaqueBackground ? 0.001 : 0,
+        alphaTest: 0.1,
         side: THREE.DoubleSide,
         toneMapped: false,
         fog: false
     });
-    material.positionNode = entityVisiblePositionNode;
+    const background = attribute(textDisplayBackgroundAttributeName, 'float');
+    material.positionNode = entityVisiblePosition();
+    const uvBounds = attribute(textDisplayUvBoundsAttributeName, 'vec4');
+    const textUv = vec2(
+        mix(uvBounds.x, uvBounds.y, uv().x),
+        mix(uvBounds.z, uvBounds.w, uv().y)
+    );
+    material.colorNode = texture(
+        textTexture,
+        mix(textUv, attribute(textDisplayBackgroundUvAttributeName, 'vec2'), background)
+    );
     return material;
 }
 
 export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THREE.InstancedMesh> {
     const options = item.options ?? {};
-    const text = (item.name ?? '').slice(0, 16384);
-    const pageEnds = (options.pages?.length ? options.pages : [text]).reduce<number[]>((ends, page) => {
-        ends.push((ends[ends.length - 1] ?? 0) + Array.from(page).length);
-        return ends;
-    }, []);
+    const { text, pageEnds, spriteReferences } = prepareTextContent(item.name ?? '', options);
+    const spriteCharacterIndices = new Set(spriteReferences.map(sprite => sprite.characterIndex));
     const pageIndexForCharacter = (characterIndex: number) => Math.max(0, pageEnds.findIndex(end => characterIndex < end));
     const pageEffect = (characterIndex: number, key: keyof TextDisplayEffects) => options.pageEffects?.[pageIndexForCharacter(characterIndex)]?.[key] ?? options[key] ?? false;
-    const [bitmapFont, unihexSource] = await Promise.all([loadBitmapFont(), loadUnihexFont()]);
+    const [bitmapFont, unihexSource, loadedSprites] = await Promise.all([
+        loadBitmapFont(),
+        loadUnihexFont(),
+        Promise.all(spriteReferences.map(async reference => {
+            const source = await loadAtlasSpriteSource(reference.atlas);
+            const sprite = source?.sprites.get(reference.sprite);
+            return sprite && source ? [reference.characterIndex, { image: source.image, ...sprite }] as const : null;
+        }))
+    ]);
+    const atlasSprites = new Map(loadedSprites.filter(sprite => sprite !== null));
     const unihexFont = createUnihexFont(text, unihexSource);
     const activeBitmapFont = !options.font || options.font === 'minecraft:default'
         ? new Map<string, BitmapGlyph>([...unihexFont, ...bitmapFont])
@@ -390,7 +551,13 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     measureContext.font = fontStyle;
     const obfuscatedGlyphs = options.obfuscated || options.pageEffects?.some(effect => effect.obfuscated) ? obfuscationGlyphs(measureContext, activeBitmapFont) : undefined;
     const measureRange = (value: string, start: number) => Array.from(value).reduce((width, character, offset) =>
-        width + glyphAdvance(character, measureContext, activeBitmapFont, pageEffect(start + offset, 'bold')), 0);
+        width + glyphAdvance(
+            character,
+            measureContext,
+            activeBitmapFont,
+            pageEffect(start + offset, 'bold'),
+            spriteCharacterIndices.has(start + offset)
+        ), 0);
 
     const maxWidth = Math.max(Math.trunc(Number(options.lineLength) || 50), 1) * 4;
     const lines = wrapText(
@@ -404,7 +571,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     const logicalHeight = lines.length * lineHeight;
     const renderWidth = logicalWidth + horizontalGlyphOverflow * 2;
     const renderHeight = logicalHeight + topGlyphOverflow;
-    const renderScale = textureScale;
+    const renderScale = spriteTextureScale(atlasSprites.values());
     const canvas = document.createElement('canvas');
     canvas.width = renderWidth * renderScale;
     canvas.height = renderHeight * renderScale;
@@ -417,22 +584,41 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     context.fillStyle = '#ffffff';
     const textAlpha = Math.round(clampAlpha(options.alpha, 1) * 255);
     context.globalAlpha = 1;
+    const spriteCanvas = document.createElement('canvas');
+    spriteCanvas.width = canvas.width;
+    spriteCanvas.height = canvas.height;
+    const spriteContext = spriteCanvas.getContext('2d')!;
+    spriteContext.imageSmoothingEnabled = false;
+    spriteContext.scale(renderScale, renderScale);
+    const spriteColorSegments: SpriteColorSegment[] = [];
+    const pageColor = (characterIndex: number) => validColor(options.pageColors?.[pageIndexForCharacter(characterIndex)] ?? options.color, '#ffffff');
+    const pageAlpha = (characterIndex: number) => clampAlpha(options.pageAlphas?.[pageIndexForCharacter(characterIndex)] ?? options.alpha, 1);
 
     lines.forEach((line, index) => {
         const align = options.pageAligns?.[pageIndexForCharacter(line.start)] ?? options.align ?? 'center';
         const width = widths[index];
         const x = Math.round((horizontalGlyphOverflow + 1 + (align === 'left' ? 0 : align === 'right' ? contentWidth - width : (contentWidth - width) / 2)) * renderScale) / renderScale;
         const baseline = topGlyphOverflow + index * lineHeight + 8;
-        drawText(context, line.text, x, baseline, activeBitmapFont, line.start, pageEffect, obfuscatedGlyphs);
+        drawText(context, line.text, x, baseline, activeBitmapFont, line.start, pageEffect, spriteCharacterIndices, obfuscatedGlyphs);
         Array.from(line.text).forEach((character, offset) => {
+            const characterIndex = line.start + offset;
             const characterX = x + measureRange(Array.from(line.text).slice(0, offset).join(''), line.start);
-            const characterWidth = glyphAdvance(character, measureContext, activeBitmapFont, pageEffect(line.start + offset, 'bold'));
-            if (pageEffect(line.start + offset, 'underline')) context.fillRect(characterX, baseline + 1, characterWidth, 1);
-            if (pageEffect(line.start + offset, 'strikeThrough')) context.fillRect(characterX, baseline - 3.5, characterWidth, 1);
+            const isSprite = spriteCharacterIndices.has(characterIndex);
+            const characterWidth = glyphAdvance(character, measureContext, activeBitmapFont, pageEffect(characterIndex, 'bold'), isSprite);
+            const sprite = atlasSprites.get(characterIndex);
+            if (sprite) {
+                spriteContext.drawImage(sprite.image, sprite.x, sprite.y, sprite.width, sprite.height, characterX, baseline - fontSize, fontSize, fontSize);
+                spriteColorSegments.push({ x: characterX, y: baseline - fontSize, color: pageColor(characterIndex), alpha: pageAlpha(characterIndex) });
+            }
+            if (pageEffect(characterIndex, 'underline')) context.fillRect(characterX, baseline + 1, characterWidth, 1);
+            if (pageEffect(characterIndex, 'strikeThrough')) context.fillRect(characterX, baseline - 3.5, characterWidth, 1);
         });
     });
-    const pageColor = (characterIndex: number) => validColor(options.pageColors?.[pageIndexForCharacter(characterIndex)] ?? options.color, '#ffffff');
-    const pageAlpha = (characterIndex: number) => clampAlpha(options.pageAlphas?.[pageIndexForCharacter(characterIndex)] ?? options.alpha, 1);
+    if (spriteColorSegments.length) {
+        const spriteImageData = spriteContext.getImageData(0, 0, spriteCanvas.width, spriteCanvas.height);
+        tintSpriteSegments(spriteImageData.data, spriteCanvas.width, renderScale, spriteColorSegments);
+        spriteContext.putImageData(spriteImageData, 0, 0);
+    }
     const samePageStyle = (left: number, right: number) => pageColor(left) === pageColor(right) && pageAlpha(left) === pageAlpha(right);
     if (import.meta.env.DEV && pageEnds.length > 1) {
         console.assert(pageColor(pageEnds[0]) === validColor(options.pageColors?.[1] ?? options.color, '#ffffff'), 'Text page colors must remain independent.');
@@ -464,6 +650,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     snapTextAlpha(imageData.data, 255);
     applyTextAlphaSegments(imageData.data, canvas.width, renderScale, pageSegments);
     context.putImageData(imageData, 0, 0);
+    if (spriteColorSegments.length) context.drawImage(spriteCanvas, 0, 0, renderWidth, renderHeight);
     const backgroundAlpha = clampAlpha(options.backgroundAlpha, 0.25);
     context.globalAlpha = textAlpha / 255;
     context.fillStyle = validColor(options.color, '#ffffff');
@@ -482,14 +669,10 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     const positions: number[] = [];
     const uvs: number[] = [];
     const indices: number[] = [];
-    const addQuad = (
-        leftTop: number, rightTop: number, leftBottom: number, rightBottom: number,
-        top: number, bottom: number, u0: number, u1: number, vTop: number, vBottom: number,
-        z = 0
-    ): void => {
+    const addQuad = (): void => {
         const offset = positions.length / 3;
-        positions.push(leftTop, top, z, leftBottom, bottom, z, rightTop, top, z, rightBottom, bottom, z);
-        uvs.push(u0, vTop, u0, vBottom, u1, vTop, u1, vBottom);
+        positions.push(0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0);
+        uvs.push(0, 1, 0, 0, 1, 1, 1, 0);
         indices.push(offset, offset + 1, offset + 2, offset + 1, offset + 3, offset + 2);
     };
     const left = (0.5 - renderWidth / 2) * textPixelSize;
@@ -497,26 +680,40 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     const swatchV = 1 - 0.5 / canvas.height;
     const backgroundSwatchU = 1.5 / canvas.width;
 
-    addQuad(
-        (0.5 - logicalWidth / 2) * textPixelSize, (0.5 + logicalWidth / 2) * textPixelSize,
-        (0.5 - logicalWidth / 2) * textPixelSize, (0.5 + logicalWidth / 2) * textPixelSize,
-        logicalHeight * textPixelSize, 0,
-        backgroundSwatchU, backgroundSwatchU, swatchV, swatchV,
-        textBackgroundOffset
-    );
-
-    addQuad(left, right, left, right, logicalHeight * textPixelSize, 0, 0, 1, 1 - topGlyphOverflow / renderHeight, 0);
+    addQuad();
+    addQuad();
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setAttribute(textDisplayBackgroundAttributeName, new THREE.Float32BufferAttribute([
+        1, 1, 1, 1,
+        0, 0, 0, 0
+    ], 1));
+    geometry.setAttribute(textDisplayLayoutAttributeName, new THREE.InstancedBufferAttribute(new Float32Array([
+        left,
+        right,
+        logicalHeight * textPixelSize,
+        logicalWidth * textPixelSize
+    ]), 4));
+    geometry.setAttribute(textDisplayUvBoundsAttributeName, new THREE.InstancedBufferAttribute(new Float32Array([
+        0,
+        1,
+        0,
+        1 - topGlyphOverflow / renderHeight
+    ]), 4));
+    geometry.setAttribute(textDisplayBackgroundUvAttributeName, new THREE.InstancedBufferAttribute(new Float32Array([
+        backgroundSwatchU,
+        swatchV
+    ]), 2));
     geometry.setIndex(indices);
     geometry.boundingBox = new THREE.Box3(
         new THREE.Vector3((0.5 - logicalWidth / 2) * textPixelSize, 0, textBackgroundOffset),
         new THREE.Vector3((0.5 + logicalWidth / 2) * textPixelSize, logicalHeight * textPixelSize, 0)
     );
+    geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
     if (import.meta.env.DEV) {
-        console.assert(positions[2] === textBackgroundOffset && positions.some((_, index) => index % 3 === 2 && positions[index] === 0), 'Text display layers must stay separated.');
+        console.assert(geometry.getAttribute(textDisplayBackgroundAttributeName).getX(0) === 1 && geometry.getAttribute(textDisplayBackgroundAttributeName).getX(4) === 0, 'Text display layers must stay separated.');
     }
     setEntityStateAttributes(geometry, 1);
 
@@ -527,97 +724,156 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     return new THREE.InstancedMesh(geometry, material, 1);
 }
 
+type TextDisplayAtlasPage = {
+    canvas: HTMLCanvasElement;
+    context: CanvasRenderingContext2D;
+    texture: THREE.CanvasTexture;
+    materials: Map<string, THREE.MeshBasicNodeMaterial>;
+    nextX: number;
+    nextY: number;
+    rowHeight: number;
+};
+
+type TextDisplayAtlasRegion = {
+    page: TextDisplayAtlasPage;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+};
+
+const textDisplayAtlasPages: TextDisplayAtlasPage[] = [];
+const textDisplayAtlasRegions = new Map<string, TextDisplayAtlasRegion>();
+
+export function resetTextDisplayAtlases(): void {
+    textDisplayAtlasPages.length = 0;
+    textDisplayAtlasRegions.clear();
+}
+
+function createTextDisplayAtlasPage(): TextDisplayAtlasPage {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = textDisplayAtlasSize;
+    const context = canvas.getContext('2d')!;
+    context.imageSmoothingEnabled = false;
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+    const page = { canvas, context, texture, materials: new Map(), nextX: 0, nextY: 0, rowHeight: 0 };
+    textDisplayAtlasPages.push(page);
+    return page;
+}
+
+function placeTextDisplayAtlasRegion(key: string, source: HTMLCanvasElement, replace: boolean): TextDisplayAtlasRegion | null {
+    const cached = textDisplayAtlasRegions.get(key);
+    if (cached && source.width <= cached.width && source.height <= cached.height) {
+        if (replace) {
+            cached.page.context.clearRect(cached.x, cached.y, cached.width, cached.height);
+            cached.page.context.drawImage(source, cached.x, cached.y);
+            cached.page.texture.needsUpdate = true;
+        }
+        return cached;
+    }
+    if (source.width > textDisplayAtlasSize || source.height > textDisplayAtlasSize) return null;
+    const width = replace ? 2 ** Math.ceil(Math.log2(source.width)) : source.width;
+    const height = replace ? 2 ** Math.ceil(Math.log2(source.height)) : source.height;
+
+    let page: TextDisplayAtlasPage | undefined;
+    let x = 0;
+    let y = 0;
+    for (const candidate of textDisplayAtlasPages) {
+        x = candidate.nextX;
+        y = candidate.nextY;
+        if (x + width > textDisplayAtlasSize) {
+            x = 0;
+            y += candidate.rowHeight;
+        }
+        if (y + height <= textDisplayAtlasSize) {
+            page = candidate;
+            break;
+        }
+    }
+    if (!page) {
+        page = createTextDisplayAtlasPage();
+        x = y = 0;
+    }
+    if (x === 0 && y !== page.nextY) page.rowHeight = 0;
+    page.context.drawImage(source, x, y);
+    page.texture.needsUpdate = true;
+    page.nextX = x + width;
+    page.nextY = y;
+    page.rowHeight = Math.max(page.rowHeight, height);
+    const region = { page, x, y, width, height };
+    textDisplayAtlasRegions.set(key, region);
+    if (import.meta.env.DEV) console.assert(x + width <= textDisplayAtlasSize && y + height <= textDisplayAtlasSize, 'Text display atlas region overflowed.');
+    return region;
+}
+
+function getTextDisplayAtlasMaterial(region: TextDisplayAtlasRegion, source: THREE.MeshBasicNodeMaterial): THREE.MeshBasicNodeMaterial {
+    const materialKey = `${source.depthWrite}:${source.visible}`;
+    let material = region.page.materials.get(materialKey);
+    if (!material) {
+        material = createTextDisplayMaterial(region.page.texture, source.depthWrite);
+        material.visible = source.visible;
+        material.userData.textDisplayAtlas = true;
+        region.page.materials.set(materialKey, material);
+    }
+    return material;
+}
+
 export async function createTextDisplayTemplates(items: TextDisplayItem[]): Promise<Map<string, THREE.InstancedMesh>> {
     const uniqueItems = new Map(items.map(item => [getTextDisplayTemplateKey(item), item]));
     const templates = new Map(await Promise.all(Array.from(uniqueItems, async ([key, item]) => [
         key,
         await createTextDisplayMesh(item)
     ] as const)));
-    const entries = Array.from(templates, ([key, mesh]) => {
+    for (const [key, mesh] of templates) {
         const material = mesh.material as THREE.MeshBasicNodeMaterial;
         const canvas = material.map?.image as HTMLCanvasElement | undefined;
-        return canvas ? { key, mesh, material, canvas, x: 0, y: 0 } : null;
-    }).filter(entry => entry !== null && entry.canvas.width <= maxTextAtlasSize && entry.canvas.height <= maxTextAtlasSize);
-    if (entries.length < 2) return templates;
-
-    const atlasWidth = Math.min(maxTextAtlasSize, Math.max(
-        ...entries.map(entry => entry.canvas.width),
-        Math.ceil(Math.sqrt(entries.reduce((area, entry) => area + entry.canvas.width * entry.canvas.height, 0)))
-    ));
-    const pages: Array<{ entries: typeof entries; x: number; y: number; rowHeight: number; width: number; height: number }> = [];
-    for (const entry of entries.sort((a, b) => b.canvas.height - a.canvas.height)) {
-        let page = pages[pages.length - 1];
-        if (!page) pages.push(page = { entries: [], x: 0, y: 0, rowHeight: 0, width: 0, height: 0 });
-        if (page.x + entry.canvas.width > atlasWidth) {
-            page.x = 0;
-            page.y += page.rowHeight;
-            page.rowHeight = 0;
-        }
-        if (page.y + entry.canvas.height > maxTextAtlasSize) {
-            pages.push(page = { entries: [], x: 0, y: 0, rowHeight: 0, width: 0, height: 0 });
-        }
-        entry.x = page.x;
-        entry.y = page.y;
-        page.entries.push(entry);
-        page.x += entry.canvas.width;
-        page.rowHeight = Math.max(page.rowHeight, entry.canvas.height);
-        page.width = Math.max(page.width, page.x);
-        page.height = Math.max(page.height, page.y + page.rowHeight);
+        if (!canvas) continue;
+        const atlasKey = uniqueItems.get(key)?.atlasKey;
+        const region = placeTextDisplayAtlasRegion(atlasKey ?? key, canvas, !!atlasKey);
+        if (!region) continue;
+        const scaleX = canvas.width / region.page.canvas.width;
+        const scaleY = canvas.height / region.page.canvas.height;
+        const offsetX = region.x / region.page.canvas.width;
+        const offsetY = (region.page.canvas.height - region.y - canvas.height) / region.page.canvas.height;
+        const uvBounds = mesh.geometry.getAttribute(textDisplayUvBoundsAttributeName);
+        uvBounds.setXYZW(
+            0,
+            uvBounds.getX(0) * scaleX + offsetX,
+            uvBounds.getY(0) * scaleX + offsetX,
+            uvBounds.getZ(0) * scaleY + offsetY,
+            uvBounds.getW(0) * scaleY + offsetY
+        );
+        const backgroundUv = mesh.geometry.getAttribute(textDisplayBackgroundUvAttributeName);
+        backgroundUv.setXY(
+            0,
+            backgroundUv.getX(0) * scaleX + offsetX,
+            backgroundUv.getY(0) * scaleY + offsetY
+        );
+        mesh.material = getTextDisplayAtlasMaterial(region, material);
+        material.map?.dispose();
+        material.dispose();
     }
-
-    for (const page of pages) {
-        const canvas = document.createElement('canvas');
-        canvas.width = page.width;
-        canvas.height = page.height;
-        const context = canvas.getContext('2d')!;
-        context.imageSmoothingEnabled = false;
-        for (const entry of page.entries) context.drawImage(entry.canvas, entry.x, entry.y);
-
-        const texture = new THREE.CanvasTexture(canvas);
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.magFilter = THREE.NearestFilter;
-        texture.minFilter = THREE.NearestFilter;
-        texture.generateMipmaps = false;
-        const materials = new Map<boolean, THREE.MeshBasicNodeMaterial>();
-        for (const entry of page.entries) {
-            const uv = entry.mesh.geometry.getAttribute('uv');
-            const scaleX = entry.canvas.width / canvas.width;
-            const scaleY = entry.canvas.height / canvas.height;
-            const offsetX = entry.x / canvas.width;
-            const offsetY = (canvas.height - entry.y - entry.canvas.height) / canvas.height;
-            for (let index = 0; index < uv.count; index++) {
-                uv.setXY(index, uv.getX(index) * scaleX + offsetX, uv.getY(index) * scaleY + offsetY);
-            }
-            uv.needsUpdate = true;
-            const opaqueBackground = entry.material.depthWrite;
-            let material = materials.get(opaqueBackground);
-            if (!material) {
-                material = createTextDisplayMaterial(texture, opaqueBackground);
-                materials.set(opaqueBackground, material);
-            }
-            entry.mesh.material = material;
-            entry.material.map?.dispose();
-            entry.material.dispose();
-        }
-    }
-
-    if (import.meta.env.DEV) console.assert(
-        pages.every(page => page.width <= maxTextAtlasSize && page.height <= maxTextAtlasSize && page.entries.every((entry, index) => (
-            entry.x + entry.canvas.width <= page.width
-            && entry.y + entry.canvas.height <= page.height
-            && page.entries.slice(index + 1).every(other => (
-                entry.x + entry.canvas.width <= other.x
-                || other.x + other.canvas.width <= entry.x
-                || entry.y + entry.canvas.height <= other.y
-                || other.y + other.canvas.height <= entry.y
-            ))
-        ))),
-        'Text display atlas layout is invalid.'
-    );
     return templates;
 }
 
 if (import.meta.env.DEV) {
+    console.assert(spriteTextureScale([{ width: 32, height: 32 }]) === 4, 'Sprite textures must retain their source resolution.');
+    const spriteContent = prepareTextContent('', {
+        pages: ['A', 'block/stone', 'B'],
+        pageTypes: ['text', 'sprite', 'text'],
+        pageAtlases: ['', 'minecraft:blocks', '']
+    });
+    console.assert(
+        spriteContent.text === `A${objectReplacementCharacter}B`
+        && spriteContent.pageEnds.join(',') === '1,2,3'
+        && spriteContent.spriteReferences[0]?.characterIndex === 1
+        && spriteContent.spriteReferences[0]?.sprite === 'minecraft:block/stone',
+        'Minecraft atlas sprites must occupy one text glyph.'
+    );
     console.assert(wrapText('ab cd', 3, value => value.length).map(line => line.text).join('|') === 'ab|cd', 'Text display wrapping changed.');
     console.assert(wrapText('ab  cd', 3, value => value.length).map(line => line.text).join('|') === 'ab |cd', 'Text display spaces changed.');
     console.assert(wrapText('ab\n', 3, value => value.length).map(line => line.text).join('|') === 'ab|', 'Text display trailing newline changed.');

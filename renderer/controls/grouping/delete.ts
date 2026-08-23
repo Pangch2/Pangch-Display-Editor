@@ -120,7 +120,7 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
         }
         const imageHeadTilePositions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
         if (imageHeadTilePositions?.[srcIdx]) imageHeadTilePositions[dstIdx] = imageHeadTilePositions[srcIdx];
-        for (const key of ['customPivots', 'localMatrices', 'displayTypes'] as const) {
+        for (const key of ['customPivots', 'localMatrices', 'displayTypes', 'textDisplayTemplateKeys'] as const) {
             const values = mesh.userData[key] as Map<number, unknown> | undefined;
             if (values?.has(srcIdx)) values.set(dstIdx, values.get(srcIdx));
             else values?.delete(dstIdx);

@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld('ipcApi', {
     return ipcRenderer.invoke('get-asset-content', assetPath);
   },
   saveIconAtlas: (name: AtlasName, data: Uint8Array) => ipcRenderer.invoke('save-icon-atlas', name, data),
+  hasSpriteAtlas: (name: string) => ipcRenderer.invoke('has-sprite-atlas', name),
+  saveSpriteAtlas: (name: string, data: Uint8Array, manifest: unknown) => ipcRenderer.invoke('save-sprite-atlas', name, data, manifest),
+  listSpriteAtlases: () => ipcRenderer.invoke('list-sprite-atlases'),
+  listAssetFiles: (assetPath: string) => ipcRenderer.invoke('list-asset-files', assetPath),
   // Read static files bundled with the app under the hardcoded/ folder
   getHardcodedContent: (relPath: string) => {
     if (typeof relPath !== 'string') {

@@ -1,13 +1,15 @@
 import {
     Box3,
+    BufferGeometry,
+    Float32BufferAttribute,
     Group,
+    InstancedBufferAttribute,
     InstancedMesh,
     Matrix4,
     Mesh,
     Ray,
     Raycaster,
     Vector3,
-    type BufferGeometry,
     type Intersection,
     type Object3D
 } from 'three/webgpu';
@@ -23,6 +25,7 @@ type BoundsTree = {
     count: number;
     geometry: BufferGeometry;
     matrixVersion: number;
+    layoutVersion: number;
     bounds: Float32Array;
     root: BoundsNode;
 };
@@ -30,12 +33,23 @@ type BoundsTree = {
 const leafSize = 12;
 const boundsTrees = new WeakMap<InstancedMesh, BoundsTree>();
 const localMatrix = new Matrix4();
+const shapeMatrix = new Matrix4();
 const inverseWorldMatrix = new Matrix4();
 const localRay = new Ray();
 const localBox = new Box3();
 const itemBox = new Box3();
 const size = new Vector3();
 const pickMesh = new Mesh();
+const textDisplayPickGeometry = new BufferGeometry();
+textDisplayPickGeometry.setAttribute('position', new Float32BufferAttribute([
+    0, 1, 0,
+    0, 0, 0,
+    1, 1, 0,
+    1, 0, 0
+], 3));
+textDisplayPickGeometry.setIndex([0, 1, 2, 1, 3, 2]);
+textDisplayPickGeometry.computeBoundingBox();
+textDisplayPickGeometry.computeBoundingSphere();
 const intersections: Intersection[] = [];
 const candidates: number[] = [];
 
@@ -65,15 +79,27 @@ function buildNode(bounds: Float32Array, instanceIds: number[]): BoundsNode {
 }
 
 function getBoundsTree(mesh: InstancedMesh): BoundsTree | null {
+    const textLayout = mesh.geometry.getAttribute('textDisplayLayout');
     const cached = boundsTrees.get(mesh);
-    if (cached?.count === mesh.count && cached.geometry === mesh.geometry && cached.matrixVersion === mesh.instanceMatrix.version) return cached;
+    if (
+        cached?.count === mesh.count
+        && cached.geometry === mesh.geometry
+        && cached.matrixVersion === mesh.instanceMatrix.version
+        && cached.layoutVersion === (textLayout?.version ?? -1)
+    ) return cached;
 
     if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
     if (!mesh.geometry.boundingBox || mesh.count === 0) return null;
     const bounds = new Float32Array(mesh.count * 6);
     for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
         mesh.getMatrixAt(instanceId, localMatrix);
-        localBox.copy(mesh.geometry.boundingBox).applyMatrix4(localMatrix);
+        if (textLayout && instanceId < textLayout.count) {
+            localBox.min.set(textLayout.getX(instanceId), 0, mesh.geometry.boundingBox.min.z);
+            localBox.max.set(textLayout.getY(instanceId), textLayout.getZ(instanceId), mesh.geometry.boundingBox.max.z);
+        } else {
+            localBox.copy(mesh.geometry.boundingBox);
+        }
+        localBox.applyMatrix4(localMatrix);
         const offset = instanceId * 6;
         bounds[offset] = localBox.min.x;
         bounds[offset + 1] = localBox.min.y;
@@ -86,6 +112,7 @@ function getBoundsTree(mesh: InstancedMesh): BoundsTree | null {
         count: mesh.count,
         geometry: mesh.geometry,
         matrixVersion: mesh.instanceMatrix.version,
+        layoutVersion: textLayout?.version ?? -1,
         bounds,
         root: buildNode(bounds, Array.from({ length: mesh.count }, (_, instanceId) => instanceId))
     };
@@ -124,17 +151,27 @@ export function intersectSceneInstances(
         }
 
         const mesh = object as InstancedMesh;
+        const textLayout = mesh.geometry.getAttribute('textDisplayLayout');
         const tree = getBoundsTree(mesh);
         if (!tree) return;
         localRay.copy(raycaster.ray).applyMatrix4(inverseWorldMatrix.copy(mesh.matrixWorld).invert());
         candidates.length = 0;
         collectCandidates(tree.root, tree.bounds, localRay, candidates);
-        pickMesh.geometry = mesh.geometry;
+        pickMesh.geometry = textLayout ? textDisplayPickGeometry : mesh.geometry;
         pickMesh.material = mesh.material;
         for (const instanceId of candidates) {
             if (acceptInstance && !acceptInstance(mesh, instanceId)) continue;
             mesh.getMatrixAt(instanceId, localMatrix);
             pickMesh.matrixWorld.multiplyMatrices(mesh.matrixWorld, localMatrix);
+            if (textLayout && instanceId < textLayout.count) {
+                shapeMatrix.makeScale(
+                    textLayout.getY(instanceId) - textLayout.getX(instanceId),
+                    textLayout.getZ(instanceId),
+                    1
+                );
+                shapeMatrix.setPosition(textLayout.getX(instanceId), 0, 0);
+                pickMesh.matrixWorld.multiply(shapeMatrix);
+            }
             intersections.length = 0;
             pickMesh.raycast(raycaster, intersections);
             for (const hit of intersections) {
@@ -158,4 +195,15 @@ if (import.meta.env.DEV) {
         candidates
     );
     console.assert(candidates.length === 1 && candidates[0] === 1, 'Instanced raycast bounds tree returned the wrong candidate.');
+
+    const geometry = new BufferGeometry();
+    geometry.boundingBox = new Box3(new Vector3(-1, 0, -0.01), new Vector3(3, 2, 0));
+    geometry.setAttribute('textDisplayLayout', new InstancedBufferAttribute(new Float32Array([-1, 3, 2, 2]), 4));
+    const mesh = new InstancedMesh(geometry, undefined, 1);
+    const tree = getBoundsTree(mesh);
+    console.assert(
+        tree?.bounds[0] === -1 && tree.bounds[3] === 3 && tree.bounds[4] === 2,
+        'Text display instance bounds must use its own layout.'
+    );
+    geometry.dispose();
 }

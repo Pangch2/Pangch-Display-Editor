@@ -11,7 +11,7 @@
   z-index: 10;
 }
 
-.panel-dock:not(.single-panel) {
+.panel-dock:not(.single-panel, .restore-preview) {
   overflow-x: hidden;
   overflow-y: auto;
 }
