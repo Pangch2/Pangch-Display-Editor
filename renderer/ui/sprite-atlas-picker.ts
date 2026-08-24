@@ -32,6 +32,7 @@ const columns = 9;
 const spriteSources = new Map<string, Promise<SpriteAtlasSource>>();
 let entriesPromise: Promise<SpriteAtlasEntry[]> | null = null;
 let mode: 'atlas' | 'sprite' = 'atlas';
+const searchValues = { atlas: '', sprite: '' };
 let selectedAtlas = '';
 let selectedSprite = '';
 let visibleSprites: SpriteEntry[] = [];
@@ -194,7 +195,7 @@ function openPicker(nextMode: typeof mode, heading: string): number {
   const currentLoadId = ++loadId;
   mode = nextMode;
   title.textContent = heading;
-  searchInput.value = '';
+  searchInput.value = searchValues[nextMode];
   grid.textContent = '불러오는 중…';
   overlay.hidden = false;
   openWithAnimation(searchWindow);
@@ -225,6 +226,7 @@ export function openSpritePicker(atlas: string, selected: string, select: (sprit
 }
 
 searchInput.addEventListener('input', () => {
+  searchValues[mode] = searchInput.value;
   if (mode === 'sprite' && activeSpriteSource) renderSprites(activeSpriteSource);
   else if (mode === 'atlas') void loadAtlases().then(renderAtlases);
 });
