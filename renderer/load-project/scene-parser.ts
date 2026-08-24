@@ -93,6 +93,8 @@ const blocksUsingDefaultGrassColors = [
   'grass_block',
   'short_grass',
   'tall_grass',
+  'tall_grass_top',
+  'tall_grass_bottom',
   'fern',
   'large_fern_top',
   'large_fern_bottom',

@@ -3066,6 +3066,16 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
     Overlay.updateSelectionOverlayObject(ref.mesh, ref.instanceId);
 }
 
+window.addEventListener('pde:history-restored', event => {
+    if (!(event as CustomEvent<{ scene?: boolean }>).detail?.scene) return;
+    const userData = loadedObjectGroup.userData;
+    const options = userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined;
+    const names = userData.objectNames as Map<string, string> | undefined;
+    if (!options || !names) return;
+    void Promise.all([...options].map(([uuid, value]) => updateTextDisplay(uuid, names.get(uuid) ?? '', value)))
+        .catch(error => console.error('텍스트 디스플레이 복원에 실패했습니다.', error));
+});
+
 export async function replaceDisplayObjects(requests: Array<{
     objectUuid: string;
     name: string;

@@ -6,12 +6,27 @@ import { entityVisiblePosition, setEntityStateAttributes } from '../entity-mater
 
 export type TextDisplayOptions = {
     color?: string;
+    shadowColor?: string;
+    shadowAlpha?: number;
     pageColors?: string[];
     pageAlphas?: number[];
     pageEffects?: TextDisplayEffects[];
     pageAligns?: Array<'left' | 'center' | 'right'>;
     pageTypes?: TextDisplayContentType[];
     pageAtlases?: string[];
+    pageHats?: boolean[];
+    pageTypeValues?: Array<Partial<Record<TextDisplayContentType, string>>>;
+    pageExtraValues?: Array<{
+        fallback?: string;
+        scoreboard?: string;
+        separator?: string;
+        nbtSource?: 'entity' | 'block' | 'storage';
+        entity?: string;
+        block?: string;
+        storage?: string;
+        preview?: string;
+        interpret?: boolean;
+    }>;
     pages?: string[];
     pageIndex?: number;
     alpha?: number;
@@ -50,6 +65,7 @@ type BitmapGlyph = {
     advance: number;
     ascent: number;
     boldOffset: number;
+    shadowOffset: number;
 };
 
 type BitmapProvider = {
@@ -62,6 +78,7 @@ type BitmapProvider = {
 type AtlasSprite = { image: ImageBitmap; x: number; y: number; width: number; height: number };
 type AtlasSpriteSource = { image: ImageBitmap; sprites: Map<string, Omit<AtlasSprite, 'image'>> };
 type AtlasSpriteReference = { characterIndex: number; atlas: string; sprite: string };
+type PlayerSpriteReference = { characterIndex: number; username: string; hat: boolean };
 type SpriteColorSegment = { x: number; y: number; color: string; alpha: number };
 type UnihexFontSource = Map<number, string>;
 type UnihexSizeOverride = [from: number, to: number, left: number, right: number];
@@ -88,6 +105,7 @@ export const textDisplayInstanceAttributeNames = [
 let bitmapFontPromise: Promise<Map<string, BitmapGlyph>> | undefined;
 let unihexFontPromise: Promise<UnihexFontSource> | undefined;
 const atlasSpriteSources = new Map<string, Promise<AtlasSpriteSource | null>>();
+const playerSkinImages = new Map<string, Promise<ImageBitmap | null>>();
 const cssColorChannels = new Map<string, Uint8ClampedArray>();
 const minecraftItalicOffset = (canvasY: number): number => 1.25 - canvasY * 0.25;
 const unihexSizeOverrides: UnihexSizeOverride[] = [
@@ -139,29 +157,56 @@ function loadAtlasSpriteSource(atlas: string): Promise<AtlasSpriteSource | null>
     return promise;
 }
 
+function loadPlayerSkin(username: string): Promise<ImageBitmap | null> {
+    const normalized = username.trim();
+    if (!/^[A-Za-z0-9_]{3,16}$/u.test(normalized)) return Promise.resolve(null);
+    const key = normalized.toLowerCase();
+    const cached = playerSkinImages.get(key);
+    if (cached) return cached;
+    const promise = window.ipcApi.getMinecraftSkin(normalized).then(async result => {
+        if (!result.success || !result.png) throw new Error(result.error ?? 'Minecraft skin lookup failed.');
+        if (result.usedFallback) return null;
+        const png = new Uint8Array(result.png.byteLength);
+        png.set(result.png);
+        return createImageBitmap(new Blob([png], { type: 'image/png' }));
+    }).catch(error => {
+        playerSkinImages.delete(key);
+        console.warn(`Failed to load player skin: ${normalized}`, error);
+        return null;
+    });
+    playerSkinImages.set(key, promise);
+    return promise;
+}
+
 function prepareTextContent(sourceText: string, options: TextDisplayOptions): {
     text: string;
     pageEnds: number[];
     spriteReferences: AtlasSpriteReference[];
+    playerReferences: PlayerSpriteReference[];
 } {
     const pages = options.pages?.length ? options.pages : [sourceText];
     const characters: string[] = [];
     const pageEnds: number[] = [];
     const spriteReferences: AtlasSpriteReference[] = [];
+    const playerReferences: PlayerSpriteReference[] = [];
     pages.forEach((page, pageIndex) => {
-        if (characters.length < maxTextCharacters && options.pageTypes?.[pageIndex] === 'sprite') {
-            spriteReferences.push({
+        const pageType = options.pageTypes?.[pageIndex];
+        if (pageType === 'translate') page = options.pageExtraValues?.[pageIndex]?.fallback ?? page;
+        else if (pageType === 'nbt') page = options.pageExtraValues?.[pageIndex]?.preview ?? '';
+        if (characters.length < maxTextCharacters && (pageType === 'sprite' || pageType === 'player')) {
+            if (pageType === 'sprite') spriteReferences.push({
                 characterIndex: characters.length,
                 atlas: options.pageAtlases?.[pageIndex] ?? 'minecraft:blocks',
                 sprite: page.includes(':') ? page : `minecraft:${page}`
             });
+            else playerReferences.push({ characterIndex: characters.length, username: page, hat: options.pageHats?.[pageIndex] ?? true });
             characters.push(objectReplacementCharacter);
         } else {
             characters.push(...Array.from(page).slice(0, maxTextCharacters - characters.length));
         }
         pageEnds.push(characters.length);
     });
-    return { text: characters.join(''), pageEnds, spriteReferences };
+    return { text: characters.join(''), pageEnds, spriteReferences, playerReferences };
 }
 
 function spriteTextureScale(sprites: Iterable<Pick<AtlasSprite, 'width' | 'height'>>): number {
@@ -210,7 +255,8 @@ function loadBitmapFont(): Promise<Map<string, BitmapGlyph>> {
                     scale,
                     advance: Math.floor(actualWidth * scale + 0.5) + 1,
                     ascent: provider.ascent,
-                    boldOffset: 1
+                    boldOffset: 1,
+                    shadowOffset: 1
                 });
             }));
         }
@@ -289,7 +335,8 @@ function createUnihexFont(text: string, source: UnihexFontSource): Map<string, B
             scale: 0.5,
             advance: Math.floor(sourceWidth / 2) + 1,
             ascent: 7,
-            boldOffset: 0.5
+            boldOffset: 0.5,
+            shadowOffset: 0.5
         });
     });
     return glyphs;
@@ -402,12 +449,18 @@ function drawText(
     start: number,
     effect: (index: number, key: keyof TextDisplayEffects) => boolean,
     spriteCharacterIndices: Set<number>,
+    shadow?: {
+        context: CanvasRenderingContext2D;
+        alpha: (index: number) => number;
+        offsets: Map<number, number>;
+    },
     obfuscatedGlyphs?: Map<number, string[]>
 ): void {
     Array.from(text).forEach((sourceCharacter, offset) => {
         const characterIndex = start + offset;
         const bold = effect(characterIndex, 'bold');
         if (spriteCharacterIndices.has(characterIndex)) {
+            shadow?.offsets.set(characterIndex, 1);
             x += glyphAdvance(sourceCharacter, context, bitmapFont, bold, true);
             return;
         }
@@ -417,32 +470,41 @@ function drawText(
             : undefined;
         const character = glyphs?.[Math.floor(Math.random() * glyphs.length)] ?? sourceCharacter;
         const glyph = bitmapFont.get(character);
-        context.save();
-        if (italic) {
-            context.translate(x, baseline);
-            context.transform(1, 0, -0.25, 1, 0, 0);
+        const drawGlyph = (target: CanvasRenderingContext2D, targetX: number, targetBaseline: number) => {
+            target.save();
+            if (italic) {
+                target.translate(targetX, targetBaseline);
+                target.transform(1, 0, -0.25, 1, 0, 0);
+            }
+            const drawX = italic ? 0 : targetX;
+            const drawBaseline = italic ? 0 : targetBaseline;
+            if (glyph) {
+                const draw = (offset: number) => target.drawImage(
+                    glyph.image,
+                    glyph.sourceX,
+                    glyph.sourceY,
+                    glyph.sourceWidth,
+                    glyph.sourceHeight,
+                    drawX + offset,
+                    drawBaseline - glyph.ascent,
+                    glyph.sourceWidth * glyph.scale,
+                    glyph.sourceHeight * glyph.scale
+                );
+                draw(0);
+                if (bold) draw(glyph.boldOffset);
+            } else {
+                target.fillText(character, drawX, drawBaseline);
+                if (bold) target.fillText(character, drawX + 1, drawBaseline);
+            }
+            target.restore();
+        };
+        drawGlyph(context, x, baseline);
+        if (shadow) {
+            const shadowOffset = glyph?.shadowOffset ?? 1;
+            shadow.offsets.set(characterIndex, shadowOffset);
+            shadow.context.globalAlpha = shadow.alpha(characterIndex);
+            drawGlyph(shadow.context, x + shadowOffset, baseline + shadowOffset);
         }
-        const drawX = italic ? 0 : x;
-        const drawBaseline = italic ? 0 : baseline;
-        if (glyph) {
-            const draw = (offset: number) => context.drawImage(
-                glyph.image,
-                glyph.sourceX,
-                glyph.sourceY,
-                glyph.sourceWidth,
-                glyph.sourceHeight,
-                drawX + offset,
-                drawBaseline - glyph.ascent,
-                glyph.sourceWidth * glyph.scale,
-                glyph.sourceHeight * glyph.scale
-            );
-            draw(0);
-            if (bold) draw(glyph.boldOffset);
-        } else {
-            context.fillText(character, drawX, drawBaseline);
-            if (bold) context.fillText(character, drawX + 1, drawBaseline);
-        }
-        context.restore();
         x += glyphAdvance(character, context, bitmapFont, bold);
     });
 }
@@ -469,6 +531,24 @@ function applyTextAlphaSegments(data: Uint8ClampedArray, canvasWidth: number, sc
             if (data[index]) data[index] = alpha;
         }
     }
+}
+
+function compositeTextShadow(canvas: HTMLCanvasElement, shadowCanvas: HTMLCanvasElement, color: string): void {
+    const shadowContext = shadowCanvas.getContext('2d')!;
+    shadowContext.save();
+    shadowContext.resetTransform();
+    shadowContext.globalCompositeOperation = 'source-in';
+    shadowContext.globalAlpha = 1;
+    shadowContext.fillStyle = color;
+    shadowContext.fillRect(0, 0, canvas.width, canvas.height);
+    shadowContext.restore();
+
+    const context = canvas.getContext('2d')!;
+    context.save();
+    context.resetTransform();
+    context.globalCompositeOperation = 'destination-over';
+    context.drawImage(shadowCanvas, 0, 0);
+    context.restore();
 }
 
 if (import.meta.env.DEV) {
@@ -507,7 +587,7 @@ function createTextDisplayMaterial(textTexture: THREE.Texture, opaqueBackground:
         transparent: true,
         depthWrite: opaqueBackground,
         alphaTest: 0.1,
-        side: THREE.DoubleSide,
+        side: THREE.FrontSide,
         toneMapped: false,
         fog: false
     });
@@ -527,20 +607,25 @@ function createTextDisplayMaterial(textTexture: THREE.Texture, opaqueBackground:
 
 export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THREE.InstancedMesh> {
     const options = item.options ?? {};
-    const { text, pageEnds, spriteReferences } = prepareTextContent(item.name ?? '', options);
-    const spriteCharacterIndices = new Set(spriteReferences.map(sprite => sprite.characterIndex));
+    const { text, pageEnds, spriteReferences, playerReferences } = prepareTextContent(item.name ?? '', options);
+    const spriteCharacterIndices = new Set([...spriteReferences, ...playerReferences].map(sprite => sprite.characterIndex));
     const pageIndexForCharacter = (characterIndex: number) => Math.max(0, pageEnds.findIndex(end => characterIndex < end));
     const pageEffect = (characterIndex: number, key: keyof TextDisplayEffects) => options.pageEffects?.[pageIndexForCharacter(characterIndex)]?.[key] ?? options[key] ?? false;
-    const [bitmapFont, unihexSource, loadedSprites] = await Promise.all([
+    const [bitmapFont, unihexSource, loadedSprites, loadedPlayers] = await Promise.all([
         loadBitmapFont(),
         loadUnihexFont(),
         Promise.all(spriteReferences.map(async reference => {
             const source = await loadAtlasSpriteSource(reference.atlas);
             const sprite = source?.sprites.get(reference.sprite);
             return sprite && source ? [reference.characterIndex, { image: source.image, ...sprite }] as const : null;
+        })),
+        Promise.all(playerReferences.map(async reference => {
+            const image = await loadPlayerSkin(reference.username);
+            return image ? [reference.characterIndex, { image, hat: reference.hat }] as const : null;
         }))
     ]);
     const atlasSprites = new Map(loadedSprites.filter(sprite => sprite !== null));
+    const playerSprites = new Map(loadedPlayers.filter(player => player !== null));
     const unihexFont = createUnihexFont(text, unihexSource);
     const activeBitmapFont = !options.font || options.font === 'minecraft:default'
         ? new Map<string, BitmapGlyph>([...unihexFont, ...bitmapFont])
@@ -576,7 +661,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     canvas.width = renderWidth * renderScale;
     canvas.height = renderHeight * renderScale;
 
-    const context = canvas.getContext('2d')!;
+    const context = canvas.getContext('2d', { willReadFrequently: true })!;
     context.imageSmoothingEnabled = false;
     context.scale(renderScale, renderScale);
     context.font = fontStyle;
@@ -593,25 +678,62 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     const spriteColorSegments: SpriteColorSegment[] = [];
     const pageColor = (characterIndex: number) => validColor(options.pageColors?.[pageIndexForCharacter(characterIndex)] ?? options.color, '#ffffff');
     const pageAlpha = (characterIndex: number) => clampAlpha(options.pageAlphas?.[pageIndexForCharacter(characterIndex)] ?? options.alpha, 1);
+    const shadowAlpha = clampAlpha(options.shadowAlpha, 0);
+    const shadowCanvas = shadowAlpha > 0 ? document.createElement('canvas') : null;
+    if (shadowCanvas) {
+        shadowCanvas.width = canvas.width;
+        shadowCanvas.height = canvas.height;
+    }
+    const shadowContext = shadowCanvas?.getContext('2d') ?? null;
+    if (shadowContext) {
+        shadowContext.imageSmoothingEnabled = false;
+        shadowContext.scale(renderScale, renderScale);
+        shadowContext.font = fontStyle;
+        shadowContext.textBaseline = 'alphabetic';
+        shadowContext.fillStyle = '#ffffff';
+    }
+    const shadowOffsets = new Map<number, number>();
+    const shadow = shadowContext ? {
+        context: shadowContext,
+        alpha: (characterIndex: number) => pageAlpha(characterIndex) * shadowAlpha,
+        offsets: shadowOffsets
+    } : undefined;
 
     lines.forEach((line, index) => {
         const align = options.pageAligns?.[pageIndexForCharacter(line.start)] ?? options.align ?? 'center';
         const width = widths[index];
         const x = Math.round((horizontalGlyphOverflow + 1 + (align === 'left' ? 0 : align === 'right' ? contentWidth - width : (contentWidth - width) / 2)) * renderScale) / renderScale;
         const baseline = topGlyphOverflow + index * lineHeight + 8;
-        drawText(context, line.text, x, baseline, activeBitmapFont, line.start, pageEffect, spriteCharacterIndices, obfuscatedGlyphs);
+        drawText(context, line.text, x, baseline, activeBitmapFont, line.start, pageEffect, spriteCharacterIndices, shadow, obfuscatedGlyphs);
         Array.from(line.text).forEach((character, offset) => {
             const characterIndex = line.start + offset;
             const characterX = x + measureRange(Array.from(line.text).slice(0, offset).join(''), line.start);
             const isSprite = spriteCharacterIndices.has(characterIndex);
             const characterWidth = glyphAdvance(character, measureContext, activeBitmapFont, pageEffect(characterIndex, 'bold'), isSprite);
+            const shadowOffset = shadowOffsets.get(characterIndex) ?? 1;
+            if (shadowContext) shadowContext.globalAlpha = pageAlpha(characterIndex) * shadowAlpha;
             const sprite = atlasSprites.get(characterIndex);
             if (sprite) {
                 spriteContext.drawImage(sprite.image, sprite.x, sprite.y, sprite.width, sprite.height, characterX, baseline - fontSize, fontSize, fontSize);
+                shadowContext?.drawImage(sprite.image, sprite.x, sprite.y, sprite.width, sprite.height, characterX + shadowOffset, baseline - fontSize + shadowOffset, fontSize, fontSize);
                 spriteColorSegments.push({ x: characterX, y: baseline - fontSize, color: pageColor(characterIndex), alpha: pageAlpha(characterIndex) });
             }
-            if (pageEffect(characterIndex, 'underline')) context.fillRect(characterX, baseline + 1, characterWidth, 1);
-            if (pageEffect(characterIndex, 'strikeThrough')) context.fillRect(characterX, baseline - 3.5, characterWidth, 1);
+            const player = playerSprites.get(characterIndex);
+            if (player) {
+                spriteContext.drawImage(player.image, 8, 8, 8, 8, characterX, baseline - fontSize, fontSize, fontSize);
+                if (player.hat) spriteContext.drawImage(player.image, 40, 8, 8, 8, characterX, baseline - fontSize, fontSize, fontSize);
+                shadowContext?.drawImage(player.image, 8, 8, 8, 8, characterX + shadowOffset, baseline - fontSize + shadowOffset, fontSize, fontSize);
+                if (player.hat) shadowContext?.drawImage(player.image, 40, 8, 8, 8, characterX + shadowOffset, baseline - fontSize + shadowOffset, fontSize, fontSize);
+                spriteColorSegments.push({ x: characterX, y: baseline - fontSize, color: pageColor(characterIndex), alpha: pageAlpha(characterIndex) });
+            }
+            if (pageEffect(characterIndex, 'underline')) {
+                context.fillRect(characterX, baseline + 1, characterWidth, 1);
+                shadowContext?.fillRect(characterX + shadowOffset, baseline + 1 + shadowOffset, characterWidth, 1);
+            }
+            if (pageEffect(characterIndex, 'strikeThrough')) {
+                context.fillRect(characterX, baseline - 3.5, characterWidth, 1);
+                shadowContext?.fillRect(characterX + shadowOffset, baseline - 3.5 + shadowOffset, characterWidth, 1);
+            }
         });
     });
     if (spriteColorSegments.length) {
@@ -651,6 +773,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     applyTextAlphaSegments(imageData.data, canvas.width, renderScale, pageSegments);
     context.putImageData(imageData, 0, 0);
     if (spriteColorSegments.length) context.drawImage(spriteCanvas, 0, 0, renderWidth, renderHeight);
+    if (shadowCanvas) compositeTextShadow(canvas, shadowCanvas, validColor(options.shadowColor, '#3f3f3f'));
     const backgroundAlpha = clampAlpha(options.backgroundAlpha, 0.25);
     context.globalAlpha = textAlpha / 255;
     context.fillStyle = validColor(options.color, '#ffffff');
@@ -753,7 +876,7 @@ export function resetTextDisplayAtlases(): void {
 function createTextDisplayAtlasPage(): TextDisplayAtlasPage {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = textDisplayAtlasSize;
-    const context = canvas.getContext('2d')!;
+    const context = canvas.getContext('2d', { willReadFrequently: true })!;
     context.imageSmoothingEnabled = false;
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -874,6 +997,23 @@ if (import.meta.env.DEV) {
         && spriteContent.spriteReferences[0]?.sprite === 'minecraft:block/stone',
         'Minecraft atlas sprites must occupy one text glyph.'
     );
+    const playerContent = prepareTextContent('', { pages: ['Pangch'], pageTypes: ['player'] });
+    console.assert(
+        playerContent.text === objectReplacementCharacter && playerContent.playerReferences[0]?.hat,
+        'Minecraft player heads must occupy one text glyph with the second layer enabled by default.'
+    );
+    console.assert(
+        prepareTextContent('', { pages: ['translation.key'], pageTypes: ['translate'], pageExtraValues: [{ fallback: '대체 문자' }] }).text === '대체 문자',
+        'Translated text must render its fallback.'
+    );
+    console.assert(
+        prepareTextContent('', {
+            pages: ['A', 'Inventory[0].tag', 'B'],
+            pageTypes: ['text', 'nbt', 'text'],
+            pageExtraValues: [{}, { preview: '미리보기' }, {}]
+        }).text === 'A미리보기B',
+        'NBT content must render its preview instead of its source path.'
+    );
     console.assert(wrapText('ab cd', 3, value => value.length).map(line => line.text).join('|') === 'ab|cd', 'Text display wrapping changed.');
     console.assert(wrapText('ab  cd', 3, value => value.length).map(line => line.text).join('|') === 'ab |cd', 'Text display spaces changed.');
     console.assert(wrapText('ab\n', 3, value => value.length).map(line => line.text).join('|') === 'ab|', 'Text display trailing newline changed.');
@@ -886,4 +1026,10 @@ if (import.meta.env.DEV) {
     const alpha = new Uint8ClampedArray([0, 0, 0, 63, 0, 0, 0, 64]);
     snapTextAlpha(alpha, 128);
     console.assert(alpha[3] === 0 && alpha[7] === 128, 'Minecraft text alpha changed.');
+    const shadowCheck = document.createElement('canvas');
+    const shadowLayer = document.createElement('canvas');
+    shadowCheck.width = shadowCheck.height = shadowLayer.width = shadowLayer.height = 2;
+    shadowLayer.getContext('2d')!.fillRect(1, 1, 1, 1);
+    compositeTextShadow(shadowCheck, shadowLayer, '#123456');
+    console.assert(shadowCheck.getContext('2d')!.getImageData(1, 1, 1, 1).data.slice(0, 3).join(',') === '18,52,86', 'Minecraft text shadow changed.');
 }

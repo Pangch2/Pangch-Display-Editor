@@ -514,7 +514,7 @@ export function recordSceneChange(root: Group, before: SceneSnapshot): void {
     );
     const refresh = () => {
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-        window.dispatchEvent(new CustomEvent('pde:history-restored'));
+        window.dispatchEvent(new CustomEvent('pde:history-restored', { detail: { scene: true } }));
     };
     // ponytail: full-scene snapshots favor correctness; replace with UUID diffs if history memory becomes measurable.
     record({

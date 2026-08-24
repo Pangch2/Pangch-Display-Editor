@@ -95,6 +95,25 @@ function loadSpriteSource(atlas: string): Promise<SpriteAtlasSource> {
   return promise;
 }
 
+const minecraftId = (value: string): string => value.includes(':') ? value : `minecraft:${value}`;
+
+export async function isValidSpriteReference(atlas: string, sprite: string): Promise<boolean> {
+  try {
+    return (await loadSpriteSource(minecraftId(atlas))).sprites.some(entry => entry.id === minecraftId(sprite));
+  } catch {
+    return false;
+  }
+}
+
+export async function resolveSpriteReference(atlas: string, sprite: string): Promise<string | null> {
+  try {
+    const sprites = (await loadSpriteSource(minecraftId(atlas))).sprites;
+    return sprites.find(entry => entry.id === minecraftId(sprite))?.id ?? sprites[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function renderAtlases(entries: SpriteAtlasEntry[]): void {
   const visible = filterEntries(entries, searchInput.value);
   grid.className = 'sprite-atlas-search-grid';
@@ -234,4 +253,5 @@ if (import.meta.env.DEV) {
   visibleSprites = [{ id: 'first', x: 0, y: 0, width: 1, height: 1 }, { id: 'second', x: 1, y: 0, width: 1, height: 1 }];
   console.assert(spriteAt(0, 0)?.id === 'first' && spriteAt(tileSize + gap, 0)?.id === 'second', 'Sprite picker hit test failed.');
   visibleSprites = [];
+  console.assert(minecraftId('blocks') === 'minecraft:blocks', 'Sprite identifiers must accept the default Minecraft namespace.');
 }

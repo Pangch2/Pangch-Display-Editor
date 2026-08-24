@@ -152,7 +152,9 @@ function registerClone(
         stores.objectBlockProps!.set(targetUuid, cloneData(stores.objectBlockProps!.get(sourceUuid)));
     }
     if (stores.objectTextDisplayOptions!.has(sourceUuid)) {
-        stores.objectTextDisplayOptions!.set(targetUuid, cloneData(stores.objectTextDisplayOptions!.get(sourceUuid)));
+        const options = cloneData(stores.objectTextDisplayOptions!.get(sourceUuid));
+        if (options && typeof options === 'object') delete (options as Record<string, unknown>).pageTypeValues;
+        stores.objectTextDisplayOptions!.set(targetUuid, options);
     }
     if (stores.objectNbt?.has(sourceUuid)) stores.objectNbt.set(targetUuid, stores.objectNbt.get(sourceUuid)!);
     if (stores.objectBrightness?.has(sourceUuid)) {

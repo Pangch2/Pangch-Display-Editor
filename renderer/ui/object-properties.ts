@@ -23,7 +23,7 @@ import { captureSceneState, captureSelectionTransformState, recordSceneChange, t
 import { record } from '../controls/undo-redo/undo-redo';
 import { getHeadGridValue, setHeadGridOverride } from './head-painter';
 import { hexToRgb, openColorPicker, rgbToHex } from './color-picker';
-import { openSpriteAtlasPicker, openSpritePicker } from './sprite-atlas-picker';
+import { isValidSpriteReference, openSpriteAtlasPicker, openSpritePicker, resolveSpriteReference } from './sprite-atlas-picker';
 
 const title = document.getElementById('details-title')!;
 const tabs = document.getElementById('project-tabs')!;
@@ -42,8 +42,15 @@ const scale = new Vector3();
 const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
 const textAlignValues = ['left', 'center', 'right'];
 const textDisplayContentTypes: TextDisplayContentType[] = ['text', 'sprite', 'player', 'translate', 'keybind', 'score', 'selector', 'nbt'];
+type TextDisplayExtraKey = 'fallback' | 'scoreboard' | 'separator';
+const textDisplayContentFields: Partial<Record<TextDisplayContentType, { primaryLabel: string; extra?: [TextDisplayExtraKey, string] }>> = {
+    translate: { primaryLabel: '값', extra: ['fallback', '대체 문자'] },
+    keybind: { primaryLabel: '값' },
+    score: { primaryLabel: '플레이어', extra: ['scoreboard', '스코어보드'] },
+    selector: { primaryLabel: '값', extra: ['separator', '중간 글자'] }
+};
 const defaultTextDisplayOptions: Required<TextDisplayOptions> = {
-    color: '#FFFFFF', pageColors: [], pageAlphas: [], pageEffects: [], pageAligns: [], pageTypes: [], pageAtlases: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
+    color: '#FFFFFF', shadowColor: '#3F3F3F', shadowAlpha: 0, pageColors: [], pageAlphas: [], pageEffects: [], pageAligns: [], pageTypes: [], pageAtlases: [], pageHats: [], pageTypeValues: [], pageExtraValues: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
     bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
     lineLength: 50, align: 'center', font: 'minecraft:default'
 };
@@ -301,7 +308,8 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
 function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
     control: T,
     onChange: (value: string) => void | Promise<void>,
-    live: boolean | number = false
+    live: boolean | number = false,
+    silent = false
 ): T {
     const read = () => control instanceof HTMLInputElement && control.type === 'checkbox' ? String(control.checked) : control.value;
     const write = (value: string) => {
@@ -359,7 +367,7 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
         } catch (error) {
             console.error(error);
             write(committed);
-            window.alert(error instanceof Error ? error.message : '오브젝트 변경에 실패했습니다.');
+            if (!silent) window.alert(error instanceof Error ? error.message : '오브젝트 변경에 실패했습니다.');
         } finally {
             control.disabled = false;
         }
@@ -418,19 +426,30 @@ function metadataProperty(key: string, labelText: string, control: HTMLElement):
     return row;
 }
 
+function metadataRank(key: string, order = metadataOrder): number {
+    const index = order.indexOf(key);
+    if (index >= 0) return index * 10;
+    if (key === 'hat' || key === 'fallback' || key === 'scoreboard' || key === 'separator'
+        || key === 'nbtValue' || key === 'nbtPreview' || key === 'nbtEntity' || key === 'nbtBlock' || key === 'nbtStorage' || key === 'interpret') {
+        const textIndex = order.indexOf('text');
+        return textIndex < 0 ? Infinity : textIndex * 10 + 1;
+    }
+    const textureIndex = order.indexOf('texture');
+    if (textureIndex < 0) return Infinity;
+    if (key === 'headGridHorizontal') return textureIndex * 10 + 1;
+    if (key === 'headGridVertical') return textureIndex * 10 + 2;
+    return Infinity;
+}
+
 function sortMetadataRows(section: HTMLElement): void {
-    const rank = (key: string): number => {
-        const index = metadataOrder.indexOf(key);
-        if (index >= 0) return index * 10;
-        const textureIndex = metadataOrder.indexOf('texture');
-        if (textureIndex < 0) return Infinity;
-        if (key === 'headGridHorizontal') return textureIndex * 10 + 1;
-        if (key === 'headGridVertical') return textureIndex * 10 + 2;
-        return Infinity;
-    };
     [...section.querySelectorAll<HTMLElement>(':scope > .object-metadata-row')]
-        .sort((a, b) => rank(a.dataset.metadataKey ?? '') - rank(b.dataset.metadataKey ?? ''))
+        .sort((a, b) => metadataRank(a.dataset.metadataKey ?? '') - metadataRank(b.dataset.metadataKey ?? ''))
         .forEach(row => section.append(row));
+}
+
+if (import.meta.env.DEV) {
+    const order = ['text', 'nbtEntity', 'nbtPreview'];
+    console.assert(metadataRank('nbtEntity', order) < metadataRank('nbtPreview', order), 'NBT metadata rows must follow their independent saved order.');
 }
 
 function propertySection(key: string, label: string | HTMLElement, ...children: (Node | string)[]): HTMLDivElement {
@@ -913,6 +932,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const pageAligns = pages.map((_, index) => options.pageAligns?.[index] ?? options.align ?? defaultTextDisplayOptions.align);
         const pageTypes = pages.map((_, index) => options.pageTypes?.[index] ?? 'text');
         const pageAtlases = pages.map((_, index) => options.pageAtlases?.[index] ?? 'minecraft:blocks');
+        const pageHats = pages.map((_, index) => options.pageHats?.[index] ?? true);
+        const pageTypeValues = pages.map((page, index) => ({ ...options.pageTypeValues?.[index], [pageTypes[index]]: page }));
+        const pageExtraValues = pages.map((_, index) => ({ ...options.pageExtraValues?.[index] }));
         let pageIndex = Math.min(Math.max(options.pageIndex ?? 0, 0), pages.length - 1);
         options.color = pageColors[pageIndex];
         options.alpha = pageAlphas[pageIndex];
@@ -927,6 +949,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             options.pageAligns = pageAligns;
             options.pageTypes = pageTypes;
             options.pageAtlases = pageAtlases;
+            options.pageHats = pageHats;
+            options.pageTypeValues = pageTypeValues;
+            options.pageExtraValues = pageExtraValues;
             options.pageIndex = pageIndex;
             const sceneText = pages.join('');
             await updateTextDisplay(uuid, sceneText, options);
@@ -943,7 +968,11 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         };
 
         const contentType = pageTypes[pageIndex];
-        const textInput = contentType === 'sprite' ? document.createElement('input') : document.createElement('textarea');
+        const textInput = contentType === 'text' ? document.createElement('textarea') : document.createElement('input');
+        if (contentType === 'player') {
+            textInput.placeholder = '플레이어 이름';
+            textInput.maxLength = 16;
+        }
         if (textInput instanceof HTMLTextAreaElement) textInput.rows = 3;
         textInput.value = text;
         const pageControls = document.createElement('div');
@@ -973,25 +1002,31 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const typeSelect = propertySelect(contentType, textDisplayContentTypes, async value => {
             const previousType = pageTypes[pageIndex];
             const previousText = pages[pageIndex];
+            const previousValues = { ...pageTypeValues[pageIndex] };
+            pageTypeValues[pageIndex][previousType] = previousText;
             pageTypes[pageIndex] = value as TextDisplayContentType;
-            if (value === 'sprite' && pages[pageIndex] === '텍스트 입력') text = pages[pageIndex] = '';
+            text = pages[pageIndex] = pageTypeValues[pageIndex][pageTypes[pageIndex]] ?? '';
             try {
                 await update();
                 clearRenderedPropertySections();
                 schedulePropertySectionRender();
             } catch (error) {
                 pageTypes[pageIndex] = previousType;
+                pageTypeValues[pageIndex] = previousValues;
                 text = pages[pageIndex] = previousText;
                 throw error;
             }
         });
-        typeSelect.className = 'text-display-type';
+        typeSelect.className = 'text-display-type-input';
         const typeSelectWrap = document.createElement('span');
-        typeSelectWrap.className = 'settings-select';
+        typeSelectWrap.className = 'settings-select text-display-type';
+        const typeSelectValue = document.createElement('span');
+        typeSelectValue.className = 'text-display-type-value';
+        typeSelectValue.textContent = contentType;
         const typeSelectIcon = document.createElement('span');
         typeSelectIcon.className = 'lucide-icon';
         typeSelectIcon.textContent = '\uE06D';
-        typeSelectWrap.append(typeSelect, typeSelectIcon);
+        typeSelectWrap.append(typeSelectValue, typeSelectIcon, typeSelect);
         pageControls.append(
             typeSelectWrap,
             pageButton('<', '이전 페이지', () => changePage(Math.max(0, pageIndex - 1)), pageIndex === 0),
@@ -1005,6 +1040,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 pageAligns.splice(pageIndex + 1, 0, options.align ?? defaultTextDisplayOptions.align);
                 pageTypes.splice(pageIndex + 1, 0, 'text');
                 pageAtlases.splice(pageIndex + 1, 0, 'minecraft:blocks');
+                pageHats.splice(pageIndex + 1, 0, true);
+                pageTypeValues.splice(pageIndex + 1, 0, { text: '' });
+                pageExtraValues.splice(pageIndex + 1, 0, {});
                 await changePage(pageIndex + 1, false);
                 recordSceneChange(loadedObjectGroup, before);
             }),
@@ -1018,6 +1056,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 pageAligns.splice(pageIndex, 1);
                 pageTypes.splice(pageIndex, 1);
                 pageAtlases.splice(pageIndex, 1);
+                pageHats.splice(pageIndex, 1);
+                pageTypeValues.splice(pageIndex, 1);
+                pageExtraValues.splice(pageIndex, 1);
                 await changePage(Math.min(pageIndex, pages.length - 1), true);
                 recordSceneChange(loadedObjectGroup, before);
             }, pages.length === 1)
@@ -1025,15 +1066,24 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const textControls = document.createElement('div');
         textControls.className = 'text-display-text';
         const valueInput = propertyValueControl(textInput, async value => {
+            if (contentType === 'sprite' && !await isValidSpriteReference(pageAtlases[pageIndex], value)) {
+                throw new Error('현재 아틀라스에 없는 스프라이트입니다.');
+            }
             const previous = text;
             text = value;
             pages[pageIndex] = value;
+            pageTypeValues[pageIndex][pageTypes[pageIndex]] = value;
             try { await update(); } catch (error) {
                 text = previous;
                 pages[pageIndex] = previous;
+                pageTypeValues[pageIndex][pageTypes[pageIndex]] = previous;
                 throw error;
             }
-        }, true);
+        }, contentType !== 'player' && contentType !== 'sprite', contentType === 'sprite');
+        if (contentType === 'player') valueInput.onkeydown = event => {
+            if (event.key === 'Enter') valueInput.blur();
+        };
+        const nbtSource = pageExtraValues[pageIndex].nbtSource ?? 'entity';
         if (contentType === 'sprite') {
             const valueControls = document.createElement('span');
             valueControls.className = 'text-display-value';
@@ -1046,28 +1096,117 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 const before = captureSceneState(loadedObjectGroup);
                 const previous = text;
                 text = pages[pageIndex] = value;
+                pageTypeValues[pageIndex][pageTypes[pageIndex]] = value;
                 try {
                     await update();
                     valueInput.value = value;
                     recordSceneChange(loadedObjectGroup, before);
+                    clearRenderedPropertySections();
+                    schedulePropertySectionRender();
                 } catch (error) {
                     text = pages[pageIndex] = previous;
+                    pageTypeValues[pageIndex][pageTypes[pageIndex]] = previous;
                     throw error;
                 }
             });
             valueControls.append(valueButton, valueInput);
             textControls.append(pageControls, valueControls);
+        } else if (contentType === 'nbt') {
+            const sourceSelect = propertySelect(nbtSource, ['entity', 'block', 'storage'], async value => {
+                const previous = pageExtraValues[pageIndex].nbtSource;
+                pageExtraValues[pageIndex].nbtSource = value as typeof nbtSource;
+                try {
+                    await update();
+                    clearRenderedPropertySections();
+                    schedulePropertySectionRender();
+                } catch (error) {
+                    pageExtraValues[pageIndex].nbtSource = previous;
+                    throw error;
+                }
+            });
+            const sourceSelectWrap = document.createElement('span');
+            sourceSelectWrap.className = 'settings-select';
+            const sourceSelectIcon = document.createElement('span');
+            sourceSelectIcon.className = 'lucide-icon';
+            sourceSelectIcon.textContent = '\uE06D';
+            sourceSelectWrap.append(sourceSelect, sourceSelectIcon);
+            textControls.append(pageControls, sourceSelectWrap);
         } else {
             textControls.append(pageControls, valueInput);
         }
-        const textProperty = metadataProperty('text', contentType === 'sprite' ? '값' : '텍스트', textControls);
-        if (contentType === 'sprite') textProperty.classList.add('text-display-sprite-value');
+        const contentFields = textDisplayContentFields[contentType];
+        const textProperty = metadataProperty('text', contentFields?.primaryLabel ?? (contentType === 'nbt' ? 'NBT' : contentType === 'player' ? '닉네임' : contentType === 'sprite' ? '값' : '텍스트'), textControls);
+        if (textInput instanceof HTMLInputElement) textProperty.classList.add('text-display-sprite-value');
         metadataSection.append(textProperty);
+        if (contentType === 'nbt') {
+            const previewInput = document.createElement('input');
+            previewInput.value = pageExtraValues[pageIndex].preview ?? '';
+            metadataSection.append(metadataProperty('nbtPreview', '미리보기', propertyValueControl(previewInput, async value => {
+                const previous = pageExtraValues[pageIndex].preview;
+                pageExtraValues[pageIndex].preview = value;
+                try { await update(); } catch (error) {
+                    pageExtraValues[pageIndex].preview = previous;
+                    throw error;
+                }
+            }, true)));
+            if (nbtSource === 'entity') metadataSection.append(metadataProperty('nbtValue', '값', valueInput));
+
+            const sourceInput = document.createElement('input');
+            sourceInput.value = pageExtraValues[pageIndex][nbtSource] ?? '';
+            const sourceLabel = nbtSource === 'entity' ? '엔티티' : nbtSource === 'block' ? '좌표' : '스토리지';
+            const sourceKey = nbtSource === 'entity' ? 'nbtEntity' : nbtSource === 'block' ? 'nbtBlock' : 'nbtStorage';
+            metadataSection.append(metadataProperty(sourceKey, sourceLabel, propertyValueControl(sourceInput, async value => {
+                const previous = pageExtraValues[pageIndex][nbtSource];
+                pageExtraValues[pageIndex][nbtSource] = value;
+                try { await update(); } catch (error) {
+                    pageExtraValues[pageIndex][nbtSource] = previous;
+                    throw error;
+                }
+            }, true)));
+
+            const interpret = document.createElement('input');
+            interpret.type = 'checkbox';
+            interpret.checked = pageExtraValues[pageIndex].interpret ?? false;
+            metadataSection.append(metadataProperty('interpret', '분석', propertyValueControl(interpret, async value => {
+                const previous = pageExtraValues[pageIndex].interpret;
+                pageExtraValues[pageIndex].interpret = value === 'true';
+                try { await update(); } catch (error) {
+                    pageExtraValues[pageIndex].interpret = previous;
+                    throw error;
+                }
+            }, true)));
+        }
+        if (contentFields?.extra) {
+            const [extraKey, extraLabel] = contentFields.extra;
+            const extraInput = document.createElement('input');
+            extraInput.value = pageExtraValues[pageIndex][extraKey] ?? '';
+            metadataSection.append(metadataProperty(extraKey, extraLabel, propertyValueControl(extraInput, async value => {
+                const previous = pageExtraValues[pageIndex][extraKey];
+                pageExtraValues[pageIndex][extraKey] = value;
+                try { await update(); } catch (error) {
+                    pageExtraValues[pageIndex][extraKey] = previous;
+                    throw error;
+                }
+            }, true)));
+        }
+        if (contentType === 'player') {
+            const hat = document.createElement('input');
+            hat.type = 'checkbox';
+            hat.className = 'text-display-player-hat';
+            hat.checked = pageHats[pageIndex];
+            metadataSection.append(metadataProperty('hat', '2번 레이어', propertyValueControl(hat, async value => {
+                const previous = pageHats[pageIndex];
+                pageHats[pageIndex] = value === 'true';
+                try { await update(); } catch (error) {
+                    pageHats[pageIndex] = previous;
+                    throw error;
+                }
+            }, true)));
+        }
         if (contentType === 'sprite') {
             const atlasControls = document.createElement('span');
             atlasControls.className = 'text-display-atlas';
             const atlasInput = document.createElement('input');
-            atlasInput.readOnly = true;
             atlasInput.value = pageAtlases[pageIndex];
             const atlasButton = document.createElement('button');
             atlasButton.type = 'button';
@@ -1076,18 +1215,45 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             atlasButton.title = atlasButton.ariaLabel = '아틀라스 선택';
             atlasButton.onclick = () => openSpriteAtlasPicker(pageAtlases[pageIndex], async atlas => {
                 const before = captureSceneState(loadedObjectGroup);
+                const value = await resolveSpriteReference(atlas, pages[pageIndex]);
                 const previous = pageAtlases[pageIndex];
+                const previousText = text;
+                if (!value) throw new Error('존재하지 않거나 비어 있는 스프라이트 아틀라스입니다.');
                 pageAtlases[pageIndex] = atlas;
+                text = pages[pageIndex] = value;
+                pageTypeValues[pageIndex].sprite = value;
                 try {
                     await update();
                     atlasInput.value = atlas;
+                    valueInput.value = value;
                     recordSceneChange(loadedObjectGroup, before);
+                    clearRenderedPropertySections();
+                    schedulePropertySectionRender();
                 } catch (error) {
                     pageAtlases[pageIndex] = previous;
+                    text = pages[pageIndex] = previousText;
+                    pageTypeValues[pageIndex].sprite = previousText;
                     throw error;
                 }
             });
-            atlasControls.append(atlasButton, atlasInput);
+            atlasControls.append(atlasButton, propertyValueControl(atlasInput, async atlas => {
+                const value = await resolveSpriteReference(atlas, pages[pageIndex]);
+                if (!value) throw new Error('존재하지 않거나 비어 있는 스프라이트 아틀라스입니다.');
+                const previous = pageAtlases[pageIndex];
+                const previousText = text;
+                pageAtlases[pageIndex] = atlas;
+                text = pages[pageIndex] = value;
+                pageTypeValues[pageIndex].sprite = value;
+                try { await update(); } catch (error) {
+                    pageAtlases[pageIndex] = previous;
+                    text = pages[pageIndex] = previousText;
+                    pageTypeValues[pageIndex].sprite = previousText;
+                    throw error;
+                }
+                valueInput.value = value;
+                clearRenderedPropertySections();
+                schedulePropertySectionRender();
+            }, false, true));
             metadataSection.append(metadataProperty('atlas', '아틀라스', atlasControls));
         }
 
@@ -1113,7 +1279,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         font.querySelector<HTMLOptionElement>('option[value="minecraft:uniform"]')!.textContent = 'Uniform';
         metadataSection.append(metadataProperty('font', '폰트', font));
 
-        const addColor = (key: 'color' | 'backgroundColor', label: string) => {
+        const addColor = (key: 'color' | 'shadowColor' | 'backgroundColor', label: string) => {
             let value = /^#[0-9a-f]{6}$/i.test(options[key]) ? options[key] : defaultTextDisplayOptions[key];
             const updateColor = (next: string) => {
                 if (key !== 'color') return updateOptions({ [key]: next });
@@ -1160,7 +1326,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             controls.append(mode, picker);
             metadataSection.append(metadataProperty(key, label, controls));
         };
-        const addAlpha = (key: 'alpha' | 'backgroundAlpha', label: string) => {
+        const addAlpha = (key: 'alpha' | 'shadowAlpha' | 'backgroundAlpha', label: string) => {
             const controls = document.createElement('span');
             controls.className = 'text-display-alpha';
             const number = document.createElement('input');
@@ -1191,6 +1357,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         };
         addColor('color', '글자 색');
         addAlpha('alpha', '글자 투명도');
+        addColor('shadowColor', '그림자 색');
+        addAlpha('shadowAlpha', '그림자 투명도');
         addColor('backgroundColor', '배경 색');
         addAlpha('backgroundAlpha', '배경 투명도');
 

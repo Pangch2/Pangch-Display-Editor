@@ -580,8 +580,47 @@
 
 .text-display-pages {
   display: grid;
-  grid-template-columns: minmax(64px, 1.5fr) repeat(4, 1fr);
+  grid-template-columns: minmax(80px, 1.5fr) repeat(4, 1fr);
   gap: 4px;
+}
+
+.text-display-type {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  padding: 3px 7px 3px 4px;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  background: #1e1e21;
+}
+
+.text-display-type-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-select.text-display-type .lucide-icon {
+  position: static;
+  top: auto;
+  right: auto;
+  margin-left: 4px;
+  pointer-events: none;
+  transform: none;
+}
+
+#project-details .object-property .text-display-type-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.text-display-type:has(.text-display-type-input:focus-visible) {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
 }
 
 .object-metadata-row.text-display-sprite-value > label {
@@ -592,6 +631,19 @@
 .text-display-text {
   display: grid;
   gap: 4px;
+}
+
+#project-details .object-property input[type="checkbox"] {
+  appearance: auto;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  justify-self: start;
+  margin: 0;
+  padding: 0;
+  border: initial;
+  background: initial;
+  cursor: pointer;
 }
 
 .text-display-pages button {
@@ -626,12 +678,6 @@
   background: #1e1e21;
   color: #f0f0f0;
   cursor: pointer;
-}
-
-.object-property input[type="checkbox"] {
-  appearance: auto;
-  width: auto;
-  justify-self: start;
 }
 
 .text-display-effects {

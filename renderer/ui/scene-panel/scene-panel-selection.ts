@@ -202,7 +202,10 @@ export function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
     if (e.shiftKey || e.ctrlKey || e.metaKey) {
         ud.addOrToggleInSelection?.(groupIds, meshToIds);
     } else {
-        ud.replaceSelectionWithGroupsAndObjects?.(groupIds || new Set(), meshToIds || new Map(), { anchorMode: 'default' });
+        ud.replaceSelectionWithGroupsAndObjects?.(groupIds || new Set(), meshToIds || new Map(), {
+            anchorMode: 'default',
+            primaryIsRangeStart: true
+        });
     }
 }
 

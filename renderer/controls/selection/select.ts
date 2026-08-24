@@ -4,14 +4,13 @@ import {
     Group,
     Vector3,
     Matrix4,
-    Raycaster,
-    Sphere,
-    type Intersection
+    Raycaster
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from './overlay';
 import { entityVisibleAttributeName } from '../../entity-material';
 import { getVisibleInstanceIds } from '../scene-visibility';
+import { intersectSceneInstances } from './instance-raycast';
 
 // --- Types ---
 
@@ -57,10 +56,6 @@ export const currentSelection: SelectionState = {
 let loadedObjectGroupForSelect: Group | null = null;
 let _selectedItemsCacheKey: string | null = null;
 let _selectedItemsCache: SelectedItem[] | null = null;
-const _pickMesh = new Mesh();
-const _pickLocalMatrix = new Matrix4();
-const _pickIntersections: Intersection[] = [];
-const _pickSphere = new Sphere();
 
 // --- Internal Helpers ---
 
@@ -157,24 +152,10 @@ export function pickInstance(
     raycaster: Raycaster, 
     rootGroup: Group
 ): { mesh: Mesh | InstancedMesh; instanceId: number } | null {
-    let picked: { mesh: InstancedMesh; instanceId: number; distance: number } | null = null;
-    rootGroup.traverse((object) => {
-        if (!(object instanceof InstancedMesh) || object.visible === false || !object.layers.test(raycaster.layers)) return;
-        if (object.boundingSphere && !raycaster.ray.intersectsSphere(_pickSphere.copy(object.boundingSphere).applyMatrix4(object.matrixWorld))) return;
-
-        _pickMesh.geometry = object.geometry;
-        _pickMesh.material = object.material;
-        for (const instanceId of getVisibleInstanceIds(object)) {
-            object.getMatrixAt(instanceId, _pickLocalMatrix);
-            _pickMesh.matrixWorld.multiplyMatrices(object.matrixWorld, _pickLocalMatrix);
-            _pickMesh.raycast(raycaster, _pickIntersections);
-            for (const hit of _pickIntersections) {
-                if (!picked || hit.distance < picked.distance) picked = { mesh: object, instanceId, distance: hit.distance };
-            }
-            _pickIntersections.length = 0;
-        }
-    });
-    return picked ? { mesh: picked.mesh, instanceId: picked.instanceId } : null;
+    const hit = intersectSceneInstances(raycaster, rootGroup, isInstanceRendered);
+    return hit?.object instanceof InstancedMesh && hit.instanceId !== undefined
+        ? { mesh: hit.object, instanceId: hit.instanceId }
+        : null;
 }
 
 export function isInstanceRendered(mesh: Mesh | InstancedMesh, instanceId: number): boolean {

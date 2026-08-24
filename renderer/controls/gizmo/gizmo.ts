@@ -581,12 +581,11 @@ function syncDragSelectionMask(): void {
     for (const mesh of meshes) {
         const previousIds = _dragSelectedIdsByMesh.get(mesh) ?? new Set<number>();
         const nextIds = nextIdsByMesh.get(mesh) ?? new Set<number>();
-        if (previousIds.size === nextIds.size && [...previousIds].every(id => nextIds.has(id))) continue;
 
         const attribute = mesh.geometry.getAttribute(dragSelectedAttributeName) as InstancedBufferAttribute | undefined;
         if (!attribute) continue;
         for (const id of previousIds) if (!nextIds.has(id)) attribute.setX(id, 0);
-        for (const id of nextIds) if (!previousIds.has(id)) attribute.setX(id, 1);
+        for (const id of nextIds) attribute.setX(id, 1);
         attribute.needsUpdate = true;
     }
     _dragSelectedIdsByMesh = nextIdsByMesh;
