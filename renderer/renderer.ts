@@ -44,7 +44,6 @@ let coordinateAxes: Group;
 let zSymbol: Group;
 let viewHelperWasAnimating = false;
 let cameraTypeBeforeViewHelper: 'perspective' | 'orthographic' | null = null;
-let perspectiveDistanceBeforeOrthographic: number | null = null;
 let cameraFov = Math.min(120, Math.max(20, Number(localStorage.getItem('pdeCameraFov')) || 80));
 let gridHeight = Number(localStorage.getItem('pdeGridHeight'));
 if (!Number.isFinite(gridHeight)) gridHeight = 0;
@@ -685,17 +684,18 @@ function setCameraType(type: 'perspective' | 'orthographic'): void {
     const position = camera.position.clone();
     const quaternion = camera.quaternion.clone();
     const distance = position.distanceTo(controls.target);
-    const halfHeight = Math.max(distance * Math.tan(cameraFov / 2 * Math.PI / 180), 10.5);
+    const perspectiveScale = Math.tan(cameraFov / 2 * Math.PI / 180);
+    const halfHeight = camera.isPerspectiveCamera
+        ? distance * perspectiveScale / camera.zoom
+        : (camera.top - camera.bottom) / (2 * camera.zoom);
     const nextCamera = type === 'perspective'
         ? new PerspectiveCamera(cameraFov, aspect, 0.05, 1000)
         : new OrthographicCamera(-halfHeight * aspect, halfHeight * aspect, halfHeight, -halfHeight, 0.05, 1000);
 
     if (type === 'orthographic') {
-        perspectiveDistanceBeforeOrthographic = distance;
         position.sub(controls.target).setLength(Math.max(distance, 20)).add(controls.target);
-    } else if (perspectiveDistanceBeforeOrthographic !== null) {
-        position.sub(controls.target).setLength(perspectiveDistanceBeforeOrthographic).add(controls.target);
-        perspectiveDistanceBeforeOrthographic = null;
+    } else {
+        position.sub(controls.target).setLength(halfHeight / perspectiveScale).add(controls.target);
     }
     nextCamera.position.copy(position);
     nextCamera.quaternion.copy(quaternion);
