@@ -1257,14 +1257,6 @@ export function initGizmo({
     );
     scene.add(selectionHelper);
 
-    const mouseInput = new Vector2();
-
-    renderer.domElement.addEventListener('pointerdown', (event: PointerEvent) => {
-        const rect = renderer.domElement.getBoundingClientRect();
-        mouseInput.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-        mouseInput.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    }, true);
-
     const setupResult = setupGizmo(camera, renderer as Renderer, scene);
     transformControls = setupResult.transformControls;
     const gizmoContainer = transformControls.getHelper().children[0];
@@ -1322,7 +1314,10 @@ export function initGizmo({
             }
 
             if ((blockbenchScaleMode || isSmartScaleEnabled()) && draggingMode === 'scale' && !isUniformScale) {
-                dragAnchorDirections = detectBlockbenchScaleAxes(camera, mouseInput, selectionHelper!, currentSpace);
+                dragAnchorDirections = detectBlockbenchScaleAxes(
+                    transformControls!.pointStart,
+                    transformControls!.worldQuaternionStart
+                );
             }
 
             beginSmartScaleDrag(

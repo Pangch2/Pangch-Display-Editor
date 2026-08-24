@@ -2,8 +2,7 @@ import {
     Matrix4, 
     Matrix3, 
     Object3D, 
-    Camera, 
-    Vector2, 
+    Quaternion,
     Vector3, 
     Box3 
 } from 'three/webgpu';
@@ -69,34 +68,21 @@ interface AxisSelection {
 }
 
 export function detectBlockbenchScaleAxes(
-    camera: Camera, 
-    mouseInput: Vector2, 
-    selectionHelper: Object3D, 
-    currentSpace: 'world' | 'local'
+    pointStart: Vector3,
+    worldQuaternionStart: Quaternion
 ): AxisSelection {
-    const checkAxis = (x: number, y: number, z: number): boolean => {
-        const axisVec = new Vector3(x, y, z);
-        if (currentSpace === 'local') {
-            axisVec.applyQuaternion(selectionHelper.quaternion);
-        }
-        
-        const origin = selectionHelper.position.clone();
-        const target = origin.clone().add(axisVec);
-        
-        origin.project(camera);
-        target.project(camera);
-        
-        const dir = new Vector2(target.x - origin.x, target.y - origin.y);
-        const mouse = new Vector2(mouseInput.x - origin.x, mouseInput.y - origin.y);
-        
-        return mouse.dot(dir) > 0;
-    };
+    const localPointStart = pointStart.clone().applyQuaternion(worldQuaternionStart.clone().invert());
 
     return {
-        x: checkAxis(1, 0, 0),
-        y: checkAxis(0, 1, 0),
-        z: checkAxis(0, 0, 1)
+        x: localPointStart.x > 0,
+        y: localPointStart.y > 0,
+        z: localPointStart.z > 0
     };
+}
+
+if (import.meta.env.DEV) {
+    const axes = detectBlockbenchScaleAxes(new Vector3(-1, 1, 1), new Quaternion());
+    console.assert(!axes.x && axes.y && axes.z, 'Blockbench scale must follow the grabbed negative handle.');
 }
 
 export function computeBlockbenchScaleShift(
