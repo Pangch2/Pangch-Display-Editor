@@ -228,6 +228,15 @@ export function isItemDisplayHatEnabled(mesh: PdeMesh, instanceId: number): bool
     return !!(getDisplayType(mesh, instanceId) === 'item_display' && mesh?.userData?.hasHat && mesh.userData.hasHat[instanceId]);
 }
 
+export function getInstanceLocalOriginOffset(mesh: PdeMesh, instanceId: number, out = new Vector3()): Vector3 {
+    out.set(0, isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0, 0);
+    if (getDisplayType(mesh, instanceId) === 'text_display') {
+        const box = getInstanceLocalBox(mesh, instanceId);
+        if (box) out.x = (box.min.x + box.max.x) * 0.5;
+    }
+    return out;
+}
+
 export function getInstanceLocalBoxMin(mesh: PdeMesh, instanceId: number, out = new Vector3()): Vector3 | null {
     const box = getInstanceLocalBox(mesh, instanceId);
     if (!box) return null;
@@ -260,8 +269,7 @@ export function calculateAvgOriginForChildren(children: GroupChildObject[], out 
         if (!m && m !== 0) return;
 
         getInstanceWorldMatrixForOrigin(m, id, tempMat);
-        const localY = isItemDisplayHatEnabled(m, id) ? 0.03125 : 0;
-        tempPos.set(0, localY, 0).applyMatrix4(tempMat);
+        getInstanceLocalOriginOffset(m, id, tempPos).applyMatrix4(tempMat);
         out.add(tempPos);
     });
 
@@ -315,6 +323,14 @@ export function getInstanceLocalBox(mesh: PdeMesh, instanceId: number): Box3 | n
     }
 
     return box;
+}
+
+if (import.meta.env.DEV) {
+    const geometry = new BufferGeometry();
+    geometry.boundingBox = new Box3(new Vector3(-1, 0, 0), new Vector3(3, 1, 0));
+    const mesh = new InstancedMesh(geometry, undefined, 1);
+    mesh.userData.displayType = 'text_display';
+    console.assert(getInstanceLocalOriginOffset(mesh, 0).equals(new Vector3(1, 0, 0)), 'Text display origin must stay horizontally centered.');
 }
 
 export function getInstanceWorldMatrix(mesh: PdeMesh, instanceId: number, outMatrix: Matrix4): Matrix4 {

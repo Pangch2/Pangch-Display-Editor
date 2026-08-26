@@ -76,9 +76,14 @@ export function getObjectOriginWorld(mesh: Mesh | InstancedMesh, instanceId: num
             return out.applyMatrix4(Overlay.getInstanceWorldMatrix(mesh, instanceId, _TMP_MAT4_A));
         }
     }
+    if (displayType === 'text_display') {
+        Overlay.getInstanceLocalOriginOffset(mesh, instanceId, out);
+    } else {
+        out.set(0, 0, 0);
+    }
 
     getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
-    return out.set(0, 0, 0).applyMatrix4(_TMP_MAT4_A);
+    return out.applyMatrix4(_TMP_MAT4_A);
 }
 
 

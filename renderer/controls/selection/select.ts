@@ -139,8 +139,7 @@ export function calculateAvgOrigin(): Vector3 {
 
     items.forEach(({ mesh, instanceId }) => {
         Overlay.getInstanceWorldMatrixForOrigin(mesh, instanceId, tempMat);
-        const localY = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
-        tempPos.set(0, localY, 0).applyMatrix4(tempMat);
+        Overlay.getInstanceLocalOriginOffset(mesh, instanceId, tempPos).applyMatrix4(tempMat);
         center.add(tempPos);
     });
 
