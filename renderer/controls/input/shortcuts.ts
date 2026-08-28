@@ -20,6 +20,7 @@ export const shortcutDefinitions = [
   { id: 'headPainterClearBrushSelection', category: '헤드 페인터', label: '브러시 선택 해제', defaults: ['Ctrl+G'] },
   { id: 'undo', category: '기록', label: '실행 취소', defaults: ['Ctrl+Z'] },
   { id: 'redo', category: '기록', label: '다시 실행', defaults: ['Ctrl+Shift+Z', 'Ctrl+Y'] },
+  { id: 'previousGizmo', category: '기록', label: '이전 조작 도구', defaults: ['Ctrl+T', 'Ctrl+R', 'Ctrl+S'] },
   { id: 'focusSelection', category: '선택', label: '선택 항목에 초점', defaults: ['F'] },
   { id: 'selectAll', category: '선택', label: '전체 선택', defaults: ['Ctrl+A'] },
   { id: 'selectAllObjects', category: '선택', label: '모든 오브젝트 선택', defaults: ['Ctrl+Shift+A'] },

@@ -398,8 +398,7 @@ window.addEventListener('wheel', event => {
     dock.scrollTop += delta;
     if (dock.scrollTop === previousScrollTop) return;
     event.preventDefault();
-    dropPreviewPlacementKey = '';
-    updateDropPreview(dragClientX, dragClientY);
+    if (dropPreview && !dropPreview.hidden) dropPreview.style.top = `${parseFloat(dropPreview.style.top) - (dock.scrollTop - previousScrollTop)}px`;
 }, { passive: false });
 
 function movePanel(panelId: PanelId): void {

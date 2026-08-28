@@ -47,6 +47,8 @@ interface PivotResetFlags {
     selectionAnchorMode: 'default' | 'center';
 }
 
+type GizmoMode = 'translate' | 'rotate' | 'scale';
+
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface HandleKeyState {
@@ -154,9 +156,18 @@ export interface HandleKeyParams {
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export function initHandleKey(p: HandleKeyParams): void {
+    let pivotEditPreviousGizmoMode: string | null = null;
     const getDirectSelectedItems = (): SelectedItem[] => Array.from(p.currentSelection.objects, ([mesh, ids]) =>
         [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))
     ).flat();
+
+    const setGizmoMode = (mode: GizmoMode): void => {
+        const controls = p.getTransformControls();
+        const currentMode = controls.mode as GizmoMode;
+        if (mode === currentMode) return;
+        p.state.previousGizmoMode = currentMode;
+        controls.setMode(mode);
+    };
 
     // ── Inner key handler ────────────────────────────────────────────────────
 
@@ -191,15 +202,19 @@ export function initHandleKey(p: HandleKeyParams): void {
                 break;
 
             case 'translate':
-                p.getTransformControls().setMode('translate');
+                setGizmoMode('translate');
                 resetHelperRotationForWorldSpace();
                 break;
             case 'rotate':
-                p.getTransformControls().setMode('rotate');
+                setGizmoMode('rotate');
                 resetHelperRotationForWorldSpace();
                 break;
             case 'scale':
-                p.getTransformControls().setMode('scale');
+                setGizmoMode('scale');
+                resetHelperRotationForWorldSpace();
+                break;
+            case 'previousGizmo':
+                setGizmoMode(p.state.previousGizmoMode as GizmoMode);
                 resetHelperRotationForWorldSpace();
                 break;
             case 'duplicate':
@@ -429,7 +444,7 @@ export function initHandleKey(p: HandleKeyParams): void {
             event.preventDefault();
             if (!p.state.isPivotEditMode) {
                 p.state.isPivotEditMode = true;
-                p.state.previousGizmoMode = p.getTransformControls().mode;
+                pivotEditPreviousGizmoMode = p.getTransformControls().mode;
                 p.state.pivotEditPreviousPivotMode = p.state.pivotMode;
                 p.getTransformControls().setMode('translate');
             }
@@ -502,9 +517,13 @@ export function initHandleKey(p: HandleKeyParams): void {
                 if (before) recordSceneChange(p.loadedObjectGroup, before);
         }
 
-        if (p.state.isGizmoBusy) return;
-        const key = (['translate', 'rotate', 'scale', 'toggleSpace', 'togglePivot', 'removeShear', 'toggleScaleMode', 'toggleSmartScale', 'group', 'duplicate', 'knife', 'toggleVertex', 'toggleShading'] as ShortcutId[])
+        const key = (['translate', 'rotate', 'scale', 'previousGizmo', 'toggleSpace', 'togglePivot', 'removeShear', 'toggleScaleMode', 'toggleSmartScale', 'group', 'duplicate', 'knife', 'toggleVertex', 'toggleShading'] as ShortcutId[])
             .find(id => matchesShortcut(event, id));
+        if (key === 'previousGizmo') {
+            event.preventDefault();
+            if (event.repeat) return;
+        }
+        if (p.state.isGizmoBusy) return;
         if (key && p.getTransformControls().dragging) {
             p.state.isGizmoBusy = true;
             const attachedObject = p.getTransformControls().object;
@@ -546,7 +565,8 @@ export function initHandleKey(p: HandleKeyParams): void {
                 }
 
                 p.state.isPivotEditMode = false;
-                p.getTransformControls().setMode(p.state.previousGizmoMode);
+                if (pivotEditPreviousGizmoMode) p.getTransformControls().setMode(pivotEditPreviousGizmoMode);
+                pivotEditPreviousGizmoMode = null;
                 p.state.pivotEditPreviousPivotMode = null;
 
                 if (p.getTransformControls().dragging) {
@@ -567,7 +587,8 @@ export function initHandleKey(p: HandleKeyParams): void {
         if (p.state.isPivotEditMode) {
             p.state.isPivotEditMode = false;
             try {
-                p.getTransformControls().setMode(p.state.previousGizmoMode);
+                if (pivotEditPreviousGizmoMode) p.getTransformControls().setMode(pivotEditPreviousGizmoMode);
+                pivotEditPreviousGizmoMode = null;
             } catch (err) {
                 console.warn('Failed to restore transformControls mode on blur/visibility change', err);
             }
