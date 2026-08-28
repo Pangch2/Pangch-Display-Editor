@@ -10,6 +10,8 @@ export type TextDisplayOptions = {
     shadowAlpha?: number;
     pageColors?: string[];
     pageAlphas?: number[];
+    pageShadowColors?: string[];
+    pageShadowAlphas?: number[];
     pageEffects?: TextDisplayEffects[];
     pageAligns?: Array<'left' | 'center' | 'right'>;
     pageTypes?: TextDisplayContentType[];
@@ -517,6 +519,7 @@ function snapTextAlpha(data: Uint8ClampedArray, alpha: number): void {
 }
 
 type TextAlphaSegment = { x: number; y: number; width: number; alpha: number };
+type TextShadowSegment = Omit<TextAlphaSegment, 'alpha'> & { color: string };
 
 function applyTextAlphaSegments(data: Uint8ClampedArray, canvasWidth: number, scale: number, segments: TextAlphaSegment[]): void {
     const canvasHeight = data.length / 4 / canvasWidth;
@@ -533,7 +536,7 @@ function applyTextAlphaSegments(data: Uint8ClampedArray, canvasWidth: number, sc
     }
 }
 
-function compositeTextShadow(canvas: HTMLCanvasElement, shadowCanvas: HTMLCanvasElement, color: string): void {
+function compositeTextShadow(canvas: HTMLCanvasElement, shadowCanvas: HTMLCanvasElement, color: string, segments: TextShadowSegment[]): void {
     const shadowContext = shadowCanvas.getContext('2d')!;
     shadowContext.save();
     shadowContext.resetTransform();
@@ -541,6 +544,14 @@ function compositeTextShadow(canvas: HTMLCanvasElement, shadowCanvas: HTMLCanvas
     shadowContext.globalAlpha = 1;
     shadowContext.fillStyle = color;
     shadowContext.fillRect(0, 0, canvas.width, canvas.height);
+    shadowContext.restore();
+    shadowContext.save();
+    shadowContext.globalCompositeOperation = 'source-atop';
+    shadowContext.globalAlpha = 1;
+    for (const segment of segments) {
+        shadowContext.fillStyle = segment.color;
+        shadowContext.fillRect(segment.x, segment.y, segment.width, lineHeight + 1);
+    }
     shadowContext.restore();
 
     const context = canvas.getContext('2d')!;
@@ -679,7 +690,9 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     const pageColor = (characterIndex: number) => validColor(options.pageColors?.[pageIndexForCharacter(characterIndex)] ?? options.color, '#ffffff');
     const pageAlpha = (characterIndex: number) => clampAlpha(options.pageAlphas?.[pageIndexForCharacter(characterIndex)] ?? options.alpha, 1);
     const shadowAlpha = clampAlpha(options.shadowAlpha, 0);
-    const shadowCanvas = shadowAlpha > 0 ? document.createElement('canvas') : null;
+    const pageShadowColor = (characterIndex: number) => validColor(options.pageShadowColors?.[pageIndexForCharacter(characterIndex)] ?? options.shadowColor, '#3f3f3f');
+    const pageShadowAlpha = (characterIndex: number) => clampAlpha(options.pageShadowAlphas?.[pageIndexForCharacter(characterIndex)] ?? options.shadowAlpha, 0);
+    const shadowCanvas = shadowAlpha > 0 || options.pageShadowAlphas?.some(alpha => clampAlpha(alpha, 0) > 0) ? document.createElement('canvas') : null;
     if (shadowCanvas) {
         shadowCanvas.width = canvas.width;
         shadowCanvas.height = canvas.height;
@@ -695,7 +708,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     const shadowOffsets = new Map<number, number>();
     const shadow = shadowContext ? {
         context: shadowContext,
-        alpha: (characterIndex: number) => pageAlpha(characterIndex) * shadowAlpha,
+        alpha: (characterIndex: number) => pageAlpha(characterIndex) * pageShadowAlpha(characterIndex),
         offsets: shadowOffsets
     } : undefined;
 
@@ -711,7 +724,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
             const isSprite = spriteCharacterIndices.has(characterIndex);
             const characterWidth = glyphAdvance(character, measureContext, activeBitmapFont, pageEffect(characterIndex, 'bold'), isSprite);
             const shadowOffset = shadowOffsets.get(characterIndex) ?? 1;
-            if (shadowContext) shadowContext.globalAlpha = pageAlpha(characterIndex) * shadowAlpha;
+            if (shadowContext) shadowContext.globalAlpha = pageAlpha(characterIndex) * pageShadowAlpha(characterIndex);
             const sprite = atlasSprites.get(characterIndex);
             if (sprite) {
                 spriteContext.drawImage(sprite.image, sprite.x, sprite.y, sprite.width, sprite.height, characterX, baseline - fontSize, fontSize, fontSize);
@@ -741,13 +754,17 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
         tintSpriteSegments(spriteImageData.data, spriteCanvas.width, renderScale, spriteColorSegments);
         spriteContext.putImageData(spriteImageData, 0, 0);
     }
-    const samePageStyle = (left: number, right: number) => pageColor(left) === pageColor(right) && pageAlpha(left) === pageAlpha(right);
+    const samePageStyle = (left: number, right: number) => pageColor(left) === pageColor(right)
+        && pageAlpha(left) === pageAlpha(right)
+        && pageShadowColor(left) === pageShadowColor(right);
     if (import.meta.env.DEV && pageEnds.length > 1) {
         console.assert(pageColor(pageEnds[0]) === validColor(options.pageColors?.[1] ?? options.color, '#ffffff'), 'Text page colors must remain independent.');
+        console.assert(pageShadowColor(pageEnds[0]) === validColor(options.pageShadowColors?.[1] ?? options.shadowColor, '#3f3f3f'), 'Text page shadow colors must remain independent.');
     }
     context.globalCompositeOperation = 'source-atop';
     context.globalAlpha = 1;
     const pageSegments: TextAlphaSegment[] = [];
+    const shadowSegments: TextShadowSegment[] = [];
     lines.forEach((line, index) => {
         const align = options.pageAligns?.[pageIndexForCharacter(line.start)] ?? options.align ?? 'center';
         const width = widths[index];
@@ -764,6 +781,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
             const segmentWidth = measureRange(characters.slice(offset, end).join(''), line.start + offset);
             context.fillRect(segmentX, topGlyphOverflow + index * lineHeight, segmentWidth, lineHeight);
             pageSegments.push({ x: segmentX, y: topGlyphOverflow + index * lineHeight, width: segmentWidth, alpha });
+            shadowSegments.push({ x: segmentX, y: topGlyphOverflow + index * lineHeight, width: segmentWidth + 1, color: pageShadowColor(line.start + offset) });
             offset = end;
         }
     });
@@ -773,7 +791,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     applyTextAlphaSegments(imageData.data, canvas.width, renderScale, pageSegments);
     context.putImageData(imageData, 0, 0);
     if (spriteColorSegments.length) context.drawImage(spriteCanvas, 0, 0, renderWidth, renderHeight);
-    if (shadowCanvas) compositeTextShadow(canvas, shadowCanvas, validColor(options.shadowColor, '#3f3f3f'));
+    if (shadowCanvas) compositeTextShadow(canvas, shadowCanvas, validColor(options.shadowColor, '#3f3f3f'), shadowSegments);
     const backgroundAlpha = clampAlpha(options.backgroundAlpha, 0.25);
     context.globalAlpha = textAlpha / 255;
     context.fillStyle = validColor(options.color, '#ffffff');
@@ -1029,7 +1047,8 @@ if (import.meta.env.DEV) {
     const shadowCheck = document.createElement('canvas');
     const shadowLayer = document.createElement('canvas');
     shadowCheck.width = shadowCheck.height = shadowLayer.width = shadowLayer.height = 2;
-    shadowLayer.getContext('2d')!.fillRect(1, 1, 1, 1);
-    compositeTextShadow(shadowCheck, shadowLayer, '#123456');
-    console.assert(shadowCheck.getContext('2d')!.getImageData(1, 1, 1, 1).data.slice(0, 3).join(',') === '18,52,86', 'Minecraft text shadow changed.');
+    shadowLayer.getContext('2d')!.fillRect(0, 1, 2, 1);
+    compositeTextShadow(shadowCheck, shadowLayer, '#123456', [{ x: 1, y: 1, width: 1, color: '#abcdef' }]);
+    const shadowPixels = shadowCheck.getContext('2d')!.getImageData(0, 1, 2, 1).data;
+    console.assert(shadowPixels.slice(0, 3).join(',') === '18,52,86' && shadowPixels.slice(4, 7).join(',') === '171,205,239', 'Minecraft text page shadows must remain independent.');
 }

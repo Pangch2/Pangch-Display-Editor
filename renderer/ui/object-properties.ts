@@ -50,7 +50,7 @@ const textDisplayContentFields: Partial<Record<TextDisplayContentType, { primary
     selector: { primaryLabel: '값', extra: ['separator', '중간 글자'] }
 };
 const defaultTextDisplayOptions: Required<TextDisplayOptions> = {
-    color: '#FFFFFF', shadowColor: '#3F3F3F', shadowAlpha: 0, pageColors: [], pageAlphas: [], pageEffects: [], pageAligns: [], pageTypes: [], pageAtlases: [], pageHats: [], pageTypeValues: [], pageExtraValues: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
+    color: '#FFFFFF', shadowColor: '#3F3F3F', shadowAlpha: 0, pageColors: [], pageAlphas: [], pageShadowColors: [], pageShadowAlphas: [], pageEffects: [], pageAligns: [], pageTypes: [], pageAtlases: [], pageHats: [], pageTypeValues: [], pageExtraValues: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
     bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
     lineLength: 50, align: 'center', font: 'minecraft:default'
 };
@@ -927,6 +927,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const pages = options.pages?.length ? [...options.pages] : [name];
         const pageColors = pages.map((_, index) => options.pageColors?.[index] ?? options.color ?? defaultTextDisplayOptions.color);
         const pageAlphas = pages.map((_, index) => options.pageAlphas?.[index] ?? options.alpha ?? defaultTextDisplayOptions.alpha);
+        const pageShadowColors = pages.map((_, index) => options.pageShadowColors?.[index] ?? options.shadowColor ?? defaultTextDisplayOptions.shadowColor);
+        const pageShadowAlphas = pages.map((_, index) => options.pageShadowAlphas?.[index] ?? options.shadowAlpha ?? defaultTextDisplayOptions.shadowAlpha);
         const effectKeys = ['bold', 'italic', 'underline', 'strikeThrough', 'obfuscated'] as const;
         const pageEffects = pages.map((_, index) => Object.fromEntries(effectKeys.map(key => [key, options.pageEffects?.[index]?.[key] ?? options[key] ?? false])) as Record<typeof effectKeys[number], boolean>);
         const pageAligns = pages.map((_, index) => options.pageAligns?.[index] ?? options.align ?? defaultTextDisplayOptions.align);
@@ -938,6 +940,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         let pageIndex = Math.min(Math.max(options.pageIndex ?? 0, 0), pages.length - 1);
         options.color = pageColors[pageIndex];
         options.alpha = pageAlphas[pageIndex];
+        options.shadowColor = pageShadowColors[pageIndex];
+        options.shadowAlpha = pageShadowAlphas[pageIndex];
         Object.assign(options, pageEffects[pageIndex]);
         options.align = pageAligns[pageIndex];
         let text = pages[pageIndex];
@@ -945,6 +949,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             options.pages = pages;
             options.pageColors = pageColors;
             options.pageAlphas = pageAlphas;
+            options.pageShadowColors = pageShadowColors;
+            options.pageShadowAlphas = pageShadowAlphas;
             options.pageEffects = pageEffects;
             options.pageAligns = pageAligns;
             options.pageTypes = pageTypes;
@@ -983,6 +989,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             text = pages[pageIndex];
             options.color = pageColors[pageIndex];
             options.alpha = pageAlphas[pageIndex];
+            options.shadowColor = pageShadowColors[pageIndex];
+            options.shadowAlpha = pageShadowAlphas[pageIndex];
             Object.assign(options, pageEffects[pageIndex]);
             options.align = pageAligns[pageIndex];
             textInput.value = text;
@@ -1036,6 +1044,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 pages.splice(pageIndex + 1, 0, '');
                 pageColors.splice(pageIndex + 1, 0, options.color ?? defaultTextDisplayOptions.color);
                 pageAlphas.splice(pageIndex + 1, 0, options.alpha ?? defaultTextDisplayOptions.alpha);
+                pageShadowColors.splice(pageIndex + 1, 0, options.shadowColor ?? defaultTextDisplayOptions.shadowColor);
+                pageShadowAlphas.splice(pageIndex + 1, 0, options.shadowAlpha ?? defaultTextDisplayOptions.shadowAlpha);
                 pageEffects.splice(pageIndex + 1, 0, { ...pageEffects[pageIndex] });
                 pageAligns.splice(pageIndex + 1, 0, options.align ?? defaultTextDisplayOptions.align);
                 pageTypes.splice(pageIndex + 1, 0, 'text');
@@ -1052,6 +1062,8 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 pages.splice(pageIndex, 1);
                 pageColors.splice(pageIndex, 1);
                 pageAlphas.splice(pageIndex, 1);
+                pageShadowColors.splice(pageIndex, 1);
+                pageShadowAlphas.splice(pageIndex, 1);
                 pageEffects.splice(pageIndex, 1);
                 pageAligns.splice(pageIndex, 1);
                 pageTypes.splice(pageIndex, 1);
@@ -1282,11 +1294,12 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const addColor = (key: 'color' | 'shadowColor' | 'backgroundColor', label: string) => {
             let value = /^#[0-9a-f]{6}$/i.test(options[key]) ? options[key] : defaultTextDisplayOptions[key];
             const updateColor = (next: string) => {
-                if (key !== 'color') return updateOptions({ [key]: next });
-                const previous = pageColors[pageIndex];
-                pageColors[pageIndex] = next;
-                return updateOptions({ color: next }).catch(error => {
-                    pageColors[pageIndex] = previous;
+                if (key === 'backgroundColor') return updateOptions({ [key]: next });
+                const pageValues = key === 'color' ? pageColors : pageShadowColors;
+                const previous = pageValues[pageIndex];
+                pageValues[pageIndex] = next;
+                return updateOptions({ [key]: next }).catch(error => {
+                    pageValues[pageIndex] = previous;
                     throw error;
                 });
             };
@@ -1344,11 +1357,12 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             const updateAlpha = (value: string) => {
                 const alpha = Math.min(1, Math.max(0, Number(value) || 0));
                 number.value = range.value = String(alpha);
-                if (key !== 'alpha') return updateOptions({ [key]: alpha });
-                const previous = pageAlphas[pageIndex];
-                pageAlphas[pageIndex] = alpha;
-                return updateOptions({ alpha }).catch(error => {
-                    pageAlphas[pageIndex] = previous;
+                if (key === 'backgroundAlpha') return updateOptions({ [key]: alpha });
+                const pageValues = key === 'alpha' ? pageAlphas : pageShadowAlphas;
+                const previous = pageValues[pageIndex];
+                pageValues[pageIndex] = alpha;
+                return updateOptions({ [key]: alpha }).catch(error => {
+                    pageValues[pageIndex] = previous;
                     throw error;
                 });
             };
