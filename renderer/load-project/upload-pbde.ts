@@ -3,7 +3,8 @@ import * as THREE from 'three/webgpu';
 import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, notifyPlayerHeadAtlasesChanged, performSelection, updateGlobalBrightness } from './mesh-builder';
 import type { GlobalBrightness, LoadedSelection } from './mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
-import { captureSceneState, recordSceneChange, type SceneSnapshot } from '../controls/undo-redo/scene-history.js';
+import { captureHistoryUiState, recordCreationChange, recordStateChange, refreshHistory } from '../controls/undo-redo/scene-history.js';
+import { deleteSelectedItems } from '../controls/grouping/delete';
 import { clear, deleteHistoryContext, setHistoryContext } from '../controls/undo-redo/undo-redo.js';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
@@ -103,10 +104,10 @@ function updateProjectDetails(): void {
         const input = document.getElementById(`project-${key}`) as HTMLInputElement | null;
         if (!input) continue;
         input.value = details?.[key] || '';
-        let historyBefore: SceneSnapshot | null = null;
+        let historyBefore: string | null = null;
         let historyInitialValue = '';
         input.onfocus = () => {
-            historyBefore = captureSceneState(loadedObjectGroup);
+            historyBefore = input.value;
             historyInitialValue = input.value;
         };
         input.oninput = () => {
@@ -119,7 +120,20 @@ function updateProjectDetails(): void {
             }
         };
         input.onblur = () => {
-            if (historyBefore && input.value !== historyInitialValue) recordSceneChange(loadedObjectGroup, historyBefore);
+            if (historyBefore !== null && input.value !== historyInitialValue) {
+                const before = historyBefore;
+                const after = input.value;
+                recordStateChange({
+                    before,
+                    after,
+                    apply: value => {
+                        const current = (loadedObjectGroup.userData.projectDetails as Record<string, string> | undefined)
+                            ?? (loadedObjectGroup.userData.projectDetails = {});
+                        current[key] = value;
+                    },
+                    refresh: () => refreshHistory(loadedObjectGroup)
+                });
+            }
             historyBefore = null;
         };
     }
@@ -135,9 +149,15 @@ function updateProjectDetails(): void {
     sky.value = String(brightness.sky);
     block.value = String(brightness.block);
     const applyBrightness = () => {
-        const before = captureSceneState(loadedObjectGroup);
-        updateGlobalBrightness({ enabled: enabled.checked, sky: Number(sky.value), block: Number(block.value) });
-        recordSceneChange(loadedObjectGroup, before);
+        const before = { ...((loadedObjectGroup.userData.globalBrightness as GlobalBrightness | undefined) ?? brightness) };
+        const after = { enabled: enabled.checked, sky: Number(sky.value), block: Number(block.value) };
+        updateGlobalBrightness(after);
+        if (before.enabled !== after.enabled || before.sky !== after.sky || before.block !== after.block) recordStateChange({
+            before,
+            after,
+            apply: updateGlobalBrightness,
+            refresh: () => refreshHistory(loadedObjectGroup)
+        });
     };
     enabled.onchange = sky.onchange = block.onchange = applyBrightness;
 }
@@ -419,7 +439,8 @@ async function mergepbde(files: File | File[]): Promise<void> {
     if (fileList.length === 0) return;
 
     const perceivedLoadStartMs = performance.now();
-    const before = captureSceneState(loadedObjectGroup);
+    const beforeUi = captureHistoryUiState();
+    const existingGroupIds = new Set((loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys());
     let merged = false;
 
     const batchGen = beginPbdeLoadGeneration();
@@ -442,9 +463,20 @@ async function mergepbde(files: File | File[]): Promise<void> {
 
     } catch (e) {
         console.error("Error merging project files:", e);
+        const newGroupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
+        deleteSelectedItems(loadedObjectGroup, {
+            groups: newGroupIds,
+            objects: new Map([...allNewMeshes].filter(([mesh]) => (mesh as THREE.Mesh).isMesh)) as Map<THREE.Mesh, Set<number>>
+        }, { resetSelectionAndDeselect: () => {} })?.dispose();
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-    if (merged) recordSceneChange(loadedObjectGroup, before);
+    if (merged) {
+        const newGroupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
+        recordCreationChange(loadedObjectGroup, {
+            groups: newGroupIds,
+            objects: new Map([...allNewMeshes].filter(([mesh]) => (mesh as THREE.Mesh).isMesh)) as Map<THREE.Mesh, Set<number>>
+        }, beforeUi);
+    }
     await precompileLoadedScene('merge', fileList.length);
     await logFinalPbdeLoadTime(perceivedLoadStartMs, 'merge', fileList.length);
 }

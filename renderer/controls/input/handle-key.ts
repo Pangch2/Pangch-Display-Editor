@@ -22,7 +22,7 @@ import type { QueueItem } from '../vertex/vertex-swap';
 import * as GroupUtils from '../grouping/group';
 import { getLinkedMirrorSelection } from '../transform/mirroring';
 import { redo, undo } from '../undo-redo/undo-redo';
-import { captureSelectionTransformState, recordSceneChange } from '../undo-redo/scene-history';
+import { captureSelectionTransformState, recordTransformChange } from '../undo-redo/scene-history';
 import { matchesShortcut, type ShortcutId } from './shortcuts';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
@@ -299,7 +299,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                             updateSelectionOverlay: p.updateSelectionOverlay
                         }
                     );
-                    recordSceneChange(p.loadedObjectGroup, before);
+                    recordTransformChange(p.loadedObjectGroup, before);
                 }
                 break;
             }
@@ -514,7 +514,7 @@ export function initHandleKey(p: HandleKeyParams): void {
                 p.updateSelectionOverlay();
 
                 console.log('Pivot reset to origin');
-                if (before) recordSceneChange(p.loadedObjectGroup, before);
+                if (before) recordTransformChange(p.loadedObjectGroup, before);
         }
 
         const key = (['translate', 'rotate', 'scale', 'previousGizmo', 'toggleSpace', 'togglePivot', 'removeShear', 'toggleScaleMode', 'toggleSmartScale', 'group', 'duplicate', 'knife', 'toggleVertex', 'toggleShading'] as ShortcutId[])

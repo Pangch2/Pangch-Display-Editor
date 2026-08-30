@@ -2,6 +2,7 @@ import { Euler, InstancedMesh, Matrix4, Mesh, Quaternion, Vector3 } from 'three/
 import type { SelectedItem, SelectionState } from '../controls/selection/select';
 import { loadedObjectGroup } from '../load-project/upload-pbde';
 import { getPlayerHeadTexture, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
+import type { DisplayReplacementResult } from '../load-project/mesh-builder';
 import type { TextDisplayContentType, TextDisplayOptions } from '../load-project/text-display';
 import { getBlockPropertyOptions } from '../load-project/pbde-assets';
 import type { GroupData } from './scene-panel/scene-panel-types';
@@ -19,8 +20,15 @@ import {
     syncLinkedMirrorGroupPivot,
     syncLinkedMirrorPivot
 } from '../controls/transform/mirroring';
-import { captureSceneState, captureSelectionTransformState, recordSceneChange, type SceneSnapshot } from '../controls/undo-redo/scene-history';
-import { record } from '../controls/undo-redo/undo-redo';
+import {
+    captureHistoryUiState,
+    captureSelectionTransformState,
+    recordReplacementChange,
+    recordStateChange,
+    recordTransformChange,
+    refreshHistory,
+    type TransformHistoryState
+} from '../controls/undo-redo/scene-history';
 import { getHeadGridValue, setHeadGridOverride } from './head-painter';
 import { hexToRgb, openColorPicker, rgbToHex } from './color-picker';
 import { isValidSpriteReference, openSpriteAtlasPicker, openSpritePicker, resolveSpriteReference } from './sprite-atlas-picker';
@@ -123,19 +131,21 @@ function format(value: number): string {
 function trackHistoryInput(
     input: HTMLInputElement | HTMLTextAreaElement,
     settle?: () => Promise<void>,
-    capture: () => SceneSnapshot = () => captureSceneState(loadedObjectGroup)
+    capture?: () => TransformHistoryState
 ): void {
-    let before: SceneSnapshot | null = null;
+    let before: TransformHistoryState | null = null;
+    let editing = false;
     const read = () => input instanceof HTMLInputElement && input.type === 'checkbox' ? String(input.checked) : input.value;
     let initialValue = read();
     const captureBeforeChange = () => {
-        if (before) return;
+        if (before || editing) return;
         initialValue = read();
-        before = capture();
+        editing = true;
+        before = capture?.() ?? null;
     };
     input.addEventListener('focus', () => {
         if (input instanceof HTMLInputElement && (input.type === 'range' || input.type === 'checkbox')) captureBeforeChange();
-        else if (!before) initialValue = read();
+        else if (!before && !editing) initialValue = read();
     });
     input.addEventListener('beforeinput', captureBeforeChange);
     input.addEventListener('pointerdown', () => {
@@ -150,8 +160,25 @@ function trackHistoryInput(
         const changeBefore = before;
         const changeInitialValue = initialValue;
         before = null;
+        editing = false;
         void (settle?.() ?? Promise.resolve()).then(() => {
-            if (changeBefore && read() !== changeInitialValue) recordSceneChange(loadedObjectGroup, changeBefore);
+            const after = read();
+            if (after === changeInitialValue) return;
+            if (changeBefore) {
+                recordTransformChange(loadedObjectGroup, changeBefore);
+                return;
+            }
+            recordStateChange({
+                before: changeInitialValue,
+                after,
+                apply: async value => {
+                    if (input instanceof HTMLInputElement && input.type === 'checkbox') input.checked = value === 'true';
+                    else input.value = value;
+                    input.oninput?.call(input, new InputEvent('input'));
+                    await settle?.();
+                },
+                refresh: () => refreshHistory(loadedObjectGroup)
+            });
         });
     });
 }
@@ -162,7 +189,7 @@ function updateInputValue(input: HTMLInputElement, value: number, activeElement:
     if (input.value !== next) input.value = next;
 }
 
-function numberInput(value: number, onChange: (value: number) => void, capture?: () => SceneSnapshot): HTMLInputElement {
+function numberInput(value: number, onChange: (value: number) => void, capture?: () => TransformHistoryState): HTMLInputElement {
     const input = document.createElement('input');
     input.type = 'number';
     input.step = 'any';
@@ -175,14 +202,14 @@ function numberInput(value: number, onChange: (value: number) => void, capture?:
     return input;
 }
 
-function scaleNumberInput(value: number, onChange: (value: number) => void, capture?: () => SceneSnapshot): HTMLInputElement {
+function scaleNumberInput(value: number, onChange: (value: number) => void, capture?: () => TransformHistoryState): HTMLInputElement {
     const input = numberInput(value, next => {
         onChange(next === 0 ? 0.0001 : next);
     }, capture);
     return input;
 }
 
-function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4, capture?: () => SceneSnapshot): HTMLElement[] {
+function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4, capture?: () => TransformHistoryState): HTMLElement[] {
     let current = value.clone();
     const heading = document.createElement('h3');
     heading.className = 'object-matrix-heading';
@@ -283,17 +310,27 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4, capt
     return [heading, grid, textRow];
 }
 
-function propertySelect(value: string, values: string[], onChange: (value: string) => void | Promise<void>): HTMLSelectElement {
+function propertySelect(value: string, values: string[], onChange: (value: string) => void | DisplayReplacementResult | Promise<void | DisplayReplacementResult>): HTMLSelectElement {
     const select = document.createElement('select');
     const optionValues = values.includes(value) ? values : [value, ...values];
     [...new Set(optionValues)].forEach(optionValue => select.add(new Option(optionValue, optionValue)));
     select.value = value;
     select.onchange = async () => {
-        const before = captureSceneState(loadedObjectGroup);
+        const beforeUi = captureHistoryUiState();
+        const before = value;
+        const after = select.value;
         select.disabled = true;
         try {
-            await onChange(select.value);
-            recordSceneChange(loadedObjectGroup, before);
+            const result = await onChange(after);
+            if (result && result.history) recordReplacementChange(
+                loadedObjectGroup, result.history.removed, result.history.created, beforeUi
+            );
+            else recordStateChange({
+                before,
+                after,
+                apply: async state => { await onChange(state); },
+                refresh: () => refreshHistory(loadedObjectGroup)
+            });
         } catch (error) {
             console.error(error);
             select.value = value;
@@ -357,13 +394,18 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
         return control;
     }
     control.onchange = async () => {
-        const before = captureSceneState(loadedObjectGroup);
+        const before = committed;
         const next = read();
         control.disabled = true;
         try {
             await onChange(next);
             committed = next;
-            recordSceneChange(loadedObjectGroup, before);
+            if (before !== next) recordStateChange({
+                before,
+                after: next,
+                apply: onChange,
+                refresh: () => refreshHistory(loadedObjectGroup)
+            });
         } catch (error) {
             console.error(error);
             write(committed);
@@ -554,7 +596,7 @@ function nameHeading(index: number, value: string, key: string, onChange: (value
 function scaleInput(
     value: number,
     onChange: (value: number, direction: '+' | '-') => void,
-    capture?: () => SceneSnapshot
+    capture?: () => TransformHistoryState
 ): HTMLElement {
     let direction: '+' | '-' = '+';
     const wrapper = document.createElement('span');
@@ -575,7 +617,7 @@ function scaleInput(
     return wrapper;
 }
 
-function capturePropertyTransformState(items: SelectedItem[], groupIds: Set<string>): SceneSnapshot {
+function capturePropertyTransformState(items: SelectedItem[], groupIds: Set<string>): TransformHistoryState {
     const objects = new Map<Mesh | InstancedMesh, Set<number>>();
     items.forEach(({ mesh, instanceId }) => {
         const ids = objects.get(mesh) ?? new Set<number>();
@@ -972,6 +1014,53 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 throw error;
             }
         };
+        const captureTextEditorState = () => structuredClone({
+            options,
+            pages,
+            pageColors,
+            pageAlphas,
+            pageShadowColors,
+            pageShadowAlphas,
+            pageEffects,
+            pageAligns,
+            pageTypes,
+            pageAtlases,
+            pageHats,
+            pageTypeValues,
+            pageExtraValues,
+            pageIndex,
+            text
+        });
+        type TextEditorState = ReturnType<typeof captureTextEditorState>;
+        const applyTextEditorState = async (state: TextEditorState) => {
+            const replace = <T>(target: T[], values: T[]) => target.splice(0, target.length, ...structuredClone(values));
+            Object.assign(options, structuredClone(state.options));
+            replace(pages, state.pages);
+            replace(pageColors, state.pageColors);
+            replace(pageAlphas, state.pageAlphas);
+            replace(pageShadowColors, state.pageShadowColors);
+            replace(pageShadowAlphas, state.pageShadowAlphas);
+            replace(pageEffects, state.pageEffects);
+            replace(pageAligns, state.pageAligns);
+            replace(pageTypes, state.pageTypes);
+            replace(pageAtlases, state.pageAtlases);
+            replace(pageHats, state.pageHats);
+            replace(pageTypeValues, state.pageTypeValues);
+            replace(pageExtraValues, state.pageExtraValues);
+            pageIndex = state.pageIndex;
+            text = state.text;
+            await update();
+        };
+        const recordTextEditorChange = (before: TextEditorState) => {
+            const after = captureTextEditorState();
+            if (JSON.stringify(before) === JSON.stringify(after)) return;
+            recordStateChange({
+                before,
+                after,
+                apply: applyTextEditorState,
+                refresh: () => refreshHistory(loadedObjectGroup)
+            });
+        };
 
         const contentType = pageTypes[pageIndex];
         const textInput = contentType === 'text' ? document.createElement('textarea') : document.createElement('input');
@@ -1040,7 +1129,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             pageButton('<', '이전 페이지', () => changePage(Math.max(0, pageIndex - 1)), pageIndex === 0),
             pageButton('>', '다음 페이지', () => changePage(Math.min(pages.length - 1, pageIndex + 1)), pageIndex === pages.length - 1),
             pageButton('+', '새 페이지', async () => {
-                const before = captureSceneState(loadedObjectGroup);
+                const before = captureTextEditorState();
                 pages.splice(pageIndex + 1, 0, '');
                 pageColors.splice(pageIndex + 1, 0, options.color ?? defaultTextDisplayOptions.color);
                 pageAlphas.splice(pageIndex + 1, 0, options.alpha ?? defaultTextDisplayOptions.alpha);
@@ -1054,11 +1143,11 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 pageTypeValues.splice(pageIndex + 1, 0, { text: '' });
                 pageExtraValues.splice(pageIndex + 1, 0, {});
                 await changePage(pageIndex + 1, false);
-                recordSceneChange(loadedObjectGroup, before);
+                recordTextEditorChange(before);
             }),
             pageButton('-', '현재 페이지 삭제', async () => {
                 if (pages.length === 1) return;
-                const before = captureSceneState(loadedObjectGroup);
+                const before = captureTextEditorState();
                 pages.splice(pageIndex, 1);
                 pageColors.splice(pageIndex, 1);
                 pageAlphas.splice(pageIndex, 1);
@@ -1072,7 +1161,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 pageTypeValues.splice(pageIndex, 1);
                 pageExtraValues.splice(pageIndex, 1);
                 await changePage(Math.min(pageIndex, pages.length - 1), true);
-                recordSceneChange(loadedObjectGroup, before);
+                recordTextEditorChange(before);
             }, pages.length === 1)
         );
         const textControls = document.createElement('div');
@@ -1105,14 +1194,14 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             valueButton.textContent = '\uE0F6';
             valueButton.title = valueButton.ariaLabel = '스프라이트 선택';
             valueButton.onclick = () => openSpritePicker(pageAtlases[pageIndex], pages[pageIndex], async value => {
-                const before = captureSceneState(loadedObjectGroup);
+                const before = captureTextEditorState();
                 const previous = text;
                 text = pages[pageIndex] = value;
                 pageTypeValues[pageIndex][pageTypes[pageIndex]] = value;
                 try {
                     await update();
                     valueInput.value = value;
-                    recordSceneChange(loadedObjectGroup, before);
+                    recordTextEditorChange(before);
                     clearRenderedPropertySections();
                     schedulePropertySectionRender();
                 } catch (error) {
@@ -1226,7 +1315,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             atlasButton.textContent = '\uE0F6';
             atlasButton.title = atlasButton.ariaLabel = '아틀라스 선택';
             atlasButton.onclick = () => openSpriteAtlasPicker(pageAtlases[pageIndex], async atlas => {
-                const before = captureSceneState(loadedObjectGroup);
+                const before = captureTextEditorState();
                 const value = await resolveSpriteReference(atlas, pages[pageIndex]);
                 const previous = pageAtlases[pageIndex];
                 const previousText = text;
@@ -1238,7 +1327,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                     await update();
                     atlasInput.value = atlas;
                     valueInput.value = value;
-                    recordSceneChange(loadedObjectGroup, before);
+                    recordTextEditorChange(before);
                     clearRenderedPropertySections();
                     schedulePropertySectionRender();
                 } catch (error) {
@@ -1318,7 +1407,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             button.title = button.ariaLabel = `${label} 선택`;
             button.style.background = value;
             button.onclick = () => {
-                const before = captureSceneState(loadedObjectGroup);
+                const before = captureTextEditorState();
                 openColorPicker(button, hexToRgb(value), color => {
                     value = rgbToHex(color);
                     button.style.background = value;
@@ -1329,7 +1418,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                         mode.value = enabled ? 'oklch' : 'hex';
                         localStorage.setItem(colorModeKey, mode.value);
                     },
-                    onClose: () => recordSceneChange(loadedObjectGroup, before)
+                    onClose: () => recordTextEditorChange(before)
                 });
             };
             picker.append(button);
@@ -1426,11 +1515,12 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 const apply = async (value: string, partnerValue = value) => {
                     await updatePlayerHeadTexture(uuid, value);
                     if (partnerUuid) await updatePlayerHeadTexture(partnerUuid, partnerValue);
-                    window.dispatchEvent(new CustomEvent('pde:history-restored'));
                 };
-                record({
-                    undo: () => apply(previous, partnerPrevious),
-                    redo: () => apply(next)
+                recordStateChange({
+                    before: [previous, partnerPrevious] as const,
+                    after: [next, next] as const,
+                    apply: ([value, partnerValue]) => apply(value, partnerValue),
+                    refresh: () => refreshHistory(loadedObjectGroup)
                 });
             };
             metadataSection.append(metadataProperty('texture', '텍스쳐', input));
@@ -1476,7 +1566,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 .forEach(([key, values]) => {
                     const value = props[key] ?? (values.includes('false') ? 'false' : values[0]);
                     metadataSection.append(metadataProperty(key, key, propertySelect(value, values, async next => {
-                        await replaceDisplayObject(uuid, replaceNameProperties(name, { ...props, [key]: next }), {
+                        return replaceDisplayObject(uuid, replaceNameProperties(name, { ...props, [key]: next }), {
                             pivotMode: currentPivotMode,
                             pivotWorld: currentPivotWorld
                         });

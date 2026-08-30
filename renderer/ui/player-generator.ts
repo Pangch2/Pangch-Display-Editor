@@ -175,7 +175,11 @@ export function createHeadProject(source: HTMLCanvasElement): File {
   return projectFile([item(0, matrix(1, 1, 1, 0, 0.5, 0))], [source.toDataURL('image/png')], 'player-head');
 }
 
-export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupName: string): number {
+export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupName: string): {
+  count: number;
+  groupId: string;
+  objects: Map<InstancedMesh, Set<number>>;
+} {
   const width = 'width' in source ? Number(source.width) : 0;
   const height = 'height' in source ? Number(source.height) : 0;
   if (!width || !height) throw new Error('이미지 크기를 확인할 수 없습니다.');
@@ -208,8 +212,10 @@ export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupN
   const itemDisplays = (userData.objectIsItemDisplay as Set<string> | undefined) ?? (userData.objectIsItemDisplay = new Set());
   const displayTypes = (userData.objectDisplayTypes as Map<string, string> | undefined) ?? (userData.objectDisplayTypes = new Map());
   const total = columns * rows;
+  const objects = new Map<InstancedMesh, Set<number>>();
 
   for (const mesh of createImageHeadAtlasMeshes(canvas, columns, rows, layer)) {
+    objects.set(mesh, new Set(Array.from({ length: mesh.count }, (_, instanceId) => instanceId)));
     for (let localIndex = 0; localIndex < mesh.count; localIndex++) {
       const uuid = crypto.randomUUID();
       const key = `${mesh.uuid}_${localIndex}`;
@@ -243,7 +249,7 @@ export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupN
   sceneOrder.push({ type: 'group', id: groupId });
   loadedObjectGroup.updateMatrixWorld(true);
   if (import.meta.env.DEV) console.assert(children.length === total, 'Image head tile count failed.');
-  return total;
+  return { count: total, groupId, objects };
 }
 
 function countItems(node: SceneNode): number {

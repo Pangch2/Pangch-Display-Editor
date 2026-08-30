@@ -1,6 +1,6 @@
 import { BoxGeometry, Group, InstancedMesh, Matrix4, Mesh, Vector3 } from 'three/webgpu';
 import { applyDeltaToSelection } from '../selection/drag';
-import { flipPlayerHeadTextures, getPlayerHeadRenderMatrix, replaceDisplayObjects } from '../../load-project/mesh-builder';
+import { flipPlayerHeadTextures, getPlayerHeadRenderMatrix, replaceDisplayObjects, type DisplayReplacementResult } from '../../load-project/mesh-builder';
 import { findMirroredBlockName } from '../../load-project/scene-parser';
 import { mainThreadAssetProvider } from '../../load-project/pbde-assets';
 import { replaceMirrorUuid } from './mirroring';
@@ -9,6 +9,7 @@ import * as GroupUtils from '../grouping/group';
 
 type PdeMesh = InstancedMesh | Mesh;
 export type FlipAxis = 'x' | 'y' | 'z';
+export type FlipResult = Array<string | undefined> & { history?: DisplayReplacementResult['history'] };
 
 export function resolveMirroredBlockNames(
     loadedObjectGroup: Group,
@@ -115,12 +116,12 @@ export async function flipObjectUuids(
     centeredPivotWorld?: Vector3,
     previewSynchronously = false,
     resolvedNextNames?: Array<string | null | undefined>
-): Promise<Array<string | undefined>> {
+): Promise<FlipResult> {
     const userData = loadedObjectGroup.userData;
     const isItemDisplay = userData.objectIsItemDisplay as Set<string> | undefined;
     const names = userData.objectNames as Map<string, string> | undefined;
     const refs = userData.objectUuidToInstance as Map<string, { mesh: PdeMesh; instanceId: number }> | undefined;
-    const result = [...uuids];
+    const result = [...uuids] as FlipResult;
     const nextNamesPromise = resolvedNextNames
         ? Promise.resolve(resolvedNextNames)
         : resolveMirroredBlockNames(loadedObjectGroup, uuids, axis);
@@ -198,9 +199,9 @@ export async function flipObjectUuids(
             name: nextName,
             transformContext: { pivotMode: activePivotMode }
         })), false);
-        let newUuids: string[];
+        let replacementResult: DisplayReplacementResult;
         try {
-            newUuids = await replacement;
+            replacementResult = await replacement;
         } catch (error) {
             if (!previewSynchronously) {
                 for (const { ref, previousMatrix, previousCustomPivot } of pending) {
@@ -212,10 +213,11 @@ export async function flipObjectUuids(
             throw error;
         }
         pending.forEach(({ index, uuid }, replacementIndex) => {
-            const newUuid = newUuids[replacementIndex];
+            const newUuid = replacementResult[replacementIndex];
             replaceMirrorUuid(loadedObjectGroup, uuid, newUuid);
             result[index] = newUuid;
         });
+        result.history = replacementResult.history;
     }
     return result;
 }

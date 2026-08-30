@@ -2,7 +2,7 @@ import { currentSelection } from '../../controls/selection/select';
 import { isPbdeLogEnabled } from '../../load-project/pbde-log';
 import { loadedObjectGroup } from '../../load-project/upload-pbde';
 import { getLinkedMirrorUuid, getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
-import { captureSceneState, recordSceneChange } from '../../controls/undo-redo/scene-history';
+import { recordStateChange, refreshHistory } from '../../controls/undo-redo/scene-history';
 import { record } from '../../controls/undo-redo/undo-redo';
 import { handleSceneItemClick, syncScenePanelSelection } from './scene-panel-selection';
 import { handleSceneItemPointerDown } from './scene-panel-dnd';
@@ -212,7 +212,15 @@ export function beginScenePanelRename(): void {
         ? ud.groups?.get(row.id)?.name ?? ''
         : ud.objectLabels?.get(row.id) ?? cleanLabel(ud.objectNames?.get(row.id) ?? row.id.slice(0, 8));
     const input = document.createElement('input');
-    const before = captureSceneState(loadedObjectGroup);
+    const partnerId = isMirrorModelingEnabled()
+        ? row.type === 'group'
+            ? getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').get(row.id)
+            : getLinkedMirrorUuid(loadedObjectGroup, row.id)
+        : undefined;
+    const readName = (id: string) => row.type === 'group'
+        ? ud.groups?.get(id)?.name ?? ''
+        : ud.objectLabels?.get(id) ?? cleanLabel(ud.objectNames?.get(id) ?? id.slice(0, 8));
+    const before = new Map([row.id, partnerId].filter((id): id is string => !!id).map(id => [id, readName(id)]));
     input.type = 'text';
     input.className = 'scene-name-input';
     input.value = current;
@@ -241,7 +249,21 @@ export function beginScenePanelRename(): void {
         if (finished) return;
         finished = true;
         if (!save) applyName(current);
-        else if (input.value !== current) recordSceneChange(loadedObjectGroup, before);
+        else if (input.value !== current) {
+            const after = new Map([...before.keys()].map(id => [id, readName(id)]));
+            recordStateChange({
+                before,
+                after,
+                apply: values => values.forEach((value, id) => {
+                    if (row.type === 'group') {
+                        const group = ud.groups?.get(id);
+                        if (group) group.name = value;
+                    } else (ud.objectLabels ??= new Map()).set(id, value);
+                    window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key: `${row.type}:${id}`, value } }));
+                }),
+                refresh: () => refreshHistory(loadedObjectGroup)
+            });
+        }
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     };
     input.addEventListener('input', () => applyName(input.value));

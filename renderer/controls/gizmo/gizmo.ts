@@ -35,7 +35,27 @@ import { initDrag, applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState } from '../input/handle-key';
 import { isShortcutPressed } from '../input/shortcuts';
-import { captureSceneState, captureSelectionTransformState, recordSceneChange, restoreSceneState, setHistoryGizmoState, setHistorySelection, type SceneSnapshot } from '../undo-redo/scene-history';
+import {
+    captureGroupStructureState,
+    applyGeometryHistoryState,
+    captureHistoryUiState,
+    captureSelectionGeometryState,
+    captureSelectionTransformState,
+    captureTransformState,
+    recordCreationChange,
+    recordGeometryChange,
+    recordGeometryAndCreationChange,
+    recordGroupStructureChange,
+    recordReplacementTransformChange,
+    recordStateChange,
+    recordTransformChange,
+    refreshHistory,
+    restoreHistoryUiState,
+    setHistoryGizmoState,
+    setHistorySelection,
+    type GeometryHistoryState,
+    type TransformHistoryState
+} from '../undo-redo/scene-history';
 import type { DragInterface } from '../selection/drag';
 import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
@@ -474,17 +494,29 @@ const _identityMatrix = new Matrix4();
 const _pendingHelperMatrix = new Matrix4();
 const _meshToInstanceRanges = new Map<Object3D, InstanceIdRange[]>();
 let selectionTransformDirty = false;
-let dragHistoryBefore: SceneSnapshot | null = null;
+let dragHistoryBefore: TransformHistoryState | GeometryHistoryState | null = null;
+let smartScaleCreationBefore: { objectUuids: Set<string>; groupIds: Set<string> } | null = null;
 let _dragPreviewActive = false;
 let _dragSelectedIdsByMesh = new Map<InstancedMesh, Set<number>>();
 
+function getSmartScaleCreatedSelection(): { groups: Set<string>; objects: Map<PdeMesh, Set<number>> } {
+    const before = smartScaleCreationBefore;
+    const objects = new Map<PdeMesh, Set<number>>();
+    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: PdeMesh; instanceId: number }> | undefined;
+    refs?.forEach(({ mesh, instanceId }, uuid) => {
+        if (before?.objectUuids.has(uuid)) return;
+        const ids = objects.get(mesh) ?? new Set<number>();
+        ids.add(instanceId);
+        objects.set(mesh, ids);
+    });
+    return {
+        groups: new Set([...getGroups().keys()].filter(id => !before?.groupIds.has(id))),
+        objects
+    };
+}
+
 function captureDragHistoryBefore(): void {
     if (dragHistoryBefore) return;
-    if (isVertexMode || (transformControls!.mode === 'scale' && isSmartScaleEnabled())) {
-        dragHistoryBefore = captureSceneState(loadedObjectGroup);
-        return;
-    }
-
     const objects = new Map<Mesh | InstancedMesh, Set<number>>(
         Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)])
     );
@@ -494,11 +526,15 @@ function captureDragHistoryBefore(): void {
         ids.forEach(id => affectedIds.add(id));
         objects.set(mesh, affectedIds);
     });
-    dragHistoryBefore = captureSelectionTransformState(
-        loadedObjectGroup,
-        objects,
-        new Set([...currentSelection.groups, ...linked.groups])
-    );
+    const groups = new Set([...currentSelection.groups, ...linked.groups]);
+    const smartScale = transformControls!.mode === 'scale' && isSmartScaleEnabled();
+    if (smartScale && !smartScaleCreationBefore) {
+        const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, unknown> | undefined;
+        smartScaleCreationBefore = { objectUuids: new Set(refs?.keys()), groupIds: new Set(getGroups().keys()) };
+    }
+    dragHistoryBefore = isVertexMode || smartScale
+        ? captureSelectionGeometryState(loadedObjectGroup, objects, groups)
+        : captureSelectionTransformState(loadedObjectGroup, objects, groups);
 }
 
 function snapFromStart(current: number, start: number, step: number): number {
@@ -951,7 +987,14 @@ function _getGizmoCommandCallbacks() {
 }
 
 function createGroup(): string | undefined {
-    const before = captureSceneState(loadedObjectGroup);
+    const linkedBefore = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
+    const objectsBefore = [
+        ...getDirectSelectedItems(),
+        ...Array.from(linkedBefore.objects, ([mesh, ids]) => [...ids].map(instanceId => ({ mesh, instanceId }))).flat()
+    ];
+    const groupIdsBefore = new Set([...currentSelection.groups, ...linkedBefore.groups]);
+    const knownGroupIds = new Set(getGroups().keys());
+    const before = captureGroupStructureState(loadedObjectGroup, groupIdsBefore, objectsBefore);
     const groupId = _runWithoutVertexQueue(() => {
         const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
         const sourceGroupId = createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
@@ -963,7 +1006,12 @@ function createGroup(): string | undefined {
         applySelection(null, [], sourceGroupId);
         return sourceGroupId;
     });
-    if (groupId) recordSceneChange(loadedObjectGroup, before);
+    if (groupId) recordGroupStructureChange(
+        loadedObjectGroup,
+        before,
+        [...getGroups().keys()].filter(id => !knownGroupIds.has(id)),
+        objectsBefore
+    );
     return groupId;
 }
 
@@ -971,7 +1019,7 @@ function ungroupGroup(groupIds: string | readonly string[], deselect = false): v
     const groups = getGroups();
     const requestedIds = [...new Set(typeof groupIds === 'string' ? [groupIds] : groupIds)].filter(id => groups.has(id));
     if (requestedIds.length === 0) return;
-    const before = captureSceneState(loadedObjectGroup, true);
+    const before = captureGroupStructureState(loadedObjectGroup, requestedIds);
     let changed = false;
     _runWithoutVertexQueue(() => {
         const pairs = getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs');
@@ -990,13 +1038,13 @@ function ungroupGroup(groupIds: string | readonly string[], deselect = false): v
         }
         changed = ungroupGroupsCommand(loadedObjectGroup, targets, _getGizmoCommandCallbacks(), !deselect);
     });
-    if (changed) recordSceneChange(loadedObjectGroup, before);
+    if (changed) recordGroupStructureChange(loadedObjectGroup, before, requestedIds);
 }
 
 function deleteSelectedItems(): void {
     if (!_hasAnySelection()) return;
-    const before = captureSceneState(loadedObjectGroup);
-    _runWithoutVertexQueue(() => {
+    const beforeUi = captureHistoryUiState();
+    const delta = _runWithoutVertexQueue(() => {
         const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
         if (linked.objects.size > 0 || linked.groups.size > 0) {
             const objects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
@@ -1007,9 +1055,21 @@ function deleteSelectedItems(): void {
             });
             _replaceSelectionWithGroupsAndObjects(new Set([...currentSelection.groups, ...linked.groups]), objects);
         }
-        deleteSelectedItemsCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
+        return deleteSelectedItemsCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
     });
-    recordSceneChange(loadedObjectGroup, before);
+    if (!delta) return;
+    const afterUi = captureHistoryUiState();
+    recordStateChange({
+        before: { deleted: false, ui: beforeUi },
+        after: { deleted: true, ui: afterUi },
+        apply: state => {
+            if (state.deleted) delta.redo();
+            else delta.undo();
+            restoreHistoryUiState(state.ui);
+        },
+        refresh: () => refreshHistory(loadedObjectGroup),
+        dispose: () => delta.dispose()
+    });
 }
 
 function getDuplicateCommandCallbacks(): DuplicateCommandCallbacks {
@@ -1033,7 +1093,7 @@ function getDuplicateCommandCallbacks(): DuplicateCommandCallbacks {
 
 function duplicateSelected(): void {
     if (!_hasAnySelection()) return;
-    const before = captureSceneState(loadedObjectGroup);
+    const beforeUi = captureHistoryUiState();
     _runWithoutVertexQueue(() => {
         let sourceUuids = getSelectedItems().map(getItemUuid);
         let sourceGroupIds = [...currentSelection.groups];
@@ -1045,18 +1105,19 @@ function duplicateSelected(): void {
             || sourceGroupIds.some(id => getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').has(id))
         );
         const duplicateCallbacks = getDuplicateCommandCallbacks();
-        duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
+        const firstCreated = duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks)!;
         if (!mirrorModeling) {
-            recordSceneChange(loadedObjectGroup, before);
+            recordCreationChange(loadedObjectGroup, firstCreated, beforeUi);
             return;
         }
 
+        let secondCreated: typeof firstCreated | null = null;
         if (hasMirrorPair) {
             sourceUuids = getSelectedItems().map(getItemUuid);
             sourceGroupIds = [...currentSelection.groups];
             sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
             sourcePrimary = currentSelection.primary;
-            duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
+            secondCreated = duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
         }
         const mirroredUuids = getSelectedItems().map(getItemUuid);
         const mirroredGroupIds = [...currentSelection.groups];
@@ -1080,11 +1141,25 @@ function duplicateSelected(): void {
 
         void flipPromise.then(finalUuids => {
             sourceUuids.forEach((uuid, index) => linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs'), uuid, finalUuids[index]));
+            const createdGroups = new Set(hasMirrorPair
+                ? [...firstCreated.groups, ...(secondCreated?.groups ?? [])]
+                : firstCreated.groups);
+            const createdObjects = new Map<Mesh | InstancedMesh, Set<number>>();
+            if (hasMirrorPair) firstCreated.objects.forEach((ids, mesh) => createdObjects.set(mesh, new Set(ids)));
+            for (const uuid of finalUuids) {
+                const ref = uuid ? (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }> | undefined)?.get(uuid) : undefined;
+                if (!ref) continue;
+                const ids = createdObjects.get(ref.mesh) ?? new Set<number>();
+                ids.add(ref.instanceId);
+                createdObjects.set(ref.mesh, ids);
+            }
             updateHelperPosition();
             updateSelectionOverlay();
             _emitSceneUpdated();
+            recordCreationChange(loadedObjectGroup, { groups: createdGroups, objects: createdObjects }, beforeUi);
+            finalUuids.history?.removed.dispose();
         }).catch(error => console.error('미러링 복제에 실패했습니다.', error))
-            .finally(() => recordSceneChange(loadedObjectGroup, before));
+            ;
     });
 }
 
@@ -1093,7 +1168,18 @@ function knifeSelected(): void {
     const x = Number(document.querySelector<HTMLInputElement>('.toolbar-dimensions input[name="x"]')?.value);
     const y = Number(document.querySelector<HTMLInputElement>('.toolbar-dimensions input[name="y"]')?.value);
     const z = Number(document.querySelector<HTMLInputElement>('.toolbar-dimensions input[name="z"]')?.value);
-    const before = captureSceneState(loadedObjectGroup);
+    const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
+    const affectedObjects = new Map<Mesh | InstancedMesh, Set<number>>(
+        Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)])
+    );
+    linked.objects.forEach((ids, mesh) => {
+        const affectedIds = affectedObjects.get(mesh) ?? new Set<number>();
+        ids.forEach(id => affectedIds.add(id));
+        affectedObjects.set(mesh, affectedIds);
+    });
+    const before = captureSelectionGeometryState(
+        loadedObjectGroup, affectedObjects, new Set([...currentSelection.groups, ...linked.groups])
+    );
     const primary = currentSelection.primary;
 
     _runWithoutVertexQueue(() => {
@@ -1106,9 +1192,9 @@ function knifeSelected(): void {
                 explicitPrimary: primary
             });
             _emitSceneUpdated();
-            recordSceneChange(loadedObjectGroup, before);
+            recordGeometryAndCreationChange(loadedObjectGroup, before, result.created);
         } catch (error) {
-            restoreSceneState(loadedObjectGroup, before);
+            applyGeometryHistoryState(loadedObjectGroup, before);
             invalidateSelectionCaches();
             updateHelperPosition();
             updateSelectionOverlay();
@@ -1141,8 +1227,11 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     const allUuids = [...selectedUuids, ...linkedUuids];
     const resolvedNextNames = await resolveMirroredBlockNames(loadedObjectGroup, allUuids, axis);
     const names = loadedObjectGroup.userData.objectNames as Map<string, string> | undefined;
+    const headUuids = allUuids.filter((uuid): uuid is string => !!uuid && (names?.get(uuid) ?? '').startsWith('player_head'));
+    const captureHeadAtlases = loadedObjectGroup.userData.capturePlayerHeadAtlasState as ((uuids?: Iterable<string>) => unknown) | undefined;
+    const restoreHeadAtlases = loadedObjectGroup.userData.restorePlayerHeadAtlasState as ((state: unknown) => void) | undefined;
+    const beforeHeadAtlases = headUuids.length ? captureHeadAtlases?.(headUuids) : undefined;
     const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }> | undefined;
-    const hasPlayerHeads = allUuids.some(uuid => !!uuid && (names?.get(uuid) ?? '').startsWith('player_head'));
     const affectedObjects = new Map<Mesh | InstancedMesh, Set<number>>();
     for (const uuid of allUuids) {
         const ref = uuid ? refs?.get(uuid) : undefined;
@@ -1151,17 +1240,14 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
         ids.add(ref.instanceId);
         affectedObjects.set(ref.mesh, ids);
     }
-    const requiresSceneSnapshot = resolvedNextNames.some(Boolean) || hasPlayerHeads;
-    const before = requiresSceneSnapshot
-        ? captureSceneState(loadedObjectGroup)
-        : captureSelectionTransformState(loadedObjectGroup, affectedObjects, selectedGroupIds);
+    const before = captureSelectionTransformState(loadedObjectGroup, affectedObjects, selectedGroupIds);
     reflectGroups(loadedObjectGroup, selectedGroupIds, axis, pivotWorld);
-    await flipObjectUuids(
+    const sourceResult = await flipObjectUuids(
         loadedObjectGroup, selectedUuids, axis, pivotWorld,
         preserveGroupBounds ? 'center' : activePivotMode,
         updateSelectionOverlay, undefined, false, resolvedNextNames.slice(0, selectedUuids.length)
     );
-    await flipObjectUuids(
+    const linkedResult = await flipObjectUuids(
         loadedObjectGroup, linkedUuids, axis, undefined, activePivotMode,
         undefined, undefined, false, resolvedNextNames.slice(selectedUuids.length)
     );
@@ -1191,7 +1277,28 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     updateHelperPosition();
     updateSelectionOverlay();
     _emitSceneUpdated();
-    recordSceneChange(loadedObjectGroup, before);
+    const replacements = [sourceResult.history, linkedResult.history].filter((history): history is NonNullable<typeof history> => !!history);
+    if (replacements.length || beforeHeadAtlases !== undefined) {
+        const afterObjects = new Map<Mesh | InstancedMesh, Set<number>>();
+        for (const uuid of [...sourceResult, ...linkedResult]) {
+            const ref = uuid ? refs?.get(uuid) : undefined;
+            if (!ref) continue;
+            const ids = afterObjects.get(ref.mesh) ?? new Set<number>();
+            ids.add(ref.instanceId);
+            afterObjects.set(ref.mesh, ids);
+        }
+        recordReplacementTransformChange(
+            loadedObjectGroup,
+            before,
+            captureTransformState(loadedObjectGroup, afterObjects, selectedGroupIds),
+            replacements,
+            beforeHeadAtlases !== undefined && restoreHeadAtlases ? {
+                before: beforeHeadAtlases,
+                after: captureHeadAtlases?.(sourceResult.filter((uuid): uuid is string => !!uuid).concat(linkedResult.filter((uuid): uuid is string => !!uuid))),
+                apply: restoreHeadAtlases
+            } : undefined
+        );
+    } else recordTransformChange(loadedObjectGroup, before);
 }
 
 //  Main entry point 
@@ -1276,6 +1383,7 @@ export function initGizmo({
         controls.enabled = !event.value;
         if (event.value) {
             dragHistoryBefore = null;
+            smartScaleCreationBefore = null;
             const items = getSelectedItems();
             const meshToInstanceIds = new Map<Object3D, number[]>();
             for (const { mesh, instanceId } of items) {
@@ -1435,7 +1543,14 @@ export function initGizmo({
             }
             const historyBefore = dragHistoryBefore;
             dragHistoryBefore = null;
-            if (changed && historyBefore) recordSceneChange(loadedObjectGroup, historyBefore);
+            const smartScaleCreated = smartScaleExtruded ? getSmartScaleCreatedSelection() : null;
+            smartScaleCreationBefore = null;
+            if (changed && historyBefore) {
+                if ('geometries' in historyBefore && smartScaleCreated && (smartScaleCreated.groups.size || smartScaleCreated.objects.size)) {
+                    recordGeometryAndCreationChange(loadedObjectGroup, historyBefore, smartScaleCreated);
+                } else if ('geometries' in historyBefore) recordGeometryChange(loadedObjectGroup, historyBefore);
+                else recordTransformChange(loadedObjectGroup, historyBefore);
+            }
         }
     });
 
@@ -1805,7 +1920,7 @@ export function initGizmo({
             if (v && v.userData && v.userData.key) {
                 const key = v.userData.key as string;
                 const vertexHistoryBefore = !selectedVertexKeys.has(key) && selectedVertexKeys.size === 1
-                    ? captureSceneState(loadedObjectGroup)
+                    ? captureSelectionGeometryState(loadedObjectGroup, currentSelection.objects, currentSelection.groups)
                     : null;
 
                 if (selectedVertexKeys.has(key)) {
@@ -1878,7 +1993,7 @@ export function initGizmo({
                             });
                         }
 
-                        if (handled && vertexHistoryBefore) recordSceneChange(loadedObjectGroup, vertexHistoryBefore);
+                        if (handled && vertexHistoryBefore) recordGeometryChange(loadedObjectGroup, vertexHistoryBefore);
                     }
                 }
 

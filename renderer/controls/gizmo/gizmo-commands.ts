@@ -8,6 +8,7 @@ import {
 import * as GroupUtils from '../grouping/group';
 import * as Duplicate from '../grouping/duplicate';
 import * as Delete from '../grouping/delete';
+import type { DeletedSceneDelta } from '../grouping/delete';
 import * as Select from '../selection/select';
 import type { SelectionState, SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
@@ -126,13 +127,14 @@ export function deleteSelectedItemsCommand(
     loadedObjectGroup: Group,
     currentSelection: SelectionState,
     callbacks: GizmoCommandCallbacks
-): void {
-    if (!callbacks.hasAnySelection()) return;
+): DeletedSceneDelta | null {
+    if (!callbacks.hasAnySelection()) return null;
 
-    Delete.deleteSelectedItems(loadedObjectGroup, currentSelection, {
+    const delta = Delete.deleteSelectedItems(loadedObjectGroup, currentSelection, {
         resetSelectionAndDeselect: callbacks.resetSelectionAndDeselect
     });
     callbacks.emitSceneUpdated();
+    return delta;
 }
 
 export function duplicateSelectedCommand(
@@ -140,8 +142,8 @@ export function duplicateSelectedCommand(
     currentSelection: SelectionState,
     selectionAnchorMode: 'default' | 'center',
     callbacks: DuplicateCommandCallbacks
-): void {
-    if (!callbacks.hasAnySelection()) return;
+): { groups: Set<string>; objects: Map<PdeMesh, Set<number>> } | null {
+    if (!callbacks.hasAnySelection()) return null;
 
     const savedPivotState = callbacks.getCustomPivotState();
     const hadPrimary = !!currentSelection.primary;
@@ -179,4 +181,5 @@ export function duplicateSelectedCommand(
     callbacks.updateSelectionOverlay();
 
     console.log('Duplication complete');
+    return newSel;
 }

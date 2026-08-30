@@ -3,7 +3,8 @@ import { getBlockIconName, getItemIconAtlas, type ItemIconAtlas } from './item-i
 import { currentSelection } from '../controls/selection/select';
 import { addDisplayObject, addTextDisplay, loadedObjectGroup, replaceDisplayObjects } from '../load-project/mesh-builder';
 import { getCompatibleBlockProperties } from '../load-project/pbde-assets';
-import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history.js';
+import { captureHistoryUiState, recordCreationChange, recordReplacementChange } from '../controls/undo-redo/scene-history.js';
+import type { InstancedMesh } from 'three/webgpu';
 import { matchesShortcut } from '../controls/input/shortcuts';
 import { toggleHeadPainter } from './head-painter';
 
@@ -80,18 +81,23 @@ async function applyIcon(name: string, isItemDisplay = activeAtlasName === 'item
   if (applying) return;
   applying = true;
   try {
-    const before = captureSceneState(loadedObjectGroup);
+    const beforeUi = captureHistoryUiState();
     const targetName = isItemDisplay ? name : await getBlockIconName(name);
     const userData = loadedObjectGroup.userData;
     const selectedUuids = getSelectedUuids();
 
     if (!selectedUuids.length) {
-      await addDisplayObject(targetName, isItemDisplay);
+      const uuid = await addDisplayObject(targetName, isItemDisplay);
+      const ref = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }>).get(uuid)!;
+      recordCreationChange(loadedObjectGroup, {
+        groups: new Set(),
+        objects: new Map([[ref.mesh, new Set([ref.instanceId])]])
+      }, beforeUi);
     } else {
       const oldItemDisplays = userData.objectIsItemDisplay as Set<string> | undefined;
       const displayTypes = userData.objectDisplayTypes as Map<string, string> | undefined;
       const blockProperties = userData.objectBlockProps as Map<string, Record<string, string>> | undefined;
-      await replaceDisplayObjects(await Promise.all(selectedUuids.map(async objectUuid => {
+      const result = await replaceDisplayObjects(await Promise.all(selectedUuids.map(async objectUuid => {
         let replacementName = targetName;
         if (isItemDisplay && oldItemDisplays?.has(objectUuid)) {
           const display = displayTypes?.get(objectUuid);
@@ -102,8 +108,10 @@ async function applyIcon(name: string, isItemDisplay = activeAtlasName === 'item
         }
         return { objectUuid, name: replacementName, isItemDisplay };
       })));
+      if (result.history) recordReplacementChange(
+        loadedObjectGroup, result.history.removed, result.history.created, beforeUi
+      );
     }
-    recordSceneChange(loadedObjectGroup, before);
     closeSearch();
   } catch (error) {
     console.error(error);
@@ -206,9 +214,17 @@ atlasButtons[0]?.addEventListener('click', () => { void openSearch('block-atlas.
 atlasButtons[1]?.addEventListener('click', () => { void openSearch('item-atlas.png'); });
 atlasButtons[2]?.addEventListener('click', () => { void applyIcon('player_head', true); });
 atlasButtons[3]?.addEventListener('click', async () => {
-  const before = captureSceneState(loadedObjectGroup);
-  await addTextDisplay(getSelectedUuids());
-  recordSceneChange(loadedObjectGroup, before);
+  const beforeUi = captureHistoryUiState();
+  const result = await addTextDisplay(getSelectedUuids());
+  if (result.history) {
+    recordReplacementChange(loadedObjectGroup, result.history.removed, result.history.created, beforeUi);
+  } else {
+    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }>).get(result.uuid)!;
+    recordCreationChange(loadedObjectGroup, {
+      groups: new Set(),
+      objects: new Map([[ref.mesh, new Set([ref.instanceId])]])
+    }, beforeUi);
+  }
 });
 atlasButtons[4]?.addEventListener('click', toggleHeadPainter);
 if (atlasButtons[4]) {
@@ -226,9 +242,9 @@ const dimensionToggle = dimensionControl.querySelector<HTMLButtonElement>('butto
 const dimensionMenu = dimensionControl.querySelector<HTMLElement>('.toolbar-dimensions-menu')!;
 dimensionControl.querySelectorAll<HTMLInputElement>('input').forEach(input => {
   const key = `pdeToolbar${input.name[0].toUpperCase()}${input.name.slice(1)}`;
-  input.value = localStorage.getItem(key) ?? '';
+  input.value = localStorage.getItem(key) ?? '2';
   input.addEventListener('input', () => {
-    input.value = input.value.replace(/\D/g, '');
+    input.value = input.value.replace(/\D/g, '') || '0';
     localStorage.setItem(key, input.value);
   });
 });

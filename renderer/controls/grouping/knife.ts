@@ -10,6 +10,7 @@ type KnifeUvAttribute = BufferAttribute | InterleavedBufferAttribute;
 
 export interface KnifeResult extends DuplicationSelection {
     changed: boolean;
+    created: DuplicationSelection;
 }
 
 function getItemKey({ mesh, instanceId }: KnifeItem): string {
@@ -111,7 +112,8 @@ export function knifeSelection(
     const result: KnifeResult = {
         groups: new Set(selection.groups),
         objects: new Map(Array.from(selection.objects, ([mesh, ids]) => [mesh, new Set(ids)])),
-        changed: items.length > 0 && pieceCount > 1
+        changed: items.length > 0 && pieceCount > 1,
+        created: { groups: new Set(), objects: new Map() }
     };
     if (!result.changed) return result;
     if (!Number.isSafeInteger(pieceCount)) throw new Error('나이프 결과가 너무 큽니다.');
@@ -189,6 +191,11 @@ export function knifeSelection(
                 const ids = result.objects.get(pieces[index].mesh) ?? new Set<number>();
                 ids.add(pieces[index].instanceId);
                 result.objects.set(pieces[index].mesh, ids);
+            }
+            if (index > 0) {
+                const ids = result.created.objects.get(pieces[index].mesh) ?? new Set<number>();
+                ids.add(pieces[index].instanceId);
+                result.created.objects.set(pieces[index].mesh, ids);
             }
         }
     }

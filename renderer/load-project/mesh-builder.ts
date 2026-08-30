@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { compressSync, strToU8 } from 'fflate';
 import { createEndPortalMaterial, createEntityMaterial, dragSelectedAttributeName, entityVisibleAttributeName, setEntityStateAttributes } from '../entity-material';
-import { deleteSelectedItems } from '../controls/grouping/delete';
+import { deleteSelectedItems, type DeletedSceneDelta } from '../controls/grouping/delete';
 import * as GroupUtils from '../controls/grouping/group';
 import * as Overlay from '../controls/selection/overlay';
 import { getItemDisplayModelMatrix, getPlayerHeadDisplayMatrix, parsePbdeProject } from './scene-parser';
@@ -11,6 +11,7 @@ import type { GeometryInstanceBatch, GeometryInstanceMeta, GeometryMeta, GroupDa
 import { createTextDisplayTemplates, getTextDisplayTemplateKey, resetTextDisplayAtlases, textDisplayInstanceAttributeNames, type TextDisplayOptions } from './text-display';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../controls/transform/mirroring';
 import { isSceneHistoryResourceRetained } from '../controls/undo-redo/scene-history';
+import { isApplying } from '../controls/undo-redo/undo-redo';
 // 애니메이션 프레임이 있는 블록 텍스처를 첫 16x16 타일로 잘라낸다.
 // function cropTextureToFirst16(tex) { ... } // Removed as per request
 
@@ -71,14 +72,16 @@ type PlayerHeadAtlasRegionSnapshot = {
 };
 type PlayerHeadAtlasSnapshot = {
     material: THREE.Material;
-    nextSlot: number;
-    freeSlots: number[];
+    targeted?: boolean;
+    nextSlot?: number;
+    freeSlots?: number[];
     imageHeadNextTile?: number;
     imageHeadReservedSlots?: number;
     imageHeadTiles?: number[];
     imageHeadTileKeys?: Array<[string, number]>;
-    skins: Map<string, PlayerHeadSkin>;
-    slotUrls: Array<string | undefined>;
+    skins?: Map<string, PlayerHeadSkin>;
+    slotUrls?: Array<string | undefined>;
+    slotEntries?: Array<{ slot: number; url?: string; skin?: PlayerHeadSkin }>;
     regions: PlayerHeadAtlasRegionSnapshot[];
 };
 const playerHeadAtlases = new WeakMap<THREE.Material, PlayerHeadAtlas>();
@@ -119,6 +122,9 @@ type MaterialUpdate = {
     signature: string;
 };
 export type LoadedSelection = Map<THREE.Object3D, Set<number>>;
+export type DisplayReplacementResult = string[] & {
+    history?: { removed: DeletedSceneDelta; created: Map<THREE.InstancedMesh, Set<number>> };
+};
 export type PlayerHeadPaintSurface = {
     mesh: THREE.InstancedMesh;
     instanceId: number;
@@ -975,15 +981,15 @@ function createHeadGeometries() {
     }
 }
 
-function createPlayerHeadAtlasGeometry(): THREE.BufferGeometry {
+function createPlayerHeadAtlasGeometry(includeLayer = true): THREE.BufferGeometry {
     createHeadGeometries();
     if (!headGeometries?.merged) throw new Error('Head geometries not available for instancing.');
-    const geometry = headGeometries.merged.clone();
+    const geometry = (includeLayer ? headGeometries.merged : headGeometries.base).clone();
     const uvs = geometry.getAttribute('uv') as THREE.BufferAttribute;
     const uvMirrorCenters = new Float32Array(uvs.count * 2);
     const faceOrder = ['left', 'right', 'top', 'bottom', 'front', 'back'];
 
-    [...faceOrder, ...faceOrder.map(face => `layer_${face}`)].forEach((key, faceIndex) => {
+    [...faceOrder, ...(includeLayer ? faceOrder.map(face => `layer_${face}`) : [])].forEach((key, faceIndex) => {
         const partIndex = playerHeadPartOrder.indexOf(key as keyof typeof playerHeadFaceParts);
         const x = (partIndex % 3) * PLAYER_HEAD_PART_SIZE;
         const y = Math.floor(partIndex / 3) * PLAYER_HEAD_PART_SIZE;
@@ -1012,35 +1018,22 @@ function createPlayerHeadAtlasGeometry(): THREE.BufferGeometry {
 }
 
 function createImageHeadAtlasGeometry(layer: 0 | 1): THREE.BufferGeometry {
-    const geometry = createPlayerHeadAtlasGeometry();
+    const geometry = createPlayerHeadAtlasGeometry(layer === 1);
     const blackUvs = geometry.getAttribute('uv') as THREE.BufferAttribute;
-    for (let vertex = 0; vertex < blackUvs.count; vertex++) blackUvs.setXY(vertex, 1 - 4 / PLAYER_HEAD_ATLAS_SIZE, 1 - 4 / PLAYER_HEAD_ATLAS_SIZE);
-    const scale = layer ? PLAYER_HEAD_LAYER_SCALE : 1;
-    const overlay = new THREE.PlaneGeometry(scale, scale);
-    overlay.translate(0, -0.5, scale / 2 + 0.0001);
-    const partIndex = layer ? 10 : 4;
-    const x = (partIndex % 3) * PLAYER_HEAD_PART_SIZE;
-    const y = Math.floor(partIndex / 3) * PLAYER_HEAD_PART_SIZE;
-    const u0 = x / PLAYER_HEAD_ATLAS_SIZE;
-    const u1 = (x + PLAYER_HEAD_PART_SIZE) / PLAYER_HEAD_ATLAS_SIZE;
-    const v0 = (PLAYER_HEAD_BLOCK_HEIGHT - y - PLAYER_HEAD_PART_SIZE) / PLAYER_HEAD_ATLAS_SIZE;
-    const v1 = (PLAYER_HEAD_BLOCK_HEIGHT - y) / PLAYER_HEAD_ATLAS_SIZE;
-    const uvs = overlay.getAttribute('uv') as THREE.BufferAttribute;
-    uvs.setXY(0, u0, v1); uvs.setXY(1, u1, v1);
-    uvs.setXY(2, u0, v0); uvs.setXY(3, u1, v0);
-    overlay.setAttribute('headLayer', new THREE.BufferAttribute(new Float32Array(4).fill(layer), 1));
-    const centers = new Float32Array(8);
-    for (let vertex = 0; vertex < 4; vertex++) centers.set([(u0 + u1) / 2, (v0 + v1) / 2], vertex * 2);
-    overlay.setAttribute('uvMirrorCenter', new THREE.BufferAttribute(centers, 2));
-
-    const merged = mergeIndexedGeometries([geometry, overlay]);
-    geometry.dispose();
-    overlay.dispose();
-    if (!merged) throw new Error('Image head geometry could not be created.');
-    merged.clearGroups();
-    merged.addGroup(0, 72, 1);
-    merged.addGroup(72, 6, 0);
-    return merged;
+    const frontFace = layer ? 10 : 4;
+    for (let vertex = 0; vertex < blackUvs.count; vertex++) {
+        if (Math.floor(vertex / 4) !== frontFace) blackUvs.setXY(vertex, 1 - 4 / PLAYER_HEAD_ATLAS_SIZE, 1 - 4 / PLAYER_HEAD_ATLAS_SIZE);
+    }
+    const frontIndex = frontFace * 6;
+    geometry.clearGroups();
+    geometry.addGroup(0, frontIndex, 1);
+    geometry.addGroup(frontIndex, 6, 0);
+    geometry.addGroup(frontIndex + 6, geometry.getIndex()!.count - frontIndex - 6, 1);
+    if (import.meta.env.DEV) console.assert(
+        geometry.getIndex()!.count === (layer ? 72 : 36) && geometry.groups[1].start === frontIndex,
+        'Image head layer geometry is invalid.'
+    );
+    return geometry;
 }
 
 function getImageHeadBlackMaterial(texture: THREE.Texture): THREE.Material {
@@ -2400,21 +2393,21 @@ function getImageHeadTileUsage(material: THREE.Material, tile: number): number {
     return count;
 }
 
-function collectPlayerHeadAtlasUsage(): {
+type PlayerHeadAtlasTargets = Iterable<string> | Map<THREE.InstancedMesh, Iterable<number>>;
+
+function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets): {
     slots: Map<THREE.Material, Set<number>>;
     imageTiles: Map<THREE.Material, Set<number>>;
 } {
     const slots = new Map<THREE.Material, Set<number>>();
     const imageTiles = new Map<THREE.Material, Set<number>>();
-    loadedObjectGroup.traverse(object => {
-        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
-        const mesh = object as THREE.InstancedMesh;
+    const collect = (mesh: THREE.InstancedMesh, instanceIds: Iterable<number>): void => {
         const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
         if (!playerHeadAtlases.has(material)) return;
         const tilePositions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
         if (tilePositions) {
             const used = imageTiles.get(material) ?? new Set<number>();
-            for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
+            for (const instanceId of instanceIds) {
                 const tile = tilePositions[instanceId];
                 if (tile) used.add(tile[1] / PLAYER_HEAD_PART_SIZE * (PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE)
                     + tile[0] / PLAYER_HEAD_PART_SIZE);
@@ -2425,8 +2418,26 @@ function collectPlayerHeadAtlasUsage(): {
         const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
         if (!offsets) return;
         const used = slots.get(material) ?? new Set<number>();
-        for (let instanceId = 0; instanceId < mesh.count; instanceId++) used.add(getPlayerHeadSlot(offsets, instanceId));
+        for (const instanceId of instanceIds) used.add(getPlayerHeadSlot(offsets, instanceId));
         slots.set(material, used);
+    };
+    if (targets instanceof Map) targets.forEach((ids, mesh) => collect(mesh, ids));
+    else if (targets) {
+        const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
+        const byMesh = new Map<THREE.InstancedMesh, Set<number>>();
+        for (const uuid of targets) {
+            const ref = refs?.get(uuid);
+            if (!ref?.mesh?.isInstancedMesh) continue;
+            const ids = byMesh.get(ref.mesh) ?? new Set<number>();
+            ids.add(ref.instanceId);
+            byMesh.set(ref.mesh, ids);
+        }
+        byMesh.forEach((ids, mesh) => collect(mesh, ids));
+    } else loadedObjectGroup.traverse(object => {
+        if ((object as THREE.InstancedMesh).isInstancedMesh) collect(
+            object as THREE.InstancedMesh,
+            Array.from({ length: (object as THREE.InstancedMesh).count }, (_, instanceId) => instanceId)
+        );
     });
     return { slots, imageTiles };
 }
@@ -2440,14 +2451,16 @@ function isReservedImageHeadTile(atlas: PlayerHeadAtlas, tile: number): boolean 
         && Math.floor(row / 4) * PLAYER_HEAD_BLOCKS_PER_ROW + Math.floor(column / 3) < (atlas.imageHeadReservedSlots ?? 0);
 }
 
-function capturePlayerHeadAtlasState(): PlayerHeadAtlasSnapshot[] {
-    const usage = collectPlayerHeadAtlasUsage();
-    return getProjectPlayerHeadAtlases().map(atlas => {
+function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): PlayerHeadAtlasSnapshot[] {
+    const usage = collectPlayerHeadAtlasUsage(targets);
+    const targeted = targets !== undefined;
+    const states = getProjectPlayerHeadAtlases().map(atlas => {
         const regions: PlayerHeadAtlasRegionSnapshot[] = [];
         const addRegion = (x: number, y: number, width: number, height: number): void => {
             regions.push({ x, y, width, height, data: atlas.context.getImageData(x, y, width, height).data.slice() });
         };
-        [...(usage.slots.get(atlas.material) ?? [])].sort((a, b) => a - b).forEach(slot => addRegion(
+        const usedSlots = [...(usage.slots.get(atlas.material) ?? [])].sort((a, b) => a - b);
+        usedSlots.forEach(slot => addRegion(
             (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH,
             Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT,
             PLAYER_HEAD_BLOCK_WIDTH,
@@ -2470,17 +2483,24 @@ function capturePlayerHeadAtlasState(): PlayerHeadAtlasSnapshot[] {
         );
         return {
             material: atlas.material,
-            nextSlot: atlas.nextSlot,
-            freeSlots: [...atlas.freeSlots],
-            imageHeadNextTile: atlas.imageHeadNextTile,
-            imageHeadReservedSlots: atlas.imageHeadReservedSlots,
+            targeted,
+            nextSlot: targeted ? undefined : atlas.nextSlot,
+            freeSlots: targeted ? undefined : [...atlas.freeSlots],
+            imageHeadNextTile: targeted && imageTiles.length === 0 ? undefined : atlas.imageHeadNextTile,
+            imageHeadReservedSlots: targeted && imageTiles.length === 0 ? undefined : atlas.imageHeadReservedSlots,
             imageHeadTiles: imageTiles,
             imageHeadTileKeys: [...(atlas.imageHeadTileKeys ?? [])].filter(([, tile]) => usedImageTiles.has(tile)),
-            skins: new Map(Array.from(atlas.skins, ([url, skin]) => [url, { ...skin }])),
-            slotUrls: [...atlas.slotUrls],
+            skins: targeted ? undefined : new Map(Array.from(atlas.skins, ([url, skin]) => [url, { ...skin }])),
+            slotUrls: targeted ? undefined : [...atlas.slotUrls],
+            slotEntries: targeted ? usedSlots.map(slot => {
+                const url = atlas.slotUrls[slot];
+                const skin = url ? atlas.skins.get(url) : undefined;
+                return { slot, url, skin: skin ? { ...skin } : undefined };
+            }) : undefined,
             regions
         };
     });
+    return targeted ? states.filter(state => state.regions.length > 0) : states;
 }
 
 function restorePlayerHeadAtlasState(value: unknown): void {
@@ -2488,20 +2508,42 @@ function restorePlayerHeadAtlasState(value: unknown): void {
     for (const state of states) {
         const atlas = playerHeadAtlases.get(state.material);
         if (!atlas) continue;
-        atlas.context.clearRect(0, 0, PLAYER_HEAD_ATLAS_SIZE, PLAYER_HEAD_ATLAS_SIZE);
+        if (!state.targeted) atlas.context.clearRect(0, 0, PLAYER_HEAD_ATLAS_SIZE, PLAYER_HEAD_ATLAS_SIZE);
+        else state.regions.forEach(region => atlas.context.clearRect(region.x, region.y, region.width, region.height));
         state.regions.forEach(region => atlas.context.putImageData(
             new ImageData(new Uint8ClampedArray(region.data), region.width, region.height),
             region.x,
             region.y
         ));
-        atlas.nextSlot = state.nextSlot;
-        atlas.freeSlots = [...state.freeSlots].sort((a, b) => b - a);
+        if (state.targeted) {
+            for (const { slot, url, skin } of state.slotEntries ?? []) {
+                atlas.freeSlots = atlas.freeSlots.filter(freeSlot => freeSlot !== slot);
+                atlas.slotUrls[slot] = url;
+                if (url && skin) atlas.skins.set(url, { ...skin });
+            }
+            if (state.imageHeadTiles?.length) {
+                atlas.imageHeadNextTile = state.imageHeadNextTile;
+                atlas.imageHeadReservedSlots = state.imageHeadReservedSlots;
+                atlas.imageHeadTiles ??= new Set();
+                state.imageHeadTiles.forEach(tile => atlas.imageHeadTiles!.add(tile));
+                const restoredTiles = new Set(state.imageHeadTiles);
+                for (const [key, tile] of atlas.imageHeadTileKeys ?? []) {
+                    if (restoredTiles.has(tile)) atlas.imageHeadTileKeys!.delete(key);
+                }
+                atlas.imageHeadTileKeys ??= new Map();
+                state.imageHeadTileKeys?.forEach(([key, tile]) => atlas.imageHeadTileKeys!.set(key, tile));
+            }
+            atlas.texture.needsUpdate = true;
+            continue;
+        }
+        atlas.nextSlot = state.nextSlot!;
+        atlas.freeSlots = [...state.freeSlots!].sort((a, b) => b - a);
         atlas.imageHeadNextTile = state.imageHeadNextTile;
         atlas.imageHeadReservedSlots = state.imageHeadReservedSlots;
         atlas.imageHeadTiles = new Set(state.imageHeadTiles);
         atlas.imageHeadTileKeys = new Map(state.imageHeadTileKeys);
-        atlas.skins = new Map(Array.from(state.skins, ([url, skin]) => [url, { ...skin }]));
-        atlas.slotUrls = [...state.slotUrls];
+        atlas.skins = new Map(Array.from(state.skins!, ([url, skin]) => [url, { ...skin }]));
+        atlas.slotUrls = [...state.slotUrls!];
         atlas.texture.needsUpdate = true;
     }
     notifyPlayerHeadAtlasesChanged();
@@ -2770,7 +2812,7 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
 
 export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
     applyPlayerHeadTexture(objectUuid, textureUrl, await loadPlayerHeadImage(textureUrl));
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
 export async function flipPlayerHeadTextures(objectUuids: string[], axis: PlayerHeadMirrorAxis): Promise<void> {
@@ -2836,7 +2878,7 @@ export async function updateDisplayObjectMatrix(objectUuid: string, name: string
     names.set(objectUuid, name);
     if (newDisplayType) displayTypes.set(objectUuid, newDisplayType);
     else displayTypes.delete(objectUuid);
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
 function disposeUnusedTextDisplayResources(geometry: THREE.BufferGeometry, material: THREE.Material): void {
@@ -3054,7 +3096,6 @@ export async function updateTextDisplay(objectUuid: string, name: string, option
         ref.mesh.userData.textDisplayMaterialOwned = !replacementMaterial.userData.textDisplayAtlas;
         ref.mesh.computeBoundingBox();
         ref.mesh.computeBoundingSphere();
-        // ponytail: retained resources live with history; add command cleanup hooks if history GPU memory becomes measurable.
         disposeUnusedTextDisplayResources(oldGeometry, oldMaterial);
     }
     (userData.objectNames as Map<string, string>).set(objectUuid, name);
@@ -3083,8 +3124,8 @@ export async function replaceDisplayObjects(requests: Array<{
     isItemDisplay?: boolean;
     isTextDisplay?: boolean;
     options?: TextDisplayOptions;
-}>, syncMirror = true): Promise<string[]> {
-    if (requests.length === 0) return [];
+}>, syncMirror = true): Promise<DisplayReplacementResult> {
+    if (requests.length === 0) return [] as DisplayReplacementResult;
     const requestedCount = requests.length;
     if (syncMirror && isMirrorModelingEnabled()) {
         const requestedUuids = new Set(requests.map(request => request.objectUuid));
@@ -3224,7 +3265,7 @@ export async function replaceDisplayObjects(requests: Array<{
             deleteSelectedItems(loadedObjectGroup, {
                 groups: new Set(),
                 objects: new Map([...added].filter(([object]) => (object as THREE.Mesh).isMesh)) as Map<THREE.Mesh, Set<number>>
-            }, { resetSelectionAndDeselect: () => {} });
+            }, { resetSelectionAndDeselect: () => {} })?.dispose();
             if (previousSceneOrder) ud.sceneOrder = previousSceneOrder;
             if (import.meta.env.DEV) console.assert(
                 replacements.every(state => refs.has(state.objectUuid) && !refs.has(state.replacementUuid)),
@@ -3252,10 +3293,11 @@ export async function replaceDisplayObjects(requests: Array<{
         return states.sort((a, b) => b.oldInstanceId - a.oldInstanceId)
             .map(state => ({ state, oldLastInstanceId: oldLastInstanceId-- }));
     }).flat();
-    deleteSelectedItems(loadedObjectGroup, {
+    const removed = deleteSelectedItems(loadedObjectGroup, {
         groups: new Set(),
         objects: new Map(Array.from(deletionStates, ([mesh, states]) => [mesh, new Set(states.map(state => state.oldInstanceId))]))
     }, { resetSelectionAndDeselect: () => {} });
+    if (!removed) throw new Error('교체할 오브젝트를 삭제할 수 없습니다.');
 
     const replacementUuids = new Map(replacements.map(state => [state.objectUuid, state.replacementUuid]));
     if (previousSceneOrder) {
@@ -3376,8 +3418,18 @@ export async function replaceDisplayObjects(requests: Array<{
         });
     }
     window.dispatchEvent(new CustomEvent('pde:replace-object-selection', { detail: selectionReplacements }));
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-    return replacements.slice(0, requestedCount).map(({ replacementUuid }) => replacementUuid);
+    if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    const result = replacements.slice(0, requestedCount).map(({ replacementUuid }) => replacementUuid) as DisplayReplacementResult;
+    const created = new Map<THREE.InstancedMesh, Set<number>>();
+    for (const state of replacements) {
+        const replacement = refs.get(state.replacementUuid);
+        if (!replacement) continue;
+        const ids = created.get(replacement.mesh) ?? new Set<number>();
+        ids.add(replacement.instanceId);
+        created.set(replacement.mesh, ids);
+    }
+    result.history = { removed, created };
+    return result;
 }
 
 export async function addDisplayObject(name: string, isItemDisplay: boolean): Promise<string> {
@@ -3407,20 +3459,21 @@ export async function addDisplayObject(name: string, isItemDisplay: boolean): Pr
         await loadAndRenderPbde(new File([compressSync(raw)], 'object-add.pbde'), true),
         'default'
     );
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     return uuid;
 }
 
-export async function addTextDisplay(objectUuids: string[] = []): Promise<string> {
+export async function addTextDisplay(objectUuids: string[] = []): Promise<{ uuid: string; history?: DisplayReplacementResult['history'] }> {
     const options: TextDisplayOptions = {
         color: '#FFFFFF', alpha: 1, backgroundColor: '#000000', backgroundAlpha: 1,
         bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
         lineLength: 50, align: 'center', font: 'minecraft:default'
     };
     if (objectUuids.length) {
-        return (await replaceDisplayObjects(objectUuids.map(objectUuid => ({
+        const result = await replaceDisplayObjects(objectUuids.map(objectUuid => ({
             objectUuid, name: '텍스트 입력', isTextDisplay: true, options
-        }))))[0];
+        })));
+        return { uuid: result[0], history: result.history };
     }
     const uuid = THREE.MathUtils.generateUUID();
     const json = strToU8(JSON.stringify([{ children: [{
@@ -3443,15 +3496,15 @@ export async function addTextDisplay(objectUuids: string[] = []): Promise<string
         pivotMode === 'center' ? 'center' : 'default'
     );
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-    return uuid;
+    return { uuid };
 }
 
 export async function replaceDisplayObject(
     objectUuid: string,
     name: string,
     transformContext?: { pivotMode: string; pivotWorld?: THREE.Vector3 }
-): Promise<string> {
-    return (await replaceDisplayObjects([{ objectUuid, name, transformContext }]))[0];
+): Promise<DisplayReplacementResult> {
+    return replaceDisplayObjects([{ objectUuid, name, transformContext }]);
 }
 
 export function updateObjectBrightness(objectUuid: string, brightness: { sky: number; block: number }): void {
@@ -3461,7 +3514,7 @@ export function updateObjectBrightness(objectUuid: string, brightness: { sky: nu
     (ud.objectBrightness as Map<string, { sky: number; block: number }>).set(objectUuid, brightness);
     setInstanceSkyBrightness(ref.mesh, ref.instanceId, brightness);
     if (ref.mesh.instanceColor) ref.mesh.instanceColor.needsUpdate = true;
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
 export function updateGlobalBrightness(brightness: GlobalBrightness): void {
@@ -3473,5 +3526,5 @@ export function updateGlobalBrightness(brightness: GlobalBrightness): void {
         setInstanceSkyBrightness(ref.mesh, ref.instanceId, objectBrightness?.get(uuid));
         if (ref.mesh.instanceColor) ref.mesh.instanceColor.needsUpdate = true;
     }
-    window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }

@@ -1,6 +1,7 @@
 export interface UndoRedoCommand {
     undo(): void | Promise<void>;
     redo(): void | Promise<void>;
+    dispose?(): void;
 }
 
 const maxHistory = 100;
@@ -25,8 +26,8 @@ function getHistory(): History {
 export function record(command: UndoRedoCommand): void {
     const { undoStack, redoStack } = getHistory();
     undoStack.push(command);
-    if (undoStack.length > maxHistory) undoStack.shift();
-    redoStack.length = 0;
+    if (undoStack.length > maxHistory) undoStack.shift()?.dispose?.();
+    redoStack.splice(0).forEach(entry => entry.dispose?.());
 }
 
 export async function undo(): Promise<boolean> {
@@ -73,8 +74,8 @@ export function canRedo(): boolean {
 
 export function clear(): void {
     const { undoStack, redoStack } = getHistory();
-    undoStack.length = 0;
-    redoStack.length = 0;
+    undoStack.splice(0).forEach(command => command.dispose?.());
+    redoStack.splice(0).forEach(command => command.dispose?.());
 }
 
 export function setHistoryContext(key: string): void {
@@ -82,6 +83,9 @@ export function setHistoryContext(key: string): void {
 }
 
 export function deleteHistoryContext(key: string): void {
+    const history = histories.get(key);
+    history?.undoStack.forEach(command => command.dispose?.());
+    history?.redoStack.forEach(command => command.dispose?.());
     histories.delete(key);
 }
 

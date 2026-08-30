@@ -40,7 +40,7 @@ import { oklchToRgb, openColorPicker, rgbToOklch } from './color-picker';
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { isSceneObjectVisible } from '../controls/scene-visibility';
 import { intersectSceneInstances } from '../controls/selection/instance-raycast';
-import { captureSceneState, recordSceneChange } from '../controls/undo-redo/scene-history';
+import { captureHistoryUiState, recordCreationChange, recordReplacementChange } from '../controls/undo-redo/scene-history';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../controls/transform/mirroring';
 import { addImageHeadGrid, createHeadProject, createPlayerProject, type PlayerModel } from './player-generator';
 import playerHeadIcon from '../../resources/player_head.svg?raw';
@@ -84,6 +84,11 @@ const blockHeight = 32;
 const partSize = 8;
 const facePartIndexes = [1, 0, 2, 3, 4, 5] as const;
 const faceGridAxes = [[2, 1], [2, 1], [0, 2], [0, 2], [0, 1], [0, 1]] as const;
+const faceNormals = [
+  new Vector3(1, 0, 0), new Vector3(-1, 0, 0),
+  new Vector3(0, 1, 0), new Vector3(0, -1, 0),
+  new Vector3(0, 0, 1), new Vector3(0, 0, -1)
+];
 const toolIcons: Record<Tool, string> = { brush: '\uE1D3', bucket: '\uE2E6', eraser: '\uE28F', picker: '\uE13B', stamp: '\uE3BB', select: '\uE121' };
 const toolLabels: Record<Tool, string> = { brush: '브러시', bucket: '양동이', eraser: '지우개', picker: '색상선택', stamp: '스탬프', select: '선택' };
 const brushOrderKey = 'pdeHeadPainterBrushOrder';
@@ -195,14 +200,57 @@ function pixelOffset(part: number, x: number, y: number): number {
 const gridBoundary = (index: number, count: number): number => Math.round(index * partSize / count);
 const gridCellCenter = (index: number, count: number): number => (gridBoundary(index, count) + gridBoundary(index + 1, count)) / (partSize * 2);
 
+function gridCellPixel(index: number, count: number): number {
+  return Math.floor((gridBoundary(index, count) + gridBoundary(index + 1, count) - 1) / 2);
+}
+
 function forEachGridPixel(columns: number, rows: number, x: number, y: number, visit: (pixelX: number, pixelY: number) => void): void {
   for (let pixelY = gridBoundary(y, rows); pixelY < gridBoundary(y + 1, rows); pixelY++) {
     for (let pixelX = gridBoundary(x, columns); pixelX < gridBoundary(x + 1, columns); pixelX++) visit(pixelX, pixelY);
   }
 }
 
-function gridCellPixel(index: number, count: number): number {
-  return Math.floor((gridBoundary(index, count) + gridBoundary(index + 1, count) - 1) / 2);
+function knifePaintTransform(scale: Vector3, offset: Vector3, normal: Vector3): [number, number, number, number] {
+  if (Math.abs(normal.x) > 0.5) return [scale.z, scale.y, normal.x >= 0 ? 1 - offset.z - scale.z : offset.z, 1 - offset.y - scale.y];
+  if (Math.abs(normal.y) > 0.5) return [scale.x, scale.z, 1 - offset.x - scale.x, 1 - offset.z - scale.z];
+  return [scale.x, scale.y, normal.z >= 0 ? offset.x : 1 - offset.x - scale.x, 1 - offset.y - scale.y];
+}
+
+const knifePixel = (pixel: number, scale: number, offset: number): number => Math.min(7, Math.max(0,
+  Math.floor((offset + pixel / partSize * scale) * partSize)));
+
+function expandKnifePaintSurface(surface: PlayerHeadPaintSurface, image: ImageData): boolean {
+  const scales = surface.mesh.geometry.getAttribute('instancedKnifeUvScale');
+  const offsets = surface.mesh.geometry.getAttribute('instancedKnifeUvOffset');
+  if (!scales || !offsets) return false;
+  const scale = new Vector3(scales.getX(surface.instanceId), scales.getY(surface.instanceId), scales.getZ(surface.instanceId));
+  const offset = new Vector3(offsets.getX(surface.instanceId), offsets.getY(surface.instanceId), offsets.getZ(surface.instanceId));
+  if (scale.equals(new Vector3(1, 1, 1)) && offset.equals(new Vector3())) return false;
+  const source = cloneImage(image);
+  for (let face = 0; face < 6; face++) {
+    const [scaleX, scaleY, offsetX, offsetY] = knifePaintTransform(scale, offset, faceNormals[face]);
+    for (let layer = 0; layer < 2; layer++) {
+      const part = facePartIndexes[face] + layer * 6;
+      for (let y = 0; y < partSize; y++) for (let x = 0; x < partSize; x++) {
+        writePixel(image, part, x, y, readPixel(source, part,
+          knifePixel(x + 0.5, scaleX, offsetX), knifePixel(y + 0.5, scaleY, offsetY)));
+      }
+    }
+  }
+  scales.setXYZ(surface.instanceId, 1, 1, 1);
+  offsets.setXYZ(surface.instanceId, 0, 0, 0);
+  scales.needsUpdate = true;
+  offsets.needsUpdate = true;
+  return true;
+}
+
+function preparePaintSurface(surface: PlayerHeadPaintSurface): ImageData {
+  const image = readPlayerHeadPaint(surface);
+  if (expandKnifePaintSurface(surface, image)) {
+    writePlayerHeadPaint(surface, image, false);
+    commitPlayerHeadPaint(surface);
+  }
+  return image;
 }
 
 function readPixel(image: ImageData, part: number, x: number, y: number): Rgba {
@@ -279,7 +327,7 @@ function getWork(hit: PaintHit): WorkSurface {
   let work = stroke.get(hit.surface.objectUuid);
   if (!work) {
     const surface = getPlayerHeadPaintSurface(hit.mesh, hit.instanceId, true)!;
-    const image = readPlayerHeadPaint(surface);
+    const image = preparePaintSurface(surface);
     const beforeTexture = (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.get(surface.objectUuid);
     work = { surface, before: cloneImage(image), beforeTexture, image, changed: false };
     stroke.set(surface.objectUuid, work);
@@ -290,7 +338,7 @@ function getWork(hit: PaintHit): WorkSurface {
         : undefined;
       const partnerSurface = partner ? getPlayerHeadPaintSurface(partner.mesh, partner.instanceId, true) : null;
       if (partnerSurface && !stroke.has(partnerSurface.objectUuid)) {
-        const partnerImage = readPlayerHeadPaint(partnerSurface);
+        const partnerImage = preparePaintSurface(partnerSurface);
         const partnerTexture = (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.get(partnerSurface.objectUuid);
         stroke.set(partnerSurface.objectUuid, {
           surface: partnerSurface,
@@ -658,9 +706,13 @@ function promoteImageHeadAndPaint(event: PointerEvent, hit: PaintHit): boolean {
   promotingImageHead = true;
   event.preventDefault();
   event.stopImmediatePropagation();
+  const beforeUi = captureHistoryUiState();
   const name = (loadedObjectGroup.userData.objectNames as Map<string, string> | undefined)?.get(hit.surface.objectUuid)
     ?? 'player_head[display=none]';
-  void replaceDisplayObjects([{ objectUuid: hit.surface.objectUuid, name }], false).then(() => {
+  void replaceDisplayObjects([{ objectUuid: hit.surface.objectUuid, name }], false).then(result => {
+    if (result.history) recordReplacementChange(
+      loadedObjectGroup, result.history.removed, result.history.created, beforeUi
+    );
     const promotedHit = getHit(event, true);
     if (promotedHit) {
       paintAt(promotedHit);
@@ -1188,7 +1240,7 @@ function createBrushEditor(): void {
       <label>이름 <input id="head-brush-name" maxlength="100"></label>
       <div class="head-painter-inline"><label>색상 <span class="head-painter-brush-color"><button type="button" class="head-painter-color-preview" data-brush-color-picker aria-label="색상 선택"></button><input id="head-brush-color" value="#000000"></span></label><label>알파 <input id="head-brush-alpha" type="number" min="0" max="255" value="255"></label></div>
       <div class="head-painter-inline"><label>강도 <input id="head-brush-strength" type="number" min="0" max="100" value="100"></label><label>간격 % <input id="head-brush-spacing" type="number" min="1" max="100" value="25"></label></div>
-      <div class="head-painter-inline"><label>가로 <input id="head-brush-width" type="number" min="1" max="8"></label><label>세로 <input id="head-brush-height" type="number" min="1" max="8"></label></div>
+      <div class="head-painter-inline"><label>가로 <input id="head-brush-width" type="number" min="1"></label><label>세로 <input id="head-brush-height" type="number" min="1"></label></div>
       <div class="head-painter-brush-grid"></div>
       <footer><button type="button" data-close>나가기</button><button type="button" data-save>저장</button></footer>
     </section>`;
@@ -1226,8 +1278,8 @@ function createBrushEditor(): void {
   brushEditor.querySelector<HTMLInputElement>('#head-brush-spacing')!.oninput = event => {
     if (editingBrush) editingBrush.spacing = Math.min(100, Math.max(1, Number((event.target as HTMLInputElement).value) || 1));
   };
-  brushEditor.querySelector<HTMLInputElement>('#head-brush-width')!.oninput = event => resizeEditingBrush(Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value))), editingBrush?.height ?? 1);
-  brushEditor.querySelector<HTMLInputElement>('#head-brush-height')!.oninput = event => resizeEditingBrush(editingBrush?.width ?? 1, Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value))));
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-width')!.oninput = event => resizeEditingBrush(Math.max(1, Number((event.target as HTMLInputElement).value)), editingBrush?.height ?? 1);
+  brushEditor.querySelector<HTMLInputElement>('#head-brush-height')!.oninput = event => resizeEditingBrush(editingBrush?.width ?? 1, Math.max(1, Number((event.target as HTMLInputElement).value)));
   const grid = brushEditor.querySelector<HTMLElement>('.head-painter-brush-grid')!;
   grid.tabIndex = 0;
   grid.oncontextmenu = event => event.preventDefault();
@@ -1635,9 +1687,14 @@ function initPlayerGenerator(): void {
     }
   };
   const merge = async (file: File, message: string) => {
-    const before = captureSceneState(loadedObjectGroup);
-    await loadAndRenderPbde(file, true);
-    recordSceneChange(loadedObjectGroup, before);
+    const beforeUi = captureHistoryUiState();
+    const existingGroupIds = new Set((loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys());
+    const objects = await loadAndRenderPbde(file, true);
+    const groupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
+    recordCreationChange(loadedObjectGroup, {
+      groups: groupIds,
+      objects: new Map([...objects].filter(([mesh]) => (mesh as InstancedMesh).isInstancedMesh)) as Map<InstancedMesh, Set<number>>
+    }, beforeUi);
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     status.textContent = message;
   };
@@ -1694,11 +1751,11 @@ function initPlayerGenerator(): void {
     if (!file || file.type !== 'image/png') throw new Error('PNG 파일을 선택해 주세요.');
     const bitmap = await createImageBitmap(file);
     try {
-      const before = captureSceneState(loadedObjectGroup);
-      const count = addImageHeadGrid(bitmap, imageLayer, file.name);
-      recordSceneChange(loadedObjectGroup, before);
+      const beforeUi = captureHistoryUiState();
+      const result = addImageHeadGrid(bitmap, imageLayer, file.name);
+      recordCreationChange(loadedObjectGroup, { groups: new Set([result.groupId]), objects: result.objects }, beforeUi);
       window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-      status.textContent = `이미지 ${imageLayer + 1}번 레이어 · ${count.toLocaleString()}개 생성 완료`;
+      status.textContent = `이미지 ${imageLayer + 1}번 레이어 · ${result.count.toLocaleString()}개 생성 완료`;
     } finally {
       bitmap.close();
     }
@@ -1727,7 +1784,7 @@ function createPanel(): void {
     <fieldset data-tool-settings="brush">
       <legend>브러시</legend>
       <label>모양 <select id="head-painter-brush-shape"><option value="square">사각형</option><option value="circle">원형</option></select></label>
-      <div class="head-painter-inline"><label>가로 <input id="head-painter-brush-width" type="number" min="1" max="8" value="1"></label><label>세로 <input id="head-painter-brush-height" type="number" min="1" max="8" value="1"></label></div>
+      <div class="head-painter-inline"><label>가로 <input id="head-painter-brush-width" type="number" min="1" value="1"></label><label>세로 <input id="head-painter-brush-height" type="number" min="1" value="1"></label></div>
       <label>강도 <span class="head-painter-range"><input id="head-painter-brush-strength-range" type="range" min="0" max="100" value="100"><input id="head-painter-brush-strength" type="number" min="0" max="100" value="100"></span></label>
       <label>간격 % <span class="head-painter-range"><input id="head-painter-brush-spacing-range" type="range" min="1" max="100" value="25"><input id="head-painter-brush-spacing" type="number" min="1" max="100" value="25"></span></label>
       <div class="head-painter-custom-brush"><span>기본 브러시</span><button type="button" class="lucide-icon" data-basic-brush="square" aria-label="브러시 선택" title="브러시 선택">${toolIcons.brush}</button><button type="button" class="lucide-icon" aria-label="설정" title="설정" disabled>\uE2F0</button><button type="button" class="lucide-icon" aria-label="삭제" title="삭제" disabled>\uE18E</button></div>
@@ -1843,8 +1900,8 @@ function createPanel(): void {
     renderCustomBrushes();
   });
   root.querySelector<HTMLButtonElement>('#head-painter-add-brush')!.onclick = () => void addCustomBrush();
-  root.querySelector<HTMLInputElement>('#head-painter-brush-width')!.oninput = event => setBrushValue('width', Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value) || 1)));
-  root.querySelector<HTMLInputElement>('#head-painter-brush-height')!.oninput = event => setBrushValue('height', Math.min(8, Math.max(1, Number((event.target as HTMLInputElement).value) || 1)));
+  root.querySelector<HTMLInputElement>('#head-painter-brush-width')!.oninput = event => setBrushValue('width', Math.max(1, Number((event.target as HTMLInputElement).value) || 1));
+  root.querySelector<HTMLInputElement>('#head-painter-brush-height')!.oninput = event => setBrushValue('height', Math.max(1, Number((event.target as HTMLInputElement).value) || 1));
   bindRangePair('head-painter-brush-strength', 0, 100, value => setBrushValue('strength', value));
   bindRangePair('head-painter-brush-spacing', 1, 100, value => setBrushValue('spacing', value));
   bindRangePair('head-painter-eraser-size', 1, 8, value => { eraserSize = value; });
@@ -1973,6 +2030,12 @@ document.addEventListener('pointerdown', event => {
 if (import.meta.env.DEV) {
   const black = oklchToRgb(rgbToOklch([0, 0, 0]));
   const redBlueMiddle = interpolateColor([255, 0, 0, 0], [0, 0, 255, 255], 0.5);
+  console.assert(
+    knifePaintTransform(new Vector3(0.5, 1, 1), new Vector3(0.5, 0, 0), new Vector3(0, 0, 1)).join() === '0.5,1,0.5,0'
+    && knifePaintTransform(new Vector3(0.5, 1, 1), new Vector3(0, 0, 0), new Vector3(0, 0, -1)).join() === '0.5,1,0.5,0'
+    && knifePixel(4, 0.125, 0.625) === 5,
+    'Knife pieces must paint their visible texture region.'
+  );
   console.assert(pixelOffset(facePartIndexes[0], 0, 0) === 8 * 4 && pixelOffset(facePartIndexes[4] + 6, 7, 7) < blockWidth * blockHeight * 4, 'Head face to texture mapping failed.');
   console.assert(black[0] === 0 && black[1] === 0 && black[2] === 0 && redBlueMiddle[3] === 128, 'OKLCH conversion or alpha interpolation failed.');
   const [smartHorizontal, smartVertical] = smartCounts(8, 8, 1, 3);

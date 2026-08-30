@@ -1,7 +1,7 @@
 import { loadedObjectGroup } from '../../load-project/upload-pbde';
 import { currentSelection } from '../../controls/selection/select';
 import { getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
-import { captureSceneState, recordSceneChange } from '../../controls/undo-redo/scene-history';
+import { captureGroupStructureState, recordGroupStructureChange, type GroupStructureHistoryState } from '../../controls/undo-redo/scene-history';
 import { scheduleSceneExtraFit } from './scene-panel-render';
 import { scenePanelState } from './scene-panel-state';
 import type {
@@ -447,7 +447,7 @@ function dropSceneItems(clientX: number, clientY: number): void {
 
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const hint = scenePanelState.sceneDropHint ?? computeSceneDropHint(clientX, clientY);
-    const before = captureSceneState(loadedObjectGroup);
+    let before: GroupStructureHistoryState | null = null;
 
     let moved = false;
     if (hint && isValidSceneDropHint(scenePanelState.sceneDragBundle, hint, ud)) {
@@ -464,6 +464,17 @@ function dropSceneItems(clientX: number, clientY: number): void {
             : [];
         const mirrorTargetId = hint.targetType === 'root' ? null : mirrorId(hint.targetType, hint.targetId);
         const mirrorParentId = hint.parentGroupId ? groupPairs.get(hint.parentGroupId) : null;
+        const affectedItems = [...bundle.items, ...mirrorItems];
+        const groupIds = new Set(affectedItems.flatMap(item => item.type === 'group' ? [item.id] : []));
+        for (const id of [hint.parentGroupId, hint.targetType === 'group' ? hint.targetId : null, mirrorParentId, mirrorTargetId]) {
+            if (id) groupIds.add(id);
+        }
+        const objects = affectedItems.flatMap(item => {
+            if (item.type !== 'object') return [];
+            const ref = ud.objectUuidToInstance?.get(item.id);
+            return ref ? [{ mesh: ref.mesh, instanceId: ref.instanceId }] : [];
+        });
+        before = captureGroupStructureState(loadedObjectGroup, groupIds, objects);
 
         moved = moveSceneItemsByDropHint(scenePanelState.sceneDragBundle, hint, ud);
         if (mirrorItems.length && (hint.targetType === 'root' || mirrorTargetId)) {
@@ -482,7 +493,7 @@ function dropSceneItems(clientX: number, clientY: number): void {
         scenePanelState.suppressSceneItemClickUntil = Date.now() + 180;
         applySceneVisibility(loadedObjectGroup);
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-        recordSceneChange(loadedObjectGroup, before);
+        if (before) recordGroupStructureChange(loadedObjectGroup, before);
     }
 }
 
