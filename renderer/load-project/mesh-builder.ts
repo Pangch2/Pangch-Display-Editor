@@ -82,6 +82,7 @@ type PlayerHeadAtlasSnapshot = {
     skins?: Map<string, PlayerHeadSkin>;
     slotUrls?: Array<string | undefined>;
     slotEntries?: Array<{ slot: number; url?: string; skin?: PlayerHeadSkin }>;
+    instances?: Array<{ uuid: string; offset: [number, number]; flip?: [number, number]; texture?: string; hasHat?: boolean }>;
     regions: PlayerHeadAtlasRegionSnapshot[];
 };
 const playerHeadAtlases = new WeakMap<THREE.Material, PlayerHeadAtlas>();
@@ -400,15 +401,35 @@ function getInstancedUvTransformCount(parts: GeometryMeta[], instances: Geometry
     if (!parts[0]?.uvTransform) return 0;
 
     let transformCount = 0;
+    let hasUvVariation = false;
     for (const instance of instances) {
         transformCount = Math.max(
             transformCount,
             instance.atlasUvTransforms?.length ?? (instance.atlasUvTransform ? 1 : 0)
         );
+        for (let partIndex = 0; partIndex < parts.length && !hasUvVariation; partIndex++) {
+            const base = parts[partIndex].uvTransform ?? parts[0].uvTransform;
+            const current = getInstancePartUvTransform(instance, partIndex);
+            hasUvVariation = !!current && current.some((value, index) => value !== base[index]);
+        }
     }
-    return transformCount === 0
+    // The geometry already contains the atlas UVs; identity transforms need no shader attributes.
+    return !hasUvVariation
         ? 0
         : Math.min(MAX_PART_UV_TRANSFORMS, Math.max(parts.length, transformCount));
+}
+
+if (import.meta.env.DEV) {
+    const uvA: [number, number, number, number] = [0.25, 0.25, 0, 0];
+    const uvB: [number, number, number, number] = [0.25, 0.25, 0.5, 0];
+    const parts = [{ uvTransform: uvA }, { uvTransform: uvB }] as GeometryMeta[];
+    console.assert(
+        getInstancedUvTransformCount(parts, [{ atlasUvTransforms: [uvA, uvB] }] as GeometryInstanceMeta[]) === 0
+        && getInstancedUvTransformCount(parts, [{ atlasUvTransforms: [uvA, uvA] }] as GeometryInstanceMeta[]) === 2
+        && getInstancedUvTransformCount(parts.slice(0, 1), [{ atlasUvTransform: uvB }] as GeometryInstanceMeta[]) === 1
+        && getInstancedUvTransformCount(parts, [{}] as GeometryInstanceMeta[]) === 0,
+        'Only differing per-instance atlas UVs require shader attributes.'
+    );
 }
 
 function getInstanceDisplayType(instance: GeometryInstanceMeta, part?: GeometryMeta): 'item_display' | 'block_display' {
@@ -2153,7 +2174,8 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     }
                                 }
                                 setEntityStateAttributes(meshGeometry, chunkCapacity);
-                                const instancedMesh = new THREE.InstancedMesh(meshGeometry, materials, chunkCapacity);
+                                const meshMaterial = materials.every(material => material === materials[0]) ? materials[0] : materials;
+                                const instancedMesh = new THREE.InstancedMesh(meshGeometry, meshMaterial, chunkCapacity);
                                 instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(chunkCapacity, 16);
                                 instancedMesh.count = chunkCount;
                                 
@@ -2270,7 +2292,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 const geometry = firstAtlas ? sharedGeometry : sharedGeometry.clone();
                                 firstAtlas = false;
                                 const totalInstances = entries.length;
-                                const headCapacity = Math.max(INITIAL_INSTANCES_PER_INSTANCED_MESH, getAppendableInstanceCapacity(totalInstances));
+                                const headCapacity = getAppendableInstanceCapacity(totalInstances);
                                 const matrices = new Float32Array(headCapacity * 16);
                                 const uvData = new Float32Array(headCapacity * 11);
                                 const interleavedUvData = new THREE.InstancedInterleavedBuffer(uvData, 11);
@@ -2395,7 +2417,7 @@ function getImageHeadTileUsage(material: THREE.Material, tile: number): number {
 
 type PlayerHeadAtlasTargets = Iterable<string> | Map<THREE.InstancedMesh, Iterable<number>>;
 
-function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets): {
+function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets, onInstance?: (mesh: THREE.InstancedMesh, instanceId: number, material: THREE.Material) => void): {
     slots: Map<THREE.Material, Set<number>>;
     imageTiles: Map<THREE.Material, Set<number>>;
 } {
@@ -2408,6 +2430,7 @@ function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets): {
         if (tilePositions) {
             const used = imageTiles.get(material) ?? new Set<number>();
             for (const instanceId of instanceIds) {
+                onInstance?.(mesh, instanceId, material);
                 const tile = tilePositions[instanceId];
                 if (tile) used.add(tile[1] / PLAYER_HEAD_PART_SIZE * (PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE)
                     + tile[0] / PLAYER_HEAD_PART_SIZE);
@@ -2418,7 +2441,10 @@ function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets): {
         const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
         if (!offsets) return;
         const used = slots.get(material) ?? new Set<number>();
-        for (const instanceId of instanceIds) used.add(getPlayerHeadSlot(offsets, instanceId));
+        for (const instanceId of instanceIds) {
+            used.add(getPlayerHeadSlot(offsets, instanceId));
+            onInstance?.(mesh, instanceId, material);
+        }
         slots.set(material, used);
     };
     if (targets instanceof Map) targets.forEach((ids, mesh) => collect(mesh, ids));
@@ -2452,7 +2478,22 @@ function isReservedImageHeadTile(atlas: PlayerHeadAtlas, tile: number): boolean 
 }
 
 function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): PlayerHeadAtlasSnapshot[] {
-    const usage = collectPlayerHeadAtlasUsage(targets);
+    const instances = new Map<THREE.Material, NonNullable<PlayerHeadAtlasSnapshot['instances']>>();
+    const usage = collectPlayerHeadAtlasUsage(targets, (mesh, instanceId, material) => {
+        const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(`${mesh.uuid}_${instanceId}`);
+        const offset = mesh.geometry.getAttribute('instancedUvOffset');
+        if (!uuid || !offset) return;
+        const flip = mesh.geometry.getAttribute('instancedUvFlip');
+        const entries = instances.get(material) ?? [];
+        entries.push({
+            uuid,
+            offset: [offset.getX(instanceId), offset.getY(instanceId)],
+            flip: flip ? [flip.getX(instanceId), flip.getY(instanceId)] : undefined,
+            texture: loadedObjectGroup.userData.objectTextures?.get(uuid),
+            hasHat: mesh.userData.hasHat?.[instanceId]
+        });
+        instances.set(material, entries);
+    });
     const targeted = targets !== undefined;
     const states = getProjectPlayerHeadAtlases().map(atlas => {
         const regions: PlayerHeadAtlasRegionSnapshot[] = [];
@@ -2483,6 +2524,7 @@ function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): PlayerHe
         );
         return {
             material: atlas.material,
+            instances: instances.get(atlas.material),
             targeted,
             nextSlot: targeted ? undefined : atlas.nextSlot,
             freeSlots: targeted ? undefined : [...atlas.freeSlots],
@@ -2515,8 +2557,28 @@ function restorePlayerHeadAtlasState(value: unknown): void {
             region.x,
             region.y
         ));
+        for (const instance of state.instances ?? []) {
+            const ref = loadedObjectGroup.userData.objectUuidToInstance?.get(instance.uuid);
+            if (!ref) continue;
+            const offset = ref.mesh.geometry.getAttribute('instancedUvOffset');
+            const flip = ref.mesh.geometry.getAttribute('instancedUvFlip');
+            if (offset) {
+                offset.setXY(ref.instanceId, ...instance.offset);
+                offset.needsUpdate = true;
+            }
+            if (flip && instance.flip) {
+                flip.setXY(ref.instanceId, ...instance.flip);
+                flip.needsUpdate = true;
+            }
+            if (ref.mesh.userData.hasHat) ref.mesh.userData.hasHat[ref.instanceId] = instance.hasHat;
+            const textures = loadedObjectGroup.userData.objectTextures;
+            if (instance.texture === undefined) textures?.delete(instance.uuid);
+            else textures?.set(instance.uuid, instance.texture);
+        }
         if (state.targeted) {
             for (const { slot, url, skin } of state.slotEntries ?? []) {
+                const oldUrl = atlas.slotUrls[slot];
+                if (oldUrl && oldUrl !== url && atlas.skins.get(oldUrl)?.slot === slot) atlas.skins.delete(oldUrl);
                 atlas.freeSlots = atlas.freeSlots.filter(freeSlot => freeSlot !== slot);
                 atlas.slotUrls[slot] = url;
                 if (url && skin) atlas.skins.set(url, { ...skin });

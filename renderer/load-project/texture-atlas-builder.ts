@@ -126,7 +126,7 @@ export async function buildTextureAtlasForRenderList(
     const { loadedTextures, textureTypes } = await loadTexturesWithLimit(texturePaths, loadTexturePixels);
     if (loadedTextures.length === 0) return null;
 
-    loadedTextures.sort((a, b) => b.pixels.h - a.pixels.h);
+    loadedTextures.sort((a, b) => b.pixels.h - a.pixels.h || a.path.localeCompare(b.path));
 
     const totalArea = loadedTextures.reduce((sum, texture) => sum + texture.pixels.w * texture.pixels.h, 0);
     let atlasW = Math.pow(2, Math.ceil(Math.log2(Math.sqrt(totalArea))));

@@ -2285,20 +2285,19 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             }
             return first;
         };
-        const applyRelativeModelMatrixToTransform = (
-            transform: Float32Array | number[] | undefined,
-            modelMatrix: Float32Array | number[],
-            baseModelMatrix: Float32Array | number[]
-        ) => {
-            const worldMatrix = new THREE.Matrix4().fromArray(transform ?? identityMatrix).transpose();
-            const currentModelMatrix = new THREE.Matrix4().fromArray(modelMatrix);
-            const baseInverse = new THREE.Matrix4().fromArray(baseModelMatrix).invert();
-            worldMatrix.multiply(currentModelMatrix.multiply(baseInverse));
-            return new Float32Array(worldMatrix.transpose().elements);
-        };
 
+        const templateBatches = new WeakMap<ModelData[], {
+            batch: GeometryBatchBuilder;
+            atlasUvTransform?: [number, number, number, number];
+            atlasUvTransforms?: [number, number, number, number][];
+        }>();
         for (const item of geometryItems) {
             if (!item.models) continue;
+            const cached = templateBatches.get(item.models);
+            if (cached) {
+                cached.batch.instances.push({ item, atlasUvTransform: cached.atlasUvTransform, atlasUvTransforms: cached.atlasUvTransforms, transform: item.transform });
+                continue;
+            }
             const parts: GeometryBatchPartSource[] = [];
             const keyParts: string[] = [];
 
@@ -2359,10 +2358,9 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     totalVertices += geomData.positions.length / 3;
                 }
             }
-            const instanceTransform = useInstancedAtlasUv && uniformModelMatrix
-                ? applyRelativeModelMatrixToTransform(item.transform, uniformModelMatrix, batch.parts[0].modelMatrix)
-                : item.transform;
-            batch.instances.push({ item, atlasUvTransform, atlasUvTransforms, transform: instanceTransform });
+            // The batch key includes the model matrix, so every relative model transform is identity.
+            batch.instances.push({ item, atlasUvTransform, atlasUvTransforms, transform: item.transform });
+            templateBatches.set(item.models, { batch, atlasUvTransform, atlasUvTransforms });
         }
 
         const useUint32Indices = totalVertices > 65535;

@@ -3,6 +3,7 @@ import {
   uniform,
   renderGroup,
   uv,
+  varying,
   attribute,
   texture,
   vec3,
@@ -142,7 +143,8 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
     : useInstancedUv
       ? knifeUv
       : uvNode;
-  const diffuseNode = texture(diffuseTex, finalUv);
+  // Atlas and head UV transforms are affine per face; interpolate the result from the vertex stage.
+  const diffuseNode = texture(diffuseTex, varying(finalUv, 'pdeUv'));
 
   const tintVec = getTintNode(tintHex);
 
