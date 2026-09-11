@@ -391,7 +391,8 @@ export function updateGroupReferenceForMovedInstance(
     loadedObjectGroup: Group,
     mesh: Mesh | InstancedMesh,
     oldInstanceId: number,
-    newInstanceId: number
+    newInstanceId: number,
+    childrenByGroup?: Map<string, Map<string, GroupChildObject>>
 ): void {
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
     const groups = getGroups(loadedObjectGroup);
@@ -412,11 +413,23 @@ export function updateGroupReferenceForMovedInstance(
 
         const group = groups.get(groupId);
         if (group && Array.isArray(group.children)) {
-            const childEntry = group.children.find(
+            let childrenByKey = childrenByGroup?.get(groupId);
+            if (childrenByGroup && !childrenByKey) {
+                childrenByKey = new Map();
+                for (const child of group.children) {
+                    if (child.type === 'object') childrenByKey.set(getGroupKey(child.mesh, child.instanceId), child);
+                }
+                childrenByGroup.set(groupId, childrenByKey);
+            }
+            const childEntry = childrenByKey ? childrenByKey.get(oldKey) : group.children.find(
                 (c): c is GroupChildObject => c.type === 'object' && c.mesh === mesh && c.instanceId === oldInstanceId
             );
             if (childEntry) {
                 childEntry.instanceId = newInstanceId;
+                if (childrenByKey) {
+                    childrenByKey.delete(oldKey);
+                    childrenByKey.set(newKey, childEntry);
+                }
             }
         }
     }

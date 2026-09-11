@@ -12,7 +12,7 @@ import {
     Vector3
 } from 'three/webgpu';
 import * as GroupUtils from './group';
-import type { GroupData, GroupChild } from './group';
+import type { GroupData, GroupChild, GroupChildObject } from './group';
 
 interface SceneOrderEntry {
     type: 'group' | 'object';
@@ -112,17 +112,9 @@ function _removeDeletedObjectMetadata(loadedObjectGroup: Group, mesh: Mesh, inst
 }
 
 /**
- * InstancedMesh에서 swap-pop 발생 시 그룹 내 인스턴스 ID 참조 업데이트
- * group.ts::updateGroupReferenceForMovedInstance 호출 래퍼
- */
-function _updateGroupReferenceForMovedInstance(loadedObjectGroup: Group, mesh: Mesh, oldInstanceId: number, newInstanceId: number): void {
-    GroupUtils.updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, oldInstanceId, newInstanceId);
-}
-
-/**
  * InstancedMesh 인스턴스 삭제 (Swap-Pop 방식)
  */
-function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: InstancedMesh, instanceIdsSortedDescending: number[]): void {
+function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: InstancedMesh, instanceIdsSortedDescending: number[], childrenByGroup = new Map<string, Map<string, GroupChildObject>>()): void {
     if (!mesh || !mesh.isInstancedMesh) return;
 
     const instanceMatrix = mesh.instanceMatrix;
@@ -176,7 +168,7 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
         if (deleteIdx < lastIdx) {
             swapData(lastIdx, deleteIdx);
             // 마지막 인스턴스가 삭제된 위치로 이동했으므로 그룹 참조 갱신
-            _updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, lastIdx, deleteIdx);
+            GroupUtils.updateGroupReferenceForMovedInstance(loadedObjectGroup, mesh, lastIdx, deleteIdx, childrenByGroup);
         }
         
         mesh.count--;
@@ -210,19 +202,18 @@ export function deleteSelectedItems(
         }
     };
 
-    const allGroupsToDelete = new Set<string>();
-    if (currentSelection.groups && currentSelection.groups.size > 0) {
-        for (const gid of currentSelection.groups) {
-            if (gid) {
-                allGroupsToDelete.add(gid);
-                const descendants = GroupUtils.getAllDescendantGroups(loadedObjectGroup, gid);
-                for (const d of descendants) allGroupsToDelete.add(d);
-            }
-        }
-    }
-
     const groups = GroupUtils.getGroups(loadedObjectGroup) as Map<string, GroupData>;
     const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup) as Map<string, string>;
+    const allGroupsToDelete = new Set<string>();
+    const pendingGroups = [...currentSelection.groups];
+    while (pendingGroups.length) {
+        const gid = pendingGroups.pop()!;
+        if (!gid || allGroupsToDelete.has(gid)) continue;
+        allGroupsToDelete.add(gid);
+        for (const child of groups.get(gid)?.children ?? []) {
+            if (child.type === 'group') pendingGroups.push(child.id);
+        }
+    }
 
     for (const gid of allGroupsToDelete) {
         const g = groups.get(gid);
@@ -350,17 +341,10 @@ export function deleteSelectedItems(
     const groupMirrorEntries = capturePairEntries(groupMirrorPairs, allGroupsToDelete);
 
     // 3. 그룹 구조 정리
-    for (const gid of currentSelection.groups) {
-         if(!gid) continue;
-         const g = groups.get(gid);
-         if (g && g.parent) {
-             const parent = groups.get(g.parent);
-             if (parent && !allGroupsToDelete.has(g.parent)) {
-                 if (Array.isArray(parent.children)) {
-                     parent.children = parent.children.filter((c: GroupChild) => !(c.type === 'group' && c.id === gid));
-                 }
-             }
-         }
+    for (const gid of affectedGroupIds) {
+        if (allGroupsToDelete.has(gid)) continue;
+        const parent = groups.get(gid);
+        if (parent) parent.children = parent.children.filter(child => child.type !== 'group' || !allGroupsToDelete.has(child.id));
     }
 
     for (const gid of allGroupsToDelete) {
@@ -386,8 +370,6 @@ export function deleteSelectedItems(
             objectToGroup.delete(key);
         }
 
-        if (!byMesh.has(mesh)) byMesh.set(mesh, new Set());
-        byMesh.get(mesh)!.add(instanceId);
     }
 
     for (const [groupId, deletedKeys] of deletedKeysByGroup) {
@@ -409,11 +391,12 @@ export function deleteSelectedItems(
     resetSelectionAndDeselect();
 
     // 5. 실제 메쉬 인스턴스 제거 실행
-    // InstancedMesh: lastIdx를 삭제 지에 복사하는 Swap-Pop 방식 — 이동된 ID는 _updateGroupReferenceForMovedInstance로 갱신
+    // Share the index across meshes; a group may contain instances from several meshes.
+    const childrenByGroup = new Map<string, Map<string, GroupChildObject>>();
     for (const [mesh, idSet] of byMesh) {
         if ((mesh as InstancedMesh).isInstancedMesh) {
             const sortedIds = Array.from(idSet).sort((a, b) => b - a);
-            _deleteInstancedMeshInstances(loadedObjectGroup, mesh as InstancedMesh, sortedIds);
+            _deleteInstancedMeshInstances(loadedObjectGroup, mesh as InstancedMesh, sortedIds, childrenByGroup);
         } else removeDeletedMesh(mesh);
     }
     const removePairs = (map: Map<string, string> | undefined, ids: Iterable<string>) => {
