@@ -153,8 +153,8 @@ function isPainterAsset(kind: PainterAssetKind, name: string, value: unknown): b
     return Array.isArray(data.colors) && data.colors.length === 64
       && data.colors.every(color => color === null || isRgba(color));
   }
-  return data.name === name && Number.isInteger(data.width) && Number(data.width) >= 0 && Number(data.width) <= 8
-    && Number.isInteger(data.height) && Number(data.height) >= 0 && Number(data.height) <= 8
+  return data.name === name && Number.isSafeInteger(data.width) && Number(data.width) >= 1
+    && Number.isSafeInteger(data.height) && Number(data.height) >= 1
     && Array.isArray(data.pixels) && data.pixels.length === Number(data.width) * Number(data.height)
     && data.pixels.every(pixel => pixel === null || isRgba(pixel));
 }

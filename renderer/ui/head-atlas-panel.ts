@@ -6,11 +6,16 @@ let playerHeadAtlasZoom = 1;
 let activePlayerHeadAtlas = 0;
 
 const renderPlayerHeadAtlases = (canvases: HTMLCanvasElement[]): void => {
+    const previousBox = playerHeadAtlasScroll.querySelector<HTMLElement>('.player-head-atlas-box');
+    const scrollLeft = previousBox?.scrollLeft ?? 0;
+    const scrollTop = previousBox?.scrollTop ?? 0;
     activePlayerHeadAtlas = clampPlayerHeadAtlasIndex(activePlayerHeadAtlas, canvases.length);
     const box = document.createElement('div');
     box.className = 'player-head-atlas-box';
     if (canvases[activePlayerHeadAtlas]) box.append(canvases[activePlayerHeadAtlas]);
     playerHeadAtlasScroll.replaceChildren(box, playerHeadAtlasList);
+    box.scrollLeft = scrollLeft;
+    box.scrollTop = scrollTop;
 
     playerHeadAtlasList.hidden = canvases.length === 0;
     playerHeadAtlasList.replaceChildren(...canvases.map((canvas, index) => {

@@ -82,7 +82,7 @@ type PlayerHeadAtlasSnapshot = {
     skins?: Map<string, PlayerHeadSkin>;
     slotUrls?: Array<string | undefined>;
     slotEntries?: Array<{ slot: number; url?: string; skin?: PlayerHeadSkin }>;
-    instances?: Array<{ uuid: string; offset: [number, number]; flip?: [number, number]; texture?: string; hasHat?: boolean }>;
+    instances?: Array<{ uuid: string; offset: [number, number]; flip?: [number, number]; texture?: string; hasHat?: boolean; tile?: [number, number]; knifeScale?: [number, number, number]; knifeOffset?: [number, number, number] }>;
     regions: PlayerHeadAtlasRegionSnapshot[];
 };
 const playerHeadAtlases = new WeakMap<THREE.Material, PlayerHeadAtlas>();
@@ -2477,20 +2477,26 @@ function isReservedImageHeadTile(atlas: PlayerHeadAtlas, tile: number): boolean 
         && Math.floor(row / 4) * PLAYER_HEAD_BLOCKS_PER_ROW + Math.floor(column / 3) < (atlas.imageHeadReservedSlots ?? 0);
 }
 
-function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): PlayerHeadAtlasSnapshot[] {
+export function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): PlayerHeadAtlasSnapshot[] {
     const instances = new Map<THREE.Material, NonNullable<PlayerHeadAtlasSnapshot['instances']>>();
     const usage = collectPlayerHeadAtlasUsage(targets, (mesh, instanceId, material) => {
         const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(`${mesh.uuid}_${instanceId}`);
         const offset = mesh.geometry.getAttribute('instancedUvOffset');
         if (!uuid || !offset) return;
         const flip = mesh.geometry.getAttribute('instancedUvFlip');
+        const knifeScale = mesh.geometry.getAttribute('instancedKnifeUvScale');
+        const knifeOffset = mesh.geometry.getAttribute('instancedKnifeUvOffset');
+        const tile = mesh.userData.imageHeadTilePositions?.[instanceId];
         const entries = instances.get(material) ?? [];
         entries.push({
             uuid,
             offset: [offset.getX(instanceId), offset.getY(instanceId)],
             flip: flip ? [flip.getX(instanceId), flip.getY(instanceId)] : undefined,
             texture: loadedObjectGroup.userData.objectTextures?.get(uuid),
-            hasHat: mesh.userData.hasHat?.[instanceId]
+            hasHat: mesh.userData.hasHat?.[instanceId],
+            tile: tile ? [...tile] as [number, number] : undefined,
+            knifeScale: knifeScale ? [knifeScale.getX(instanceId), knifeScale.getY(instanceId), knifeScale.getZ(instanceId)] : undefined,
+            knifeOffset: knifeOffset ? [knifeOffset.getX(instanceId), knifeOffset.getY(instanceId), knifeOffset.getZ(instanceId)] : undefined
         });
         instances.set(material, entries);
     });
@@ -2545,7 +2551,7 @@ function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): PlayerHe
     return targeted ? states.filter(state => state.regions.length > 0) : states;
 }
 
-function restorePlayerHeadAtlasState(value: unknown): void {
+export function restorePlayerHeadAtlasState(value: unknown): void {
     const states = Array.isArray(value) ? value as PlayerHeadAtlasSnapshot[] : [];
     for (const state of states) {
         const atlas = playerHeadAtlases.get(state.material);
@@ -2569,6 +2575,17 @@ function restorePlayerHeadAtlasState(value: unknown): void {
             if (flip && instance.flip) {
                 flip.setXY(ref.instanceId, ...instance.flip);
                 flip.needsUpdate = true;
+            }
+            if (instance.tile) ref.mesh.userData.imageHeadTilePositions[ref.instanceId] = [...instance.tile];
+            for (const [name, value] of [
+                ['instancedKnifeUvScale', instance.knifeScale],
+                ['instancedKnifeUvOffset', instance.knifeOffset]
+            ] as const) {
+                const attribute = ref.mesh.geometry.getAttribute(name);
+                if (attribute && value) {
+                    attribute.setXYZ(ref.instanceId, ...value);
+                    attribute.needsUpdate = true;
+                }
             }
             if (ref.mesh.userData.hasHat) ref.mesh.userData.hasHat[ref.instanceId] = instance.hasHat;
             const textures = loadedObjectGroup.userData.objectTextures;
@@ -2611,7 +2628,7 @@ function restorePlayerHeadAtlasState(value: unknown): void {
     notifyPlayerHeadAtlasesChanged();
 }
 
-function cleanupUnusedPlayerHeadAtlasSlots(): void {
+export function cleanupUnusedPlayerHeadAtlasSlots(): void {
     let changed = false;
     const usage = collectPlayerHeadAtlasUsage();
     for (const atlas of getProjectPlayerHeadAtlases()) {

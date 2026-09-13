@@ -362,8 +362,9 @@
 
 .head-painter-stamp-preview {
   display: grid;
-  min-height: 36px;
-  max-width: 128px;
+  width: min(100%, 128px);
+  min-height: 0;
+  overflow: hidden;
   aspect-ratio: 1;
   gap: 1px;
   background: #111;
@@ -371,6 +372,7 @@
 
 .head-painter-stamp-preview span {
   min-width: 0;
+  min-height: 0;
   background-color: #29292d;
 }
 
@@ -456,6 +458,8 @@
   display: grid;
   gap: 8px;
   width: min(420px, calc(100vw - 30px));
+  max-height: calc(100vh - 30px);
+  overflow-y: auto;
   padding: 14px;
   border: 1px solid #555;
   border-radius: 6px;
@@ -484,13 +488,17 @@
 
 .head-painter-brush-grid {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  width: 100%;
   aspect-ratio: 1;
+  min-height: 0;
+  overflow: hidden;
   gap: 2px;
   user-select: none;
 }
 
 .head-painter-brush-grid button {
+  min-width: 0;
+  min-height: 0;
   padding: 0;
   background: #111;
 }
@@ -501,8 +509,4 @@
 
 .head-painter-brush-grid button.selected {
   outline: 2px solid #70c7ff;
-}
-
-.head-painter-brush-grid button:disabled {
-  background: #29292d;
 }

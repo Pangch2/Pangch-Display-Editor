@@ -13,6 +13,8 @@ import {
   WebGPURenderer
 } from 'three/webgpu';
 import {
+  capturePlayerHeadAtlasState,
+  cleanupUnusedPlayerHeadAtlasSlots,
   commitPlayerHeadPaint,
   getPlayerHeadPaintSurface,
   loadAndRenderPbde,
@@ -20,6 +22,7 @@ import {
   mirrorPlayerHeadPaint,
   readPlayerHeadPaint,
   replaceDisplayObjects,
+  restorePlayerHeadAtlasState,
   setPlayerHeadLayerVisible,
   writePlayerHeadPaint,
   type PlayerHeadPaintSurface
@@ -73,8 +76,7 @@ type PaintHit = {
 };
 type WorkSurface = {
   surface: PlayerHeadPaintSurface;
-  before: ImageData;
-  beforeTexture?: string;
+  before: ReturnType<typeof capturePlayerHeadAtlasState>;
   image: ImageData;
   changed: boolean;
 };
@@ -326,24 +328,23 @@ function getWork(hit: PaintHit): WorkSurface {
   if (!stroke) stroke = new Map();
   let work = stroke.get(hit.surface.objectUuid);
   if (!work) {
+    const before = capturePlayerHeadAtlasState([hit.surface.objectUuid]);
     const surface = getPlayerHeadPaintSurface(hit.mesh, hit.instanceId, true)!;
     const image = preparePaintSurface(surface);
-    const beforeTexture = (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.get(surface.objectUuid);
-    work = { surface, before: cloneImage(image), beforeTexture, image, changed: false };
+    work = { surface, before, image, changed: false };
     stroke.set(surface.objectUuid, work);
     if (isMirrorModelingEnabled()) {
       const partnerUuid = getLinkedMirrorUuid(loadedObjectGroup, surface.objectUuid);
       const partner = partnerUuid
         ? (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(partnerUuid)
         : undefined;
-      const partnerSurface = partner ? getPlayerHeadPaintSurface(partner.mesh, partner.instanceId, true) : null;
+      const partnerBefore = partnerUuid ? capturePlayerHeadAtlasState([partnerUuid]) : [];
+      const partnerSurface = partner && !stroke.has(partnerUuid!) ? getPlayerHeadPaintSurface(partner.mesh, partner.instanceId, true) : null;
       if (partnerSurface && !stroke.has(partnerSurface.objectUuid)) {
         const partnerImage = preparePaintSurface(partnerSurface);
-        const partnerTexture = (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.get(partnerSurface.objectUuid);
         stroke.set(partnerSurface.objectUuid, {
           surface: partnerSurface,
-          before: cloneImage(partnerImage),
-          beforeTexture: partnerTexture,
+          before: partnerBefore,
           image: partnerImage,
           changed: false
         });
@@ -374,31 +375,24 @@ function flushWork(work: WorkSurface): void {
 
 function finishStroke(): void {
   if (!stroke) return;
-  const changes = [...stroke.values()].filter(work => work.changed).map(work => ({
-    surface: work.surface,
-    before: work.before,
-    beforeTexture: work.beforeTexture,
-    after: cloneImage(work.image)
-  }));
+  const works = [...stroke.values()];
   stroke = null;
   lastStrokeHit = null;
-  if (!changes.length) return;
-  changes.forEach(({ surface }) => commitPlayerHeadPaint(surface));
-  window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-  const apply = (key: 'before' | 'after') => {
-    changes.forEach(change => {
-      writePlayerHeadPaint(change.surface, change[key]);
-      commitPlayerHeadPaint(change.surface);
-      if (key === 'before') {
-        const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
-        if (change.beforeTexture === undefined) textures?.delete(change.surface.objectUuid);
-        else textures?.set(change.surface.objectUuid, change.beforeTexture);
-      }
-    });
+  works.forEach(({ surface }) => commitPlayerHeadPaint(surface));
+  const before = [...works].reverse().flatMap(work => work.before);
+  const after = capturePlayerHeadAtlasState(works.map(work => work.surface.objectUuid));
+  const apply = (state: typeof before) => {
+    restorePlayerHeadAtlasState(state);
+    cleanupUnusedPlayerHeadAtlasSlots();
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     invalidateHeadPainterGridOverlay();
   };
-  record({ undo: () => apply('before'), redo: () => apply('after') });
+  if (!works.some(work => work.changed)) {
+    apply(before);
+    return;
+  }
+  window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+  record({ undo: () => apply(before), redo: () => apply(after) });
   invalidateHeadPainterGridOverlay();
 }
 
@@ -598,38 +592,41 @@ function fillAt(hit: PaintHit): void {
 }
 
 function copyStamp(hit: PaintHit): void {
-  const image = readPlayerHeadPaint(hit.surface);
-  const part = facePartIndexes[hit.face] + hit.layer * 6;
-  stampPixels = centeredOffsets(stampWidth, stampHeight).map(({ x: offsetX, y: offsetY }) => {
-    const x = hit.x + offsetX;
-    const y = hit.y + offsetY;
-    return x < 0 || x >= hit.columns || y < 0 || y >= hit.rows
-      ? null
-      : readPixel(image, part, gridCellPixel(x, hit.columns), gridCellPixel(y, hit.rows));
-  });
+  const images = new Map<string, ReturnType<typeof readPlayerHeadPaint>>();
+  stampPixels = Array(stampWidth * stampHeight).fill(null);
+  for (const { hit: target, index } of getStampCells(hit, true)) {
+    let image = images.get(target.surface.objectUuid);
+    if (!image) {
+      image = readPlayerHeadPaint(target.surface);
+      images.set(target.surface.objectUuid, image);
+    }
+    const part = facePartIndexes[target.face] + target.layer * 6;
+    stampPixels[index] = readPixel(image, part, gridCellPixel(target.x, target.columns), gridCellPixel(target.y, target.rows));
+  }
   syncStampInputs();
 }
 
 function getStampCells(hit: PaintHit, includeEmpty: boolean): Array<{ hit: PaintHit; index: number }> {
   return centeredOffsets(stampWidth, stampHeight).flatMap(({ index, x, y }) => {
-    const target = { ...hit, x: hit.x + x, y: hit.y + y };
-    return (includeEmpty || stampPixels[index])
-      && target.x >= 0 && target.x < target.columns && target.y >= 0 && target.y < target.rows
+    const target = adjacentBrushHit(hit, hit.x + x, hit.y + y);
+    return target && (includeEmpty || stampPixels[index])
       ? [{ hit: target, index }]
       : [];
   });
 }
 
 function placeStamp(hit: PaintHit): void {
-  const work = getWork(hit);
-  const part = facePartIndexes[hit.face] + hit.layer * 6;
+  const touched = new Set<WorkSurface>();
   getStampCells(hit, false).forEach(({ hit: target, index }) => {
+    const work = getWork(target);
+    const part = facePartIndexes[target.face] + target.layer * 6;
+    touched.add(work);
     const color = stampPixels[index]!;
     forEachGridPixel(target.columns, target.rows, target.x, target.y, (pixelX, pixelY) => {
-      work.changed = writePixel(work.image, part, pixelX, pixelY, colorForLayer(color, hit.layer)) || work.changed;
+      work.changed = writePixel(work.image, part, pixelX, pixelY, colorForLayer(color, target.layer)) || work.changed;
     });
   });
-  flushWork(work);
+  touched.forEach(flushWork);
 }
 
 function transformStamp(kind: 'left' | 'right' | 'vertical' | 'horizontal'): void {
@@ -1100,14 +1097,15 @@ async function addCustomBrush(): Promise<void> {
 function renderBrushEditorGrid(): void {
   if (!brushEditor || !editingBrush) return;
   const grid = brushEditor.querySelector<HTMLElement>('.head-painter-brush-grid')!;
-  grid.replaceChildren(...Array.from({ length: 64 }, (_, index) => {
-    const x = index % 8;
-    const y = Math.floor(index / 8);
+  const { width, height, pixels } = editingBrush;
+  grid.style.gridTemplateColumns = `repeat(${width}, minmax(0, 1fr))`;
+  grid.style.gridTemplateRows = `repeat(${height}, minmax(0, 1fr))`;
+  grid.replaceChildren(...Array.from({ length: width * height }, (_, index) => {
+    const x = index % width;
+    const y = Math.floor(index / width);
     const button = document.createElement('button');
     button.type = 'button';
-    const enabled = x < editingBrush!.width && y < editingBrush!.height;
-    const color = enabled ? editingBrush!.pixels[y * editingBrush!.width + x] : null;
-    button.disabled = !enabled;
+    const color = pixels[index];
     button.classList.toggle('active', !!color);
     button.classList.toggle('selected', selectedBrushPixels.has(`${x},${y}`));
     if (color) button.style.backgroundColor = `rgba(${color[0]},${color[1]},${color[2]},${color[3] / 255})`;
@@ -1513,8 +1511,8 @@ function resizeStamp(width: number, height: number): void {
   const oldWidth = stampWidth;
   const oldHeight = stampHeight;
   const oldPixels = stampPixels;
-  stampWidth = clampGrid(width);
-  stampHeight = clampGrid(height);
+  stampWidth = Math.max(1, Math.round(Number.isFinite(width) ? width : 1));
+  stampHeight = Math.max(1, Math.round(Number.isFinite(height) ? height : 1));
   stampPixels = Array<Rgba | null>(stampWidth * stampHeight).fill(null);
   for (let y = 0; y < Math.min(oldHeight, stampHeight); y++) {
     for (let x = 0; x < Math.min(oldWidth, stampWidth); x++) stampPixels[y * stampWidth + x] = oldPixels[y * oldWidth + x] ?? null;
@@ -1529,7 +1527,8 @@ function syncStampInputs(): void {
   root.querySelector<HTMLInputElement>('#head-painter-stamp-height')!.value = String(stampHeight);
   const preview = root.querySelector<HTMLElement>('.head-painter-stamp-preview');
   if (!preview) return;
-  preview.style.gridTemplateColumns = `repeat(${Math.max(1, stampWidth)}, 1fr)`;
+  preview.style.gridTemplateColumns = `repeat(${stampWidth}, minmax(0, 1fr))`;
+  preview.style.gridTemplateRows = `repeat(${stampHeight}, minmax(0, 1fr))`;
   preview.replaceChildren(...stampPixels.map(color => {
     const cell = document.createElement('span');
     if (color) cell.style.background = `rgba(${color[0]},${color[1]},${color[2]},${color[3] / 255})`;
@@ -1800,7 +1799,7 @@ function createPanel(): void {
     <fieldset data-tool-settings="picker" hidden><legend>색상선택</legend><small>Alt로 화면색을 선택합니다.</small></fieldset>
     <fieldset data-tool-settings="stamp" hidden>
       <legend>스탬프</legend>
-      <div class="head-painter-inline"><label>가로 <input id="head-painter-stamp-width" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-stamp-height" type="number" min="0" max="8" value="8"></label></div>
+      <div class="head-painter-inline"><label>가로 <input id="head-painter-stamp-width" type="number" min="1" value="8"></label><label>세로 <input id="head-painter-stamp-height" type="number" min="1" value="8"></label></div>
       <div class="head-painter-stamp-actions"><button type="button" data-stamp="left" class="lucide-icon" aria-label="왼쪽 회전" title="왼쪽 회전">\uE148</button><button type="button" data-stamp="right" class="lucide-icon" aria-label="오른쪽 회전" title="오른쪽 회전">\uE149</button><button type="button" data-stamp="vertical" class="lucide-icon" aria-label="상하 반전" title="상하 반전">\uE35E</button><button type="button" data-stamp="horizontal" class="lucide-icon" aria-label="좌우 반전" title="좌우 반전">\uE35D</button></div>
       <div class="head-painter-stamp-preview"></div>
       <small>Shift+클릭으로 복사, 클릭으로 배치</small>
