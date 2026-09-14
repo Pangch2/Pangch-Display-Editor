@@ -47,6 +47,7 @@ import { captureHistoryUiState, recordCreationChange, recordReplacementChange } 
 import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../controls/transform/mirroring';
 import { addImageHeadGrid, createHeadProject, createPlayerProject, type PlayerModel } from './player-generator';
 import playerHeadIcon from '../../resources/player_head.svg?raw';
+import { initHeadTextureGenerator } from './head-texture-generator';
 
 const generatorPlayerHeadIcon = playerHeadIcon.replace(/stroke="[^"]+"/, 'stroke="currentColor"');
 
@@ -1845,6 +1846,7 @@ function createPanel(): void {
   document.getElementById('head-painter')!.append(root);
   initSectionReordering();
   initPlayerGenerator();
+  initHeadTextureGenerator(root.querySelector<HTMLElement>('[data-head-painter-section="texture-generator"]')!, endPaintPointer);
   createBrushEditor();
 
   root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.onclick = () => setTool(button.dataset.tool as Tool));

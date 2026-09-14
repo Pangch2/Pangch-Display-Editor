@@ -75,6 +75,9 @@ let projectTabDropMarkerClass: 'project-tab-drop-before' | 'project-tab-drop-aft
 
 export { loadedObjectGroup };
 
+export function getActiveProjectId(): string | undefined { return projects[activeProject]?.id; }
+export function hasProject(id: string): boolean { return projects.some(project => project.id === id); }
+
 function clearProjectTabDropMarker(): void {
     if (projectTabDropMarkerEl && projectTabDropMarkerClass) {
         projectTabDropMarkerEl.classList.remove(projectTabDropMarkerClass);

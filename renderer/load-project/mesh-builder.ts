@@ -2822,6 +2822,26 @@ export function getPlayerHeadTexture(objectUuid: string): string | undefined {
     return textures?.get(objectUuid);
 }
 
+// A hosted copy changes the reference only; keep dense image tiles, knife UVs and mirrored UVs intact.
+export function replacePlayerHeadTextureReference(objectUuid: string, previous: string, next: string): boolean {
+    const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
+    if (textures?.get(objectUuid) !== previous) return false;
+    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    if (!ref) return false;
+    const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId);
+    if (!surface) return false;
+    const material = (Array.isArray(ref.mesh.material) ? ref.mesh.material[0] : ref.mesh.material) as THREE.Material;
+    const atlas = playerHeadAtlases.get(material);
+    if (atlas && surface.denseLayer === undefined && atlas.slotUrls[surface.slot] === previous) {
+        const skin = atlas.skins.get(previous);
+        if (skin?.slot === surface.slot) atlas.skins.delete(previous);
+        atlas.slotUrls[surface.slot] = next;
+        if (!atlas.skins.has(next)) atlas.skins.set(next, { slot: surface.slot, hasHat: !!ref.mesh.userData.hasHat[ref.instanceId] });
+    }
+    textures.set(objectUuid, next);
+    return true;
+}
+
 export function setPlayerHeadLayerVisible(visible: boolean): void {
     loadedObjectGroup.traverse(object => {
         if (!(object as THREE.InstancedMesh).isInstancedMesh) return;

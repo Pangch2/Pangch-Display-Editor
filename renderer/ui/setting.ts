@@ -41,6 +41,8 @@ overlay.innerHTML = `
           <fieldset>
             <legend>헤드 페인트 계정</legend>
             <button class="settings-login" type="button">로그인하기</button>
+            <button class="settings-logout" type="button" hidden>로그아웃</button>
+            <p class="settings-account-status" role="status" aria-live="polite"></p>
           </fieldset>
         </section>
         <section class="settings-page" data-settings-content="shortcuts" hidden>
@@ -96,6 +98,35 @@ overlay.innerHTML = `
   </section>
 `;
 document.body.appendChild(overlay);
+
+const loginButton = overlay.querySelector<HTMLButtonElement>('.settings-login')!;
+const logoutButton = overlay.querySelector<HTMLButtonElement>('.settings-logout')!;
+const accountStatus = overlay.querySelector<HTMLElement>('.settings-account-status')!;
+const headTextureApi = window.ipcApi?.headTextures;
+function renderHeadAccount(state: Awaited<ReturnType<typeof window.ipcApi.headTextures.account>>): void {
+  loginButton.textContent = state.username ? '다시 로그인' : '로그인하기';
+  logoutButton.hidden = !state.username;
+  accountStatus.textContent = state.error || (state.username ? `${state.username} 로그인됨` : state.configured ? '로그인하지 않음' : 'PDE Microsoft 앱 등록 설정이 필요합니다.');
+}
+async function changeHeadAccount(action: 'login' | 'logout'): Promise<void> {
+  if (!headTextureApi) return;
+  const button = action === 'login' ? loginButton : logoutButton;
+  button.disabled = true;
+  accountStatus.textContent = action === 'login' ? '브라우저에서 Microsoft 로그인을 완료해 주세요.' : '스킨 복원 후 로그아웃합니다…';
+  try { renderHeadAccount(await headTextureApi[action]()); }
+  catch (error) { accountStatus.textContent = String(error); }
+  finally { button.disabled = false; }
+}
+loginButton.onclick = () => { void changeHeadAccount('login'); };
+logoutButton.onclick = () => { void changeHeadAccount('logout'); };
+if (headTextureApi) {
+  void headTextureApi.account().then(renderHeadAccount).catch(error => { accountStatus.textContent = String(error); });
+  const unsubscribeHeadAccount = headTextureApi.subscribe(event => { if (event.account) renderHeadAccount(event.account); });
+  window.addEventListener('beforeunload', unsubscribeHeadAccount, { once: true });
+} else {
+  loginButton.disabled = true;
+  accountStatus.textContent = '새 계정 기능을 연결하려면 PDE 데스크톱 앱을 다시 시작해 주세요.';
+}
 
 const settingsWindow = overlay.querySelector<HTMLElement>('.settings-window')!;
 const closeButton = overlay.querySelector<HTMLButtonElement>('.settings-close')!;

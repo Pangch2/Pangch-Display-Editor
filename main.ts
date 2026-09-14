@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import axios from 'axios';
 import { unzip } from 'fflate';
 import pLimit from 'p-limit';
+import { initHeadTextureService } from './head-texture-service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -455,6 +456,7 @@ function createWindow() {
   }
 
   Menu.setApplicationMenu(null);
+  initHeadTextureService(win);
 
   // ✅ 생성된 디렉토리 캐싱 (중복 mkdir 방지)
   async function ensureDir(dirPath: string): Promise<void> {

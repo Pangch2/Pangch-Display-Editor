@@ -6,6 +6,19 @@ type PainterAssetType = 'brush' | 'palette';
 
 // 렌더러 프로세스의 window 객체에 안전하게 API 노출
 contextBridge.exposeInMainWorld('ipcApi', {
+  headTextures: {
+    account: () => ipcRenderer.invoke('head-account-state'),
+    login: () => ipcRenderer.invoke('head-account-login'),
+    logout: () => ipcRenderer.invoke('head-account-logout'),
+    start: (sources: string[]) => ipcRenderer.invoke('head-texture-start', sources),
+    cancel: () => ipcRenderer.invoke('head-texture-cancel'),
+    state: () => ipcRenderer.invoke('head-texture-state'),
+    subscribe: (callback: (event: unknown) => void) => {
+      const listener = (_event: unknown, value: unknown) => callback(value);
+      ipcRenderer.on('head-texture-event', listener);
+      return () => ipcRenderer.removeListener('head-texture-event', listener);
+    }
+  },
   // Main -> Renderer (수신)
   on: (channel: AssetEventChannel, callback: (...args: unknown[]) => void) => {
     const validChannels = ['assets-downloaded', 'assets-download-failed', 'assets-progress'];
