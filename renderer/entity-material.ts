@@ -96,7 +96,7 @@ export function toggleShading(): boolean {
   return shadingEnabled.value === 1;
 }
 
-export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false) {
+export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false, headUvTexture?: Texture) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
 
@@ -138,10 +138,14 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   const faceCenter = attribute('uvMirrorCenter', 'vec2').add(attribute('instancedUvOffset', 'vec2'));
   const faceMin = faceCenter.sub(4 / 2048);
   const knifeUv = faceMin.add(knifeUvOffset.mul(8 / 2048)).add(mirroredUv.sub(faceMin).mul(knifeUvScale));
+  const headUvTransform = headUvTexture ? texture(headUvTexture, faceCenter).level(0) : null;
+  const headUv = headUvTransform
+    ? faceMin.add(knifeUv.sub(faceMin).mul(headUvTransform.xy.add(1))).add(headUvTransform.zw)
+    : knifeUv;
   const finalUv = useInstancedUvTransform
     ? uvNode.mul(uvTransformNode.xy).add(uvTransformNode.zw)
     : useInstancedUv
-      ? knifeUv
+      ? headUv
       : uvNode;
   // Atlas and head UV transforms are affine per face; interpolate the result from the vertex stage.
   const diffuseNode = texture(diffuseTex, varying(finalUv, 'pdeUv'));
@@ -151,12 +155,17 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   const normalizedSkyLight = skyLightLevel.div(15.0);
   const lightMapColor = normalizedSkyLight.div(float(4.0).sub(normalizedSkyLight.mul(3.0)));
 
+  const headLayer = attribute('headLayer', 'float');
+  // Composite the base layer over opaque black; the outer layer keeps its alpha.
+  const diffuseColor = useHeadLayerVisibility
+    ? diffuseNode.xyz.mul(mix(diffuseNode.w, float(1), headLayer))
+    : diffuseNode.xyz;
   const alpha = useHeadLayerVisibility
-    ? diffuseNode.w.mul(float(1).sub(attribute('headLayer', 'float').mul(float(1).sub(attribute('headLayerVisible', 'float')))))
+    ? mix(float(1), diffuseNode.w, headLayer).mul(float(1).sub(headLayer.mul(float(1).sub(attribute('headLayerVisible', 'float')))))
     : diffuseNode.w;
-  const unlitColor = vec4(mul(diffuseNode.xyz, tintVec), alpha);
+  const unlitColor = vec4(mul(diffuseColor, tintVec), alpha);
   const litColor = vec4(
-    mul(mul(mul(diffuseNode.xyz, tintVec), directionalLight), lightMapColor),
+    mul(mul(mul(diffuseColor, tintVec), directionalLight), lightMapColor),
     alpha
   );
 
