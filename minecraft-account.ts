@@ -36,7 +36,7 @@ async function responseJson<T>(response: Response): Promise<T> {
     const retryAt = retry ? (/^\d+$/.test(retry) ? Date.now() + Number(retry) * 1000 : Date.parse(retry)) : 0;
     // Do not forward identity-provider response bodies: they can contain credentials.
     throw new MinecraftError(response.status === 401 ? '다시 로그인해 주세요.'
-      : response.status === 403 ? '계정 또는 PDE 앱의 Minecraft API 접근 권한을 확인해 주세요.'
+      : response.status === 403 ? `접근이 거부되었습니다 (HTTP 403, ${new URL(response.url).origin}${new URL(response.url).pathname}). 계정 또는 PDE 앱의 해당 API 접근 권한을 확인해 주세요.`
       : `Minecraft 인증/스킨 요청 실패 (HTTP ${response.status})`, response.status, retryAt || 0);
   }
   return response.status === 204 ? undefined as T : await response.json() as T;
@@ -52,7 +52,7 @@ export class MinecraftAccount {
   private session?: Session;
   private accessToken = '';
   private expiresAt = 0;
-  private clientId = '';
+  private clientId = 'dd0f5c23-a76b-4600-9c75-774150a780dc';
   private ready?: Promise<void>;
   private loggingIn?: Promise<HeadAccountState>;
   private refreshing?: Promise<void>;
@@ -60,7 +60,7 @@ export class MinecraftAccount {
   private initialize(): Promise<void> {
     return this.ready ??= (async () => {
       const config = await readAccountFile<{ clientId?: string }>('pde-minecraft-config.json');
-      this.clientId = process.env.PDE_MICROSOFT_CLIENT_ID || config?.clientId || '';
+      this.clientId = process.env.PDE_MICROSOFT_CLIENT_ID || config?.clientId || this.clientId;
       if (this.clientId && !/^[a-f\d-]{36}$/i.test(this.clientId)) throw new Error('PDE Microsoft Client ID 설정이 올바르지 않습니다.');
       const stored = await readAccountFile<{ encrypted: string }>('pde-minecraft-account.json');
       if (stored && safeStorage.isEncryptionAvailable()) {
