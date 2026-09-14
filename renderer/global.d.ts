@@ -28,7 +28,7 @@ declare interface MinecraftSkinResult {
 }
 
 declare interface IpcApi {
-  headTextures: import('../head-texture-types').HeadTextureApi;
+  headTextures: import('./player-head-service/head-texture-types').HeadTextureApi;
   getAssetContent(path: string): Promise<AssetContentResult>;
   saveIconAtlas(name: 'block-atlas.png' | 'item-atlas.png', data: Uint8Array): Promise<{ success: boolean; error?: string }>;
   hasSpriteAtlas(name: string): Promise<{ success: boolean; exists: boolean; error?: string }>;

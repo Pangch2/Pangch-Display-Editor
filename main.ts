@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import axios from 'axios';
 import { unzip } from 'fflate';
 import pLimit from 'p-limit';
-import { initHeadTextureService } from './head-texture-service.js';
+import { initHeadTextureService } from './renderer/player-head-service/head-texture-service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

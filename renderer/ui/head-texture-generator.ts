@@ -1,7 +1,7 @@
 import { getPlayerHeadTexture, replacePlayerHeadTextureReference, notifyPlayerHeadAtlasesChanged } from '../load-project/mesh-builder';
 import { getActiveProjectId, hasProject, loadedObjectGroup } from '../load-project/upload-pbde';
 import { record, isApplying } from '../controls/undo-redo/undo-redo';
-import type { HeadTextureState } from '../../head-texture-types';
+import type { HeadTextureState } from '../player-head-service/head-texture-types';
 
 type Target = { uuid: string; source: string };
 let batch: { projectId: string; targets: Target[]; results: Map<string, string> } | undefined;
