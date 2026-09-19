@@ -16,8 +16,8 @@ const SPRITE_ATLAS_DIR = path.join(CACHE_DIR, 'sprite-atlases');
 const KEY_MAPPING_DIR = path.join(CACHE_DIR, 'key-mapping');
 const KEY_MAPPING_ORDER_PATH = path.join(KEY_MAPPING_DIR, '.order');
 const BRUSH_DIR = path.join(CACHE_DIR, 'brush');
-const clientUrl = 'https://piston-data.mojang.com/v1/objects/4815359f45cf77c9042296d98acb22a95df6a58a/client.jar';
-const serverUrl = 'https://piston-data.mojang.com/v1/objects/9580afcd37c63cb01e81d5d9f836f21b4d21c540/server.jar';
+const clientUrl = 'https://piston-data.mojang.com/v1/objects/e877b6a07acd633fb3bb475002175cec036e7b87/client.jar';
+const serverUrl = 'https://piston-data.mojang.com/v1/objects/33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c/server.jar';
 // When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
 // For reading hardcoded JSON at runtime, prefer resolved path within the asar; when unpacked dev, use __dirname.
 const APP_ROOT = path.dirname(__dirname);
