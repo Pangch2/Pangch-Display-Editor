@@ -514,7 +514,7 @@
   width: 100%;
   height: auto;
   cursor: pointer;
-  image-rendering: pixelated;
+  image-rendering: auto;
 }
 
 .sprite-atlas-search-grid {

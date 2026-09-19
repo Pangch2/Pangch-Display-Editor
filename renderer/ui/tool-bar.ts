@@ -33,6 +33,8 @@ const grid = overlay.querySelector<HTMLElement>('.block-item-search-grid')!;
 const searchWindow = overlay.querySelector<HTMLElement>('.block-item-search-window')!;
 const tileSize = 72;
 const gap = 3;
+const canvasWidth = 9 * (tileSize + gap) - gap;
+let canvasHeight = 0;
 const canvas = document.createElement('canvas');
 const context = canvas.getContext('2d')!;
 let source: HTMLCanvasElement;
@@ -129,9 +131,15 @@ function renderIcons(): void {
   }
 
   grid.replaceChildren(canvas);
-  canvas.width = 9 * (tileSize + gap) - gap;
-  canvas.height = Math.ceil(visibleNames.length / 9) * (tileSize + gap) - gap;
-  context.imageSmoothingEnabled = false;
+  canvasHeight = Math.ceil(visibleNames.length / 9) * (tileSize + gap) - gap;
+  const displayWidth = grid.clientWidth;
+  const displayHeight = displayWidth * canvasHeight / canvasWidth;
+  canvas.style.height = `${displayHeight}px`;
+  canvas.width = Math.max(1, Math.round(displayWidth * window.devicePixelRatio));
+  canvas.height = Math.max(1, Math.round(displayHeight * window.devicePixelRatio));
+  context.setTransform(canvas.width / canvasWidth, 0, 0, canvas.height / canvasHeight, 0, 0);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
 
   for (let index = 0; index < visibleNames.length; index++) {
     const column = index % 9;
@@ -149,6 +157,13 @@ function renderIcons(): void {
     context.drawImage(source, icon.x, icon.y, icon.size, icon.size, x + 7, y + 7, tileSize - 14, tileSize - 14);
   }
 }
+
+function resizeIcons(): void {
+  if (!overlay.hidden && canvas.parentElement === grid) renderIcons();
+}
+
+new ResizeObserver(resizeIcons).observe(grid, { box: 'device-pixel-content-box' });
+window.addEventListener('resize', resizeIcons);
 
 function closeSearch(): void {
   if (overlay.hidden) return;
@@ -178,16 +193,16 @@ canvas.addEventListener('pointermove', event => {
   const bounds = canvas.getBoundingClientRect();
   canvas.title = getHoveredName(
     visibleNames,
-    (event.clientX - bounds.left) * canvas.width / bounds.width,
-    (event.clientY - bounds.top) * canvas.height / bounds.height
+    (event.clientX - bounds.left) * canvasWidth / bounds.width,
+    (event.clientY - bounds.top) * canvasHeight / bounds.height
   );
 });
 canvas.addEventListener('click', event => {
   const bounds = canvas.getBoundingClientRect();
   const name = getHoveredName(
     visibleNames,
-    (event.clientX - bounds.left) * canvas.width / bounds.width,
-    (event.clientY - bounds.top) * canvas.height / bounds.height
+    (event.clientX - bounds.left) * canvasWidth / bounds.width,
+    (event.clientY - bounds.top) * canvasHeight / bounds.height
   );
   if (name) void applyIcon(name);
 });
