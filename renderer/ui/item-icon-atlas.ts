@@ -356,8 +356,8 @@ async function prepareIcons(names: string[]): Promise<PreparedIcon[]> {
                 name,
                 models: models ? cloneModels(models) : [],
                 image: image ?? undefined,
-                applyGuiTransform: useBlock || applyHardcodedGuiTransform,
-                guiTransform: useBlock || applyHardcodedGuiTransform ? await getGuiTransform(name) : null,
+                applyGuiTransform: useBlock,
+                guiTransform: useBlock ? await getGuiTransform(name) : null,
                 blockProps: useBlock ? blockTemplate?.blockProps : undefined
             } : null;
         }));

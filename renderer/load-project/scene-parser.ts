@@ -277,11 +277,15 @@ function isHardcodedModelId(modelId) {
     return !/^item\/.*sign$/i.test(path) && isHardcodedModelPath(path);
 }
 
-function specialItemGeometryModelId(model: any): string | null {
+function specialItemGeometryModelId(model: any, itemName: string): string | null {
     const type = model?.model?.type;
     if (typeof type !== 'string') return null;
     const { ns, path } = nsAndPathFromId(type);
-    return isHardcodedModelPath(path) ? `${ns}:item/${path}` : null;
+    if (isHardcodedModelPath(path)) return `${ns}:item/${path}`;
+    // 렌더러 타입이 여러 아이템에 공유되면 원래 아이템 ID로 지오메트리를 찾는다.
+    const item = nsAndPathFromId(itemName);
+    const itemModelId = `${item.ns}:item/${item.path}`;
+    return isHardcodedModelId(itemModelId) ? itemModelId : null;
 }
 
 // 주어진 모델 ID에서 가능한 하드코딩 파일 경로 후보를 생성한다.
@@ -358,7 +362,7 @@ if (import.meta.env.DEV) {
         'Sign item models must remain generated sprites.'
     );
     console.assert(
-        specialItemGeometryModelId({ model: { type: 'minecraft:banner' } }) === 'minecraft:item/banner',
+        specialItemGeometryModelId({ model: { type: 'minecraft:banner' } }, 'white_banner') === 'minecraft:item/banner',
         'Special item geometry lookup failed.'
     );
 }
@@ -369,7 +373,7 @@ async function loadModelJson(assetPath) {
 }
 
 // 모델 ID를 기준으로 부모 체인과 텍스처 정보를 재귀적으로 해석한다.
-async function resolveModelTree(modelId: string, cache = new Map<string, ResolvedModel | null>()): Promise<ResolvedModel | null> {
+async function resolveModelTree(modelId: string, cache = new Map<string, ResolvedModel | null>(), useHardcoded = true): Promise<ResolvedModel | null> {
     if (typeof modelId !== 'string' || !modelId) {
         return null;
     }
@@ -397,6 +401,7 @@ async function resolveModelTree(modelId: string, cache = new Map<string, Resolve
     const assetsPath = modelIdToAssetPath(modelId);
     const hardcodedCandidates = getHardcodedModelCandidates(modelId);
     const loadHardcoded = async () => {
+        if (!useHardcoded) return null;
         for (const candidatePath of hardcodedCandidates) {
             try {
                 const candidateJson = await loadModelJson(candidatePath);
@@ -461,7 +466,7 @@ async function resolveModelTree(modelId: string, cache = new Map<string, Resolve
     let ignoreDisplayIds = [];
 
     if (json.parent) {
-        const parentRes = await resolveModelTree(json.parent, cache);
+        const parentRes = await resolveModelTree(json.parent, cache, useHardcoded);
         if (parentRes) {
             mergedTextures = { ...(parentRes.textures || {}), ...(mergedTextures || {}) };
             elements = elements || parentRes.elements || null;
@@ -996,9 +1001,9 @@ if (import.meta.env.DEV) {
 async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplate | null> {
     try {
         const { baseName, props } = blockNameToBaseAndProps(item.name);
-        const { path } = nsAndPathFromId(baseName);
+        const { ns, path } = nsAndPathFromId(baseName);
         const hasHardcodedState = hasHardcodedBlockstate(path);
-        const blockstatePath = `assets/minecraft/blockstates/${path}.json`;
+        const blockstatePath = `assets/${ns}/blockstates/${path}.json`;
         const hardcodedStatePath = `hardcoded/blockstates/${path}.json`;
 
         let blockstate;
@@ -1066,7 +1071,11 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
         const bannerColorHex = getBannerColorHex(item.name);
         for (const apply of modelsToBuild) {
             if (!apply?.model) continue;
-            const resolved = await resolveModelTree(apply.model, modelCache);
+            let resolved = await resolveModelTree(apply.model, modelCache);
+            // 공유된 빈 블록 모델 대신 해당 블록의 기존 지오메트리를 사용한다.
+            if (!resolved?.elements?.length && isHardcodedModelPath(path)) {
+                resolved = await resolveModelTree(`${ns}:block/${path}`, modelCache);
+            }
             if (!resolved || !resolved.elements) continue;
             fromHardcoded ||= resolved.fromHardcoded;
             
@@ -1678,8 +1687,9 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
     if (!resolved) {
         return null;
     }
-    const displayResolved = displayModelId && displayModelId !== modelId
-        ? await resolveModelTree(displayModelId, modelTreeCache) ?? resolved
+    const displayCache = displayModelId ? new Map<string, ResolvedModel | null>() : modelTreeCache;
+    const displayResolved = displayModelId
+        ? await resolveModelTree(displayModelId, displayCache, false) ?? resolved
         : resolved;
 
     const hasElements = !!(resolved.elements && resolved.elements.length > 0);
@@ -1703,7 +1713,7 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
         const displayModelMatrix = modelMatrix.clone();
         if (type) {
             try {
-                const displayTransform = await getDisplayTransformForItem(displayResolved, type, modelTreeCache);
+                const displayTransform = await getDisplayTransformForItem(displayResolved, type, displayCache);
                 const displayMatrix = buildDisplayTransformMatrix(displayTransform);
                 if (displayMatrix) displayModelMatrix.premultiply(displayMatrix);
             } catch { /* Display lookup failures keep the base model matrix. */ }
@@ -1763,7 +1773,7 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
                     modelId = definition.model.model;
                 } else if (typeof definition.model.base === 'string') {
                     displayModelId = definition.model.base;
-                    modelId = specialItemGeometryModelId(definition.model) ?? displayModelId;
+                    modelId = specialItemGeometryModelId(definition.model, baseName) ?? displayModelId;
                 }
                 if (Array.isArray(definition.model.tints)) tintList = definition.model.tints.slice();
             }
