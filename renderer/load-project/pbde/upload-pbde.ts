@@ -1,11 +1,11 @@
-import { openWithAnimation, closeWithAnimation } from '../ui/ui-open-close.js';
+import { openWithAnimation, closeWithAnimation } from '../../ui/ui-open-close.js';
 import * as THREE from 'three/webgpu';
-import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, notifyPlayerHeadAtlasesChanged, performSelection, updateGlobalBrightness } from './mesh-builder';
-import type { GlobalBrightness, LoadedSelection } from './mesh-builder';
+import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, notifyPlayerHeadAtlasesChanged, performSelection, updateGlobalBrightness } from '../display/mesh-builder';
+import type { GlobalBrightness, LoadedSelection } from '../display/mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
-import { captureHistoryUiState, recordCreationChange, recordStateChange, refreshHistory } from '../controls/undo-redo/scene-history.js';
-import { deleteSelectedItems } from '../controls/grouping/delete';
-import { clear, deleteHistoryContext, setHistoryContext } from '../controls/undo-redo/undo-redo.js';
+import { captureHistoryUiState, recordCreationChange, recordStateChange, refreshHistory } from '../../controls/undo-redo/scene-history.js';
+import { deleteSelectedItems } from '../../controls/grouping/delete';
+import { clear, deleteHistoryContext, setHistoryContext } from '../../controls/undo-redo/undo-redo.js';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 type ScenePrecompileTrace = {

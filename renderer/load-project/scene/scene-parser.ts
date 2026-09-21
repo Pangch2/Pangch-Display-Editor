@@ -2,9 +2,10 @@ import { decompressSync, strFromU8 } from 'fflate';
 import * as THREE from 'three/webgpu';
 import { buildTextureAtlasForRenderList } from './texture-atlas-builder';
 import type { TexturePixelData } from './texture-atlas-builder';
-import { isNodeBufferLike } from './pbde-assets';
-import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
-import type { GroupData as ParserGroupData } from './pbde-types';
+import { isNodeBufferLike } from '../pbde/pbde-assets';
+import { isPbdeLogEnabled, pbdeLogNames } from '../pbde/pbde-log';
+import type { GroupData as ParserGroupData } from '../pbde/pbde-types';
+import { applyModelTransform, relativeModelTransform } from '../batching/geometry-batching';
 
 interface ResolvedModel {
     id: string;
@@ -65,6 +66,8 @@ type GeometryBatchBuilder = {
         atlasUvTransform?: [number, number, number, number];
         atlasUvTransforms?: [number, number, number, number][];
         transform?: Float32Array | number[];
+        modelTransform?: number[];
+        partTints?: number[];
     }>;
 };
 
@@ -111,7 +114,6 @@ const blocksUsingDefaultFoliageColors = [
   'mangrove_leaves',
 ];
 
-const MAX_PART_UV_TRANSFORMS = 8;
 
 function getTextureColor(modelResourceLocation: string, textureLayer?: string | number, tintindex?: number) {
   try {
@@ -2300,12 +2302,14 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             batch: GeometryBatchBuilder;
             atlasUvTransform?: [number, number, number, number];
             atlasUvTransforms?: [number, number, number, number][];
+            modelTransform?: number[];
+            partTints?: number[];
         }>();
         for (const item of geometryItems) {
             if (!item.models) continue;
             const cached = templateBatches.get(item.models);
             if (cached) {
-                cached.batch.instances.push({ item, atlasUvTransform: cached.atlasUvTransform, atlasUvTransforms: cached.atlasUvTransforms, transform: item.transform });
+                cached.batch.instances.push({ item, atlasUvTransform: cached.atlasUvTransform, atlasUvTransforms: cached.atlasUvTransforms, partTints: cached.partTints, modelTransform: cached.modelTransform, transform: applyModelTransform(item.transform!, cached.modelTransform) });
                 continue;
             }
             const parts: GeometryBatchPartSource[] = [];
@@ -2327,20 +2331,20 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             const allPartsHaveAtlasUv = parts.every(part => !!part.geomData.uvTransform);
             const useInstancedAtlasUv = allPartsHaveAtlasUv
                 && !!uniformPartModelMatrix
-                && parts.length <= MAX_PART_UV_TRANSFORMS;
+                && new THREE.Matrix4().fromArray(uniformPartModelMatrix).determinant() !== 0;
             const atlasUvTransform = useInstancedAtlasUv ? parts[0].geomData.uvTransform : undefined;
             const atlasUvTransforms = useInstancedAtlasUv
                 ? parts.map(part => part.geomData.uvTransform as [number, number, number, number])
                 : undefined;
             const uniformModelMatrix = useInstancedAtlasUv ? uniformPartModelMatrix : null;
+            const partTints = useInstancedAtlasUv ? parts.map(part => (part.geomData.tintHex ?? 0xffffff) >>> 0) : undefined;
             for (const part of parts) {
                 const { model, geomData, geometryIndex, modelMatrix } = part;
                 if (useInstancedAtlasUv && uniformModelMatrix) {
                     keyParts.push(
                         cachedGeometryShapeKey(geomData),
-                        matrixKey(modelMatrix),
                         geomData.texPath,
-                        String((geomData.tintHex ?? 0xffffff) >>> 0)
+                        ((geomData.tintHex ?? 0xffffff) >>> 0) <= 0xffffff ? 'tint' : String(geomData.tintHex)
                     );
                 } else {
                     keyParts.push(
@@ -2354,7 +2358,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                 }
             }
 
-            const batchKey = `${item.type}|${keyParts.join('|')}`;
+            const batchKey = `${useInstancedAtlasUv ? 'atlas' : item.type}|${keyParts.join('|')}`;
             let batch = geometryBatches.get(batchKey);
             if (!batch) {
                 batch = { parts, instances: [] };
@@ -2368,9 +2372,11 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                     totalVertices += geomData.positions.length / 3;
                 }
             }
-            // The batch key includes the model matrix, so every relative model transform is identity.
-            batch.instances.push({ item, atlasUvTransform, atlasUvTransforms, transform: item.transform });
-            templateBatches.set(item.models, { batch, atlasUvTransform, atlasUvTransforms });
+            const modelTransform = uniformModelMatrix
+                ? relativeModelTransform(uniformModelMatrix, batch.parts[0].modelMatrix)
+                : undefined;
+            batch.instances.push({ item, atlasUvTransform, atlasUvTransforms, partTints, modelTransform, transform: applyModelTransform(item.transform!, modelTransform) });
+            templateBatches.set(item.models, { batch, atlasUvTransform, atlasUvTransforms, partTints, modelTransform });
         }
 
         const useUint32Indices = totalVertices > 65535;
@@ -2403,7 +2409,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         let indicesCursor = 0;
 
         // 배치 대표 지오메트리만 연속 메모리 공간에 복사하고, 인스턴스별 데이터는 별도 배열로 압축한다.
-        for (const batch of geometryBatches.values()) {
+        for (const [batchKey, batch] of geometryBatches) {
             itemId++;
             const batchParts = [];
 
@@ -2456,9 +2462,12 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             }
 
             geometryBatchMetadata.push({
+                shapeKey: batchKey.startsWith('atlas|') ? batchKey : undefined,
                 parts: batchParts,
-                instances: batch.instances.map(({ item, atlasUvTransform, atlasUvTransforms, transform }) => ({
+                instances: batch.instances.map(({ item, atlasUvTransform, atlasUvTransforms, partTints, transform, modelTransform }) => ({
                     transform: transform ?? item.transform,
+                    modelTransform,
+                    partTints,
                     uuid: item.uuid,
                     groupId: item.groupId ?? null,
                     name: (item as any).name ?? null,

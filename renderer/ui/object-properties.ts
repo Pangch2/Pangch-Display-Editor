@@ -1,10 +1,10 @@
 import { Euler, InstancedMesh, Matrix4, Mesh, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectedItem, SelectionState } from '../controls/selection/select';
-import { loadedObjectGroup } from '../load-project/upload-pbde';
-import { getPlayerHeadTexture, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/mesh-builder';
-import type { DisplayReplacementResult } from '../load-project/mesh-builder';
-import type { TextDisplayContentType, TextDisplayOptions } from '../load-project/text-display';
-import { getBlockPropertyOptions } from '../load-project/pbde-assets';
+import { loadedObjectGroup } from '../load-project/pbde/upload-pbde';
+import { getPlayerHeadTexture, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/display/mesh-builder';
+import type { DisplayReplacementResult } from '../load-project/display/mesh-builder';
+import type { TextDisplayContentType, TextDisplayOptions } from '../load-project/display/text-display';
+import { getBlockPropertyOptions } from '../load-project/pbde/pbde-assets';
 import type { GroupData } from './scene-panel/scene-panel-types';
 import { cleanLabel } from './scene-panel/scene-panel-model';
 import * as GroupUtils from '../controls/grouping/group';

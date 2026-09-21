@@ -46,6 +46,8 @@ export interface GeometryMeta {
 
 export interface GeometryInstanceMeta {
     transform: Float32Array | number[];
+    modelTransform?: number[];
+    partTints?: number[];
     uuid: string;
     groupId: string | null;
     name?: string | null;
@@ -59,6 +61,7 @@ export interface GeometryInstanceMeta {
 }
 
 export interface GeometryInstanceBatch {
+    shapeKey?: string;
     parts: GeometryMeta[];
     instances: GeometryInstanceMeta[];
 }

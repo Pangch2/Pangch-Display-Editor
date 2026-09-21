@@ -96,7 +96,7 @@ export function toggleShading(): boolean {
   return shadingEnabled.value === 1;
 }
 
-export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false, headUvTexture?: Texture) {
+export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false, headUvTexture?: Texture, instancedTintIndex = -1) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
 
@@ -150,7 +150,7 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   // Atlas and head UV transforms are affine per face; interpolate the result from the vertex stage.
   const diffuseNode = texture(diffuseTex, varying(finalUv, 'pdeUv'));
 
-  const tintVec = getTintNode(tintHex);
+  const tintVec = instancedTintIndex < 0 ? getTintNode(tintHex) : attribute(`instancedTint${instancedTintIndex}`, 'vec3');
 
   const normalizedSkyLight = skyLightLevel.div(15.0);
   const lightMapColor = normalizedSkyLight.div(float(4.0).sub(normalizedSkyLight.mul(3.0)));

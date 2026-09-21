@@ -13,6 +13,7 @@ interface HistorySelection {
 
 export interface HistoryGizmoState {
     isVertexMode: boolean;
+    pivotMode: string;
     vertexQueue: QueueItem[];
     selectedVertexKeys: Set<string>;
     isCustomPivot: boolean;

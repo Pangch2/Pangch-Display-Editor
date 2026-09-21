@@ -24,8 +24,8 @@ import {
 } from 'three/webgpu';
 import { initAssets } from './asset-manager';
 import { getItemIconAtlas } from './ui/item-icon-atlas';
-import { ensureSpriteAtlases } from './load-project/sprite-atlas';
-import { loadedObjectGroup } from './load-project/upload-pbde';
+import { ensureSpriteAtlases } from './load-project/scene/sprite-atlas';
+import { loadedObjectGroup } from './load-project/pbde/upload-pbde';
 import { openWithAnimation, closeWithAnimation } from './ui/ui-open-close';
 import { initContextMenu } from './ui/context-menu';
 import './ui/scene-panel';

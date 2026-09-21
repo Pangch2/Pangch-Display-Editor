@@ -4,8 +4,8 @@ import {
   Quaternion,
   Vector3
 } from 'three/webgpu';
-import { createImageHeadAtlasMeshes, deferredPlayerHeadTexture, loadedObjectGroup } from '../load-project/mesh-builder';
-import type { GroupData } from '../load-project/pbde-types';
+import { createImageHeadAtlasMeshes, deferredPlayerHeadTexture, loadedObjectGroup } from '../load-project/display/mesh-builder';
+import type { GroupData } from '../load-project/pbde/pbde-types';
 
 export type PlayerModel = 'default' | 'animation';
 export type SkinModel = 'classic' | 'slim';

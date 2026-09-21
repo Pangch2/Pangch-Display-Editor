@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { createEntityMaterial, dragSelectedAttributeName } from '../entity-material';
-import { mainThreadAssetProvider } from '../load-project/pbde-assets';
-import { buildBlockIconTemplate, buildItemIconModels, type ModelData } from '../load-project/scene-parser';
-import { buildTextureAtlasForRenderList, type TexturePixelData } from '../load-project/texture-atlas-builder';
+import { mainThreadAssetProvider } from '../load-project/pbde/pbde-assets';
+import { buildBlockIconTemplate, buildItemIconModels, type ModelData } from '../load-project/scene/scene-parser';
+import { buildTextureAtlasForRenderList, type TexturePixelData } from '../load-project/scene/texture-atlas-builder';
 
 const iconSize = 64;
 const defaultBlockGuiTransform = {
@@ -160,12 +160,13 @@ function needsHardcodedItemGeometry(definition: any): boolean {
 }
 
 const iconModelOverrides = {
-    '2D': ['*_sign', '*_door', '*_stairs', '*_bars', '*_chain', 'light', 'tripwire', 'trident'],
-    '3D': ['*_bed', '*_banner', '*_shulker_box', '*_chest', 'end_portal', 'end_gateway']
+    '2D': ['sign', '*_sign', 'door', '*_door', 'stairs', '*_stairs', 'bars', '*_bars', 'chain', '*_chain', 'light', 'tripwire', 'trident'],
+    '3D': ['bed', '*_bed', 'banner', '*_banner', 'shulker_box', '*_shulker_box', 'chest', '*_chest', 'end_portal', 'end_gateway', '*copper_golem_statue']
 };
 
 function matchesIconModelOverride(name: string, overrides: string[]): boolean {
-    return overrides.some(override => override.startsWith('*') ? name.endsWith(override.slice(1)) : name === override);
+    const { path } = parseIconName(name);
+    return overrides.some(override => override.startsWith('*') ? path.endsWith(override.slice(1)) : path === override);
 }
 
 function usesBlockIconModel(name: string): boolean {
@@ -286,6 +287,8 @@ if (import.meta.env.DEV) {
         !usesBlockIconModel('oak_sign')
             && !usesBlockIconModel('oak_hanging_sign')
             && !usesBlockIconModel('cut_copper_stairs')
+            && usesBlockIconModel('chest')
+            && usesBlockIconModel('minecraft:chest[type=single]')
             && usesBlockIconModel('white_bed')
             && usesBlockIconModel('white_banner')
             && usesBlockIconModel('white_shulker_box')

@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { attribute, mix, positionGeometry, positionLocal, texture, uv, vec2, vec3 } from 'three/tsl';
 import { strFromU8 } from 'fflate';
-import { getAssetBytes } from '../asset-manager';
-import { entityVisiblePosition, setEntityStateAttributes } from '../entity-material';
+import { getAssetBytes } from '../../asset-manager';
+import { entityVisiblePosition, setEntityStateAttributes } from '../../entity-material';
 
 export type TextDisplayOptions = {
     color?: string;

@@ -1,6 +1,6 @@
 import { currentSelection } from '../../controls/selection/select';
-import { isPbdeLogEnabled } from '../../load-project/pbde-log';
-import { loadedObjectGroup } from '../../load-project/upload-pbde';
+import { isPbdeLogEnabled } from '../../load-project/pbde/pbde-log';
+import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
 import { getLinkedMirrorUuid, getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
 import { recordStateChange, refreshHistory } from '../../controls/undo-redo/scene-history';
 import { record } from '../../controls/undo-redo/undo-redo';

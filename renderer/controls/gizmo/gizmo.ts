@@ -61,6 +61,7 @@ import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
 import { processVertexRotate } from '../vertex/vertex-rotate';
 import { processVertexScale } from '../vertex/vertex-scale';
+import { captureVertexHistoryState } from '../vertex/vertex-history';
 import * as Select from '../selection/select';
 import type { SelectionState } from '../selection/select';
 import type { GroupData } from '../grouping/group';
@@ -1318,6 +1319,7 @@ export function initGizmo({
     setHistoryGizmoState(
         () => ({
             isVertexMode,
+            pivotMode,
             vertexQueue,
             selectedVertexKeys,
             isCustomPivot,
@@ -1336,6 +1338,7 @@ export function initGizmo({
         }),
         state => {
             isVertexMode = state.isVertexMode;
+            pivotMode = state.pivotMode;
             vertexQueue.splice(0, vertexQueue.length, ...state.vertexQueue);
             selectedVertexKeys.clear();
             state.selectedVertexKeys.forEach(key => selectedVertexKeys.add(key));
@@ -1919,8 +1922,14 @@ export function initGizmo({
             const v = Overlay.getHoveredVertex(m, camera, renderer);
             if (v && v.userData && v.userData.key) {
                 const key = v.userData.key as string;
+                const firstVertexKey = selectedVertexKeys.values().next().value;
                 const vertexHistoryBefore = !selectedVertexKeys.has(key) && selectedVertexKeys.size === 1
-                    ? captureSelectionGeometryState(loadedObjectGroup, currentSelection.objects, currentSelection.groups)
+                    ? captureVertexHistoryState(
+                        loadedObjectGroup,
+                        currentSelection,
+                        vertexQueue,
+                        Overlay.findSpritesByKeys([firstVertexKey])[firstVertexKey]?.userData.source
+                    )
                     : null;
 
                 if (selectedVertexKeys.has(key)) {
@@ -1993,7 +2002,7 @@ export function initGizmo({
                             });
                         }
 
-                        if (handled && vertexHistoryBefore) recordGeometryChange(loadedObjectGroup, vertexHistoryBefore);
+                        if (handled && vertexHistoryBefore) recordTransformChange(loadedObjectGroup, vertexHistoryBefore);
                     }
                 }
 

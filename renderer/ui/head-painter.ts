@@ -26,7 +26,7 @@ import {
   setPlayerHeadLayerVisible,
   writePlayerHeadPaint,
   type PlayerHeadPaintSurface
-} from '../load-project/mesh-builder';
+} from '../load-project/display/mesh-builder';
 import { currentSelection } from '../controls/selection/select';
 import {
   getHeadPainterFaceAxes,

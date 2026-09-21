@@ -1,6 +1,6 @@
 import { blockbenchScaleMode, toggleBlockbenchScaleMode } from '../controls/gizmo/blockbench-scale';
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
-import { loadedObjectGroup } from '../load-project/upload-pbde';
+import { loadedObjectGroup } from '../load-project/pbde/upload-pbde';
 import { cleanLabel } from './scene-panel/scene-panel-model';
 import { getShortcutConflictDetails, getShortcutMapping, getShortcuts, matchesShortcut, normalizeShortcutKey, resetShortcutMapping, resetShortcuts, setShortcutMapping, setShortcuts, shortcutDefinitions, shortcutFromKeys } from '../controls/input/shortcuts';
 

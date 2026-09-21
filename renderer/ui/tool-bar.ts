@@ -1,8 +1,8 @@
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { getBlockIconName, getItemIconAtlas, type ItemIconAtlas } from './item-icon-atlas';
 import { currentSelection } from '../controls/selection/select';
-import { addDisplayObject, addTextDisplay, loadedObjectGroup, replaceDisplayObjects } from '../load-project/mesh-builder';
-import { getCompatibleBlockProperties } from '../load-project/pbde-assets';
+import { addDisplayObject, addTextDisplay, loadedObjectGroup, replaceDisplayObjects } from '../load-project/display/mesh-builder';
+import { getCompatibleBlockProperties } from '../load-project/pbde/pbde-assets';
 import { captureHistoryUiState, recordCreationChange, recordReplacementChange } from '../controls/undo-redo/scene-history.js';
 import type { InstancedMesh } from 'three/webgpu';
 import { matchesShortcut } from '../controls/input/shortcuts';

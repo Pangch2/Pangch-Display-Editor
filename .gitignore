@@ -33,9 +33,6 @@ Thumbs.db
 # 로그 파일
 *.log
 
-# 테스트
-/tests/
-
 # 잠금 파일은 반드시 포함! (주의)
 # package-lock.json 포함 필요
 # yarn.lock 포함 필요 (Yarn 사용자일 경우)

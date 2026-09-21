@@ -13,7 +13,7 @@ import {
 import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
 import * as Overlay from '../selection/overlay';
-import { isPbdeLogEnabled, pbdeLogNames } from '../../load-project/pbde-log';
+import { isPbdeLogEnabled, pbdeLogNames } from '../../load-project/pbde/pbde-log';
 import { dragSelectedAttributeName } from '../../entity-material';
 
 const getDisplayType = Overlay.getDisplayType;
@@ -404,6 +404,10 @@ function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMes
     chunk.userData.pdeDuplicateChunk = true;
     chunk.userData.displayType = sourceMesh.userData?.displayType;
     chunk.userData.displayTypes = new Map<number, string>();
+    if (sourceMesh.userData.pbdeModelMatrix) chunk.userData.pbdeModelMatrix = [...sourceMesh.userData.pbdeModelMatrix];
+    if (sourceMesh.geometry.userData.atlasBatch) {
+        chunk.userData.pbdeSignature = sourceMesh.userData.pbdeSignature;
+    }
     if (sourceMesh.userData?.hasHat) chunk.userData.hasHat = [];
     if (sourceMesh.userData.imageHeadLayer !== undefined) {
         chunk.userData.imageHeadLayer = sourceMesh.userData.imageHeadLayer;
@@ -419,7 +423,8 @@ function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMes
 
 function takeAppendableInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMesh): InstancedMesh {
     const chunk = appendableInstancedChunks.get(sourceMesh);
-    if (chunk?.parent === loadedObjectGroup && chunk.count < getInstancedCapacity(chunk)) return chunk;
+    if (chunk?.parent === loadedObjectGroup && chunk.count < getInstancedCapacity(chunk)
+        && chunk.geometry.userData.atlasBatch === sourceMesh.geometry.userData.atlasBatch) return chunk;
 
     const created = createInstancedChunk(loadedObjectGroup, sourceMesh);
     appendableInstancedChunks.set(sourceMesh, created);

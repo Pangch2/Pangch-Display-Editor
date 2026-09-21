@@ -1,4 +1,4 @@
-import { getAssetBytes } from '../asset-manager';
+import { getAssetBytes } from '../../asset-manager';
 
 type DirectorySource = {
     type: 'minecraft:directory';

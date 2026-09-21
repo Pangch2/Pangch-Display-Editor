@@ -1,5 +1,5 @@
-import { getPlayerHeadTexture, replacePlayerHeadTextureReference, notifyPlayerHeadAtlasesChanged } from '../load-project/mesh-builder';
-import { getActiveProjectId, hasProject, loadedObjectGroup } from '../load-project/upload-pbde';
+import { getPlayerHeadTexture, replacePlayerHeadTextureReference, notifyPlayerHeadAtlasesChanged } from '../load-project/display/mesh-builder';
+import { getActiveProjectId, hasProject, loadedObjectGroup } from '../load-project/pbde/upload-pbde';
 import { record, isApplying } from '../controls/undo-redo/undo-redo';
 import type { HeadTextureState } from '../player-head-service/head-texture-types';
 

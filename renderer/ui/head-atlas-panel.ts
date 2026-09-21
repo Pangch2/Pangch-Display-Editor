@@ -1,4 +1,4 @@
-import { capturePlayerHeadAtlasState, commitPlayerHeadPaint, getPlayerHeadAtlasFaces, restorePlayerHeadAtlasState, type PlayerHeadAtlasFace } from '../load-project/mesh-builder';
+import { capturePlayerHeadAtlasState, commitPlayerHeadPaint, getPlayerHeadAtlasFaces, restorePlayerHeadAtlasState, type PlayerHeadAtlasFace } from '../load-project/display/mesh-builder';
 import { record } from '../controls/undo-redo/undo-redo';
 import { getHeadAtlasUvRect, setHeadAtlasUvRect, transformHeadUvRect } from './head-atlas-uv';
 

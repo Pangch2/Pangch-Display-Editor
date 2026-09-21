@@ -1,4 +1,4 @@
-import { loadedObjectGroup } from '../../load-project/upload-pbde';
+import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
 import { currentSelection } from '../../controls/selection/select';
 import { getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
 import { captureGroupStructureState, recordGroupStructureChange, type GroupStructureHistoryState } from '../../controls/undo-redo/scene-history';
