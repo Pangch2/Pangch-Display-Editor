@@ -42,6 +42,7 @@ import {
     captureSelectionGeometryState,
     captureSelectionTransformState,
     captureTransformState,
+    captureVertexHistoryState,
     recordCreationChange,
     recordGeometryChange,
     recordGeometryAndCreationChange,
@@ -61,7 +62,6 @@ import type { InstanceIdRange } from '../selection/instance-ranges';
 import { processVertexSnap } from '../vertex/vertex-translate';
 import { processVertexRotate } from '../vertex/vertex-rotate';
 import { processVertexScale } from '../vertex/vertex-scale';
-import { captureVertexHistoryState } from '../vertex/vertex-history';
 import * as Select from '../selection/select';
 import type { SelectionState } from '../selection/select';
 import type { GroupData } from '../grouping/group';
