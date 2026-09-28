@@ -935,6 +935,24 @@ function renderPalette(): void {
       }
       syncColorControls();
       renderPalette();
+      (grid.children[index] as HTMLButtonElement).focus();
+    };
+    button.oncontextmenu = event => {
+      event.preventDefault();
+      activePaletteSlot = index;
+      palette[index] = cloneRgba(currentColor);
+      saveActivePalette();
+      renderPalette();
+      (grid.children[index] as HTMLButtonElement).focus();
+    };
+    button.onkeydown = event => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      event.preventDefault();
+      event.stopPropagation();
+      palette[index] = null;
+      saveActivePalette();
+      renderPalette();
+      (grid.children[index] as HTMLButtonElement).focus();
     };
     return button;
   }));
