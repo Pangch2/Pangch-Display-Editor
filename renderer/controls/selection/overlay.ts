@@ -622,14 +622,15 @@ export function getHeadPainterFaceAxes(face: number, scale: number): [Vector3, V
     const half = scale / 2;
     const bottom = -0.5 - half;
     const top = -0.5 + half;
-    return [
-        [new Vector3(half, bottom, half), new Vector3(0, 0, -scale), new Vector3(0, scale, 0)],
-        [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)],
-        [new Vector3(half, top, -half), new Vector3(-scale, 0, 0), new Vector3(0, 0, scale)],
-        [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, 0, scale)],
-        [new Vector3(-half, bottom, half), new Vector3(scale, 0, 0), new Vector3(0, scale, 0)],
-        [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, scale, 0)]
-    ][face] as [Vector3, Vector3, Vector3];
+    switch (face) {
+        case 0: return [new Vector3(half, bottom, half), new Vector3(0, 0, -scale), new Vector3(0, scale, 0)];
+        case 1: return [new Vector3(-half, bottom, -half), new Vector3(0, 0, scale), new Vector3(0, scale, 0)];
+        case 2: return [new Vector3(half, top, -half), new Vector3(-scale, 0, 0), new Vector3(0, 0, scale)];
+        case 3: return [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, 0, scale)];
+        case 4: return [new Vector3(-half, bottom, half), new Vector3(scale, 0, 0), new Vector3(0, scale, 0)];
+        case 5: return [new Vector3(half, bottom, -half), new Vector3(-scale, 0, 0), new Vector3(0, scale, 0)];
+        default: throw new RangeError(`Invalid head face: ${face}`);
+    }
 }
 
 export function updateHeadPainterStampPreview(
@@ -637,34 +638,114 @@ export function updateHeadPainterStampPreview(
     hits: Array<{ mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number }>,
     getGridBoundary: (index: number, count: number) => number
 ): void {
-    if (!hits.length) return removeHeadPainterStampPreview();
-    const points = hits.flatMap(hit => {
-        const scale = (hit.layer ? 1.0625 : 1) * 1.006;
-        const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(hit.face, scale);
-        const point = (x: number, y: number) => origin.clone()
-            .addScaledVector(horizontalAxis, getGridBoundary(x, hit.columns) / 8)
-            .addScaledVector(verticalAxis, 1 - getGridBoundary(y, hit.rows) / 8);
-        const matrix = new Matrix4();
-        hit.mesh.getMatrixAt(hit.instanceId, matrix);
-        matrix.premultiply(hit.mesh.matrixWorld);
-        if (hit.mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(hit.instanceId)) matrix.premultiply(dragDeltaMatrix);
-        const topLeft = point(hit.x, hit.y).applyMatrix4(matrix);
-        const topRight = point(hit.x + 1, hit.y).applyMatrix4(matrix);
-        const bottomRight = point(hit.x + 1, hit.y + 1).applyMatrix4(matrix);
-        const bottomLeft = point(hit.x, hit.y + 1).applyMatrix4(matrix);
-        return [topLeft, topRight, topRight, bottomRight, bottomRight, bottomLeft, bottomLeft, topLeft];
-    });
-    const geometry = new BufferGeometry().setFromPoints(points);
-
+    if (!hits.length) return hideHeadPainterStampPreview();
     if (!headPainterStampPreview) {
-        headPainterStampPreview = new LineSegments(geometry, new LineBasicNodeMaterial({ color: 0xffffff, transparent: true, opacity: 1, depthTest: false, depthWrite: false }));
+        headPainterStampPreview = new LineSegments(new BufferGeometry(), new LineBasicNodeMaterial({ color: 0xffffff, transparent: true, opacity: 1, depthTest: false, depthWrite: false }));
         headPainterStampPreview.name = 'head-painter-stamp-preview';
         headPainterStampPreview.renderOrder = 2000;
+        headPainterStampPreview.frustumCulled = false;
         scene.add(headPainterStampPreview);
-    } else {
-        headPainterStampPreview.geometry.dispose();
-        headPainterStampPreview.geometry = geometry;
     }
+    headPainterStampPreview.visible = true;
+    let positions = headPainterStampPreview.geometry.getAttribute('position') as BufferAttribute | undefined;
+    if (!positions || positions.count < hits.length * 8) {
+        const capacity = Math.max(hits.length * 8, (positions?.count ?? 0) * 2);
+        headPainterStampPreview.geometry.dispose();
+        headPainterStampPreview.geometry = new BufferGeometry();
+        positions = new BufferAttribute(new Float32Array(capacity * 3), 3);
+        headPainterStampPreview.geometry.setAttribute('position', positions);
+    }
+
+    const faces = new Map<InstancedMesh, Map<number, { hit: typeof hits[number]; cells: Uint8Array; matrix?: Matrix4; positions?: Float32Array; offset?: number }>>();
+    const previousFaces = headPainterStampPreview.userData.faces as typeof faces | undefined;
+    const bufferChanged = headPainterStampPreview.userData.positionAttribute !== positions;
+    for (const hit of hits) {
+        let meshFaces = faces.get(hit.mesh);
+        if (!meshFaces) faces.set(hit.mesh, meshFaces = new Map());
+        // Each instance has six faces and two paint layers.
+        const key = hit.instanceId * 12 + hit.face * 2 + hit.layer;
+        let face = meshFaces.get(key);
+        if (!face) meshFaces.set(key, face = { hit, cells: new Uint8Array(hit.columns * hit.rows) });
+        face.cells[hit.y * hit.columns + hit.x] = 1;
+    }
+    const matrix = new Matrix4();
+    const point = new Vector3();
+    let vertex = 0;
+    let updateStart = Infinity;
+    let updateEnd = 0;
+    for (const meshFaces of faces.values()) {
+        for (const [key, face] of meshFaces) {
+            const { hit, cells } = face;
+            hit.mesh.getMatrixAt(hit.instanceId, matrix);
+            matrix.premultiply(hit.mesh.matrixWorld);
+            if (hit.mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(hit.instanceId)) matrix.premultiply(dragDeltaMatrix);
+            const previous = previousFaces?.get(hit.mesh)?.get(key);
+            face.offset = vertex * 3;
+            if (previous?.hit.columns === hit.columns && previous.hit.rows === hit.rows
+                && previous.matrix?.equals(matrix) && cells.every((value, index) => value === previous.cells[index])) {
+                face.matrix = previous.matrix;
+                face.positions = previous.positions;
+                if (bufferChanged || previous.offset !== face.offset) {
+                    (positions.array as Float32Array).set(face.positions!, face.offset);
+                    updateStart = Math.min(updateStart, face.offset);
+                    updateEnd = Math.max(updateEnd, face.offset + face.positions!.length);
+                }
+                vertex += face.positions!.length / 3;
+                continue;
+            }
+            face.matrix = matrix.clone();
+            const scale = (hit.layer ? 1.0625 : 1) * 1.006;
+            const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(hit.face, scale);
+            const addPoint = (x: number, y: number) => {
+                point.copy(origin)
+                    .addScaledVector(horizontalAxis, getGridBoundary(x, hit.columns) / 8)
+                    .addScaledVector(verticalAxis, 1 - getGridBoundary(y, hit.rows) / 8)
+                    .applyMatrix4(matrix);
+                positions!.setXYZ(vertex++, point.x, point.y, point.z);
+            };
+            const horizontalEdges = new Uint8Array((hit.rows + 1) * hit.columns);
+            const verticalEdges = new Uint8Array((hit.columns + 1) * hit.rows);
+            for (let cell = 0; cell < cells.length; cell++) {
+                if (!cells[cell]) continue;
+                const x = cell % hit.columns;
+                const y = Math.floor(cell / hit.columns);
+                horizontalEdges[y * hit.columns + x] = horizontalEdges[(y + 1) * hit.columns + x] = 1;
+                verticalEdges[x * hit.rows + y] = verticalEdges[(x + 1) * hit.rows + y] = 1;
+            }
+            for (const [edges, count, horizontal] of [[horizontalEdges, hit.columns, true], [verticalEdges, hit.rows, false]] as const) {
+                for (let row = 0; row < edges.length / count; row++) {
+                    for (let i = 0; i < count;) {
+                        if (!edges[row * count + i]) { i++; continue; }
+                        const start = i++;
+                        while (i < count && edges[row * count + i]) i++;
+                        const end = i;
+                        if (horizontal) { addPoint(start, row); addPoint(end, row); }
+                        else { addPoint(row, start); addPoint(row, end); }
+                    }
+                }
+            }
+            face.positions = (positions.array as Float32Array).slice(face.offset, vertex * 3);
+            updateStart = Math.min(updateStart, face.offset);
+            updateEnd = Math.max(updateEnd, vertex * 3);
+        }
+    }
+    headPainterStampPreview.userData.faces = faces;
+    headPainterStampPreview.userData.positionAttribute = positions;
+    if (updateEnd > updateStart) {
+        // Keep edits pending until WebGPU consumes them, and upload one span per frame.
+        for (const range of positions.updateRanges) {
+            updateStart = Math.min(updateStart, range.start);
+            updateEnd = Math.max(updateEnd, range.start + range.count);
+        }
+        positions.clearUpdateRanges();
+        positions.addUpdateRange(updateStart, updateEnd - updateStart);
+        positions.needsUpdate = true;
+    }
+    headPainterStampPreview.geometry.setDrawRange(0, vertex);
+}
+
+export function hideHeadPainterStampPreview(): void {
+    if (headPainterStampPreview) headPainterStampPreview.visible = false;
 }
 
 export function removeHeadPainterStampPreview(): void {

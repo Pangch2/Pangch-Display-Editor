@@ -457,6 +457,7 @@ export function createPlayerHeadAtlas(notify = true): PlayerHeadAtlas {
     texture.needsUpdate = true;
     texture.magFilter = THREE.NearestFilter;
     texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
     texture.colorSpace = THREE.SRGBColorSpace;
 
     const headUvTexture = createHeadAtlasUvTexture(canvas);
@@ -778,37 +779,30 @@ function getPlayerHeadSlot(uvOffsets: THREE.BufferAttribute | THREE.InterleavedB
         + Math.round((1 - uvOffsets.getY(instanceId)) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT - 1) * PLAYER_HEAD_BLOCKS_PER_ROW;
 }
 
-function getPlayerHeadSlotUsage(material: THREE.Material, slot: number): number {
-    let count = 0;
-    loadedObjectGroup.traverse(object => {
-        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
-        const mesh = object as THREE.InstancedMesh;
-        const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
-        if (meshMaterial !== material || !offsets) return;
-        for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
-            if (getPlayerHeadSlot(offsets, instanceId) === slot) count++;
-        }
-    });
-    return count;
-}
-
-function getImageHeadTileUsage(material: THREE.Material, tile: number): number {
+function getPlayerHeadPaintUsage(material: THREE.Material): { slots: Map<number, number>; imageTiles: Map<number, number> } {
+    const slots = new Map<number, number>();
+    const imageTiles = new Map<number, number>();
     const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
-    let count = 0;
     loadedObjectGroup.traverse(object => {
         if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
         const mesh = object as THREE.InstancedMesh;
         const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
         if (meshMaterial !== material) return;
         const positions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
-        if (!positions) return;
+        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
         for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
-            const position = positions[instanceId];
-            if (position && position[1] / PLAYER_HEAD_PART_SIZE * tilesPerRow + position[0] / PLAYER_HEAD_PART_SIZE === tile) count++;
+            if (positions) {
+                const position = positions[instanceId];
+                if (!position) continue;
+                const tile = position[1] / PLAYER_HEAD_PART_SIZE * tilesPerRow + position[0] / PLAYER_HEAD_PART_SIZE;
+                imageTiles.set(tile, (imageTiles.get(tile) ?? 0) + 1);
+            } else if (offsets) {
+                const slot = getPlayerHeadSlot(offsets, instanceId);
+                slots.set(slot, (slots.get(slot) ?? 0) + 1);
+            }
         }
     });
-    return count;
+    return { slots, imageTiles };
 }
 
 type PlayerHeadAtlasTargets = Iterable<string> | Map<THREE.InstancedMesh, Iterable<number>>;
@@ -1090,13 +1084,16 @@ export function cleanupUnusedPlayerHeadAtlasSlots(): void {
 export function getPlayerHeadPaintSurface(
     mesh: THREE.InstancedMesh,
     instanceId: number,
-    exclusive = false
+    exclusive = false,
+    paintUsage?: Map<THREE.Material, ReturnType<typeof getPlayerHeadPaintUsage>>
 ): PlayerHeadPaintSurface | null {
     const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.Material;
     const atlas = playerHeadAtlases.get(material);
     const uvOffsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
     const objectUuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(`${mesh.uuid}_${instanceId}`);
     if (!atlas || !uvOffsets || !objectUuid || instanceId < 0 || instanceId >= mesh.count) return null;
+    const usage = exclusive ? paintUsage?.get(material) ?? getPlayerHeadPaintUsage(material) : undefined;
+    if (usage) paintUsage?.set(material, usage);
     const denseLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
     const denseTile = (mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined)?.[instanceId];
     if (denseLayer !== undefined && denseTile) {
@@ -1104,8 +1101,8 @@ export function getPlayerHeadPaintSurface(
         if (exclusive) {
             const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
             const oldTile = y / PLAYER_HEAD_PART_SIZE * tilesPerRow + x / PLAYER_HEAD_PART_SIZE;
-            const usage = getImageHeadTileUsage(material, oldTile);
-            if (usage > 1) {
+            const count = usage!.imageTiles.get(oldTile) ?? 0;
+            if (count > 1) {
                 const nextTile = takeImageHeadTile(atlas, tilesPerRow * tilesPerRow);
                 if (nextTile === undefined) throw new Error('Player head paint atlas is full.');
                 const nextX = nextTile % tilesPerRow * PLAYER_HEAD_PART_SIZE;
@@ -1113,6 +1110,8 @@ export function getPlayerHeadPaintSurface(
                 const region = { x, y, width: PLAYER_HEAD_PART_SIZE, height: PLAYER_HEAD_PART_SIZE };
                 atlas.context.putImageData(readHeadAtlasRegion(atlas.context, region), nextX, nextY);
                 resetHeadAtlasUvs(atlas.context.canvas, { ...region, x: nextX, y: nextY });
+                usage!.imageTiles.set(oldTile, count - 1);
+                usage!.imageTiles.set(nextTile, 1);
                 x = nextX;
                 y = nextY;
                 (mesh.userData.imageHeadTilePositions as Array<[number, number]>)[instanceId] = [x, y];
@@ -1136,7 +1135,7 @@ export function getPlayerHeadPaintSurface(
     }
 
     let slot = getPlayerHeadSlot(uvOffsets, instanceId);
-    if (exclusive && getPlayerHeadSlotUsage(material, slot) > 1) {
+    if (exclusive && (usage!.slots.get(slot) ?? 0) > 1) {
         const nextSlot = takePlayerHeadSlot(atlas);
         if (nextSlot === undefined) throw new Error('Player head paint atlas is full.');
         const oldX = (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
@@ -1145,6 +1144,8 @@ export function getPlayerHeadPaintSurface(
         const nextY = Math.floor(nextSlot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
         atlas.context.putImageData(readHeadAtlasRegion(atlas.context, { x: oldX, y: oldY, width: PLAYER_HEAD_BLOCK_WIDTH, height: PLAYER_HEAD_BLOCK_HEIGHT }), nextX, nextY);
         resetHeadAtlasUvs(atlas.context.canvas, { x: nextX, y: nextY, width: PLAYER_HEAD_BLOCK_WIDTH, height: PLAYER_HEAD_BLOCK_HEIGHT });
+        usage!.slots.set(slot, usage!.slots.get(slot)! - 1);
+        usage!.slots.set(nextSlot, 1);
         slot = nextSlot;
         uvOffsets.setXY(instanceId, nextX / PLAYER_HEAD_ATLAS_SIZE, 1 - (nextY + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE);
         uvOffsets.needsUpdate = true;
@@ -1200,7 +1201,6 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface): void {
         }
     }
     surface.mesh.userData.hasHat[surface.instanceId] = hasHat;
-    surface.texture.needsUpdate = true;
 
     const skin = document.createElement('canvas');
     skin.width = skin.height = 64;

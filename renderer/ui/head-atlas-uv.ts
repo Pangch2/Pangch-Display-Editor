@@ -4,6 +4,7 @@ export type HeadUvRect = { x: number; y: number; width: number; height: number }
 export type HeadUvEntry = { x: number; y: number; rect: HeadUvRect };
 const atlasUvs = new WeakMap<HTMLCanvasElement, { texture: DataTexture; entries: Map<number, HeadUvEntry> }>();
 const tileSize = 8;
+let headAtlasReadCanvas: HTMLCanvasElement | null = null;
 
 export function createHeadAtlasUvTexture(canvas: HTMLCanvasElement): DataTexture {
     const texture = new DataTexture(new Float32Array(canvas.width * canvas.height / 16), canvas.width / tileSize, canvas.height / tileSize, RGBAFormat, FloatType);
@@ -33,9 +34,16 @@ export function setHeadAtlasUvRect(canvas: HTMLCanvasElement, x: number, y: numb
 }
 
 export function captureHeadAtlasUvs(canvas: HTMLCanvasElement, region: HeadUvRect): HeadUvEntry[] {
-    return [...(atlasUvs.get(canvas)?.entries.values() ?? [])]
-        .filter(entry => entry.x >= region.x && entry.x < region.x + region.width && entry.y >= region.y && entry.y < region.y + region.height)
-        .map(entry => ({ ...entry, rect: { ...entry.rect } }));
+    const entries = atlasUvs.get(canvas)?.entries;
+    if (!entries?.size) return [];
+    const result: HeadUvEntry[] = [];
+    for (let y = Math.ceil(region.y / tileSize) * tileSize; y < region.y + region.height; y += tileSize) {
+        for (let x = Math.ceil(region.x / tileSize) * tileSize; x < region.x + region.width; x += tileSize) {
+            const entry = entries.get(y / tileSize * (canvas.width / tileSize) + x / tileSize);
+            if (entry) result.push({ ...entry, rect: { ...entry.rect } });
+        }
+    }
+    return result;
 }
 
 export function resetHeadAtlasUvs(canvas: HTMLCanvasElement, region: HeadUvRect): void {
@@ -45,11 +53,12 @@ export function resetHeadAtlasUvs(canvas: HTMLCanvasElement, region: HeadUvRect)
 export function readHeadAtlasRegion(context: CanvasRenderingContext2D, region: HeadUvRect): ImageData {
     const entries = captureHeadAtlasUvs(context.canvas, region);
     if (!entries.length) return context.getImageData(region.x, region.y, region.width, region.height);
-    const canvas = document.createElement('canvas');
-    canvas.width = region.width;
-    canvas.height = region.height;
-    const output = canvas.getContext('2d')!;
+    const canvas = headAtlasReadCanvas ??= document.createElement('canvas');
+    if (canvas.width !== region.width) canvas.width = region.width;
+    if (canvas.height !== region.height) canvas.height = region.height;
+    const output = canvas.getContext('2d', { willReadFrequently: true })!;
     output.imageSmoothingEnabled = false;
+    output.clearRect(0, 0, canvas.width, canvas.height);
     output.drawImage(context.canvas, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
     for (const { x, y, rect } of entries) {
         output.clearRect(x - region.x, y - region.y, tileSize, tileSize);

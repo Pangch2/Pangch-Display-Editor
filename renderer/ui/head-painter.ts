@@ -1,6 +1,8 @@
 import {
+  Box3,
   Camera,
   InstancedMesh,
+  Mesh,
   Matrix3,
   Matrix4,
   Raycaster,
@@ -30,8 +32,9 @@ import {
 import { currentSelection } from '../controls/selection/select';
 import {
   getHeadPainterFaceAxes,
-  invalidateHeadPainterGridOverlay,
-  removeHeadPainterStampPreview,
+  hideHeadPainterStampPreview,
+  invalidateHeadPainterGridOverlay as invalidateHeadPainterGrid,
+  removeHeadPainterStampPreview as clearHeadPainterStampPreview,
   removeHeadPainterGridOverlay,
   updateHeadPainterStampPreview,
   updateHeadPainterGridOverlay
@@ -42,7 +45,7 @@ import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
 import { oklchToRgb, openColorPicker, rgbToOklch } from './color-picker';
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { isSceneObjectVisible } from '../controls/scene-visibility';
-import { intersectSceneInstances } from '../controls/selection/instance-raycast';
+import { getSceneRaycastObjects, intersectSceneInstances } from '../controls/selection/instance-raycast';
 import { captureHistoryUiState, recordCreationChange, recordReplacementChange } from '../controls/undo-redo/scene-history';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../controls/transform/mirroring';
 import { addImageHeadGrid, createHeadProject, createPlayerProject, type PlayerModel } from './player-generator';
@@ -104,6 +107,8 @@ const raycaster = new Raycaster();
 const pointer = new Vector2();
 const paintTextureUpdateIntervalMs = 1000 / 30;
 const paintTextureUpdateTimes = new WeakMap<object, number>();
+const pendingPaintTextures = new Set<PlayerHeadPaintSurface['texture']>();
+let paintTextureUpdateTimer: ReturnType<typeof setTimeout> | undefined;
 
 let painterContext: PainterContext | null = null;
 let active = false;
@@ -138,6 +143,7 @@ let stampWidth = 8;
 let stampHeight = 8;
 let stampPixels: Array<Rgba | null> = Array(64).fill(null);
 let stroke: Map<string, WorkSurface> | null = null;
+let strokePaintUsage: Parameters<typeof getPlayerHeadPaintSurface>[3];
 let lastStrokeHit: PaintHit | null = null;
 let paintPointerId: number | null = null;
 let paintHeadUuid: string | null = null;
@@ -159,6 +165,37 @@ let brushUndo: BrushAsset[] = [];
 let brushRedo: BrushAsset[] = [];
 let pointerMoveFrame = 0;
 let pendingPointerMove: PointerEvent | null = null;
+let lastPreviewKey: string | null = null;
+let painterWorldMatrixDirty = true;
+const previewAdjacentHits = new Map<string, PaintHit | null>();
+const previewLocalHits = new Map<string, Map<string | number, PaintHit | null>>();
+const previewAdjacentColumns = new Map<string, Map<number, Map<number, PaintHit | null>>>();
+const previewPaintImages = new Map<string, ImageData>();
+let cachedPaintOffsets: { width: number; height: number; offsets: Array<{ index: number; x: number; y: number }> } | null = null;
+
+function invalidateHeadPainterGridOverlay(): void {
+  lastPreviewKey = null;
+  painterWorldMatrixDirty = true;
+  previewAdjacentHits.clear();
+  previewLocalHits.clear();
+  previewAdjacentColumns.clear();
+  previewPaintImages.clear();
+  invalidateHeadPainterGrid();
+}
+
+function removeHeadPainterStampPreview(): void {
+  lastPreviewKey = null;
+  previewAdjacentHits.clear();
+  previewLocalHits.clear();
+  previewAdjacentColumns.clear();
+  previewPaintImages.clear();
+  clearHeadPainterStampPreview();
+}
+
+function hidePaintPreview(): void {
+  lastPreviewKey = null;
+  hideHeadPainterStampPreview();
+}
 
 const clampByte = (value: number): number => Math.round(Math.min(255, Math.max(0, value)));
 const clampGrid = (value: number): number => Math.round(Math.min(8, Math.max(0, Number.isFinite(value) ? value : 0)));
@@ -250,7 +287,7 @@ function expandKnifePaintSurface(surface: PlayerHeadPaintSurface, image: ImageDa
 function preparePaintSurface(surface: PlayerHeadPaintSurface): ImageData {
   const image = readPlayerHeadPaint(surface);
   if (expandKnifePaintSurface(surface, image)) {
-    writePlayerHeadPaint(surface, image, false);
+    writePlayerHeadPaint(surface, image);
     commitPlayerHeadPaint(surface);
   }
   return image;
@@ -278,59 +315,79 @@ function sourceOver(destination: Rgba, source: Rgba, coverage: number): Rgba {
   )).concat(Math.round(alpha * 255)) as Rgba;
 }
 
-function getRaycastHit(deselectOnMiss = false): PaintHit | null {
+function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, objects?: Mesh[], faceHits?: Map<InstancedMesh, Map<number, PaintHit[]>>): PaintHit | null {
   if (!painterContext) return null;
-  loadedObjectGroup.updateMatrixWorld(true);
   const intersection = intersectSceneInstances(raycaster, loadedObjectGroup, (mesh, instanceId) => {
     const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
       ?.get(`${mesh.uuid}_${instanceId}`);
     return !uuid || isSceneObjectVisible(loadedObjectGroup, uuid);
-  });
+  }, objects);
   if (!intersection) {
     if (deselectOnMiss) (loadedObjectGroup.userData.resetSelection as (() => void) | undefined)?.();
     return null;
   }
   if (!(intersection.object as InstancedMesh).isInstancedMesh || intersection.instanceId === undefined || !intersection.uv || intersection.faceIndex === undefined) return null;
   const mesh = intersection.object as InstancedMesh;
-  const surface = getPlayerHeadPaintSurface(mesh, intersection.instanceId);
-  if (!surface) return null;
   const imageLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
   const imageOverlay = imageLayer !== undefined && intersection.faceIndex >= 24;
   const triangle = intersection.faceIndex % 24;
   const actualLayer = imageOverlay ? imageLayer : triangle >= 12 ? 1 : 0;
   const face = imageOverlay ? 4 : Math.floor((triangle % 12) / 2);
+  const cachedFace = faceHits?.get(mesh)?.get(intersection.instanceId)?.[face];
+  const surface = cachedFace?.surface ?? getPlayerHeadPaintSurface(mesh, intersection.instanceId);
+  if (!surface) return null;
   const actualPart = facePartIndexes[face] + actualLayer * 6;
   const partX = (actualPart % 3) * partSize;
   const partY = Math.floor(actualPart / 3) * partSize;
   const pixelX = Math.min(7, Math.max(0, Math.floor(intersection.uv.x * atlasSize - partX)));
   const pixelY = Math.min(7, Math.max(0, Math.floor(blockHeight - intersection.uv.y * atlasSize - partY)));
-  const matrix = getInstanceWorldMatrix(mesh, intersection.instanceId, new Matrix4());
-  const [horizontal, vertical] = getFaceGridCounts(surface.objectUuid, face, matrix);
-  const columns = Math.max(1, horizontal);
-  const rows = Math.max(1, vertical);
+  let columns = cachedFace?.columns;
+  let rows = cachedFace?.rows;
+  if (columns === undefined || rows === undefined) {
+    const matrix = getInstanceWorldMatrix(mesh, intersection.instanceId, new Matrix4());
+    const [horizontal, vertical] = getFaceGridCounts(surface.objectUuid, face, matrix);
+    columns = Math.max(1, horizontal);
+    rows = Math.max(1, vertical);
+  }
   const x = Math.min(columns - 1, Math.floor((pixelX + 0.5) * columns / partSize));
   const y = Math.min(rows - 1, Math.floor((pixelY + 0.5) * rows / partSize));
-  const packed = readPlayerHeadPaint(surface);
-  const layer = imageOverlay ? imageLayer : layerMode === 'layer' ? 1 : layerMode === 'base' ? 0
-    : readPixel(packed, facePartIndexes[face] + 6, gridCellPixel(x, columns), gridCellPixel(y, rows))[3] > 0 ? 1 : 0;
-  return { mesh, instanceId: intersection.instanceId, surface, face, layer, x, y, columns, rows, promote: imageLayer !== undefined && !imageOverlay };
+  let layer: 0 | 1 = imageOverlay ? imageLayer : layerMode === 'layer' ? 1 : 0;
+  if (!imageOverlay && layerMode === 'auto') {
+    const packed = images?.get(surface.objectUuid) ?? readPlayerHeadPaint(surface);
+    images?.set(surface.objectUuid, packed);
+    layer = packed.data[pixelOffset(facePartIndexes[face] + 6, gridCellPixel(x, columns), gridCellPixel(y, rows)) + 3] > 0 ? 1 : 0;
+  }
+  const hit: PaintHit = { mesh, instanceId: intersection.instanceId, surface, face, layer, x, y, columns, rows, promote: imageLayer !== undefined && !imageOverlay };
+  if (faceHits && !cachedFace) {
+    let meshHits = faceHits.get(mesh);
+    if (!meshHits) faceHits.set(mesh, meshHits = new Map());
+    let hits = meshHits.get(intersection.instanceId);
+    if (!hits) meshHits.set(intersection.instanceId, hits = []);
+    hits[face] = hit;
+  }
+  return hit;
 }
 
-function getHit(event: PointerEvent, deselectOnMiss = false): PaintHit | null {
+function getHit(event: PointerEvent, deselectOnMiss = false, images?: Map<string, ImageData>): PaintHit | null {
   if (!painterContext) return null;
   const rect = painterContext.renderer.domElement.getBoundingClientRect();
   pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
   raycaster.layers.enable(2);
   raycaster.setFromCamera(pointer, painterContext.getCamera());
-  return getRaycastHit(deselectOnMiss);
+  if (painterWorldMatrixDirty) {
+    loadedObjectGroup.updateMatrixWorld(true);
+    painterWorldMatrixDirty = false;
+  }
+  return getRaycastHit(deselectOnMiss, images);
 }
 
 function getWork(hit: PaintHit): WorkSurface {
   if (!stroke) stroke = new Map();
+  strokePaintUsage ??= new Map();
   let work = stroke.get(hit.surface.objectUuid);
   if (!work) {
     const before = capturePlayerHeadAtlasState([hit.surface.objectUuid]);
-    const surface = getPlayerHeadPaintSurface(hit.mesh, hit.instanceId, true)!;
+    const surface = getPlayerHeadPaintSurface(hit.mesh, hit.instanceId, true, strokePaintUsage)!;
     const image = preparePaintSurface(surface);
     work = { surface, before, image, changed: false };
     stroke.set(surface.objectUuid, work);
@@ -340,7 +397,7 @@ function getWork(hit: PaintHit): WorkSurface {
         ? (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(partnerUuid)
         : undefined;
       const partnerBefore = partnerUuid ? capturePlayerHeadAtlasState([partnerUuid]) : [];
-      const partnerSurface = partner && !stroke.has(partnerUuid!) ? getPlayerHeadPaintSurface(partner.mesh, partner.instanceId, true) : null;
+      const partnerSurface = partner && !stroke.has(partnerUuid!) ? getPlayerHeadPaintSurface(partner.mesh, partner.instanceId, true, strokePaintUsage) : null;
       if (partnerSurface && !stroke.has(partnerSurface.objectUuid)) {
         const partnerImage = preparePaintSurface(partnerSurface);
         stroke.set(partnerSurface.objectUuid, {
@@ -355,6 +412,19 @@ function getWork(hit: PaintHit): WorkSurface {
   return work;
 }
 
+function flushPaintTextures(force = false): void {
+  clearTimeout(paintTextureUpdateTimer);
+  paintTextureUpdateTimer = undefined;
+  const now = performance.now();
+  for (const texture of pendingPaintTextures) {
+    if (!force && now - (paintTextureUpdateTimes.get(texture) ?? -Infinity) < paintTextureUpdateIntervalMs) continue;
+    texture.needsUpdate = true;
+    paintTextureUpdateTimes.set(texture, now);
+    pendingPaintTextures.delete(texture);
+  }
+  if (pendingPaintTextures.size) paintTextureUpdateTimer = setTimeout(flushPaintTextures, paintTextureUpdateIntervalMs);
+}
+
 function flushWork(work: WorkSurface): void {
   const flushed = [work];
   const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, work.surface.objectUuid) : undefined;
@@ -365,21 +435,18 @@ function flushWork(work: WorkSurface): void {
     flushed.push(partner);
   }
   flushed.forEach(target => writePlayerHeadPaint(target.surface, target.image, false));
-  const now = performance.now();
-  flushed.forEach(target => {
-    const lastUpdate = paintTextureUpdateTimes.get(target.surface.texture) ?? -Infinity;
-    if (now - lastUpdate < paintTextureUpdateIntervalMs) return;
-    target.surface.texture.needsUpdate = true;
-    paintTextureUpdateTimes.set(target.surface.texture, now);
-  });
+  flushed.forEach(target => pendingPaintTextures.add(target.surface.texture));
+  if (paintTextureUpdateTimer === undefined) paintTextureUpdateTimer = setTimeout(flushPaintTextures, 0);
 }
 
 function finishStroke(): void {
   if (!stroke) return;
   const works = [...stroke.values()];
   stroke = null;
+  strokePaintUsage = undefined;
   lastStrokeHit = null;
   works.forEach(({ surface }) => commitPlayerHeadPaint(surface));
+  flushPaintTextures(true);
   const before = [...works].reverse().flatMap(work => work.before);
   const after = capturePlayerHeadAtlasState(works.map(work => work.surface.objectUuid));
   const apply = (state: typeof before) => {
@@ -421,57 +488,130 @@ function canPaintHead(sourceUuid: string | null, targetUuid: string, allowAdjace
 
 const isSamePaintFace = (sourceFace: number, targetFace: number): boolean => sourceFace === targetFace;
 
-function adjacentBrushHit(hit: PaintHit, x: number, y: number): PaintHit | null {
-  if (x >= 0 && x < hit.columns && y >= 0 && y < hit.rows) return { ...hit, x, y };
-  if (!paintAdjacentHeads || !painterContext) return null;
-
+function createAdjacentBrushHit(hit: PaintHit, width: number, height: number, cachedHits?: Map<string, PaintHit | null>, localHits?: Map<string | number, PaintHit | null>, images = new Map<string, ImageData>(), columnCache?: typeof previewAdjacentColumns): (x: number, y: number) => PaintHit | null {
   const scale = hit.layer ? 1.0625 : 1;
   const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(hit.face, scale);
   const matrix = getInstanceWorldMatrix(hit.mesh, hit.instanceId, new Matrix4());
-  const target = origin.clone()
-    .addScaledVector(horizontalAxis, gridCellCenter(x, hit.columns))
-    .addScaledVector(verticalAxis, 1 - gridCellCenter(y, hit.rows))
-    .applyMatrix4(matrix);
+  const target = new Vector3();
   const normal = origin.clone()
     .addScaledVector(horizontalAxis, 0.5)
     .addScaledVector(verticalAxis, 0.5)
     .sub(new Vector3(0, -0.5, 0))
     .applyNormalMatrix(new Matrix3().getNormalMatrix(matrix));
   const rayLength = Math.max(matrix.getMaxScaleOnAxis() * 1e-4, Number.EPSILON);
-  raycaster.ray.set(target.addScaledVector(normal, rayLength), normal.negate());
-  const previousFar = raycaster.far;
-  raycaster.far = rayLength * 2;
-  const adjacentHit = getRaycastHit();
-  raycaster.far = previousFar;
-  if (!adjacentHit || adjacentHit.promote || adjacentHit.surface.objectUuid === hit.surface.objectUuid || !isSamePaintFace(hit.face, adjacentHit.face)) return null;
-  return adjacentHit;
+  const direction = normal.clone().negate();
+  const rayKey = cachedHits ? `${direction.x},${direction.y},${direction.z},${rayLength}` : '';
+  const planeAxis = direction.y === 0 && direction.z === 0 ? 0
+    : direction.x === 0 && direction.z === 0 ? 1 : direction.x === 0 && direction.y === 0 ? 2 : -1;
+  const columnAxis = (planeAxis + 1) % 3;
+  const rowAxis = (planeAxis + 2) % 3;
+  let columns: Map<number, Map<number, PaintHit | null>> | undefined;
+  if (columnCache && planeAxis >= 0) {
+    const plane = target.copy(origin).applyMatrix4(matrix).addScaledVector(normal, rayLength).getComponent(planeAxis);
+    const planeKey = `${rayKey}|${plane}`;
+    columns = columnCache.get(planeKey);
+    if (!columns) {
+      // ponytail: two planes × 256 columns × 256 rows; rotated faces retain the general ray cache.
+      if (columnCache.size >= 2) columnCache.delete(columnCache.keys().next().value!);
+      columnCache.set(planeKey, columns = new Map());
+    }
+  }
+  const faceHits = new Map<InstancedMesh, Map<number, PaintHit[]>>();
+  let objects: Mesh[] | undefined;
+  return (x, y) => {
+    if (x >= 0 && x < hit.columns && y >= 0 && y < hit.rows) return { ...hit, x, y };
+    if (!paintAdjacentHeads || !painterContext) return null;
+    const localKey = Number.isInteger(x) && Number.isInteger(y) && Math.abs(x) < 32768 && Math.abs(y) < 32768
+      ? (y + 32768) * 65536 + x + 32768 : `${x},${y}`;
+    const localHit = localHits?.get(localKey);
+    if (localHit !== undefined) return localHit;
+    target.copy(origin)
+      .addScaledVector(horizontalAxis, gridCellCenter(x, hit.columns))
+      .addScaledVector(verticalAxis, 1 - gridCellCenter(y, hit.rows))
+      .applyMatrix4(matrix)
+      .addScaledVector(normal, rayLength);
+    const key = cachedHits && !columns ? `${target.x},${target.y},${target.z},${rayKey}` : '';
+    const columnKey = columns ? target.getComponent(columnAxis) : 0;
+    const rowKey = columns ? target.getComponent(rowAxis) : 0;
+    let adjacentHit = columns ? columns.get(columnKey)?.get(rowKey) : cachedHits?.get(key);
+    if (adjacentHit !== undefined) {
+      const result = !adjacentHit || adjacentHit.promote || adjacentHit.surface.objectUuid === hit.surface.objectUuid || !isSamePaintFace(hit.face, adjacentHit.face) ? null : adjacentHit;
+      localHits?.set(localKey, result);
+      return result;
+    }
+    raycaster.ray.set(target, direction);
+    if (!objects) {
+      const region = new Box3();
+      for (const cornerX of [hit.x - Math.floor(width / 2), hit.x - Math.floor(width / 2) + width - 1]) {
+        for (const cornerY of [hit.y - Math.floor(height / 2), hit.y - Math.floor(height / 2) + height - 1]) {
+          region.expandByPoint(target.copy(origin)
+            .addScaledVector(horizontalAxis, gridCellCenter(cornerX, hit.columns))
+            .addScaledVector(verticalAxis, 1 - gridCellCenter(cornerY, hit.rows))
+            .applyMatrix4(matrix));
+        }
+      }
+      objects = getSceneRaycastObjects(loadedObjectGroup, region.expandByScalar(rayLength * 2),
+        planeAxis >= 0 ? { axis: planeAxis, size: matrix.getMaxScaleOnAxis() * scale } : undefined);
+    }
+    const previousFar = raycaster.far;
+    raycaster.far = rayLength * 2;
+    try {
+      adjacentHit = getRaycastHit(false, images, objects, faceHits);
+      if (columns) {
+        let rows = columns.get(columnKey);
+        if (!rows) {
+          if (columns.size >= 256) columns.delete(columns.keys().next().value!);
+          columns.set(columnKey, rows = new Map());
+        }
+        rows.set(rowKey, adjacentHit);
+        if (rows.size > 256) rows.delete(rows.keys().next().value!);
+      } else cachedHits?.set(key, adjacentHit);
+      const result = !adjacentHit || adjacentHit.promote || adjacentHit.surface.objectUuid === hit.surface.objectUuid || !isSamePaintFace(hit.face, adjacentHit.face) ? null : adjacentHit;
+      localHits?.set(localKey, result);
+      return result;
+    } finally {
+      raycaster.far = previousFar;
+    }
+  };
 }
 
 function centeredOffsets(width: number, height: number): Array<{ index: number; x: number; y: number }> {
-  return Array.from({ length: width * height }, (_, index) => ({
-    index,
-    x: index % width - Math.floor(width / 2),
-    y: Math.floor(index / width) - Math.floor(height / 2)
-  }));
+  if (cachedPaintOffsets?.width !== width || cachedPaintOffsets.height !== height) {
+    cachedPaintOffsets = { width, height, offsets: Array.from({ length: width * height }, (_, index) => ({
+      index,
+      x: index % width - Math.floor(width / 2),
+      y: Math.floor(index / width) - Math.floor(height / 2)
+    })) };
+  }
+  return cachedPaintOffsets.offsets;
 }
 
-function getBrushPaints(hit: PaintHit): Array<{ hit: PaintHit; source: Rgba; coverage: number }> {
+function getBrushPaints(hit: PaintHit, cachedHits?: Map<string, PaintHit | null>, localHits?: Map<string | number, PaintHit | null>, previewHits?: PaintHit[], images?: Map<string, ImageData>, columnCache?: typeof previewAdjacentColumns): Array<{ hit: PaintHit; source: Rgba; coverage: number }> {
   const custom = brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
   const width = custom?.width ?? brushWidth;
   const height = custom?.height ?? brushHeight;
-  return centeredOffsets(width, height).flatMap(({ index, x, y }) => {
-    const target = adjacentBrushHit(hit, hit.x + x, hit.y + y);
+  const adjacentHit = createAdjacentBrushHit(hit, width, height, cachedHits, localHits, images, columnCache);
+  const paints: Array<{ hit: PaintHit; source: Rgba; coverage: number }> = [];
+  const strength = (custom ? custom.strength ?? 100 : brushStrength) / 100;
+  const uniformCoverage = !!custom || (brushShape !== 'circle' && Number.isInteger(width) && Number.isInteger(height));
+  for (const { index, x, y } of centeredOffsets(width, height)) {
     const source = custom ? custom.pixels[index] : currentColor;
-    const coverage = custom ? (custom.strength ?? 100) / 100 : brushCoverage(
+    const coverage = uniformCoverage ? strength : brushCoverage(
       x + (width % 2 === 0 ? 0.5 : 0),
       y + (height % 2 === 0 ? 0.5 : 0),
       width,
       height,
       100,
       brushShape === 'circle'
-    ) * brushStrength / 100;
-    return target && source && coverage > 0 ? [{ hit: target, source, coverage }] : [];
-  });
+    ) * strength;
+    if (!source || coverage <= 0) continue;
+    const target = adjacentHit(hit.x + x, hit.y + y);
+    if (target) {
+      if (previewHits) previewHits.push(target);
+      else paints.push({ hit: target, source, coverage });
+    }
+  }
+  return paints;
 }
 
 function stampBrush(hit: PaintHit): void {
@@ -479,10 +619,12 @@ function stampBrush(hit: PaintHit): void {
   for (const { hit: target, source, coverage } of getBrushPaints(hit)) {
     const work = getWork(target);
     const part = facePartIndexes[target.face] + target.layer * 6;
-    touched.add(work);
     forEachGridPixel(target.columns, target.rows, target.x, target.y, (pixelX, pixelY) => {
       const next = colorForLayer(overwrite && coverage === 1 ? source : sourceOver(readPixel(work.image, part, pixelX, pixelY), source, coverage), target.layer);
-      work.changed = writePixel(work.image, part, pixelX, pixelY, next) || work.changed;
+      if (writePixel(work.image, part, pixelX, pixelY, next)) {
+        work.changed = true;
+        touched.add(work);
+      }
     });
   }
   touched.forEach(flushWork);
@@ -607,13 +749,18 @@ function copyStamp(hit: PaintHit): void {
   syncStampInputs();
 }
 
-function getStampCells(hit: PaintHit, includeEmpty: boolean): Array<{ hit: PaintHit; index: number }> {
-  return centeredOffsets(stampWidth, stampHeight).flatMap(({ index, x, y }) => {
-    const target = adjacentBrushHit(hit, hit.x + x, hit.y + y);
-    return target && (includeEmpty || stampPixels[index])
-      ? [{ hit: target, index }]
-      : [];
-  });
+function getStampCells(hit: PaintHit, includeEmpty: boolean, cachedHits?: Map<string, PaintHit | null>, localHits?: Map<string | number, PaintHit | null>, previewHits?: PaintHit[], images?: Map<string, ImageData>, columnCache?: typeof previewAdjacentColumns): Array<{ hit: PaintHit; index: number }> {
+  const adjacentHit = createAdjacentBrushHit(hit, stampWidth, stampHeight, cachedHits, localHits, images, columnCache);
+  const cells: Array<{ hit: PaintHit; index: number }> = [];
+  for (const { index, x, y } of centeredOffsets(stampWidth, stampHeight)) {
+    if (!includeEmpty && !stampPixels[index]) continue;
+    const target = adjacentHit(hit.x + x, hit.y + y);
+    if (target) {
+      if (previewHits) previewHits.push(target);
+      else cells.push({ hit: target, index });
+    }
+  }
+  return cells;
 }
 
 function placeStamp(hit: PaintHit): void {
@@ -621,10 +768,12 @@ function placeStamp(hit: PaintHit): void {
   getStampCells(hit, false).forEach(({ hit: target, index }) => {
     const work = getWork(target);
     const part = facePartIndexes[target.face] + target.layer * 6;
-    touched.add(work);
     const color = stampPixels[index]!;
     forEachGridPixel(target.columns, target.rows, target.x, target.y, (pixelX, pixelY) => {
-      work.changed = writePixel(work.image, part, pixelX, pixelY, colorForLayer(color, target.layer)) || work.changed;
+      if (writePixel(work.image, part, pixelX, pixelY, colorForLayer(color, target.layer))) {
+        work.changed = true;
+        touched.add(work);
+      }
     });
   });
   touched.forEach(flushWork);
@@ -776,26 +925,58 @@ function paintAt(hit: PaintHit): void {
 function processPointerMove(event: PointerEvent): void {
   if (!active || !painterContext) return;
   if (event.target !== painterContext.renderer.domElement || painterContext.isGizmoHovered()) {
-    removeHeadPainterStampPreview();
+    hidePaintPreview();
     finishStroke();
     return;
   }
-  const candidate = getHit(event);
+  const candidate = getHit(event, false, stroke ? undefined : previewPaintImages);
   const hit = candidate && canPaintHead(paintHeadUuid, candidate.surface.objectUuid, paintAdjacentHeads) ? candidate : null;
-  if (lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp') && hit) {
-    updateHeadPainterStampPreview(painterContext.scene, getStampCells(hit, true).map(cell => cell.hit), gridBoundary);
-  } else if (lastTool === 'stamp' && hit) {
-    updateHeadPainterStampPreview(painterContext.scene, getStampCells(hit, false).map(cell => cell.hit), gridBoundary);
-  } else if (lastTool === 'brush' && hit) {
-    updateHeadPainterStampPreview(painterContext.scene, getBrushPaints(hit).map(paint => paint.hit), gridBoundary);
-  } else {
-    removeHeadPainterStampPreview();
-  }
+  updatePaintPreview(hit);
   if (!(event.buttons & 1) || event.pointerId !== paintPointerId || lastTool === 'select' || lastTool === 'picker' || !hit) {
     finishStroke();
     return;
   }
   paintAt(hit);
+}
+
+function updatePaintPreview(hit: PaintHit | null): void {
+  if (!painterContext || (lastTool !== 'brush' && lastTool !== 'stamp')) return removeHeadPainterStampPreview();
+  if (!hit) return hidePaintPreview();
+  const copy = lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp');
+  // World-ray results are reusable across meshes; local cells remain scoped to their source.
+  const surfaceKey = [hit.mesh.instanceMatrix.version, hit.face, hit.layer, hit.columns, hit.rows,
+    ...hit.mesh.matrixWorld.elements, ...dragDeltaMatrix.elements, lastTool, copy, brushShape, brushWidth, brushHeight, brushStrength,
+    selectedBrushName, stampWidth, stampHeight, paintAdjacentHeads, layerMode, gridHorizontal, gridVertical, smartGrid].join('|');
+  const sourceKey = `${hit.mesh.uuid}:${hit.instanceId}|${surfaceKey}`;
+  const key = `${sourceKey}|${hit.x}|${hit.y}`;
+  if (!stroke && key === lastPreviewKey) return;
+  // Painting changes auto-layer hits; scene/grid changes invalidate through the shared handler.
+  if (stroke) {
+    previewAdjacentHits.clear();
+    previewLocalHits.clear();
+    previewAdjacentColumns.clear();
+    previewPaintImages.clear();
+  }
+  let localHits = previewLocalHits.get(sourceKey);
+  if (!localHits) {
+    // ponytail: retain four source faces; world-ray cache handles longer cursor paths.
+    if (previewLocalHits.size >= 4) previewLocalHits.delete(previewLocalHits.keys().next().value!);
+    previewLocalHits.set(sourceKey, localHits = new Map());
+  }
+  const hits: PaintHit[] = [];
+  if (lastTool === 'brush') getBrushPaints(hit, previewAdjacentHits, localHits, hits, previewPaintImages, previewAdjacentColumns);
+  else getStampCells(hit, copy, previewAdjacentHits, localHits, hits, previewPaintImages, previewAdjacentColumns);
+  updateHeadPainterStampPreview(painterContext.scene, hits, gridBoundary);
+  lastPreviewKey = key;
+  // ponytail: bounded FIFO; evict old rays without making the entire brush cold again.
+  for (const oldestKey of previewAdjacentHits.keys()) {
+    if (previewAdjacentHits.size <= 65536) break;
+    previewAdjacentHits.delete(oldestKey);
+  }
+  for (const oldestKey of previewPaintImages.keys()) {
+    if (previewPaintImages.size <= 512) break;
+    previewPaintImages.delete(oldestKey);
+  }
 }
 
 function flushPointerMove(): void {
@@ -982,6 +1163,7 @@ function bindRangePair(id: string, minimum: number, maximum: number, setValue: (
 }
 
 function renderToolSettings(): void {
+  lastPreviewKey = null;
   if (!root) return;
   root.querySelectorAll<HTMLElement>('[data-tool-settings]').forEach(element => { element.hidden = element.dataset.toolSettings !== lastTool; });
   root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.classList.toggle('active', button.dataset.tool === lastTool));
@@ -1541,6 +1723,7 @@ function resizeStamp(width: number, height: number): void {
 }
 
 function syncStampInputs(): void {
+  lastPreviewKey = null;
   if (!root) return;
   root.querySelector<HTMLInputElement>('#head-painter-stamp-width')!.value = String(stampWidth);
   root.querySelector<HTMLInputElement>('#head-painter-stamp-height')!.value = String(stampHeight);
@@ -2039,6 +2222,7 @@ window.addEventListener('pde:scene-updated', () => {
   invalidateHeadPainterGridOverlay();
 });
 window.addEventListener('pde:object-transform-changed', invalidateHeadPainterGridOverlay);
+window.addEventListener('pde:scene-visibility-changed', invalidateHeadPainterGridOverlay);
 window.addEventListener('pde:history-restored', invalidateHeadPainterGridOverlay);
 document.addEventListener('pointerdown', event => {
   const menu = root?.querySelector<HTMLElement>('.head-painter-preset-menu');
