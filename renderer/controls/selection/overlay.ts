@@ -13,9 +13,10 @@ import {
     InstancedBufferAttribute,
     StorageInstancedBufferAttribute,
     LineBasicMaterial,
-    LineBasicNodeMaterial,
     EdgesGeometry,
     BoxGeometry,
+    PlaneGeometry,
+    DynamicDrawUsage,
     Material,
     LineSegments,
     MeshBasicNodeMaterial,
@@ -27,6 +28,7 @@ import {
     Camera,
     Vector2
 } from 'three/webgpu';
+import { createHeadPainterGridMaterial, createHeadPainterPreviewMaterial } from './head-painter-gpu-preview';
 import * as GroupUtils from '../grouping/group';
 import type { GroupChildObject } from '../grouping/group';
 import { dragDeltaMatrix, dragPreviewPositionNode, dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
@@ -502,7 +504,7 @@ export function prepareMultiSelectionDrag(_currentSelection: SelectionState): vo
 const _headGridDragMatrix = new Matrix4();
 const HEAD_GRID_INSTANCES_PER_CHUNK = 32768;
 let headPainterGridOverlay: Group | null = null;
-let headPainterStampPreview: LineSegments | null = null;
+let headPainterStampPreview: InstancedMesh | null = null;
 let headPainterGridDirty = true;
 
 export function invalidateHeadPainterGridOverlay(): void {
@@ -515,23 +517,41 @@ export function updateHeadPainterGridOverlay(
     enabled: boolean,
     layerMode: 'auto' | 'layer' | 'base',
     color: number,
-    getFaceGridCounts: (objectUuid: string, face: number, worldMatrix: Matrix4) => [number, number],
-    getGridBoundary: (index: number, count: number) => number
+    getFaceGridCounts: (objectUuid: string, face: number, worldMatrix: Matrix4) => [number, number]
 ): void {
     if (!headPainterGridDirty && _headGridDragMatrix.equals(dragDeltaMatrix)) return;
-
-    const worldMatrix = new Matrix4();
-    const batches = new Map<string, { positions: number[]; matrices: number[] }>();
-    const addLine = (positions: number[], a: Vector3, b: Vector3) => {
-        positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
-    };
-
+    if (!enabled) {
+        if (headPainterGridOverlay) headPainterGridOverlay.visible = false;
+        headPainterGridDirty = false;
+        _headGridDragMatrix.copy(dragDeltaMatrix);
+        return;
+    }
+    const meshes: InstancedMesh[] = [];
     objectGroup.updateMatrixWorld(true);
-    if (enabled) objectGroup.traverse(object => {
-        if (!(object as InstancedMesh).isInstancedMesh) return;
-        const mesh = object as InstancedMesh;
-        if (!mesh.geometry.getAttribute('headLayerVisible')) return;
-        const keyToUuid = objectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
+    objectGroup.traverse(object => {
+        if ((object as InstancedMesh).isInstancedMesh && (object as InstancedMesh).geometry.getAttribute('headLayerVisible')) meshes.push(object as InstancedMesh);
+    });
+    if (!headPainterGridOverlay) {
+        headPainterGridOverlay = new Group();
+        headPainterGridOverlay.name = 'head-painter-grid';
+        scene.add(headPainterGridOverlay);
+    }
+    headPainterGridOverlay.visible = true;
+    for (const child of headPainterGridOverlay.children) (child as InstancedMesh).count = 0;
+    const total = meshes.reduce((sum, mesh) => sum + mesh.count, 0);
+    const keyToUuid = objectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
+    const worldMatrix = new Matrix4();
+    let chunkIndex = 0;
+    const changed = new Set<BufferAttribute>();
+    const write = (attribute: BufferAttribute, offset: number, values: ArrayLike<number>) => {
+        let differs = false;
+        for (let i = 0; i < values.length; i++) if (attribute.array[offset + i] !== Math.fround(values[i])) {
+            attribute.array[offset + i] = values[i];
+            differs = true;
+        }
+        if (differs) changed.add(attribute);
+    };
+    for (const mesh of meshes) {
         for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
             if (mesh.geometry.getAttribute(entityVisibleAttributeName)?.getX(instanceId) === 0) continue;
             const uuid = keyToUuid?.get(`${mesh.uuid}_${instanceId}`);
@@ -541,62 +561,53 @@ export function updateHeadPainterGridOverlay(
             mesh.getMatrixAt(instanceId, worldMatrix);
             worldMatrix.premultiply(mesh.matrixWorld);
             if (mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(instanceId)) worldMatrix.premultiply(dragDeltaMatrix);
-            const counts = Array.from({ length: 6 }, (_, face) => getFaceGridCounts(uuid, face, worldMatrix));
-            const key = `${scale}|${counts.flat().join(',')}`;
-            let batch = batches.get(key);
-            if (!batch) {
-                const positions: number[] = [];
-                counts.forEach(([horizontal, vertical], face) => {
-                    const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(face, scale);
-                    origin.addScaledVector(horizontalAxis.clone().cross(verticalAxis).normalize(), 0.001);
-                    addLine(positions, origin.clone(), origin.clone().add(horizontalAxis));
-                    addLine(positions, origin.clone().add(verticalAxis), origin.clone().add(horizontalAxis).add(verticalAxis));
-                    addLine(positions, origin.clone(), origin.clone().add(verticalAxis));
-                    addLine(positions, origin.clone().add(horizontalAxis), origin.clone().add(horizontalAxis).add(verticalAxis));
-                    for (let line = 1; line < horizontal; line++) {
-                        const start = origin.clone().addScaledVector(horizontalAxis, getGridBoundary(line, horizontal) / 8);
-                        addLine(positions, start, start.clone().add(verticalAxis));
-                    }
-                    for (let line = 1; line < vertical; line++) {
-                        const start = origin.clone().addScaledVector(verticalAxis, getGridBoundary(line, vertical) / 8);
-                        addLine(positions, start, start.clone().add(horizontalAxis));
-                    }
-                });
-                if (import.meta.env.DEV) console.assert(positions.length === counts.reduce((sum, [horizontal, vertical]) =>
-                    sum + (4 + Math.max(0, horizontal - 1) + Math.max(0, vertical - 1)) * 6, 0), 'Head painter grid face geometry is incomplete.');
-                batches.set(key, batch = { positions, matrices: [] });
-            }
-            worldMatrix.toArray(batch.matrices, batch.matrices.length);
-        }
-    });
-
-    removeHeadPainterGridOverlay();
-    if (batches.size) {
-        headPainterGridOverlay = new Group();
-        headPainterGridOverlay.name = 'head-painter-grid';
-        const material = new LineBasicNodeMaterial({ color, transparent: true, opacity: 0.9, depthTest: true, depthWrite: false });
-        for (const { positions, matrices } of batches.values()) {
-            const geometry = new BufferGeometry();
-            geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
-            const total = matrices.length / 16;
-            for (let start = 0; start < total; start += HEAD_GRID_INSTANCES_PER_CHUNK) {
-                const count = Math.min(HEAD_GRID_INSTANCES_PER_CHUNK, total - start);
-                const lines = new InstancedMesh(geometry, material, count) as InstancedMesh & { isLineSegments: true };
-                lines.isLineSegments = true;
-                lines.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(matrices.slice(start * 16, (start + count) * 16)), 16);
-                lines.instanceMatrix.needsUpdate = true;
+            let lines = headPainterGridOverlay.children[chunkIndex] as InstancedMesh;
+            if (lines && lines.count === lines.instanceMatrix.count) lines = headPainterGridOverlay.children[++chunkIndex] as InstancedMesh;
+            if (!lines) {
+                const capacity = Math.min(Math.max(16, total), HEAD_GRID_INSTANCES_PER_CHUNK);
+                const geometry = createHeadPainterGridGeometry(capacity);
+                const material = (headPainterGridOverlay.children[0] as InstancedMesh)?.material ?? createHeadPainterGridMaterial(color);
+                lines = new InstancedMesh(geometry, material, capacity);
+                (lines as InstancedMesh & { isLineSegments: boolean }).isLineSegments = true;
+                lines.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(capacity * 16), 16).setUsage(DynamicDrawUsage);
+                lines.count = 0;
                 lines.frustumCulled = false;
                 lines.renderOrder = 1000;
                 headPainterGridOverlay.add(lines);
             }
+            const slot = lines.count++;
+            write(lines.instanceMatrix, slot * 16, worldMatrix.elements);
+            write(lines.geometry.getAttribute('headPainterGridScale') as BufferAttribute, slot, [scale]);
+            for (let pair = 0; pair < 3; pair++) {
+                write(lines.geometry.getAttribute(`headPainterGrid${pair}`) as BufferAttribute, slot * 4,
+                    [...getFaceGridCounts(uuid, pair * 2, worldMatrix), ...getFaceGridCounts(uuid, pair * 2 + 1, worldMatrix)]);
+            }
         }
-        scene.add(headPainterGridOverlay);
-        if (import.meta.env.DEV) console.assert(headPainterGridOverlay.children.every(object =>
-            (object as InstancedMesh).count <= HEAD_GRID_INSTANCES_PER_CHUNK
-            && !!(object as InstancedMesh & { isLineSegments?: boolean }).isLineSegments), 'Head painter grid chunking failed.');
     }
+    for (const attribute of changed) attribute.needsUpdate = true;
+    for (const child of headPainterGridOverlay.children) ((child as InstancedMesh).material as MeshBasicNodeMaterial).color.setHex(color);
     headPainterGridDirty = false;
     _headGridDragMatrix.copy(dragDeltaMatrix);
+}
+
+function createHeadPainterGridGeometry(capacity: number): BufferGeometry {
+    const positions: number[] = [], horizontal: number[] = [], vertical: number[] = [], lines: number[] = [];
+    for (let face = 0; face < 6; face++) {
+        const [origin, h, v] = getHeadPainterFaceAxes(face, 1);
+        for (let axis = 0; axis < 2; axis++) for (let line = 0; line <= 8; line++) for (let end = 0; end < 2; end++) {
+            positions.push(...origin.toArray()); horizontal.push(...h.toArray()); vertical.push(...v.toArray());
+            lines.push(face, line, axis, end);
+        }
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('headPainterGridHorizontal', new Float32BufferAttribute(horizontal, 3));
+    geometry.setAttribute('headPainterGridVertical', new Float32BufferAttribute(vertical, 3));
+    geometry.setAttribute('headPainterGridLine', new Float32BufferAttribute(lines, 4));
+    for (let pair = 0; pair < 3; pair++) geometry.setAttribute(`headPainterGrid${pair}`,
+        new InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(DynamicDrawUsage));
+    geometry.setAttribute('headPainterGridScale', new InstancedBufferAttribute(new Float32Array(capacity), 1).setUsage(DynamicDrawUsage));
+    return geometry;
 }
 
 export function removeHeadPainterGridOverlay(): void {
@@ -607,6 +618,7 @@ export function removeHeadPainterGridOverlay(): void {
         headPainterGridOverlay.traverse(object => {
             const mesh = object as InstancedMesh;
             if (!mesh.isInstancedMesh) return;
+            mesh.dispose();
             geometries.add(mesh.geometry);
             const meshMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
             meshMaterials.forEach(material => materials.add(material));
@@ -635,113 +647,84 @@ export function getHeadPainterFaceAxes(face: number, scale: number): [Vector3, V
 
 export function updateHeadPainterStampPreview(
     scene: Scene,
-    hits: Array<{ mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number }>,
-    getGridBoundary: (index: number, count: number) => number
+    hits: Array<{ mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number }>
 ): void {
     if (!hits.length) return hideHeadPainterStampPreview();
-    if (!headPainterStampPreview) {
-        headPainterStampPreview = new LineSegments(new BufferGeometry(), new LineBasicNodeMaterial({ color: 0xffffff, transparent: true, opacity: 1, depthTest: false, depthWrite: false }));
-        headPainterStampPreview.name = 'head-painter-stamp-preview';
-        headPainterStampPreview.renderOrder = 2000;
-        headPainterStampPreview.frustumCulled = false;
-        scene.add(headPainterStampPreview);
-    }
-    headPainterStampPreview.visible = true;
-    let positions = headPainterStampPreview.geometry.getAttribute('position') as BufferAttribute | undefined;
-    if (!positions || positions.count < hits.length * 8) {
-        const capacity = Math.max(hits.length * 8, (positions?.count ?? 0) * 2);
-        headPainterStampPreview.geometry.dispose();
-        headPainterStampPreview.geometry = new BufferGeometry();
-        positions = new BufferAttribute(new Float32Array(capacity * 3), 3);
-        headPainterStampPreview.geometry.setAttribute('position', positions);
-    }
-
-    const faces = new Map<InstancedMesh, Map<number, { hit: typeof hits[number]; cells: Uint8Array; matrix?: Matrix4; positions?: Float32Array; offset?: number }>>();
-    const previousFaces = headPainterStampPreview.userData.faces as typeof faces | undefined;
-    const bufferChanged = headPainterStampPreview.userData.positionAttribute !== positions;
+    const faces = new Map<InstancedMesh, Map<number, { hit: typeof hits[number]; low: number; high: number }>>();
+    let count = 0;
     for (const hit of hits) {
         let meshFaces = faces.get(hit.mesh);
         if (!meshFaces) faces.set(hit.mesh, meshFaces = new Map());
-        // Each instance has six faces and two paint layers.
         const key = hit.instanceId * 12 + hit.face * 2 + hit.layer;
         let face = meshFaces.get(key);
-        if (!face) meshFaces.set(key, face = { hit, cells: new Uint8Array(hit.columns * hit.rows) });
-        face.cells[hit.y * hit.columns + hit.x] = 1;
+        if (!face) {
+            meshFaces.set(key, face = { hit, low: 0, high: 0 });
+            count++;
+        }
+        const bit = hit.y * 8 + hit.x;
+        if (bit < 32) face.low = (face.low | (1 << bit)) >>> 0;
+        else face.high = (face.high | (1 << (bit - 32))) >>> 0;
     }
+    if (!headPainterStampPreview || headPainterStampPreview.instanceMatrix.count < count) {
+        const capacity = Math.max(count, (headPainterStampPreview?.instanceMatrix.count ?? 0) * 2, 16);
+        const geometry = new PlaneGeometry(1, 1);
+        geometry.setAttribute('headPainterGrid', new InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(DynamicDrawUsage));
+        geometry.setAttribute('headPainterCells', new InstancedBufferAttribute(new Uint32Array(capacity * 2), 2).setUsage(DynamicDrawUsage));
+        if (headPainterStampPreview) {
+            headPainterStampPreview.dispose();
+            headPainterStampPreview.geometry.dispose();
+            headPainterStampPreview.geometry = geometry;
+        } else {
+            headPainterStampPreview = new InstancedMesh(geometry, createHeadPainterPreviewMaterial(), capacity);
+            headPainterStampPreview.name = 'head-painter-stamp-preview';
+            headPainterStampPreview.renderOrder = 2000;
+            headPainterStampPreview.frustumCulled = false;
+            scene.add(headPainterStampPreview);
+        }
+        headPainterStampPreview.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(capacity * 16), 16).setUsage(DynamicDrawUsage);
+    }
+    headPainterStampPreview.visible = true;
+    headPainterStampPreview.count = count;
+    const grid = headPainterStampPreview.geometry.getAttribute('headPainterGrid') as InstancedBufferAttribute;
+    const cells = headPainterStampPreview.geometry.getAttribute('headPainterCells') as InstancedBufferAttribute;
+    const matrices = headPainterStampPreview.instanceMatrix.array as Float32Array;
+    const packedMatrix = new Float32Array(16);
     const matrix = new Matrix4();
-    const point = new Vector3();
-    let vertex = 0;
-    let updateStart = Infinity;
+    const faceMatrix = new Matrix4();
+    let index = 0;
+    let updateStart = count;
     let updateEnd = 0;
-    for (const meshFaces of faces.values()) {
-        for (const [key, face] of meshFaces) {
-            const { hit, cells } = face;
-            hit.mesh.getMatrixAt(hit.instanceId, matrix);
-            matrix.premultiply(hit.mesh.matrixWorld);
-            if (hit.mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(hit.instanceId)) matrix.premultiply(dragDeltaMatrix);
-            const previous = previousFaces?.get(hit.mesh)?.get(key);
-            face.offset = vertex * 3;
-            if (previous?.hit.columns === hit.columns && previous.hit.rows === hit.rows
-                && previous.matrix?.equals(matrix) && cells.every((value, index) => value === previous.cells[index])) {
-                face.matrix = previous.matrix;
-                face.positions = previous.positions;
-                if (bufferChanged || previous.offset !== face.offset) {
-                    (positions.array as Float32Array).set(face.positions!, face.offset);
-                    updateStart = Math.min(updateStart, face.offset);
-                    updateEnd = Math.max(updateEnd, face.offset + face.positions!.length);
-                }
-                vertex += face.positions!.length / 3;
-                continue;
-            }
-            face.matrix = matrix.clone();
-            const scale = (hit.layer ? 1.0625 : 1) * 1.006;
-            const [origin, horizontalAxis, verticalAxis] = getHeadPainterFaceAxes(hit.face, scale);
-            const addPoint = (x: number, y: number) => {
-                point.copy(origin)
-                    .addScaledVector(horizontalAxis, getGridBoundary(x, hit.columns) / 8)
-                    .addScaledVector(verticalAxis, 1 - getGridBoundary(y, hit.rows) / 8)
-                    .applyMatrix4(matrix);
-                positions!.setXYZ(vertex++, point.x, point.y, point.z);
-            };
-            const horizontalEdges = new Uint8Array((hit.rows + 1) * hit.columns);
-            const verticalEdges = new Uint8Array((hit.columns + 1) * hit.rows);
-            for (let cell = 0; cell < cells.length; cell++) {
-                if (!cells[cell]) continue;
-                const x = cell % hit.columns;
-                const y = Math.floor(cell / hit.columns);
-                horizontalEdges[y * hit.columns + x] = horizontalEdges[(y + 1) * hit.columns + x] = 1;
-                verticalEdges[x * hit.rows + y] = verticalEdges[(x + 1) * hit.rows + y] = 1;
-            }
-            for (const [edges, count, horizontal] of [[horizontalEdges, hit.columns, true], [verticalEdges, hit.rows, false]] as const) {
-                for (let row = 0; row < edges.length / count; row++) {
-                    for (let i = 0; i < count;) {
-                        if (!edges[row * count + i]) { i++; continue; }
-                        const start = i++;
-                        while (i < count && edges[row * count + i]) i++;
-                        const end = i;
-                        if (horizontal) { addPoint(start, row); addPoint(end, row); }
-                        else { addPoint(row, start); addPoint(row, end); }
-                    }
-                }
-            }
-            face.positions = (positions.array as Float32Array).slice(face.offset, vertex * 3);
-            updateStart = Math.min(updateStart, face.offset);
-            updateEnd = Math.max(updateEnd, vertex * 3);
+    for (const meshFaces of faces.values()) for (const { hit, low, high } of meshFaces.values()) {
+        hit.mesh.getMatrixAt(hit.instanceId, matrix);
+        matrix.premultiply(hit.mesh.matrixWorld);
+        if (hit.mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(hit.instanceId)) matrix.premultiply(dragDeltaMatrix);
+        const [origin, horizontal, vertical] = getHeadPainterFaceAxes(hit.face, (hit.layer ? 1.0625 : 1) * 1.006);
+        faceMatrix.makeBasis(horizontal, vertical, horizontal.clone().cross(vertical).normalize());
+        faceMatrix.setPosition(origin.addScaledVector(horizontal, 0.5).addScaledVector(vertical, 0.5));
+        matrix.multiply(faceMatrix).toArray(packedMatrix);
+        if (grid.getX(index) !== hit.columns || grid.getY(index) !== hit.rows
+            || cells.getX(index) !== low || cells.getY(index) !== high
+            || packedMatrix.some((value, component) => value !== matrices[index * 16 + component])) {
+            matrices.set(packedMatrix, index * 16);
+            grid.setXY(index, hit.columns, hit.rows);
+            cells.setXY(index, low, high);
+            updateStart = Math.min(updateStart, index);
+            updateEnd = index + 1;
         }
+        index++;
     }
-    headPainterStampPreview.userData.faces = faces;
-    headPainterStampPreview.userData.positionAttribute = positions;
-    if (updateEnd > updateStart) {
-        // Keep edits pending until WebGPU consumes them, and upload one span per frame.
-        for (const range of positions.updateRanges) {
-            updateStart = Math.min(updateStart, range.start);
-            updateEnd = Math.max(updateEnd, range.start + range.count);
+    if (updateEnd > updateStart) for (const buffer of [headPainterStampPreview.instanceMatrix, grid, cells]) {
+        let start = updateStart * buffer.itemSize;
+        let end = updateEnd * buffer.itemSize;
+        // Preserve changes still awaiting consumption by WebGPU.
+        for (const range of buffer.updateRanges) {
+            start = Math.min(start, range.start);
+            end = Math.max(end, range.start + range.count);
         }
-        positions.clearUpdateRanges();
-        positions.addUpdateRange(updateStart, updateEnd - updateStart);
-        positions.needsUpdate = true;
+        buffer.clearUpdateRanges();
+        buffer.addUpdateRange(start, end - start);
+        buffer.needsUpdate = true;
     }
-    headPainterStampPreview.geometry.setDrawRange(0, vertex);
 }
 
 export function hideHeadPainterStampPreview(): void {
@@ -751,8 +734,9 @@ export function hideHeadPainterStampPreview(): void {
 export function removeHeadPainterStampPreview(): void {
     if (!headPainterStampPreview) return;
     headPainterStampPreview.removeFromParent();
+    headPainterStampPreview.dispose();
     headPainterStampPreview.geometry.dispose();
-    (headPainterStampPreview.material as LineBasicNodeMaterial).dispose();
+    (headPainterStampPreview.material as MeshBasicNodeMaterial).dispose();
     headPainterStampPreview = null;
 }
 

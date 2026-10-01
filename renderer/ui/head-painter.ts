@@ -12,6 +12,7 @@ import {
   UnsignedByteType,
   Vector2,
   Vector3,
+  Vector4,
   WebGPURenderer
 } from 'three/webgpu';
 import {
@@ -45,7 +46,11 @@ import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
 import { oklchToRgb, openColorPicker, rgbToOklch } from './color-picker';
 import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { isSceneObjectVisible } from '../controls/scene-visibility';
-import { getSceneRaycastObjects, intersectSceneInstances } from '../controls/selection/instance-raycast';
+import { getSceneRaycastFaces, getSceneRaycastObjects, intersectSceneInstances } from '../controls/selection/instance-raycast';
+import {
+  createHeadPainterGpuPreview, disposeHeadPainterGpuPreview, headPainterPixelEpsilon, updateHeadPainterGpuPreviewData,
+  type HeadPainterGpuPreview, type HeadPainterGpuPreviewData
+} from '../controls/selection/head-painter-gpu-preview';
 import { captureHistoryUiState, recordCreationChange, recordReplacementChange } from '../controls/undo-redo/scene-history';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../controls/transform/mirroring';
 import { addImageHeadGrid, createHeadProject, createPlayerProject, type PlayerModel } from './player-generator';
@@ -172,9 +177,19 @@ const previewLocalHits = new Map<string, Map<string | number, PaintHit | null>>(
 const previewAdjacentColumns = new Map<string, Map<number, Map<number, PaintHit | null>>>();
 const previewPaintImages = new Map<string, ImageData>();
 let cachedPaintOffsets: { width: number; height: number; offsets: Array<{ index: number; x: number; y: number }> } | null = null;
+let gpuPaintPreview: HeadPainterGpuPreview | null = null;
+let gpuPreviewSourceKey: string | null = null;
+let gpuPreviewBrushKey: string | null = null;
+let gpuPreviewFlags: Uint32Array | null = null;
+let gpuPreviewFailed = false;
+let gpuPreviewSceneData: HeadPainterGpuPreviewData | null = null;
 
 function invalidateHeadPainterGridOverlay(): void {
   lastPreviewKey = null;
+  gpuPreviewSourceKey = null;
+  gpuPreviewBrushKey = null;
+  gpuPreviewFailed = false;
+  gpuPreviewSceneData = null;
   painterWorldMatrixDirty = true;
   previewAdjacentHits.clear();
   previewLocalHits.clear();
@@ -185,6 +200,12 @@ function invalidateHeadPainterGridOverlay(): void {
 
 function removeHeadPainterStampPreview(): void {
   lastPreviewKey = null;
+  if (gpuPaintPreview) disposeHeadPainterGpuPreview(gpuPaintPreview);
+  gpuPaintPreview = null;
+  gpuPreviewSourceKey = null;
+  gpuPreviewBrushKey = null;
+  gpuPreviewFlags = null;
+  gpuPreviewSceneData = null;
   previewAdjacentHits.clear();
   previewLocalHits.clear();
   previewAdjacentColumns.clear();
@@ -194,6 +215,7 @@ function removeHeadPainterStampPreview(): void {
 
 function hidePaintPreview(): void {
   lastPreviewKey = null;
+  if (gpuPaintPreview) gpuPaintPreview.mesh.visible = false;
   hideHeadPainterStampPreview();
 }
 
@@ -339,8 +361,8 @@ function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, 
   const actualPart = facePartIndexes[face] + actualLayer * 6;
   const partX = (actualPart % 3) * partSize;
   const partY = Math.floor(actualPart / 3) * partSize;
-  const pixelX = Math.min(7, Math.max(0, Math.floor(intersection.uv.x * atlasSize - partX)));
-  const pixelY = Math.min(7, Math.max(0, Math.floor(blockHeight - intersection.uv.y * atlasSize - partY)));
+  const pixelX = Math.min(7, Math.max(0, Math.floor(intersection.uv.x * atlasSize - partX + headPainterPixelEpsilon)));
+  const pixelY = Math.min(7, Math.max(0, Math.floor(blockHeight - intersection.uv.y * atlasSize - partY + headPainterPixelEpsilon)));
   let columns = cachedFace?.columns;
   let rows = cachedFace?.rows;
   if (columns === undefined || rows === undefined) {
@@ -939,6 +961,251 @@ function processPointerMove(event: PointerEvent): void {
   paintAt(hit);
 }
 
+function prepareGpuPaintPreview(hit: PaintHit): HeadPainterGpuPreviewData | null {
+  const sourceMatrix = getInstanceWorldMatrix(hit.mesh, hit.instanceId, new Matrix4());
+  const rayLength = Math.max(sourceMatrix.getMaxScaleOnAxis() * 1e-4, Number.EPSILON);
+  // Scene triangles stay in world space: changing the aimed head/grid only updates uniforms.
+  const objects = paintAdjacentHeads ? getSceneRaycastObjects(loadedObjectGroup, undefined, undefined, false) : [];
+  const faces = getSceneRaycastFaces(objects);
+  // ponytail: nearby regular/deforming/text meshes retain CPU picking; extend GPU picking if needed.
+  const unsupportedBounds: Box3[] = [];
+  const triangles: number[] = [], records: number[] = [], matrices: number[] = [], grids: number[] = [];
+  const recordIndices = new Map<string, number>();
+  const instanceWorlds = new Map<string, { matrix: Matrix4; index: number }>();
+  const getWorld = (mesh: InstancedMesh, instanceId: number) => {
+    const key = `${mesh.uuid}_${instanceId}`;
+    let world = instanceWorlds.get(key);
+    if (!world) {
+      world = { matrix: getInstanceWorldMatrix(mesh, instanceId, new Matrix4()), index: matrices.length / 16 };
+      world.matrix.toArray(matrices, matrices.length);
+      instanceWorlds.set(key, world);
+    }
+    return world;
+  };
+  const sourceSlots = new Map<string, number>();
+  const surfaces = new Map<string, PlayerHeadPaintSurface | null>();
+  const worldBounds = new Box3();
+  let scaleSum = 0, scaleCount = 0;
+  const addRecord = (mesh: InstancedMesh, instanceId: number, face: number, columns: number, rows: number, rule: number,
+    surface?: PlayerHeadPaintSurface): number => {
+    const key = `${mesh.uuid}_${instanceId}:${face}:${rule}`;
+    const cached = recordIndices.get(key);
+    if (cached !== undefined) return cached;
+    const recordIndex = records.length / 8, slot = grids.length / 2;
+    let low = 0, high = 0;
+    if (rule === 2 && surface) {
+      const image = previewPaintImages.get(surface.objectUuid) ?? readPlayerHeadPaint(surface);
+      previewPaintImages.set(surface.objectUuid, image);
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+        if (!image.data[pixelOffset(facePartIndexes[face] + 6, x, y) + 3]) continue;
+        const bit = y * 8 + x;
+        if (bit < 32) low = (low | (1 << bit)) >>> 0;
+        else high = (high | (1 << (bit - 32))) >>> 0;
+      }
+    }
+    const world = getWorld(mesh, instanceId);
+    records.push(columns, rows, slot, rule, low, high, world.index, face);
+    grids.push(columns, rows, columns, rows);
+    recordIndices.set(key, recordIndex);
+    sourceSlots.set(`${mesh.uuid}_${instanceId}:${face}`, slot);
+    return recordIndex;
+  };
+  const sourceRule = hit.mesh.userData.imageHeadLayer ?? (layerMode === 'auto' ? 2 : layerMode === 'layer' ? 1 : 0);
+  addRecord(hit.mesh, hit.instanceId, hit.face, hit.columns, hit.rows, sourceRule, hit.surface);
+  const a = new Vector3(), b = new Vector3(), c = new Vector3();
+  for (const prepared of faces) {
+    if (prepared.instanceId === undefined || prepared.geometry.morphAttributes.position?.length
+      || prepared.mesh.geometry.getAttribute('textDisplayLayout') || prepared.start % 3
+      || (Number.isFinite(prepared.count) && prepared.count % 3)) {
+      unsupportedBounds.push(prepared.geometry.boundingBox.clone().applyMatrix4(prepared.matrix));
+      continue;
+    }
+    const mesh = prepared.mesh as InstancedMesh, instanceId = prepared.instanceId!;
+    if (!mesh.layers.test(raycaster.layers)) continue;
+    const instanceKey = `${mesh.uuid}_${instanceId}`;
+    const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(instanceKey);
+    if (uuid && !isSceneObjectVisible(loadedObjectGroup, uuid)) continue;
+    let surface = surfaces.get(instanceKey);
+    if (surface === undefined) {
+      surface = getPlayerHeadPaintSurface(mesh, instanceId);
+      surfaces.set(instanceKey, surface);
+      scaleSum += prepared.matrix.getMaxScaleOnAxis(); scaleCount++;
+    }
+    const geometry = prepared.geometry, positions = geometry.getAttribute('position'), uv = geometry.getAttribute('uv');
+    const index = geometry.index;
+    const end = Math.min(prepared.start + prepared.count, index?.count ?? positions.count);
+    for (let offset = prepared.start; offset + 2 < end; offset += 3) {
+      const ia = index ? index.getX(offset) : offset, ib = index ? index.getX(offset + 1) : offset + 1;
+      const ic = index ? index.getX(offset + 2) : offset + 2;
+      a.fromBufferAttribute(positions, ia); b.fromBufferAttribute(positions, ib); c.fromBufferAttribute(positions, ic);
+      let material = mesh.material;
+      if (Array.isArray(material)) {
+        const group = geometry.groups.find(group => offset >= group.start && offset < group.start + group.count);
+        if (!group) continue;
+        material = material[group.materialIndex];
+      }
+      a.applyMatrix4(prepared.matrix); b.applyMatrix4(prepared.matrix); c.applyMatrix4(prepared.matrix);
+      worldBounds.expandByPoint(a).expandByPoint(b).expandByPoint(c);
+      const faceIndex = offset / 3, imageLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
+      const imageOverlay = imageLayer !== undefined && faceIndex >= 24;
+      const face = imageOverlay ? 4 : Math.floor((faceIndex % 12) / 2);
+      const actualLayer = imageOverlay ? imageLayer! : (faceIndex % 24 >= 12 ? 1 : 0);
+      let code = -1;
+      if (uv && surface && (imageLayer === undefined || imageOverlay)) {
+        const [horizontal, vertical] = getFaceGridCounts(surface.objectUuid, face, getWorld(mesh, instanceId).matrix);
+        const rule = imageOverlay ? imageLayer! : layerMode === 'auto' ? 2 : layerMode === 'layer' ? 1 : 0;
+        code = addRecord(mesh, instanceId, face, Math.max(1, horizontal), Math.max(1, vertical), rule, surface) * 12
+          + facePartIndexes[face] + actualLayer * 6;
+      }
+      triangles.push(a.x, a.y, a.z, uv?.getX(ia) ?? 0, b.x, b.y, b.z, uv?.getX(ib) ?? 0,
+        c.x, c.y, c.z, uv?.getX(ic) ?? 0, uv?.getY(ia) ?? 0, uv?.getY(ib) ?? 0, uv?.getY(ic) ?? 0, code * 4 + material.side);
+    }
+  }
+  if (worldBounds.isEmpty()) worldBounds.set(new Vector3(), new Vector3());
+  const origin = worldBounds.getCenter(new Vector3());
+  const size = worldBounds.getSize(new Vector3());
+  const cellSize = Math.max(size.x / 128, size.y / 128, size.z / 128, scaleSum / Math.max(1, scaleCount), 1e-6);
+  const dimensions = size.divideScalar(cellSize).ceil().addScalar(1);
+  const minimum = worldBounds.min.clone().sub(origin);
+  const binLists = new Map<number, number[]>();
+  for (let triangle = 0; triangle < triangles.length / 16; triangle++) {
+    const offset = triangle * 16;
+    for (let vertex = 0; vertex < 3; vertex++) for (let axis = 0; axis < 3; axis++) triangles[offset + vertex * 4 + axis] -= origin.getComponent(axis);
+    a.fromArray(triangles, offset); b.fromArray(triangles, offset + 4); c.fromArray(triangles, offset + 8);
+    const first = a.clone().min(b).min(c).sub(minimum).divideScalar(cellSize).floor();
+    const last = a.clone().max(b).max(c).sub(minimum).divideScalar(cellSize).floor();
+    for (let z = first.z; z <= last.z; z++) for (let y = first.y; y <= last.y; y++) for (let x = first.x; x <= last.x; x++) {
+      const bin = (z * dimensions.y + y) * dimensions.x + x;
+      let list = binLists.get(bin);
+      if (!list) binLists.set(bin, list = []);
+      list.push(triangle);
+    }
+  }
+  const bins = new Uint32Array(dimensions.x * dimensions.y * dimensions.z * 2), indices: number[] = [];
+  for (const [bin, list] of binLists) {
+    bins[bin * 2] = indices.length; bins[bin * 2 + 1] = list.length;
+    for (const triangle of list) indices.push(triangle);
+  }
+  for (const oldestKey of previewPaintImages.keys()) {
+    if (previewPaintImages.size <= 512) break;
+    previewPaintImages.delete(oldestKey);
+  }
+  return { triangles: new Float32Array(triangles), records: new Uint32Array(records), bins, indices: new Uint32Array(indices),
+    matrices: new Float32Array(matrices), grids: new Float32Array(grids), binBounds: new Vector4(minimum.x, minimum.y, minimum.z, cellSize),
+    binDimensions: new Vector4(dimensions.x, dimensions.y, dimensions.z, 0), origin, sourceSlots, unsupportedBounds, rayLength };
+}
+
+function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean): boolean {
+  if (gpuPreviewFailed || !painterContext?.renderer?.backend?.isWebGPUBackend) return false;
+  const custom = lastTool === 'brush' && brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
+  const width = lastTool === 'stamp' ? stampWidth : custom?.width ?? brushWidth;
+  const height = lastTool === 'stamp' ? stampHeight : custom?.height ?? brushHeight;
+  const brushKey = `${lastTool}|${copy}|${brushShape}|${width}|${height}|${custom?.strength ?? brushStrength}|${selectedBrushName}`;
+  let flagsChanged = false;
+  if (brushKey !== gpuPreviewBrushKey) {
+    const strength = (custom ? custom.strength ?? 100 : brushStrength) / 100;
+    gpuPreviewFlags = new Uint32Array(width * height);
+    for (const { index, x, y } of centeredOffsets(width, height)) {
+      const selected = lastTool === 'stamp' ? copy || !!stampPixels[index] : strength > 0 && (custom ? !!custom.pixels[index]
+        : brushCoverage(x + (width % 2 === 0 ? 0.5 : 0), y + (height % 2 === 0 ? 0.5 : 0), width, height, 100, brushShape === 'circle') > 0);
+      gpuPreviewFlags[index] = selected ? 1 : 0;
+    }
+    gpuPreviewBrushKey = brushKey;
+    flagsChanged = true;
+  }
+  if (!gpuPreviewFlags!.some(Boolean)) { hidePaintPreview(); return true; }
+  try {
+    let sceneChanged = false;
+    if (!gpuPreviewSceneData) {
+      const data = prepareGpuPaintPreview(hit);
+      if (!data) {
+        if (gpuPaintPreview) gpuPaintPreview.mesh.visible = false;
+        return false;
+      }
+      gpuPreviewSceneData = data;
+      sceneChanged = true;
+    }
+    const data = gpuPreviewSceneData;
+    if (sceneChanged || flagsChanged || !gpuPaintPreview) {
+      const needsCapacity = !gpuPaintPreview || gpuPaintPreview.buffers.flags.array.length < gpuPreviewFlags!.length
+        || gpuPaintPreview.buffers.masks.count < data.grids.length
+        || gpuPaintPreview.mesh.instanceMatrix.array.length < data.matrices.length
+        || (['triangles', 'records', 'bins', 'indices'] as const).some(name => gpuPaintPreview!.buffers[name].array.length < data[name].length);
+      if (needsCapacity) {
+        const limit = painterContext.renderer.backend.device?.limits?.maxStorageBufferBindingSize ?? Infinity;
+        const capacityBytes = (count: number, minimum: number) => 2 ** Math.ceil(Math.log2(Math.max(count, minimum))) * 4;
+        // ponytail: adapter-sized scene tables; split buffers if larger projects need GPU previews.
+        if (capacityBytes(data.triangles.length, 4096) > limit || capacityBytes(data.matrices.length, 2048) > limit
+          || capacityBytes(data.records.length, 2048) > limit || capacityBytes(data.grids.length, 2048) > limit
+          || capacityBytes(data.bins.length, 2048) > limit || capacityBytes(data.indices.length, 8192) > limit) {
+          gpuPreviewFailed = true;
+          if (gpuPaintPreview) gpuPaintPreview.mesh.visible = false;
+          return false;
+        }
+        if (gpuPaintPreview) disposeHeadPainterGpuPreview(gpuPaintPreview);
+        gpuPaintPreview = createHeadPainterGpuPreview(data, gpuPreviewFlags!);
+        painterContext.scene.add(gpuPaintPreview.mesh);
+        flagsChanged = true;
+      }
+      updateHeadPainterGpuPreviewData(gpuPaintPreview!, data, flagsChanged ? gpuPreviewFlags! : undefined);
+    }
+    if (gpuPreviewSourceKey !== sourceKey || sceneChanged) {
+      const world = getInstanceWorldMatrix(hit.mesh, hit.instanceId, new Matrix4());
+      const [origin, horizontal, vertical] = getHeadPainterFaceAxes(hit.face, hit.layer ? 1.0625 : 1);
+      const normal = origin.clone().addScaledVector(horizontal, 0.5).addScaledVector(vertical, 0.5)
+        .sub(new Vector3(0, -0.5, 0)).applyNormalMatrix(new Matrix3().getNormalMatrix(world));
+      const linear = new Matrix3().setFromMatrix4(world);
+      gpuPaintPreview!.frame.value.makeBasis(horizontal.applyMatrix3(linear), vertical.applyMatrix3(linear), normal)
+        .setPosition(origin.applyMatrix4(world).sub(data.origin));
+      const slot = data.sourceSlots.get(`${hit.mesh.uuid}_${hit.instanceId}:${hit.face}`);
+      if (slot === undefined) { gpuPaintPreview!.mesh.visible = false; return false; }
+      gpuPaintPreview!.source.value.set(hit.columns, hit.rows, slot + hit.layer, Math.max(world.getMaxScaleOnAxis() * 1e-4, Number.EPSILON));
+      gpuPreviewSourceKey = sourceKey;
+    }
+    gpuPaintPreview!.face.value = hit.face;
+    if (data.unsupportedBounds.length) {
+      const footprint = new Box3();
+      for (const x of [hit.x - Math.floor(width / 2), hit.x + width - Math.floor(width / 2) - 1]) {
+        for (const y of [hit.y - Math.floor(height / 2), hit.y + height - Math.floor(height / 2) - 1]) {
+          footprint.expandByPoint(new Vector3(gridCellCenter(x, hit.columns), 1 - gridCellCenter(y, hit.rows), 0)
+            .applyMatrix4(gpuPaintPreview!.frame.value).add(data.origin));
+        }
+      }
+      footprint.expandByScalar(gpuPaintPreview!.source.value.w * 2);
+      if (data.unsupportedBounds.some(bounds => bounds.intersectsBox(footprint))) {
+        gpuPaintPreview!.mesh.visible = false;
+        return false;
+      }
+    }
+    if (stroke && layerMode === 'auto') {
+      for (const work of stroke.values()) {
+        const slot = data.sourceSlots.get(`${work.surface.mesh.uuid}_${work.surface.instanceId}:${hit.face}`);
+        if (slot === undefined) continue;
+        let low = 0, high = 0;
+        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+          if (!work.image.data[pixelOffset(facePartIndexes[hit.face] + 6, x, y) + 3]) continue;
+          const bit = y * 8 + x;
+          if (bit < 32) low = (low | (1 << bit)) >>> 0; else high = (high | (1 << (bit - 32))) >>> 0;
+        }
+        const offset = slot * 4 + 4;
+        data.records[offset] = low; data.records[offset + 1] = high;
+      }
+      gpuPaintPreview!.buffers.records.array.set(data.records);
+      gpuPaintPreview!.buffers.records.needsUpdate = true;
+    }
+    gpuPaintPreview!.brush.value.set(hit.x, hit.y, width, height);
+    gpuPaintPreview!.mesh.visible = true;
+    hideHeadPainterStampPreview();
+    painterContext.renderer.compute([gpuPaintPreview!.clear, gpuPaintPreview!.paint]);
+    return true;
+  } catch (error) {
+    console.error('Head painter GPU preview failed; using CPU picking.', error);
+    gpuPreviewFailed = true;
+    if (gpuPaintPreview) gpuPaintPreview.mesh.visible = false;
+    return false;
+  }
+}
+
 function updatePaintPreview(hit: PaintHit | null): void {
   if (!painterContext || (lastTool !== 'brush' && lastTool !== 'stamp')) return removeHeadPainterStampPreview();
   if (!hit) return hidePaintPreview();
@@ -950,6 +1217,10 @@ function updatePaintPreview(hit: PaintHit | null): void {
   const sourceKey = `${hit.mesh.uuid}:${hit.instanceId}|${surfaceKey}`;
   const key = `${sourceKey}|${hit.x}|${hit.y}`;
   if (!stroke && key === lastPreviewKey) return;
+  if (updateGpuPaintPreview(hit, sourceKey, copy)) {
+    lastPreviewKey = key;
+    return;
+  }
   // Painting changes auto-layer hits; scene/grid changes invalidate through the shared handler.
   if (stroke) {
     previewAdjacentHits.clear();
@@ -966,7 +1237,7 @@ function updatePaintPreview(hit: PaintHit | null): void {
   const hits: PaintHit[] = [];
   if (lastTool === 'brush') getBrushPaints(hit, previewAdjacentHits, localHits, hits, previewPaintImages, previewAdjacentColumns);
   else getStampCells(hit, copy, previewAdjacentHits, localHits, hits, previewPaintImages, previewAdjacentColumns);
-  updateHeadPainterStampPreview(painterContext.scene, hits, gridBoundary);
+  updateHeadPainterStampPreview(painterContext.scene, hits);
   lastPreviewKey = key;
   // ponytail: bounded FIFO; evict old rays without making the entire brush cold again.
   for (const oldestKey of previewAdjacentHits.keys()) {
@@ -1057,8 +1328,7 @@ export function updateHeadPainter(): void {
     gridEnabled,
     layerMode,
     (gridColor[0] << 16) | (gridColor[1] << 8) | gridColor[2],
-    getFaceGridCounts,
-    gridBoundary
+    getFaceGridCounts
   );
 }
 
@@ -1164,6 +1434,7 @@ function bindRangePair(id: string, minimum: number, maximum: number, setValue: (
 
 function renderToolSettings(): void {
   lastPreviewKey = null;
+  gpuPreviewBrushKey = null;
   if (!root) return;
   root.querySelectorAll<HTMLElement>('[data-tool-settings]').forEach(element => { element.hidden = element.dataset.toolSettings !== lastTool; });
   root.querySelectorAll<HTMLButtonElement>('.head-painter-tool').forEach(button => button.classList.toggle('active', button.dataset.tool === lastTool));
@@ -1179,6 +1450,7 @@ function setTool(tool: Tool): void {
 }
 
 function syncBrushControls(): void {
+  gpuPreviewBrushKey = null;
   if (!root) return;
   const brush = brushShape === 'custom' ? customBrushes.find(item => item.name === selectedBrushName) : null;
   root.querySelector<HTMLInputElement>('#head-painter-brush-width')!.value = String(brush?.width ?? brushWidth);
@@ -1724,6 +1996,7 @@ function resizeStamp(width: number, height: number): void {
 
 function syncStampInputs(): void {
   lastPreviewKey = null;
+  gpuPreviewBrushKey = null;
   if (!root) return;
   root.querySelector<HTMLInputElement>('#head-painter-stamp-width')!.value = String(stampWidth);
   root.querySelector<HTMLInputElement>('#head-painter-stamp-height')!.value = String(stampHeight);

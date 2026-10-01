@@ -37,7 +37,7 @@ type BoundsTree = {
 };
 
 type HeadTriangle = { offset: number; a: number; b: number; c: number; va: Vector3; vb: Vector3; vc: Vector3; normal: Vector3 };
-type PreparedFace = { mesh: Mesh; instanceId?: number; matrix: Matrix4; inverse: Matrix4; geometry: BufferGeometry; start: number; count: number; triangles?: HeadTriangle[] };
+export type PreparedFace = { mesh: Mesh; instanceId?: number; matrix: Matrix4; inverse: Matrix4; geometry: BufferGeometry; start: number; count: number; triangles?: HeadTriangle[] };
 
 const leafSize = 12;
 const boundsTrees = new WeakMap<InstancedMesh, BoundsTree>();
@@ -400,7 +400,11 @@ export function intersectSceneInstances(
     return nearest;
 }
 
-export function getSceneRaycastObjects(root: Group, region: Box3, grid?: { axis: number; size: number }): Mesh[] {
+export function getSceneRaycastFaces(objects: Mesh[]): readonly PreparedFace[] {
+    return raycastObjectBounds.get(objects)?.faces ?? [];
+}
+
+export function getSceneRaycastObjects(root: Group, region?: Box3, grid?: { axis: number; size: number }, prepareRaycast = true): Mesh[] {
     const objects: Mesh[] = [];
     const bounds: number[] = [];
     const faces: PreparedFace[] = [];
@@ -420,10 +424,10 @@ export function getSceneRaycastObjects(root: Group, region: Box3, grid?: { axis:
             const first = boxes ? Math.max(start, i * 6) : start;
             const last = boxes ? Math.min(start + count, (i + 1) * 6) : start + count;
             if (last <= first) continue;
-            box.copy(boxes ? boxes[i] : geometry.boundingBox).applyMatrix4(matrix);
-            if (!box.intersectsBox(region)) continue;
+            if (region || prepareRaycast) box.copy(boxes ? boxes[i] : geometry.boundingBox).applyMatrix4(matrix);
+            if (region && !box.intersectsBox(region)) continue;
             faces.push({ mesh, geometry, matrix, inverse, instanceId, start: first, count: last - first, triangles: headFaces?.triangles[i] });
-            bounds.push(box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z);
+            if (prepareRaycast) bounds.push(box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z);
         }
     };
     root.traverse(object => {
@@ -438,7 +442,7 @@ export function getSceneRaycastObjects(root: Group, region: Box3, grid?: { axis:
             if (!mesh.geometry.boundingBox) return;
             box.copy(mesh.geometry.boundingBox);
         }
-        if (!box.applyMatrix4(mesh.matrixWorld).intersectsBox(region)) return;
+        if (region && !box.applyMatrix4(mesh.matrixWorld).intersectsBox(region)) return;
         objects.push(mesh);
         if (!(mesh as InstancedMesh).isInstancedMesh) {
             addFaces(mesh, mesh.geometry, mesh.matrixWorld.clone());
@@ -446,7 +450,7 @@ export function getSceneRaycastObjects(root: Group, region: Box3, grid?: { axis:
         }
         const instanceMesh = mesh as InstancedMesh;
         const tree = getBoundsTree(instanceMesh)!;
-        const localRegion = region.clone().applyMatrix4(inverseWorldMatrix.copy(mesh.matrixWorld).invert());
+        const localRegion = region ? region.clone().applyMatrix4(inverseWorldMatrix.copy(mesh.matrixWorld).invert()) : tree.root.box;
         const ids: number[] = [];
         collectBoxCandidates(tree.root, tree.bounds, localRegion, ids);
         const layout = mesh.geometry.getAttribute('textDisplayLayout');
@@ -463,7 +467,8 @@ export function getSceneRaycastObjects(root: Group, region: Box3, grid?: { axis:
     });
     // Prepare world-space instances/faces once; cell rays skip repeated transforms and full-head tests.
     if (!faces.length) return [];
-    if (grid && grid.size > 0 && Number.isFinite(grid.size)) {
+    if (!prepareRaycast) raycastObjectBounds.set(objects, { bounds, faces });
+    else if (region && grid && grid.size > 0 && Number.isFinite(grid.size)) {
         const columns = new Map<number, Map<number, number[]>>();
         const columnAxis = (grid.axis + 1) % 3;
         const rowAxis = (grid.axis + 2) % 3;

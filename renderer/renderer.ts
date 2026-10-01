@@ -54,6 +54,7 @@ type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike }
 type WebGpuRendererWithPipelines = { _pipelines?: { caches?: { size?: number } } };
 type NodeBuilderLike = {
     object?: { instanceMatrix?: { array?: unknown } };
+    uniforms: Record<string, { name: string; node: unknown }[]>;
     getUniformFromNode: (node: { value?: unknown }, type: string, shaderStage: string, name?: string | null) => unknown;
 };
 type WebGpuBackendWithNodeBuilder = {
@@ -196,7 +197,7 @@ function getPipelineCacheSize(): number {
     return typeof size === 'number' ? size : -1;
 }
 
-function stabilizeInstancedMatrixBindingNames(): void {
+function stabilizeInstancedMatrixBindingNames(renderer: WebGPURenderer): void {
     const backend = (renderer as unknown as { backend?: WebGpuBackendWithNodeBuilder }).backend;
     const createNodeBuilder = backend?.createNodeBuilder;
     if (!backend || !createNodeBuilder) return;
@@ -207,8 +208,11 @@ function stabilizeInstancedMatrixBindingNames(): void {
         const getUniformFromNode = prototype.getUniformFromNode;
         prototype.getUniformFromNode = function (node, type, shaderStage, name = null) {
             const instanceMatrix = this.object?.instanceMatrix;
-            const stableName = (type === 'buffer' && node.value === instanceMatrix?.array)
-                || (type === 'storageBuffer' && node.value === instanceMatrix)
+            const isInstanceMatrix = (type === 'buffer' && node.value === instanceMatrix?.array)
+                || (type === 'storageBuffer' && node.value === instanceMatrix);
+            // Explicit TSL reads can create another node for this buffer; only one owns the stable name.
+            const binding = this.uniforms[shaderStage].find(uniform => uniform.name === 'pdeInstanceMatrix');
+            const stableName = isInstanceMatrix && (!binding || binding.node === node)
                 ? 'pdeInstanceMatrix'
                 : name;
             return getUniformFromNode.call(this, node, type, shaderStage, stableName);
@@ -557,7 +561,7 @@ async function initScene(): Promise<void> {
     renderer.setPixelRatio(Number(localStorage.getItem('pdeRenderScale')) || 1);
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
     await renderer.init();
-    stabilizeInstancedMatrixBindingNames();
+    stabilizeInstancedMatrixBindingNames(renderer);
 
     // 4. 컨트롤(Controls)
     controls = new OrbitControls(camera, renderer.domElement);
