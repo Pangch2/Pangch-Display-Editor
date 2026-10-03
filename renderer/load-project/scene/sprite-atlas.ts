@@ -271,10 +271,10 @@ function canvasPng(canvas: HTMLCanvasElement): Promise<Uint8Array> {
 
 async function createSpriteAtlas(name: string, definitionPath: string): Promise<void> {
     const sprites = await collectSprites(await readJson<AtlasDefinition>(definitionPath));
+    const canvas = document.createElement('canvas');
     try {
         if (!sprites.size) throw new Error(`Sprite atlas is empty: ${name}`);
         const packed = packSprites([...sprites.values()]);
-        const canvas = document.createElement('canvas');
         canvas.width = packed.width;
         canvas.height = packed.height;
         const context = canvas.getContext('2d');
@@ -301,6 +301,7 @@ async function createSpriteAtlas(name: string, definitionPath: string): Promise<
         if (!saved.success) throw new Error(saved.error ?? `Sprite atlas save failed: ${name}`);
     } finally {
         sprites.forEach(sprite => sprite.image.close());
+        canvas.width = canvas.height = 0;
     }
 }
 

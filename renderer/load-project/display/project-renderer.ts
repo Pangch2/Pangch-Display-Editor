@@ -13,6 +13,8 @@ import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-h
 import { planUvTransforms, relativeUvTransform as getRelativeUvTransform } from '../batching/geometry-batching';
 import { setInstanceModelTransform } from '../batching/instance-model-transform';
 import { applyAtlasAppend, atlasBatchSignature, getTintParts, planAtlasAppend, rebaseAtlasInstances, setAtlasBatchState } from '../batching/atlas-instance-batch';
+import { getAtlasPartMaterial, setAtlasPartMaterial } from '../batching/atlas-part-material';
+import { appendPlayerHeadEntries, findAppendablePlayerHeadMesh } from '../batching/player-head-batch';
 
 function _clearSceneAndCaches(): void {
     // 1-1. 캐시된 텍스처 및 리소스 완벽 해제
@@ -593,8 +595,10 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                             appendPlan.tintParts.includes(partIndex) ? partIndex : -1);
                                     }));
                                     if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
+                                    const atlasMaterial = await getAtlasPartMaterial(representativeParts, appendPlan.uvPlan, appendPlan.tintParts, myGen, instancedMesh.count + appendCount);
+                                    if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
                                     const oldGeometry = applyAtlasAppend(instancedMesh, appendPlan);
-                                    instancedMesh.material = nextMaterials.every(material => material === nextMaterials[0]) ? nextMaterials[0] : nextMaterials;
+                                    instancedMesh.material = setAtlasPartMaterial(instancedMesh.geometry, representativeParts, appendPlan.uvPlan, appendPlan.tintParts, nextMaterials, instancedMesh.count + appendCount, atlasMaterial);
                                     if (!isSceneHistoryResourceRetained(oldGeometry)) oldGeometry.dispose();
                                 }
                                 for (let i = 0; i < appendCount; i++) {
@@ -682,6 +686,9 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                         }
 
                         if (mergedGeo) {
+                            const atlasMaterial = pendingMaterialSlots.length ? undefined
+                                : await getAtlasPartMaterial(representativeParts, group.uvPlan!, group.tintParts!, myGen, instances.length - transformStart);
+                            if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
                             for (let chunkStart = transformStart; chunkStart < instances.length; chunkStart += INITIAL_INSTANCES_PER_INSTANCED_MESH) {
                                 const chunkCount = Math.min(INITIAL_INSTANCES_PER_INSTANCED_MESH, instances.length - chunkStart);
                                 const chunkCapacity = getAppendableInstanceCapacity(chunkCount);
@@ -711,7 +718,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                     }
                                     meshGeometry.setAttribute(`instancedTint${partIndex}`, new THREE.InstancedBufferAttribute(values, 3));
                                 }
-                                const meshMaterial = materials.every(material => material === materials[0]) ? materials[0] : materials;
+                                const meshMaterial = setAtlasPartMaterial(meshGeometry, representativeParts, group.uvPlan!, group.tintParts!, materials, chunkCount, atlasMaterial);
                                 const instancedMesh = new THREE.InstancedMesh(meshGeometry, meshMaterial, chunkCapacity);
                                 instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(chunkCapacity, 16);
                                 instancedMesh.count = chunkCount;
@@ -828,7 +835,14 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                             const sharedGeometry = createPlayerHeadAtlasGeometry();
 
                             let firstAtlas = true;
-                            for (const [atlas, entries] of atlasItems) {
+                            for (const [atlas, atlasEntries] of atlasItems) {
+                                const reusable = isMerge ? findAppendablePlayerHeadMesh(loadedObjectGroup, atlas.material, sharedGeometry) : undefined;
+                                const appended = reusable ? appendPlayerHeadEntries(reusable, atlasEntries, (item, instanceId) => {
+                                    registerObject(reusable, instanceId, item.uuid, item.groupId);
+                                    addLoadedInstance(newlyAddedSelectableMeshes, reusable, instanceId);
+                                }) : 0;
+                                const entries = atlasEntries.slice(appended);
+                                if (!entries.length) continue;
                                 const geometry = firstAtlas ? sharedGeometry : sharedGeometry.clone();
                                 firstAtlas = false;
                                 const totalInstances = entries.length;
@@ -869,6 +883,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
                                 instancedMesh.count = totalInstances;
                                 instancedMesh.userData.displayType = 'item_display';
+                                instancedMesh.userData.playerHeadBatch = true;
                                 instancedMesh.userData.hasHat = hasHatArray;
                                 instancedMesh.instanceMatrix.needsUpdate = true;
                                 instancedMesh.frustumCulled = false;
@@ -883,6 +898,7 @@ export async function loadAndRenderPbde(file: File, isMerge: boolean, overrideGe
                                 if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
                                 loadedObjectGroup.add(instancedMesh);
                             }
+                            if (firstAtlas) sharedGeometry.dispose();
 
                         } catch (err) {
                             console.error('Player head instancing failed:', err);

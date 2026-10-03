@@ -1117,7 +1117,8 @@ export function getPlayerHeadPaintSurface(
                     1 - (y + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
                 );
                 uvOffsets.needsUpdate = true;
-                if (!paintUsage) atlas.texture.needsUpdate = true;
+                // Upload the copied tile before rendering its new UV coordinates.
+                atlas.texture.needsUpdate = true;
             } else {
                 atlas.imageHeadTileKeys?.delete(oldTile);
             }
@@ -1143,7 +1144,8 @@ export function getPlayerHeadPaintSurface(
         slot = nextSlot;
         uvOffsets.setXY(instanceId, nextX / PLAYER_HEAD_ATLAS_SIZE, 1 - (nextY + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE);
         uvOffsets.needsUpdate = true;
-        if (!paintUsage) atlas.texture.needsUpdate = true;
+        // Upload the copied slot before rendering its new UV coordinates.
+        atlas.texture.needsUpdate = true;
     }
     return {
         mesh,

@@ -37,7 +37,7 @@ const canvasWidth = 9 * (tileSize + gap) - gap;
 let canvasHeight = 0;
 const canvas = document.createElement('canvas');
 const context = canvas.getContext('2d')!;
-let source: HTMLCanvasElement;
+let source: ItemIconAtlas['itemImage'];
 let icons: ItemIconAtlas['itemIcons'];
 let names: string[] = [];
 let visibleNames: string[] = [];
@@ -126,6 +126,7 @@ async function applyIcon(name: string, isItemDisplay = activeAtlasName === 'item
 function renderIcons(): void {
   visibleNames = filterNames(names, searchInput.value);
   if (!visibleNames.length) {
+    canvas.width = canvas.height = 0;
     grid.textContent = '검색 결과 없음';
     return;
   }
@@ -159,7 +160,8 @@ function renderIcons(): void {
 }
 
 function resizeIcons(): void {
-  if (!overlay.hidden && canvas.parentElement === grid) renderIcons();
+  if (overlay.hidden || canvas.parentElement !== grid) return;
+  if (canvas.width !== Math.max(1, Math.round(grid.clientWidth * window.devicePixelRatio))) renderIcons();
 }
 
 new ResizeObserver(resizeIcons).observe(grid, { box: 'device-pixel-content-box' });
@@ -169,7 +171,10 @@ function closeSearch(): void {
   if (overlay.hidden) return;
   const currentCloseId = ++loadId;
   void closeWithAnimation(searchWindow).then(() => {
-    if (currentCloseId === loadId) overlay.hidden = true;
+    if (currentCloseId === loadId) {
+      overlay.hidden = true;
+      canvas.width = canvas.height = 0;
+    }
   });
 }
 

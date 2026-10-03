@@ -61,6 +61,20 @@ function setRowPosition(el: HTMLElement, row: ScenePanelRow): void {
     el.style.paddingLeft = `${12 + row.depth * 16}px`;
 }
 
+function updateObjectIcon(icon: HTMLElement, uuid: string): void {
+    const ud = loadedObjectGroup.userData as LoadedObjectUserData;
+    const rawName = ud.objectLabels?.get(uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
+    const isItemDisplay = ud.objectIsItemDisplay?.has(uuid) ?? false;
+    const isTextDisplay = ud.objectUuidToInstance?.get(uuid)?.mesh.userData.displayType === 'text_display';
+    const isPaintedHead = rawName.startsWith('player_head') && (
+        ud.objectTextures?.get(uuid)?.startsWith('data:image/png;base64')
+        || ud.objectUuidToInstance?.get(uuid)?.mesh.userData.imageHeadLayer !== undefined
+    );
+    icon.className = `scene-icon ${isTextDisplay ? 'icon-text' : isItemDisplay ? 'icon-item' : 'icon-box'}`;
+    const text = isTextDisplay ? '\uE198' : isPaintedHead ? '\uE1D3' : isItemDisplay ? '\uE5C6' : '\uE061';
+    if (icon.textContent !== text) icon.textContent = text;
+}
+
 function makeObjectRow(row: ScenePanelRow): HTMLElement {
     const uuid = row.id;
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
@@ -87,12 +101,7 @@ function makeObjectRow(row: ScenePanelRow): HTMLElement {
     setRowPosition(el, row);
 
     const leftIcon = document.createElement('span');
-    leftIcon.className = `scene-icon ${isTextDisplay ? 'icon-text' : isItemDisplay ? 'icon-item' : 'icon-box'}`;
-    const isPaintedHead = rawName.startsWith('player_head') && (
-        ud.objectTextures?.get(uuid)?.startsWith('data:image/png;base64')
-        || ud.objectUuidToInstance?.get(uuid)?.mesh.userData.imageHeadLayer !== undefined
-    );
-    leftIcon.innerHTML = isTextDisplay ? '&#xE198;' : isPaintedHead ? '&#xE1D3;' : isItemDisplay ? '&#xE5C6;' : '&#xE061;';
+    updateObjectIcon(leftIcon, uuid);
 
     const nameEl = document.createElement('span');
     nameEl.className = 'scene-name';
@@ -530,8 +539,11 @@ export function renderVisibleSceneRows(): void {
 
 export function scheduleScenePanelRender(refresh = false): void {
     if (refresh) {
-        scenePanelState.renderedRowEls.forEach(el => el.remove());
-        scenePanelState.renderedRowEls.clear();
+        // Texture changes only affect icons; preserve rows and their fitted labels.
+        for (const el of scenePanelState.renderedRowEls.values()) {
+            const icon = el.querySelector<HTMLElement>('.scene-icon');
+            if (icon && el.dataset.uuid) updateObjectIcon(icon, el.dataset.uuid);
+        }
     }
     if (scenePanelState.scenePanelRenderRaf) return;
     scenePanelState.scenePanelRenderRaf = requestAnimationFrame(() => {

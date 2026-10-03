@@ -15,6 +15,7 @@ import type { CloneJobEntry } from './group';
 import * as Overlay from '../selection/overlay';
 import { isPbdeLogEnabled, pbdeLogNames } from '../../load-project/pbde/pbde-log';
 import { dragSelectedAttributeName } from '../../entity-material';
+import { restoreAtlasPartMaterials } from '../../load-project/batching/atlas-part-material';
 
 const getDisplayType = Overlay.getDisplayType;
 
@@ -439,6 +440,7 @@ function cloneInstancedBatch(
     timings?: DuplicateTimingStats
 ): CloneResult[] {
     if (!sourceMesh.geometry || jobs.length === 0) return [];
+    restoreAtlasPartMaterials(sourceMesh);
 
     let targetMesh = sourceMesh;
     let targetCapacity = getInstancedCapacity(targetMesh);

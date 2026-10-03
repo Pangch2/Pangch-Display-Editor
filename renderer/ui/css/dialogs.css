@@ -498,6 +498,7 @@
   min-height: 0;
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 12px;
   background: #1e1e21;
   text-align: center;

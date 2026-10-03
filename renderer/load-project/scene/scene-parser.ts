@@ -2273,18 +2273,20 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             }
             return key;
         };
-        const geometryShapeKey = (geomData: GeometryData) => [
-            numberArrayKey(geomData.positions),
-            numberArrayKey(geomData.normals),
+        const geometryShapeKey = (geomData: GeometryData, exact = false) => [
+            exact ? geomData.positions.join(',') : numberArrayKey(geomData.positions),
+            exact ? geomData.normals.join(',') : numberArrayKey(geomData.normals),
             normalizedUvKey(geomData),
             numberArrayKey(geomData.indices)
         ].join(';');
         const geometryShapeKeys = new WeakMap<GeometryData, string>();
-        const cachedGeometryShapeKey = (geomData: GeometryData) => {
-            let key = geometryShapeKeys.get(geomData);
+        const exactGeometryShapeKeys = new WeakMap<GeometryData, string>();
+        const cachedGeometryShapeKey = (geomData: GeometryData, exact = false) => {
+            const keys = exact ? exactGeometryShapeKeys : geometryShapeKeys;
+            let key = keys.get(geomData);
             if (!key) {
-                key = geometryShapeKey(geomData);
-                geometryShapeKeys.set(geomData, key);
+                key = geometryShapeKey(geomData, exact);
+                keys.set(geomData, key);
             }
             return key;
         };
@@ -2329,7 +2331,13 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
 
             const uniformPartModelMatrix = getUniformPartModelMatrix(parts);
             const allPartsHaveAtlasUv = parts.every(part => !!part.geomData.uvTransform);
-            const useInstancedAtlasUv = allPartsHaveAtlasUv
+            // Multipart batches retain every part matrix. Leave translucent and
+            // special shader parts on the existing path to preserve their draw order.
+            const useMultipartAtlasUv = !uniformPartModelMatrix && allPartsHaveAtlasUv
+                && parts.every(part => part.geomData.texPath === '__ATLAS__'
+                    && ((part.geomData.tintHex ?? 0xffffff) >>> 0) <= 0xffffff)
+                && new THREE.Matrix4().fromArray(parts[0].modelMatrix).determinant() !== 0;
+            const useInstancedAtlasUv = useMultipartAtlasUv || allPartsHaveAtlasUv
                 && !!uniformPartModelMatrix
                 && new THREE.Matrix4().fromArray(uniformPartModelMatrix).determinant() !== 0;
             const atlasUvTransform = useInstancedAtlasUv ? parts[0].geomData.uvTransform : undefined;
@@ -2340,12 +2348,13 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             const partTints = useInstancedAtlasUv ? parts.map(part => (part.geomData.tintHex ?? 0xffffff) >>> 0) : undefined;
             for (const part of parts) {
                 const { model, geomData, geometryIndex, modelMatrix } = part;
-                if (useInstancedAtlasUv && uniformModelMatrix) {
+                if (useInstancedAtlasUv) {
                     keyParts.push(
-                        cachedGeometryShapeKey(geomData),
+                        cachedGeometryShapeKey(geomData, useMultipartAtlasUv),
                         geomData.texPath,
                         ((geomData.tintHex ?? 0xffffff) >>> 0) <= 0xffffff ? 'tint' : String(geomData.tintHex)
                     );
+                    if (useMultipartAtlasUv) keyParts.push(matrixKey(modelMatrix));
                 } else {
                     keyParts.push(
                         model.geometryId,
@@ -2358,7 +2367,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
                 }
             }
 
-            const batchKey = `${useInstancedAtlasUv ? 'atlas' : item.type}|${keyParts.join('|')}`;
+            const batchKey = `${useMultipartAtlasUv ? 'atlas|multipart' : useInstancedAtlasUv ? 'atlas' : item.type}|${keyParts.join('|')}`;
             let batch = geometryBatches.get(batchKey);
             if (!batch) {
                 batch = { parts, instances: [] };

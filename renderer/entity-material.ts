@@ -68,14 +68,17 @@ const srgbToLinear = (c: number): number => {
   return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
 };
 
+export const getTintComponents = (tintHex = 0xffffff): [number, number, number] => [
+  srgbToLinear(((tintHex >>> 16) & 0xff) / 255),
+  srgbToLinear(((tintHex >>> 8) & 0xff) / 255),
+  srgbToLinear((tintHex & 0xff) / 255)
+];
+
 const getTintNode = (tintHex?: number): ReturnType<typeof vec3> => {
   const normalizedTint = (tintHex ?? 0xffffff) >>> 0;
   let tintNode = tintNodeCache.get(normalizedTint);
   if (!tintNode) {
-    const rS = ((normalizedTint >> 16) & 0xff) / 255;
-    const gS = ((normalizedTint >> 8) & 0xff) / 255;
-    const bS = (normalizedTint & 0xff) / 255;
-    tintNode = vec3(srgbToLinear(rS), srgbToLinear(gS), srgbToLinear(bS));
+    tintNode = vec3(...getTintComponents(normalizedTint));
     tintNodeCache.set(normalizedTint, tintNode);
   }
   return tintNode;
@@ -96,7 +99,7 @@ export function toggleShading(): boolean {
   return shadingEnabled.value === 1;
 }
 
-export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false, headUvTexture?: Texture, instancedTintIndex = -1) {
+export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false, headUvTexture?: Texture, instancedTintIndex = -1, useVertexTint = false) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
 
@@ -142,15 +145,17 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   const headUv = headUvTransform
     ? faceMin.add(knifeUv.sub(faceMin).mul(headUvTransform.xy.add(1))).add(headUvTransform.zw)
     : knifeUv;
-  const finalUv = useInstancedUvTransform
-    ? uvNode.mul(uvTransformNode.xy).add(uvTransformNode.zw)
+  const partUvTransform = useVertexTint ? attribute('atlasPartUvTransform', 'vec4') : uvTransformNode;
+  const finalUv = useVertexTint || useInstancedUvTransform
+    ? uvNode.mul(partUvTransform.xy).add(partUvTransform.zw)
     : useInstancedUv
       ? headUv
       : uvNode;
   // Atlas and head UV transforms are affine per face; interpolate the result from the vertex stage.
   const diffuseNode = texture(diffuseTex, varying(finalUv, 'pdeUv'));
 
-  const tintVec = instancedTintIndex < 0 ? getTintNode(tintHex) : attribute(`instancedTint${instancedTintIndex}`, 'vec3');
+  const tintVec = useVertexTint ? attribute('atlasPartTint', 'vec3')
+    : instancedTintIndex < 0 ? getTintNode(tintHex) : attribute(`instancedTint${instancedTintIndex}`, 'vec3');
 
   const normalizedSkyLight = skyLightLevel.div(15.0);
   const lightMapColor = normalizedSkyLight.div(float(4.0).sub(normalizedSkyLight.mul(3.0)));

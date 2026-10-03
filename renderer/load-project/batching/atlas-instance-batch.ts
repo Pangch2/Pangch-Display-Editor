@@ -1,5 +1,5 @@
 import { Color, InstancedBufferAttribute, Matrix4, type InstancedMesh } from 'three/webgpu';
-import { planUvTransforms, relativeUvTransform, type UvTransform } from './geometry-batching';
+import { applyModelTransform, planUvTransforms, relativeModelTransform, relativeUvTransform, type UvTransform } from './geometry-batching';
 import type { GeometryInstanceMeta, GeometryMeta } from '../pbde/pbde-types';
 
 type AtlasPart = Pick<GeometryMeta, 'texPath' | 'uvTransform' | 'tintHex' | 'modelMatrix'>;
@@ -33,12 +33,13 @@ export function setAtlasBatchState(mesh: InstancedMesh, parts: AtlasPart[], uvPl
 }
 
 export function rebaseAtlasInstances(source: AtlasPart[], target: AtlasPart[], instances: GeometryInstanceMeta[]): GeometryInstanceMeta[] {
-    const correction = new Matrix4().fromArray(source[0].modelMatrix)
-        .multiply(new Matrix4().fromArray(target[0].modelMatrix).invert());
+    const correction = relativeModelTransform(source[0].modelMatrix, target[0].modelMatrix);
     return instances.map(instance => ({
         ...instance,
-        transform: new Matrix4().fromArray(instance.transform).transpose().multiply(correction).transpose().toArray(),
-        modelTransform: new Matrix4().fromArray(instance.modelTransform ?? new Matrix4().elements).multiply(correction).toArray(),
+        transform: applyModelTransform(instance.transform, correction),
+        modelTransform: correction
+            ? new Matrix4().fromArray(instance.modelTransform ?? new Matrix4().elements).multiply(new Matrix4().fromArray(correction)).toArray()
+            : instance.modelTransform,
         atlasUvTransforms: source.map((part, index) => instance.atlasUvTransforms?.[index] ?? instance.atlasUvTransform ?? part.uvTransform!),
         partTints: source.map((part, index) => instance.partTints?.[index] ?? part.tintHex ?? 0xffffff)
     }));

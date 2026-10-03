@@ -46,8 +46,8 @@ function releaseTextureSlot() {
     }
 }
 
-export function getMaterialKey(part: Pick<GeometryMeta, 'texPath' | 'tintHex'>, instancedUvTransformCount: number, instancedUvTransformIndex = 0, instancedTintIndex = -1): string {
-    return `${part.texPath}|${instancedTintIndex < 0 ? (part.tintHex ?? 0xffffff) >>> 0 : `tint${instancedTintIndex}`}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}:${instancedUvTransformIndex}` : 'base'}`;
+export function getMaterialKey(part: Pick<GeometryMeta, 'texPath' | 'tintHex'>, instancedUvTransformCount: number, instancedUvTransformIndex = 0, instancedTintIndex = -1, useVertexTint = false): string {
+    return `${part.texPath}|${instancedTintIndex < 0 ? (part.tintHex ?? 0xffffff) >>> 0 : `tint${instancedTintIndex}`}|${instancedUvTransformCount > 0 ? `uvt${instancedUvTransformCount}:${instancedUvTransformIndex}` : 'base'}${useVertexTint ? '|vertexTint' : ''}`;
 }
 
 function isAtlasTexturePath(texPath: string): boolean {
@@ -350,10 +350,10 @@ function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
     }
 }
 
-export async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, instancedUvTransformCount = 0, instancedUvTransformIndex = 0, instancedTintIndex = -1): Promise<THREE.Material> {
+export async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, instancedUvTransformCount = 0, instancedUvTransformIndex = 0, instancedTintIndex = -1, useVertexTint = false): Promise<THREE.Material> {
     // undefined는 흰색(0xffffff)으로 정규화하여 캐시 키 불일치를 방지한다.
     const effectiveTint = (tintHex ?? 0xffffff) >>> 0;
-    const key = getMaterialKey({ texPath, tintHex }, instancedUvTransformCount, instancedUvTransformIndex, instancedTintIndex);
+    const key = getMaterialKey({ texPath, tintHex }, instancedUvTransformCount, instancedUvTransformIndex, instancedTintIndex, useVertexTint);
     if (blockMaterialCache.has(key) && gen === currentLoadGen) {
         const mat = blockMaterialCache.get(key)!;
         // 아틀라스 텍스처가 변경되었으면 stale 항목을 캐시에서 제거하고 재생성한다.
@@ -384,7 +384,7 @@ export async function getBlockMaterial(texPath: string, tintHex: number | undefi
         }
 
         const tex = await loadBlockTexture(texPath, gen);
-        const { material } = createEntityMaterial(tex, effectiveTint, false, instancedUvTransformCount > 0, instancedUvTransformCount, instancedUvTransformIndex, false, true, undefined, instancedTintIndex);
+        const { material } = createEntityMaterial(tex, effectiveTint, false, instancedUvTransformCount > 0, instancedUvTransformCount, instancedUvTransformIndex, false, true, undefined, instancedTintIndex, useVertexTint);
         material.toneMapped = false;
         material.fog = false;
         material.flatShading = true;

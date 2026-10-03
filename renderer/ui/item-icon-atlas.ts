@@ -311,8 +311,8 @@ if (import.meta.env.DEV) {
 }
 
 export type ItemIconAtlas = {
-    itemImage: HTMLCanvasElement;
-    blockImage: HTMLCanvasElement;
+    itemImage: ImageBitmap;
+    blockImage: ImageBitmap;
     itemIcons: IconMap;
     blockIcons: IconMap;
 };
@@ -467,15 +467,13 @@ async function buildAtlases(
     atlasTexture: THREE.Texture,
     materials: Map<string, THREE.Material>
 ): Promise<{
-    items: { image: HTMLCanvasElement; icons: IconMap };
-    blocks: { image: HTMLCanvasElement; icons: IconMap };
+    items: { image: OffscreenCanvas; icons: IconMap };
+    blocks: { image: OffscreenCanvas; icons: IconMap };
 }> {
     const targets = [itemNames, blockNames].map(names => {
         const grid = atlasGrid(names.length);
-        const image = document.createElement('canvas');
-        image.width = grid.width;
-        image.height = grid.height;
-        const context = image.getContext('2d')!;
+        const image = new OffscreenCanvas(grid.width, grid.height);
+        const context = image.getContext('2d', { willReadFrequently: true })!;
         context.imageSmoothingEnabled = false;
         return { image, context, icons: createIconMap(names, grid.columns) };
     });
@@ -523,16 +521,15 @@ async function buildAtlases(
             }
         }
     }
+    rendered.width = rendered.height = 0;
     return {
         items: { image: targets[0].image, icons: targets[0].icons },
         blocks: { image: targets[1].image, icons: targets[1].icons }
     };
 }
 
-async function saveAtlas(name: 'block-atlas.png' | 'item-atlas.png', image: HTMLCanvasElement): Promise<void> {
-    const png = await new Promise<Blob>((resolve, reject) => image.toBlob(
-        blob => blob ? resolve(blob) : reject(new Error(`Failed to encode ${name}.`)), 'image/png'
-    ));
+async function saveAtlas(name: 'block-atlas.png' | 'item-atlas.png', image: OffscreenCanvas): Promise<void> {
+    const png = await image.convertToBlob({ type: 'image/png' });
     const saved = await window.ipcApi.saveIconAtlas(name, new Uint8Array(await png.arrayBuffer()));
     if (!saved.success) throw new Error(saved.error ?? `Failed to save ${name}.`);
 }
@@ -545,23 +542,13 @@ function createIconMap(names: string[], columns: number): IconMap {
     }]));
 }
 
-async function loadAtlas(name: 'block-atlas.png' | 'item-atlas.png'): Promise<HTMLCanvasElement | null> {
+async function loadAtlas(name: 'block-atlas.png' | 'item-atlas.png'): Promise<ImageBitmap | null> {
     const result = await window.ipcApi.getAssetContent(name);
     if (!result.success) return null;
-    const url = URL.createObjectURL(new Blob([result.content as BlobPart], { type: 'image/png' }));
     try {
-        const source = new Image();
-        source.src = url;
-        await source.decode();
-        const image = document.createElement('canvas');
-        image.width = source.width;
-        image.height = source.height;
-        image.getContext('2d')!.drawImage(source, 0, 0);
-        return image;
+        return await createImageBitmap(new Blob([result.content as BlobPart], { type: 'image/png' }));
     } catch {
         return null;
-    } finally {
-        URL.revokeObjectURL(url);
     }
 }
 
@@ -570,12 +557,17 @@ async function loadAtlases(): Promise<ItemIconAtlas | null> {
     const itemNames = [...new Set<string>(list?.items ?? [])];
     const blockNames = [...new Set<string>(list?.blocks ?? [])];
     const [itemImage, blockImage] = await Promise.all([loadAtlas('item-atlas.png'), loadAtlas('block-atlas.png')]);
-    return itemImage && blockImage ? {
+    if (!itemImage || !blockImage) {
+        itemImage?.close();
+        blockImage?.close();
+        return null;
+    }
+    return {
         itemImage,
         blockImage,
         itemIcons: createIconMap(itemNames, Math.max(1, Math.floor(itemImage.width / iconSize))),
         blockIcons: createIconMap(blockNames, Math.max(1, Math.floor(blockImage.width / iconSize)))
-    } : null;
+    };
 }
 
 async function createAtlases(): Promise<ItemIconAtlas> {
@@ -584,6 +576,7 @@ async function createAtlases(): Promise<ItemIconAtlas> {
     let entries: PreparedIcon[] = [];
     let atlasTexture: THREE.Texture | undefined;
     let renderer: THREE.WebGPURenderer | undefined;
+    let outputCanvases: OffscreenCanvas[] = [];
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0.01, 100);
     const materials = new Map<string, THREE.Material>();
@@ -607,9 +600,17 @@ async function createAtlases(): Promise<ItemIconAtlas> {
         const { items, blocks } = await buildAtlases(
             itemNames, blockNames, prepared, renderer, scene, camera, atlasTexture, materials
         );
+        outputCanvases = [items.image, blocks.image];
         await Promise.all([saveAtlas('item-atlas.png', items.image), saveAtlas('block-atlas.png', blocks.image)]);
         window.ipcApi.send?.('log-atlas-generation-time', performance.now() - atlasStart);
-        return { itemImage: items.image, blockImage: blocks.image, itemIcons: items.icons, blockIcons: blocks.icons };
+        const itemImage = items.image.transferToImageBitmap();
+        try {
+            const blockImage = blocks.image.transferToImageBitmap();
+            return { itemImage, blockImage, itemIcons: items.icons, blockIcons: blocks.icons };
+        } catch (error) {
+            itemImage.close();
+            throw error;
+        }
     } finally {
         iconAssetPromises.clear();
         entries.forEach(entry => entry.image?.close());
@@ -619,7 +620,11 @@ async function createAtlases(): Promise<ItemIconAtlas> {
         materials.forEach(material => material.dispose());
         (atlasTexture?.image as ImageBitmap | undefined)?.close();
         atlasTexture?.dispose();
-        renderer?.dispose();
+        outputCanvases.forEach(canvas => { canvas.width = canvas.height = 0; });
+        if (renderer) {
+            await renderer.dispose();
+            renderer.domElement.width = renderer.domElement.height = 0;
+        }
     }
 }
 
