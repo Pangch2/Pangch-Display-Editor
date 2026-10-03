@@ -7,10 +7,7 @@ import {
   Matrix3,
   Matrix4,
   Raycaster,
-  RenderTarget,
-  RGBAFormat,
   Scene,
-  UnsignedByteType,
   Vector2,
   Vector3,
   Vector4,
@@ -57,6 +54,7 @@ import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../controls/transf
 import { addImageHeadGrid, createHeadProject, createPlayerProject, type PlayerModel } from './player-generator';
 import playerHeadIcon from '../../resources/player_head.svg?raw';
 import { initHeadTextureGenerator } from './head-texture-generator';
+import { readTextureColor } from './texture-color-pick';
 
 const generatorPlayerHeadIcon = playerHeadIcon.replace(/stroke="[^"]+"/, 'stroke="currentColor"');
 
@@ -156,10 +154,8 @@ let paintHeadUuid: string | null = null;
 let deferredPaint: { pointerId: number; x: number; y: number } | null = null;
 let restoreCameraControls: (() => void) | null = null;
 let altPicking = false;
-let pickingColor = false;
 let promotingImageHead = false;
 let pickerCursorBefore: string | null = null;
-let colorTarget: RenderTarget | null = null;
 let root: HTMLElement | null = null;
 let brushEditor: HTMLElement | null = null;
 let editingBrush: BrushAsset | null = null;
@@ -340,13 +336,17 @@ function sourceOver(destination: Rgba, source: Rgba, coverage: number): Rgba {
   )).concat(Math.round(alpha * 255)) as Rgba;
 }
 
-function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, objects?: Mesh[], faceHits?: Map<InstancedMesh, Map<number, PaintHit[]>>): PaintHit | null {
-  if (!painterContext) return null;
-  const intersection = intersectSceneInstances(raycaster, loadedObjectGroup, (mesh, instanceId) => {
+function getPainterIntersection(objects?: Mesh[]) {
+  return intersectSceneInstances(raycaster, loadedObjectGroup, (mesh, instanceId) => {
     const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
       ?.get(`${mesh.uuid}_${instanceId}`);
     return !uuid || isSceneObjectVisible(loadedObjectGroup, uuid);
   }, objects);
+}
+
+function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, objects?: Mesh[], faceHits?: Map<InstancedMesh, Map<number, PaintHit[]>>, sampleTexture = false): PaintHit | null {
+  if (!painterContext) return null;
+  const intersection = getPainterIntersection(objects);
   if (!intersection) {
     if (deselectOnMiss) (loadedObjectGroup.userData.resetSelection as (() => void) | undefined)?.();
     return null;
@@ -366,8 +366,8 @@ function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, 
   const partY = Math.floor(actualPart / 3) * partSize;
   const pixelX = Math.min(7, Math.max(0, Math.floor(intersection.uv.x * atlasSize - partX + headPainterPixelEpsilon)));
   const pixelY = Math.min(7, Math.max(0, Math.floor(blockHeight - intersection.uv.y * atlasSize - partY + headPainterPixelEpsilon)));
-  let columns = cachedFace?.columns;
-  let rows = cachedFace?.rows;
+  let columns = sampleTexture ? partSize : cachedFace?.columns;
+  let rows = sampleTexture ? partSize : cachedFace?.rows;
   if (columns === undefined || rows === undefined) {
     const matrix = getInstanceWorldMatrix(mesh, intersection.instanceId, new Matrix4());
     const [horizontal, vertical] = getFaceGridCounts(surface.objectUuid, face, matrix);
@@ -393,7 +393,7 @@ function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, 
   return hit;
 }
 
-function getHit(event: PointerEvent, deselectOnMiss = false, images?: Map<string, ImageData>): PaintHit | null {
+function getHit(event: PointerEvent, deselectOnMiss = false, images?: Map<string, ImageData>, sampleTexture = false): PaintHit | null {
   if (!painterContext) return null;
   const rect = painterContext.renderer.domElement.getBoundingClientRect();
   pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
@@ -403,7 +403,7 @@ function getHit(event: PointerEvent, deselectOnMiss = false, images?: Map<string
     loadedObjectGroup.updateMatrixWorld(true);
     painterWorldMatrixDirty = false;
   }
-  return getRaycastHit(deselectOnMiss, images);
+  return getRaycastHit(deselectOnMiss, images, undefined, undefined, sampleTexture);
 }
 
 function getWork(hit: PaintHit): WorkSurface {
@@ -873,33 +873,31 @@ function transformStamp(kind: 'left' | 'right' | 'vertical' | 'horizontal'): voi
   syncStampInputs();
 }
 
-async function pickColor(event: PointerEvent): Promise<void> {
-  if (!painterContext || pickingColor) return;
-  pickingColor = true;
-  const { renderer, scene } = painterContext;
-  const size = renderer.getDrawingBufferSize(new Vector2());
-  if (!colorTarget) {
-    colorTarget = new RenderTarget(size.x, size.y, { format: RGBAFormat, type: UnsignedByteType, depthBuffer: true });
-    colorTarget.texture.colorSpace = renderer.outputColorSpace;
-  } else if (colorTarget.width !== size.x || colorTarget.height !== size.y) {
-    colorTarget.setSize(size.x, size.y);
+function pickColor(event: PointerEvent): void {
+  const images = new Map<string, ImageData>();
+  const hit = getHit(event, true, images, true);
+  if (!hit) {
+    if (!painterContext) return;
+    const intersection = getPainterIntersection();
+    const color = intersection && readTextureColor(intersection);
+    if (color) setCurrentColor(color, true);
+    return;
   }
-  const rect = renderer.domElement.getBoundingClientRect();
-  const x = Math.min(size.x - 1, Math.max(0, Math.floor((event.clientX - rect.left) / rect.width * size.x)));
-  const y = Math.min(size.y - 1, Math.max(0, Math.floor((rect.bottom - event.clientY) / rect.height * size.y)));
-  const previousTarget = renderer.getRenderTarget();
-  try {
-    renderer.setRenderTarget(colorTarget);
-    renderer.render(scene, painterContext.getCamera());
-    renderer.setRenderTarget(previousTarget);
-    const pixels = await renderer.readRenderTargetPixelsAsync(colorTarget, x, y, 1, 1);
-    const emptySlot = palette.findIndex(color => !color);
-    if (emptySlot >= 0) activePaletteSlot = emptySlot;
-    setCurrentColor([pixels[0], pixels[1], pixels[2], pixels[3]], emptySlot >= 0);
-  } finally {
-    renderer.setRenderTarget(previousTarget);
-    pickingColor = false;
+  const image = images.get(hit.surface.objectUuid) ?? readPlayerHeadPaint(hit.surface);
+  let { x, y } = hit;
+  const scales = hit.mesh.geometry.getAttribute('instancedKnifeUvScale');
+  const offsets = hit.mesh.geometry.getAttribute('instancedKnifeUvOffset');
+  if (scales && offsets) {
+    const scale = new Vector3(scales.getX(hit.instanceId), scales.getY(hit.instanceId), scales.getZ(hit.instanceId));
+    const offset = new Vector3(offsets.getX(hit.instanceId), offsets.getY(hit.instanceId), offsets.getZ(hit.instanceId));
+    const [scaleX, scaleY, offsetX, offsetY] = knifePaintTransform(scale, offset, faceNormals[hit.face]);
+    x = knifePixel(x + 0.5, scaleX, offsetX);
+    y = knifePixel(y + 0.5, scaleY, offsetY);
   }
+  const layer = layerMode === 'auto' && hit.surface.denseLayer === undefined
+    ? readPixel(image, facePartIndexes[hit.face] + 6, x, y)[3] > 0 ? 1 : 0
+    : hit.layer;
+  setCurrentColor(readPixel(image, facePartIndexes[hit.face] + layer * 6, x, y), true);
 }
 
 function setAltPicking(enabled: boolean): void {
@@ -949,10 +947,9 @@ function onPointerDown(event: PointerEvent): void {
   }
   if (lastTool === 'picker') {
     if (!altPicking) return;
-    getHit(event, true);
     event.preventDefault();
     event.stopImmediatePropagation();
-    void pickColor(event);
+    pickColor(event);
     return;
   }
   if (painterContext.isGizmoHovered()) return;

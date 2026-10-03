@@ -178,6 +178,13 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   material.positionNode = useEntityVisibility ? entityVisiblePositionNode : dragPreviewPositionNode;
   material.colorNode = mix(unlitColor, litColor, shadingEnabled);
   material.map = diffuseTex;
+  material.userData.textureColorPick = {
+    uvAttribute: useVertexTint ? 'atlasPartUvTransform' : useInstancedUvTransform
+      ? uvTransformCount === 1 ? 'instancedUvTransform' : `instancedUvTransform${instancedUvTransformIndex}` : null,
+    tintAttribute: useVertexTint ? 'atlasPartTint' : instancedTintIndex >= 0 ? `instancedTint${instancedTintIndex}` : null,
+    tintHex,
+    useVertexTint
+  };
   material.transparent = true;
   material.fog = false;
   material.flatShading = true;

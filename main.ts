@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
 const ASSET_CACHE_READY_PATH = path.join(CACHE_DIR, '.assets-complete');
+const registryCacheId = 'server-jar-v2';
 const SPRITE_ATLAS_DIR = path.join(CACHE_DIR, 'sprite-atlases');
 const KEY_MAPPING_DIR = path.join(CACHE_DIR, 'key-mapping');
 const KEY_MAPPING_ORDER_PATH = path.join(KEY_MAPPING_DIR, '.order');
@@ -750,7 +751,10 @@ function createWindow() {
       const [hasAssetsMarker, hasFontAssets, hasRegistry, requiredAssetsReady] = await Promise.all([
         pathExists(ASSET_CACHE_READY_PATH),
         pathExists(path.join(CACHE_DIR, 'assets/minecraft/font/include/default.json')),
-        pathExists(registryPath),
+        fs.readFile(registryPath, 'utf8').then(content => {
+          const registry = JSON.parse(content);
+          return registry.registry === registryCacheId && Array.isArray(registry.items) && Array.isArray(registry.blocks);
+        }).catch(() => false),
         Promise.all(requiredPrefixes.map(prefix => pathExists(path.join(CACHE_DIR, prefix)))).then(results => results.every(Boolean))
       ]);
       const hasAssets = hasAssetsMarker && hasFontAssets && requiredAssetsReady;
@@ -799,16 +803,20 @@ function createWindow() {
         const searchItems = new Set(creativeItems.items);
         const searchOrder = new Map(creativeItems.items.map((name, index) => [name, index]));
         const bySearchOrder = (a: string, b: string) => (searchOrder.get(a) ?? Infinity) - (searchOrder.get(b) ?? Infinity);
-        const items = [...creativeItems.items, ...[...new Set([...itemRegistry, ...blockRegistry])].filter(name => !searchItems.has(name))];
+        const items = [...creativeItems.items, ...[...new Set(itemRegistry)].filter(name => !searchItems.has(name))];
         const blocks = [...new Set([...blockRegistry, ...creativeItems.blocks])].sort(bySearchOrder);
         const registry: RegistryList = {
           items,
           blocks
         };
         await includeHardcodedRegistryItems(registry);
+        // Registry order determines atlas cells; rebuild atlases with the corrected lists.
+        await Promise.all(['item-atlas.png', 'block-atlas.png'].map(name =>
+          fs.rm(path.join(CACHE_DIR, name), { force: true })
+        ));
         await fs.writeFile(
           path.join(CACHE_DIR, 'item-block-list.json'),
-          JSON.stringify({ registry: 'server-jar', ...registry })
+          JSON.stringify({ registry: registryCacheId, ...registry })
         );
         console.log(`item-block-list.json generated in ${Date.now() - registryStart}ms`);
       } else {
@@ -816,7 +824,7 @@ function createWindow() {
         const registry = JSON.parse(cachedRegistry) as RegistryList;
         if (!Array.isArray(registry.items) || !Array.isArray(registry.blocks)) throw new Error('Cached registry is invalid.');
         await includeHardcodedRegistryItems(registry);
-        const normalizedRegistry = JSON.stringify({ registry: 'server-jar', items: registry.items, blocks: registry.blocks });
+        const normalizedRegistry = JSON.stringify({ registry: registryCacheId, items: registry.items, blocks: registry.blocks });
         if (normalizedRegistry !== cachedRegistry) await fs.writeFile(registryPath, normalizedRegistry);
       }
       const totalTime = Date.now() - startTime;
