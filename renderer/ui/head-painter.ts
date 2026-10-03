@@ -1,4 +1,5 @@
 import {
+  Box2,
   Box3,
   Camera,
   InstancedMesh,
@@ -112,7 +113,7 @@ const raycaster = new Raycaster();
 const pointer = new Vector2();
 const paintTextureUpdateIntervalMs = 1000 / 30;
 const paintTextureUpdateTimes = new WeakMap<object, number>();
-const pendingPaintTextures = new Set<PlayerHeadPaintSurface['texture']>();
+const pendingPaintTextures = new Map<PlayerHeadPaintSurface['texture'], Box2>();
 let paintTextureUpdateTimer: ReturnType<typeof setTimeout> | undefined;
 
 let painterContext: PainterContext | null = null;
@@ -183,6 +184,7 @@ let gpuPreviewBrushKey: string | null = null;
 let gpuPreviewFlags: Uint32Array | null = null;
 let gpuPreviewFailed = false;
 let gpuPreviewSceneData: HeadPainterGpuPreviewData | null = null;
+const pendingGpuPaintWorks = new Set<WorkSurface>();
 
 function invalidateHeadPainterGridOverlay(): void {
   lastPreviewKey = null;
@@ -190,6 +192,7 @@ function invalidateHeadPainterGridOverlay(): void {
   gpuPreviewBrushKey = null;
   gpuPreviewFailed = false;
   gpuPreviewSceneData = null;
+  pendingGpuPaintWorks.clear();
   painterWorldMatrixDirty = true;
   previewAdjacentHits.clear();
   previewLocalHits.clear();
@@ -309,8 +312,8 @@ function expandKnifePaintSurface(surface: PlayerHeadPaintSurface, image: ImageDa
 function preparePaintSurface(surface: PlayerHeadPaintSurface): ImageData {
   const image = readPlayerHeadPaint(surface);
   if (expandKnifePaintSurface(surface, image)) {
-    writePlayerHeadPaint(surface, image);
-    commitPlayerHeadPaint(surface);
+    writePlayerHeadPaint(surface, image, false);
+    commitPlayerHeadPaint(surface, image);
   }
   return image;
 }
@@ -438,9 +441,25 @@ function flushPaintTextures(force = false): void {
   clearTimeout(paintTextureUpdateTimer);
   paintTextureUpdateTimer = undefined;
   const now = performance.now();
-  for (const texture of pendingPaintTextures) {
+  for (const [texture, region] of pendingPaintTextures) {
     if (!force && now - (paintTextureUpdateTimes.get(texture) ?? -Infinity) < paintTextureUpdateIntervalMs) continue;
-    texture.needsUpdate = true;
+    const backend = painterContext?.renderer.backend;
+    if (backend?.isWebGPUBackend && backend.get(texture).texture) {
+      // Keep Three's allocation/version handling; upload only the changed canvas rectangle.
+      painterContext!.renderer.initTexture(texture);
+      const width = region.max.x - region.min.x, height = region.max.y - region.min.y;
+      try {
+        backend.device.queue.copyExternalImageToTexture(
+          { source: texture.image, origin: [region.min.x, region.min.y], flipY: texture.flipY },
+          { texture: backend.get(texture).texture, origin: [region.min.x,
+            texture.flipY ? texture.image.height - region.max.y : region.min.y], premultipliedAlpha: texture.premultiplyAlpha },
+          [width, height]
+        );
+      } catch (error) {
+        console.error('Head paint region upload failed:', error);
+        texture.needsUpdate = true;
+      }
+    } else texture.needsUpdate = true;
     paintTextureUpdateTimes.set(texture, now);
     pendingPaintTextures.delete(texture);
   }
@@ -457,7 +476,16 @@ function flushWork(work: WorkSurface): void {
     flushed.push(partner);
   }
   flushed.forEach(target => writePlayerHeadPaint(target.surface, target.image, false));
-  flushed.forEach(target => pendingPaintTextures.add(target.surface.texture));
+  for (const target of flushed) {
+    const { surface } = target;
+    const region = pendingPaintTextures.get(surface.texture) ?? new Box2();
+    region.expandByPoint(new Vector2(surface.x, surface.y));
+    region.expandByPoint(new Vector2(surface.x + (surface.denseLayer === undefined ? blockWidth : partSize),
+      surface.y + (surface.denseLayer === undefined ? blockHeight : partSize)));
+    pendingPaintTextures.set(surface.texture, region);
+    pendingGpuPaintWorks.add(target);
+    previewPaintImages.set(surface.objectUuid, target.image);
+  }
   if (paintTextureUpdateTimer === undefined) paintTextureUpdateTimer = setTimeout(flushPaintTextures, 0);
 }
 
@@ -467,10 +495,7 @@ function finishStroke(): void {
   stroke = null;
   strokePaintUsage = undefined;
   lastStrokeHit = null;
-  works.forEach(({ surface }) => commitPlayerHeadPaint(surface));
-  flushPaintTextures(true);
   const before = [...works].reverse().flatMap(work => work.before);
-  const after = capturePlayerHeadAtlasState(works.map(work => work.surface.objectUuid));
   const apply = (state: typeof before) => {
     restorePlayerHeadAtlasState(state);
     cleanupUnusedPlayerHeadAtlasSlots();
@@ -478,12 +503,22 @@ function finishStroke(): void {
     invalidateHeadPainterGridOverlay();
   };
   if (!works.some(work => work.changed)) {
+    flushPaintTextures(true);
     apply(before);
     return;
   }
-  window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+  let layerChanged = false;
+  for (const { surface, image } of works) {
+    const previousHat = surface.mesh.userData.hasHat[surface.instanceId];
+    commitPlayerHeadPaint(surface, image);
+    layerChanged ||= previousHat !== surface.mesh.userData.hasHat[surface.instanceId];
+  }
+  flushPaintTextures(true);
+  updateGpuPaintPreviewAlphas();
+  const after = capturePlayerHeadAtlasState(works.map(work => work.surface.objectUuid));
+  if (layerChanged) invalidateHeadPainterGrid();
+  window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { texturesOnly: true, skipGizmoRefresh: true } }));
   record({ undo: () => apply(before), redo: () => apply(after) });
-  invalidateHeadPainterGridOverlay();
 }
 
 function endPaintPointer(): void {
@@ -509,6 +544,16 @@ function canPaintHead(sourceUuid: string | null, targetUuid: string, allowAdjace
 }
 
 const isSamePaintFace = (sourceFace: number, targetFace: number): boolean => sourceFace === targetFace;
+
+function currentPaintLayer(hit: PaintHit | null, images: Map<string, ImageData>): PaintHit | null {
+  if (!hit || layerMode !== 'auto' || hit.surface.denseLayer !== undefined) return hit;
+  const image = stroke?.get(hit.surface.objectUuid)?.image ?? images.get(hit.surface.objectUuid)
+    ?? readPlayerHeadPaint(getPlayerHeadPaintSurface(hit.mesh, hit.instanceId) ?? hit.surface);
+  images.set(hit.surface.objectUuid, image);
+  const layer = image.data[pixelOffset(facePartIndexes[hit.face] + 6,
+    gridCellPixel(hit.x, hit.columns), gridCellPixel(hit.y, hit.rows)) + 3] > 0 ? 1 : 0;
+  return layer === hit.layer ? hit : { ...hit, layer };
+}
 
 function createAdjacentBrushHit(hit: PaintHit, width: number, height: number, cachedHits?: Map<string, PaintHit | null>, localHits?: Map<string | number, PaintHit | null>, images = new Map<string, ImageData>(), columnCache?: typeof previewAdjacentColumns): (x: number, y: number) => PaintHit | null {
   const scale = hit.layer ? 1.0625 : 1;
@@ -557,6 +602,7 @@ function createAdjacentBrushHit(hit: PaintHit, width: number, height: number, ca
     const rowKey = columns ? target.getComponent(rowAxis) : 0;
     let adjacentHit = columns ? columns.get(columnKey)?.get(rowKey) : cachedHits?.get(key);
     if (adjacentHit !== undefined) {
+      adjacentHit = currentPaintLayer(adjacentHit, images);
       const result = !adjacentHit || adjacentHit.promote || adjacentHit.surface.objectUuid === hit.surface.objectUuid || !isSamePaintFace(hit.face, adjacentHit.face) ? null : adjacentHit;
       localHits?.set(localKey, result);
       return result;
@@ -638,7 +684,7 @@ function getBrushPaints(hit: PaintHit, cachedHits?: Map<string, PaintHit | null>
 
 function stampBrush(hit: PaintHit): void {
   const touched = new Set<WorkSurface>();
-  for (const { hit: target, source, coverage } of getBrushPaints(hit)) {
+  for (const { hit: target, source, coverage } of getBrushPaints(hit, previewAdjacentHits, undefined, undefined, previewPaintImages, previewAdjacentColumns)) {
     const work = getWork(target);
     const part = facePartIndexes[target.face] + target.layer * 6;
     forEachGridPixel(target.columns, target.rows, target.x, target.y, (pixelX, pixelY) => {
@@ -787,7 +833,7 @@ function getStampCells(hit: PaintHit, includeEmpty: boolean, cachedHits?: Map<st
 
 function placeStamp(hit: PaintHit): void {
   const touched = new Set<WorkSurface>();
-  getStampCells(hit, false).forEach(({ hit: target, index }) => {
+  getStampCells(hit, false, previewAdjacentHits, undefined, undefined, previewPaintImages, previewAdjacentColumns).forEach(({ hit: target, index }) => {
     const work = getWork(target);
     const part = facePartIndexes[target.face] + target.layer * 6;
     const color = stampPixels[index]!;
@@ -1095,6 +1141,31 @@ function prepareGpuPaintPreview(hit: PaintHit): HeadPainterGpuPreviewData | null
     binDimensions: new Vector4(dimensions.x, dimensions.y, dimensions.z, 0), origin, sourceSlots, unsupportedBounds, rayLength };
 }
 
+function updateGpuPaintPreviewAlphas(): void {
+  if (!gpuPreviewSceneData || !gpuPaintPreview) return;
+  const { records, sourceSlots } = gpuPreviewSceneData;
+  const buffer = gpuPaintPreview.buffers.records;
+  for (const work of pendingGpuPaintWorks) {
+    for (let face = 0; face < 6; face++) {
+      const slot = sourceSlots.get(`${work.surface.mesh.uuid}_${work.surface.instanceId}:${face}`);
+      if (slot === undefined || records[slot * 4 + 3] !== 2) continue;
+      let low = 0, high = 0;
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+        if (!work.image.data[pixelOffset(facePartIndexes[face] + 6, x, y) + 3]) continue;
+        const bit = y * 8 + x;
+        if (bit < 32) low = (low | (1 << bit)) >>> 0; else high = (high | (1 << (bit - 32))) >>> 0;
+      }
+      const offset = slot * 4 + 4;
+      if (records[offset] === low && records[offset + 1] === high) continue;
+      records[offset] = buffer.array[offset] = low;
+      records[offset + 1] = buffer.array[offset + 1] = high;
+      buffer.addUpdateRange(offset, 2);
+      buffer.needsUpdate = true;
+    }
+  }
+  pendingGpuPaintWorks.clear();
+}
+
 function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean): boolean {
   if (gpuPreviewFailed || !painterContext?.renderer?.backend?.isWebGPUBackend) return false;
   const custom = lastTool === 'brush' && brushShape === 'custom' ? customBrushes.find(brush => brush.name === selectedBrushName) : null;
@@ -1123,6 +1194,7 @@ function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean):
         return false;
       }
       gpuPreviewSceneData = data;
+      pendingGpuPaintWorks.clear();
       sceneChanged = true;
     }
     const data = gpuPreviewSceneData;
@@ -1146,8 +1218,14 @@ function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean):
         gpuPaintPreview = createHeadPainterGpuPreview(data, gpuPreviewFlags!);
         painterContext.scene.add(gpuPaintPreview.mesh);
         flagsChanged = true;
+        sceneChanged = true;
       }
-      updateHeadPainterGpuPreviewData(gpuPaintPreview!, data, flagsChanged ? gpuPreviewFlags! : undefined);
+      if (sceneChanged) updateHeadPainterGpuPreviewData(gpuPaintPreview!, data);
+      if (flagsChanged) {
+        gpuPaintPreview!.buffers.flags.array.set(gpuPreviewFlags!);
+        gpuPaintPreview!.buffers.flags.needsUpdate = true;
+        gpuPaintPreview!.paint.count = gpuPreviewFlags!.length;
+      }
     }
     if (gpuPreviewSourceKey !== sourceKey || sceneChanged) {
       const world = getInstanceWorldMatrix(hit.mesh, hit.instanceId, new Matrix4());
@@ -1177,22 +1255,7 @@ function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean):
         return false;
       }
     }
-    if (stroke && layerMode === 'auto') {
-      for (const work of stroke.values()) {
-        const slot = data.sourceSlots.get(`${work.surface.mesh.uuid}_${work.surface.instanceId}:${hit.face}`);
-        if (slot === undefined) continue;
-        let low = 0, high = 0;
-        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
-          if (!work.image.data[pixelOffset(facePartIndexes[hit.face] + 6, x, y) + 3]) continue;
-          const bit = y * 8 + x;
-          if (bit < 32) low = (low | (1 << bit)) >>> 0; else high = (high | (1 << (bit - 32))) >>> 0;
-        }
-        const offset = slot * 4 + 4;
-        data.records[offset] = low; data.records[offset + 1] = high;
-      }
-      gpuPaintPreview!.buffers.records.array.set(data.records);
-      gpuPaintPreview!.buffers.records.needsUpdate = true;
-    }
+    updateGpuPaintPreviewAlphas();
     gpuPaintPreview!.brush.value.set(hit.x, hit.y, width, height);
     gpuPaintPreview!.mesh.visible = true;
     hideHeadPainterStampPreview();
@@ -2490,7 +2553,12 @@ export function initHeadPainter(context: PainterContext): void {
   }
 }
 
-window.addEventListener('pde:scene-updated', () => {
+window.addEventListener('pde:scene-updated', event => {
+  if ((event as CustomEvent).detail?.texturesOnly) {
+    lastPreviewKey = null;
+    previewPaintImages.clear();
+    return;
+  }
   if (active) setPlayerHeadLayerVisible(layerMode !== 'base');
   invalidateHeadPainterGridOverlay();
 });

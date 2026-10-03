@@ -2,9 +2,8 @@ import { app, BrowserWindow, Menu, ipcMain } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import axios from 'axios';
-import { unzip } from 'fflate';
-import pLimit from 'p-limit';
+import { minecraftAssetPrefixes as requiredPrefixes, unzipMinecraftFiles, writeMinecraftAssets } from './minecraft-assets.js';
+import { downloadMinecraftFiles } from './minecraft-download.js';
 import { initHeadTextureService } from './renderer/player-head-service/head-texture-service.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -458,11 +457,6 @@ function createWindow() {
   Menu.setApplicationMenu(null);
   initHeadTextureService(win);
 
-  // ✅ 생성된 디렉토리 캐싱 (중복 mkdir 방지)
-  async function ensureDir(dirPath: string): Promise<void> {
-    await fs.mkdir(dirPath, { recursive: true });
-  }
-
   ipcMain.handle('get-asset-content', async (_event, assetPath: string) => {
     const fullPath = path.join(CACHE_DIR, assetPath);
     try {
@@ -743,27 +737,6 @@ function createWindow() {
     }
   });
 
-  const requiredPrefixes = [
-    'assets/minecraft/items/',
-    'assets/minecraft/blockstates/',
-    'assets/minecraft/models/',
-    'assets/minecraft/atlases/',
-    'assets/minecraft/font/',
-    'assets/minecraft/textures/item/',
-    'assets/minecraft/textures/font/',
-    'assets/minecraft/textures/particle/',
-    'assets/minecraft/textures/block/',
-    'assets/minecraft/textures/environment/end_sky.png',
-    'assets/minecraft/textures/environment/celestial/',
-    'assets/minecraft/textures/gui/sprites/',
-    'assets/minecraft/textures/map/decorations/',
-    'assets/minecraft/textures/mob_effect/',
-    'assets/minecraft/textures/painting/',
-    'assets/minecraft/textures/palettes/',
-    'assets/minecraft/textures/trims/items/',
-    'assets/minecraft/textures/entity/'
-  ];
-
   ipcMain.handle('get-required-prefixes', () => {
     return requiredPrefixes;
   });
@@ -782,82 +755,28 @@ function createWindow() {
       ]);
       const hasAssets = hasAssetsMarker && hasFontAssets && requiredAssetsReady;
       if (!hasAssets || !hasRegistry) event.sender.send('assets-progress', '팽치가 모장에서 뛰어오는중');
-      const [clientResponse, serverResponse] = await Promise.all([
-        hasAssets ? null : axios<ArrayBuffer>({ url: clientUrl, method: 'GET', responseType: 'arraybuffer' }),
-        hasRegistry ? null : axios<ArrayBuffer>({ url: serverUrl, method: 'GET', responseType: 'arraybuffer' })
-      ]);
-
-        if (clientResponse) {
-        event.sender.send('assets-progress', '팽치가 블럭을 쌓는중');
-        console.log('Assets not found. Downloading client assets...');
-        // assets 폴더만 선택적으로 압축 해제
-        console.log('Unzipping assets only...');
-        const unzipStart = Date.now();
-        
-        const unzipped = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
-          unzip(new Uint8Array(clientResponse.data), {
-            filter(file) {
-              return file.name.startsWith('assets/minecraft/') && !file.name.endsWith('/');
-            }
-          }, (err, data) => {
-            if (err) reject(err);
-            else resolve(data);
-          });
-        });
-        
-        console.log(`Unzip complete in ${Date.now() - unzipStart}ms`);
-
-        // 필요한 prefix만 추가 필터링
-        const allNames = Object.keys(unzipped);
-        const assetEntries = allNames.filter(name =>
-          requiredPrefixes.some(prefix => name.startsWith(prefix))
-        );
-
-        console.log(`Saving ${assetEntries.length} assets to disk...`);
-
-        // 병렬 파일 쓰기 (제한 64)
-        const limit = pLimit(64);
-        let savedCount = 0;
-        const writeStart = Date.now();
-
-        await Promise.all(assetEntries.map(name =>
-          limit(async () => {
-            const relativePath = name.replace(/^client\/assets\//, 'assets/');
-            const fullPath = path.join(CACHE_DIR, relativePath);
-
-            await ensureDir(path.dirname(fullPath));
-            await fs.writeFile(fullPath, unzipped[name]);
-
-            savedCount++;
-            if (savedCount % 1000 === 0) {
-              console.log(`Saved ${savedCount}/${assetEntries.length} assets...`);
-            }
-          })
-        ));
-
-        console.log(`File writing complete in ${Date.now() - writeStart}ms`);
-        await fs.writeFile(ASSET_CACHE_READY_PATH, clientUrl);
-        }
-
-        if (serverResponse) {
-        event.sender.send('assets-progress', '팽치가 블럭 아이템 리스트를 배껴적는중');
-        console.log('item-block-list.json not found. Downloading server registry...');
-        const serverBundle = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
-          unzip(new Uint8Array(serverResponse.data), {
-            filter: file => /^META-INF\/versions\/.+\/server-.+\.jar$/.test(file.name)
-          }, (err, data) => err ? reject(err) : resolve(data));
-        });
-        const bundledServer = Object.values(serverBundle)[0];
-        if (!bundledServer) throw new Error('Bundled server jar was not found.');
-        const serverClasses = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
-          unzip(bundledServer, {
-            filter: file => [
+      const [, serverClasses] = await Promise.all([
+        hasAssets ? null : downloadMinecraftFiles(clientUrl, name => requiredPrefixes.some(prefix => name.startsWith(prefix)))
+          .then(async files => {
+            event.sender.send('assets-progress', '팽치가 블럭을 쌓는중');
+            await writeMinecraftAssets(files, CACHE_DIR);
+            await fs.writeFile(ASSET_CACHE_READY_PATH, clientUrl);
+          }),
+        hasRegistry ? null : downloadMinecraftFiles(serverUrl, name => /^META-INF\/versions\/.+\/server-.+\.jar$/.test(name))
+          .then(async serverBundle => {
+            console.log('item-block-list.json not found. Downloading server registry...');
+            const bundledServer = Object.values(serverBundle)[0];
+            if (!bundledServer) throw new Error('Bundled server jar was not found.');
+            return unzipMinecraftFiles(bundledServer, name => [
               'net/minecraft/world/item/CreativeModeTabs.class',
               'net/minecraft/world/item/Items.class',
               'net/minecraft/world/level/block/Blocks.class'
-            ].includes(file.name)
-          }, (err, data) => err ? reject(err) : resolve(data));
-        });
+            ].includes(name));
+          })
+      ]);
+
+      if (serverClasses) {
+        event.sender.send('assets-progress', '팽치가 블럭 아이템 리스트를 배껴적는중');
         const itemAssetNames = new Set(
           (await fs.readdir(path.join(assetsPath, 'minecraft', 'items')))
             .filter(name => name.endsWith('.json'))
@@ -892,17 +811,17 @@ function createWindow() {
           JSON.stringify({ registry: 'server-jar', ...registry })
         );
         console.log(`item-block-list.json generated in ${Date.now() - registryStart}ms`);
-        } else {
-          const cachedRegistry = await fs.readFile(registryPath, 'utf8');
-          const registry = JSON.parse(cachedRegistry) as RegistryList;
-          if (!Array.isArray(registry.items) || !Array.isArray(registry.blocks)) throw new Error('Cached registry is invalid.');
-          await includeHardcodedRegistryItems(registry);
-          const normalizedRegistry = JSON.stringify({ registry: 'server-jar', items: registry.items, blocks: registry.blocks });
-          if (normalizedRegistry !== cachedRegistry) await fs.writeFile(registryPath, normalizedRegistry);
-        }
-        const totalTime = Date.now() - startTime;
-        console.log(`Asset cache ready in ${(totalTime / 1000).toFixed(2)}s`);
-        event.sender.send('assets-downloaded', []);
+      } else {
+        const cachedRegistry = await fs.readFile(registryPath, 'utf8');
+        const registry = JSON.parse(cachedRegistry) as RegistryList;
+        if (!Array.isArray(registry.items) || !Array.isArray(registry.blocks)) throw new Error('Cached registry is invalid.');
+        await includeHardcodedRegistryItems(registry);
+        const normalizedRegistry = JSON.stringify({ registry: 'server-jar', items: registry.items, blocks: registry.blocks });
+        if (normalizedRegistry !== cachedRegistry) await fs.writeFile(registryPath, normalizedRegistry);
+      }
+      const totalTime = Date.now() - startTime;
+      console.log(`Asset cache ready in ${(totalTime / 1000).toFixed(2)}s`);
+      event.sender.send('assets-downloaded', []);
     } catch (error) {
       console.error('Asset download and caching failed:', error);
       event.sender.send('assets-download-failed', errorMessage(error));

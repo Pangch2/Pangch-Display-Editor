@@ -528,7 +528,11 @@ export function renderVisibleSceneRows(): void {
     }
 }
 
-export function scheduleScenePanelRender(): void {
+export function scheduleScenePanelRender(refresh = false): void {
+    if (refresh) {
+        scenePanelState.renderedRowEls.forEach(el => el.remove());
+        scenePanelState.renderedRowEls.clear();
+    }
     if (scenePanelState.scenePanelRenderRaf) return;
     scenePanelState.scenePanelRenderRaf = requestAnimationFrame(() => {
         scenePanelState.scenePanelRenderRaf = 0;

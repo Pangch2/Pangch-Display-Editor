@@ -5,6 +5,17 @@ import { buildBlockIconTemplate, buildItemIconModels, type ModelData } from '../
 import { buildTextureAtlasForRenderList, type TexturePixelData } from '../load-project/scene/texture-atlas-builder';
 
 const iconSize = 64;
+const iconAssetPromises = new Map<string, ReturnType<typeof mainThreadAssetProvider.getAsset>>();
+const iconAssetProvider = {
+    getAsset(path: string): ReturnType<typeof mainThreadAssetProvider.getAsset> {
+        let promise = iconAssetPromises.get(path);
+        if (!promise) {
+            promise = mainThreadAssetProvider.getAsset(path);
+            iconAssetPromises.set(path, promise);
+        }
+        return promise;
+    }
+};
 const defaultBlockGuiTransform = {
     rotation: [30, 225, 0],
     translation: [0, 0, 0],
@@ -206,7 +217,7 @@ async function loadFlatItemIcon(name: string): Promise<ImageBitmap | null> {
         }
         if (!textureId) return null;
         const [textureNamespace, texturePath] = textureId.includes(':') ? textureId.split(':', 2) : ['minecraft', textureId];
-        const asset = await mainThreadAssetProvider.getAsset(`assets/${textureNamespace}/textures/${texturePath}.png`);
+        const asset = await iconAssetProvider.getAsset(`assets/${textureNamespace}/textures/${texturePath}.png`);
         if (!(asset instanceof Uint8Array)) return null;
         const bitmap = await createImageBitmap(new Blob([asset as BlobPart], { type: 'image/png' }));
         if (bitmap.height <= bitmap.width) return bitmap;
@@ -310,7 +321,7 @@ let atlasPromise: Promise<ItemIconAtlas> | null = null;
 
 async function readJson(path: string): Promise<any | null> {
     try {
-        return JSON.parse(String(await mainThreadAssetProvider.getAsset(path)));
+        return JSON.parse(String(await iconAssetProvider.getAsset(path)));
     } catch {
         return null;
     }
@@ -318,7 +329,7 @@ async function readJson(path: string): Promise<any | null> {
 
 async function loadTexturePixels(texPath: string): Promise<TexturePixelData | null> {
     try {
-        const asset = await mainThreadAssetProvider.getAsset(texPath);
+        const asset = await iconAssetProvider.getAsset(texPath);
         if (!(asset instanceof Uint8Array)) return null;
         const bitmap = await createImageBitmap(new Blob([asset as BlobPart], { type: 'image/png' }));
         try {
@@ -339,15 +350,18 @@ async function loadTexturePixels(texPath: string): Promise<TexturePixelData | nu
 }
 
 async function prepareIcons(names: string[]): Promise<PreparedIcon[]> {
-    const icons: PreparedIcon[] = [];
-    for (let start = 0; start < names.length; start += 32) {
-        const chunk = await Promise.all(names.slice(start, start + 32).map(async (name): Promise<PreparedIcon | null> => {
+    const icons = new Array<PreparedIcon | null>(names.length);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(32, names.length) }, async () => {
+        while (cursor < names.length) {
+            const index = cursor++;
+            const name = names[index];
             const useBlockModel = usesBlockIconModel(name);
             const image = useBlockModel ? null : await loadFlatItemIcon(name);
-            const itemModels = image ? null : await buildItemIconModels(`${name}[display=gui]`, mainThreadAssetProvider);
+            const itemModels = image ? null : await buildItemIconModels(`${name}[display=gui]`, iconAssetProvider);
             const blockIcon = !image && (useBlockModel || !itemModels) ? await getBlockIconName(name) : null;
             const blockTemplate = blockIcon
-                ? await buildBlockIconTemplate(blockIcon, mainThreadAssetProvider)
+                ? await buildBlockIconTemplate(blockIcon, iconAssetProvider)
                 : null;
             const applyHardcodedGuiTransform = !!itemModels?.some(model => model.fromHardcoded)
                 && await usesHardcodedItemGeometry(name);
@@ -355,7 +369,7 @@ async function prepareIcons(names: string[]): Promise<PreparedIcon[]> {
                 useBlockModel || !itemModels || !!blockTemplate.fromHardcoded && applyHardcodedGuiTransform
             );
             const models = useBlock ? blockTemplate?.models : itemModels;
-            return models || image ? {
+            icons[index] = models || image ? {
                 name,
                 models: models ? cloneModels(models) : [],
                 image: image ?? undefined,
@@ -363,10 +377,9 @@ async function prepareIcons(names: string[]): Promise<PreparedIcon[]> {
                 guiTransform: useBlock ? await getGuiTransform(name) : null,
                 blockProps: useBlock ? blockTemplate?.blockProps : undefined
             } : null;
-        }));
-        icons.push(...chunk.filter((icon): icon is PreparedIcon => icon !== null));
-    }
-    return icons;
+        }
+    }));
+    return icons.filter((icon): icon is PreparedIcon => icon !== null);
 }
 
 function createAtlasTexture(data: Uint8ClampedArray, width: number, height: number): Promise<THREE.Texture> {
@@ -431,30 +444,17 @@ function createModelGroup(
     return group;
 }
 
-async function renderIcon(
-    renderer: THREE.WebGPURenderer,
-    scene: THREE.Scene,
-    camera: THREE.OrthographicCamera,
-    icon: PreparedIcon,
-    atlasTexture: THREE.Texture,
-    materials: Map<string, THREE.Material>
-): Promise<void> {
-    const group = createModelGroup(icon, atlasTexture, materials);
-    scene.add(group);
+function placeIconGroup(group: THREE.Group, x: number, y: number): THREE.Group {
     group.updateMatrixWorld(true);
-
     const bounds = new THREE.Box3().setFromObject(group);
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
-    const viewSize = Math.max(1, size.x, size.y) / 0.88;
-    camera.left = camera.bottom = -viewSize / 2;
-    camera.right = camera.top = viewSize / 2;
-    camera.position.set(center.x, center.y, center.z + Math.max(10, size.z * 2));
-    camera.lookAt(center);
-    camera.updateProjectionMatrix();
-
-    renderer.render(scene, camera);
-    scene.remove(group);
+    const scale = 0.88 / Math.max(1, size.x, size.y);
+    const cell = new THREE.Group();
+    cell.add(group);
+    cell.scale.setScalar(scale);
+    cell.position.set(x - center.x * scale, y - center.y * scale, -center.z * scale);
+    return cell;
 }
 
 async function buildAtlases(
@@ -480,14 +480,47 @@ async function buildAtlases(
         return { image, context, icons: createIconMap(names, grid.columns) };
     });
 
+    const modelNames = [...prepared.values()].filter(icon => !icon.image).map(icon => icon.name);
+    const grid = atlasGrid(modelNames.length);
+    const modelPositions = createIconMap(modelNames, grid.columns);
+    const rendered = document.createElement('canvas');
+    rendered.width = grid.width;
+    rendered.height = grid.height;
+    if (modelNames.length) {
+        renderer.setSize(grid.width, grid.height, false);
+        camera.left = 0;
+        camera.right = grid.columns;
+        camera.top = 0;
+        camera.bottom = -grid.columns;
+        camera.position.set(0, 0, 10);
+        camera.lookAt(0, 0, 0);
+        camera.updateProjectionMatrix();
+        for (const name of modelNames) {
+            const position = modelPositions.get(name)!;
+            scene.add(placeIconGroup(
+                createModelGroup(prepared.get(name)!, atlasTexture, materials),
+                position.x / iconSize + 0.5, -position.y / iconSize - 0.5
+            ));
+        }
+        await renderer.compileAsync(scene, camera);
+        renderer.render(scene, camera);
+        // Copy the GPU canvas once; all per-icon crops then use this 2D canvas.
+        rendered.getContext('2d')!.drawImage(renderer.domElement, 0, 0);
+    }
+
     for (const name of new Set([...itemNames, ...blockNames])) {
         const icon = prepared.get(name);
         if (!icon) continue;
-        if (!icon.image) await renderIcon(renderer, scene, camera, icon, atlasTexture, materials);
         for (const target of targets) {
             const position = target.icons.get(name);
             if (!position) continue;
-            target.context.drawImage(icon.image ?? renderer.domElement, position.x, position.y, iconSize, iconSize);
+            if (icon.image) {
+                target.context.drawImage(icon.image, position.x, position.y, iconSize, iconSize);
+            } else {
+                const source = modelPositions.get(name)!;
+                target.context.drawImage(rendered, source.x, source.y, iconSize, iconSize,
+                    position.x, position.y, iconSize, iconSize);
+            }
         }
     }
     return {
@@ -547,28 +580,30 @@ async function loadAtlases(): Promise<ItemIconAtlas | null> {
 
 async function createAtlases(): Promise<ItemIconAtlas> {
     window.dispatchEvent(new Event('pde:creating-icon-atlases'));
-    const list = await readJson('item-block-list.json');
-    const itemNames = [...new Set<string>(list?.items ?? [])];
-    const blockNames = [...new Set<string>(list?.blocks ?? [])];
     const atlasStart = performance.now();
-    const entries = await prepareIcons([...new Set([...itemNames, ...blockNames])]);
-    const prepared = new Map(entries.map(entry => [entry.name, entry]));
-    const textureAtlas = await buildTextureAtlasForRenderList(
-        entries.map(entry => ({ type: 'itemDisplayModel', models: entry.models, blockProps: entry.blockProps })),
-        loadTexturePixels
-    );
-    if (!textureAtlas) throw new Error('Failed to build the item icon texture atlas.');
-
-    const atlasTexture = await createAtlasTexture(textureAtlas.data, textureAtlas.width, textureAtlas.height);
-    const renderer = new THREE.WebGPURenderer({ antialias: false, alpha: true, logarithmicDepthBuffer: true });
-    renderer.setSize(iconSize, iconSize, false);
-    renderer.setClearColor(0x000000, 0);
-    await renderer.init();
+    let entries: PreparedIcon[] = [];
+    let atlasTexture: THREE.Texture | undefined;
+    let renderer: THREE.WebGPURenderer | undefined;
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0.01, 100);
     const materials = new Map<string, THREE.Material>();
 
     try {
+        const list = await readJson('item-block-list.json');
+        const itemNames = [...new Set<string>(list?.items ?? [])];
+        const blockNames = [...new Set<string>(list?.blocks ?? [])];
+        entries = await prepareIcons([...new Set([...itemNames, ...blockNames])]);
+        const prepared = new Map(entries.map(entry => [entry.name, entry]));
+        const textureAtlas = await buildTextureAtlasForRenderList(
+            entries.map(entry => ({ type: 'itemDisplayModel', models: entry.models, blockProps: entry.blockProps })),
+            loadTexturePixels
+        );
+        if (!textureAtlas) throw new Error('Failed to build the item icon texture atlas.');
+
+        atlasTexture = await createAtlasTexture(textureAtlas.data, textureAtlas.width, textureAtlas.height);
+        renderer = new THREE.WebGPURenderer({ antialias: false, alpha: true, logarithmicDepthBuffer: true });
+        renderer.setClearColor(0x000000, 0);
+        await renderer.init();
         const { items, blocks } = await buildAtlases(
             itemNames, blockNames, prepared, renderer, scene, camera, atlasTexture, materials
         );
@@ -576,10 +611,15 @@ async function createAtlases(): Promise<ItemIconAtlas> {
         window.ipcApi.send?.('log-atlas-generation-time', performance.now() - atlasStart);
         return { itemImage: items.image, blockImage: blocks.image, itemIcons: items.icons, blockIcons: blocks.icons };
     } finally {
+        iconAssetPromises.clear();
         entries.forEach(entry => entry.image?.close());
+        scene.traverse(object => {
+            if (object instanceof THREE.Mesh) object.geometry.dispose();
+        });
         materials.forEach(material => material.dispose());
-        atlasTexture.dispose();
-        renderer.dispose();
+        (atlasTexture?.image as ImageBitmap | undefined)?.close();
+        atlasTexture?.dispose();
+        renderer?.dispose();
     }
 }
 

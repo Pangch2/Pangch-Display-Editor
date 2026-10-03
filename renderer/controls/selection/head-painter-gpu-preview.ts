@@ -227,6 +227,7 @@ export type HeadPainterGpuPreview = ReturnType<typeof createHeadPainterGpuPrevie
 export function updateHeadPainterGpuPreviewData(preview: HeadPainterGpuPreview, data: HeadPainterGpuPreviewData, flags?: Uint32Array): void {
     for (const name of ['triangles', 'records', 'bins', 'indices'] as const) {
         preview.buffers[name].array.set(data[name]);
+        preview.buffers[name].clearUpdateRanges();
         preview.buffers[name].needsUpdate = true;
     }
     if (flags) {

@@ -72,7 +72,10 @@ window.addEventListener('resize', () => {
     }
     scenePanelVisible = visible;
 });
-window.addEventListener('pde:scene-updated', refreshScenePanel);
+window.addEventListener('pde:scene-updated', event => {
+    if ((event as CustomEvent).detail?.texturesOnly) scheduleScenePanelRender(true);
+    else refreshScenePanel();
+});
 window.addEventListener('pde:object-renamed', () => {
     if (!(document.activeElement as HTMLElement | null)?.classList.contains('scene-name-input')) refreshScenePanel();
 });

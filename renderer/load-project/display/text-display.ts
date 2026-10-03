@@ -270,7 +270,7 @@ function loadBitmapFont(): Promise<Map<string, BitmapGlyph>> {
 }
 
 function loadUnihexFont(): Promise<UnihexFontSource> {
-    return unihexFontPromise ??= fetch(new URL('../../resources/unifont-17.0.01.hex', import.meta.url)).then(async response => {
+    return unihexFontPromise ??= fetch(new URL('../../../resources/unifont-17.0.01.hex', import.meta.url)).then(async response => {
         if (!response.ok) throw new Error(`Unifont HEX failed to load: ${response.status}`);
         const glyphs = new Map<number, string>();
         for (const line of (await response.text()).split(/\r?\n/u)) {

@@ -15,6 +15,7 @@ let refreshUvEditor = () => {};
 
 function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
     let faces = getPlayerHeadAtlasFaces(canvas);
+    let facesDirty = false;
     selectedFace = canvas === selectedCanvas ? faces.find(face => face.x === selectedFace?.x && face.y === selectedFace?.y) ?? null : null;
     selectedCanvas = canvas;
     const selection = document.createElement('div');
@@ -47,7 +48,7 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
         caption.textContent = `${selectedFace.name} · X ${rect.x}, Y ${rect.y} · ${rect.width} × ${rect.height} px · ${selectedFace.surfaces.length}개 헤드 · 내부: 이동 / 테두리: 크기`;
     };
     const finishEdit = (face: PlayerHeadAtlasFace, before: ReturnType<typeof capturePlayerHeadAtlasState>) => {
-        face.surfaces.forEach(commitPlayerHeadPaint);
+        face.surfaces.forEach(surface => commitPlayerHeadPaint(surface));
         const after = capturePlayerHeadAtlasState(face.surfaces.map(surface => surface.objectUuid));
         const apply = (state: typeof before) => {
             restorePlayerHeadAtlasState(state);
@@ -56,12 +57,19 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
         record({ undo: () => apply(before), redo: () => apply(after) });
         window.dispatchEvent(new Event('pde:scene-updated'));
     };
-    refreshUvEditor = () => {
+    const refreshFaces = () => {
+        if (!facesDirty) return;
         faces = getPlayerHeadAtlasFaces(canvas);
         selectedFace = faces.find(face => face.x === selectedFace?.x && face.y === selectedFace?.y) ?? null;
+        facesDirty = false;
+    };
+    refreshUvEditor = () => {
+        facesDirty = true;
+        if (selectedFace && stage.offsetParent) refreshFaces();
         refresh();
     };
     stage.addEventListener('pointerdown', event => {
+        refreshFaces();
         if (event.button !== 0 || cancelUvDrag) return;
         refreshUvEditor();
         const bounds = canvas.getBoundingClientRect();
@@ -127,6 +135,7 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
         window.addEventListener('keydown', escape, true);
     });
     selection.addEventListener('keydown', event => {
+        refreshFaces();
         if (!selectedFace || cancelUvDrag || event.ctrlKey || event.metaKey || event.altKey) return;
         const delta = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
         if (!delta) return;

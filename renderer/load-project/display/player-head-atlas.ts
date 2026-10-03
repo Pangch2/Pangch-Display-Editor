@@ -30,7 +30,7 @@ export type PlayerHeadAtlas = {
     imageHeadNextTile?: number;
     imageHeadReservedSlots?: number;
     imageHeadTiles?: Set<number>;
-    imageHeadTileKeys?: Map<string, number>;
+    imageHeadTileKeys?: Map<number, string>;
     skins: Map<string, PlayerHeadSkin>;
     slotUrls: Array<string | undefined>;
 };
@@ -50,7 +50,7 @@ type PlayerHeadAtlasSnapshot = {
     imageHeadNextTile?: number;
     imageHeadReservedSlots?: number;
     imageHeadTiles?: number[];
-    imageHeadTileKeys?: Array<[string, number]>;
+    imageHeadTileKeys?: Array<[number, string]>;
     skins?: Map<string, PlayerHeadSkin>;
     slotUrls?: Array<string | undefined>;
     slotEntries?: Array<{ slot: number; url?: string; skin?: PlayerHeadSkin }>;
@@ -550,7 +550,7 @@ export function createImageHeadAtlasMeshes(
     const tilePixelCache = new WeakMap<PlayerHeadAtlas, Map<number, Uint8ClampedArray>>();
     const atlasEntries = new Map<PlayerHeadAtlas, Array<{ index: number; tile: number }>>();
     const keyedTiles = new Map<string, Array<{ atlas: PlayerHeadAtlas; tile: number }>>();
-    for (const atlas of atlases) for (const [key, tile] of atlas.imageHeadTileKeys ?? []) {
+    for (const atlas of atlases) for (const [tile, key] of atlas.imageHeadTileKeys ?? []) {
         const candidates = keyedTiles.get(key) ?? [];
         candidates.push({ atlas, tile });
         keyedTiles.set(key, candidates);
@@ -611,7 +611,7 @@ export function createImageHeadAtlasMeshes(
             }
             if (!assignment && candidates.length === 0) {
                 const { atlas, tile } = allocateTile();
-                atlas.imageHeadTileKeys!.set(key, tile);
+                atlas.imageHeadTileKeys!.set(tile, key);
                 keyedTiles.set(key, [{ atlas, tile }]);
                 atlas.context.drawImage(source, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE,
                     tile % tilesPerRow * PLAYER_HEAD_PART_SIZE, Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE,
@@ -928,7 +928,8 @@ export function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): P
             imageHeadNextTile: targeted && imageTiles.length === 0 ? undefined : atlas.imageHeadNextTile,
             imageHeadReservedSlots: targeted && imageTiles.length === 0 ? undefined : atlas.imageHeadReservedSlots,
             imageHeadTiles: imageTiles,
-            imageHeadTileKeys: [...(atlas.imageHeadTileKeys ?? [])].filter(([, tile]) => usedImageTiles.has(tile)),
+            imageHeadTileKeys: imageTiles.filter(tile => atlas.imageHeadTileKeys?.has(tile))
+                .map(tile => [tile, atlas.imageHeadTileKeys!.get(tile)!] as [number, string]),
             skins: targeted ? undefined : new Map(Array.from(atlas.skins, ([url, skin]) => [url, { ...skin }])),
             slotUrls: targeted ? undefined : [...atlas.slotUrls],
             slotEntries: targeted ? usedSlots.map(slot => {
@@ -1001,12 +1002,9 @@ export function restorePlayerHeadAtlasState(value: unknown): void {
                 atlas.imageHeadReservedSlots = state.imageHeadReservedSlots;
                 atlas.imageHeadTiles ??= new Set();
                 state.imageHeadTiles.forEach(tile => atlas.imageHeadTiles!.add(tile));
-                const restoredTiles = new Set(state.imageHeadTiles);
-                for (const [key, tile] of atlas.imageHeadTileKeys ?? []) {
-                    if (restoredTiles.has(tile)) atlas.imageHeadTileKeys!.delete(key);
-                }
+                state.imageHeadTiles.forEach(tile => atlas.imageHeadTileKeys?.delete(tile));
                 atlas.imageHeadTileKeys ??= new Map();
-                state.imageHeadTileKeys?.forEach(([key, tile]) => atlas.imageHeadTileKeys!.set(key, tile));
+                state.imageHeadTileKeys?.forEach(([tile, key]) => atlas.imageHeadTileKeys!.set(tile, key));
             }
             atlas.texture.needsUpdate = true;
             continue;
@@ -1068,9 +1066,7 @@ export function cleanupUnusedPlayerHeadAtlasSlots(): void {
                 PLAYER_HEAD_PART_SIZE
             );
             allocated.delete(tile);
-            for (const [key, mappedTile] of atlas.imageHeadTileKeys ?? []) {
-                if (mappedTile === tile) atlas.imageHeadTileKeys!.delete(key);
-            }
+            atlas.imageHeadTileKeys?.delete(tile);
             atlas.texture.needsUpdate = true;
             changed = true;
         }
@@ -1121,11 +1117,9 @@ export function getPlayerHeadPaintSurface(
                     1 - (y + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
                 );
                 uvOffsets.needsUpdate = true;
-                atlas.texture.needsUpdate = true;
+                if (!paintUsage) atlas.texture.needsUpdate = true;
             } else {
-                for (const [key, tile] of atlas.imageHeadTileKeys ?? []) {
-                    if (tile === oldTile) atlas.imageHeadTileKeys!.delete(key);
-                }
+                atlas.imageHeadTileKeys?.delete(oldTile);
             }
         }
         return {
@@ -1149,7 +1143,7 @@ export function getPlayerHeadPaintSurface(
         slot = nextSlot;
         uvOffsets.setXY(instanceId, nextX / PLAYER_HEAD_ATLAS_SIZE, 1 - (nextY + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE);
         uvOffsets.needsUpdate = true;
-        atlas.texture.needsUpdate = true;
+        if (!paintUsage) atlas.texture.needsUpdate = true;
     }
     return {
         mesh,
@@ -1189,8 +1183,9 @@ export function writePlayerHeadPaint(surface: PlayerHeadPaintSurface, packed: Im
     if (updateTexture) surface.texture.needsUpdate = true;
 }
 
-export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface): void {
-    const packed = readPlayerHeadPaint(surface);
+let playerHeadSkinCanvas: HTMLCanvasElement | undefined;
+
+export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = readPlayerHeadPaint(surface)): void {
     let hasHat = false;
     for (let y = PLAYER_HEAD_PART_SIZE * 2; y < PLAYER_HEAD_BLOCK_HEIGHT && !hasHat; y++) {
         for (let x = 0; x < PLAYER_HEAD_BLOCK_WIDTH; x++) {
@@ -1202,11 +1197,12 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface): void {
     }
     surface.mesh.userData.hasHat[surface.instanceId] = hasHat;
 
-    const skin = document.createElement('canvas');
-    skin.width = skin.height = 64;
+    const skin = playerHeadSkinCanvas ??= document.createElement('canvas');
+    if (skin.width !== 64 || skin.height !== 64) skin.width = skin.height = 64;
     const context = skin.getContext('2d');
     if (!context) return;
     context.imageSmoothingEnabled = false;
+    context.clearRect(0, 0, 64, 64);
     playerHeadPartOrder.forEach((key, index) => {
         const [dx, dy] = playerHeadFaceParts[key];
         const sourceX = (index % 3) * PLAYER_HEAD_PART_SIZE;
@@ -1219,7 +1215,7 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface): void {
     const oldUrl = atlas?.slotUrls[surface.slot];
     if (atlas && surface.denseLayer !== undefined) {
         const tile = surface.y / PLAYER_HEAD_PART_SIZE * (PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE) + surface.x / PLAYER_HEAD_PART_SIZE;
-        for (const [key, value] of atlas.imageHeadTileKeys ?? []) if (value === tile) atlas.imageHeadTileKeys!.delete(key);
+        atlas.imageHeadTileKeys?.delete(tile);
     }
     if (atlas && surface.denseLayer === undefined) {
         if (oldUrl && atlas.skins.get(oldUrl)?.slot === surface.slot) atlas.skins.delete(oldUrl);

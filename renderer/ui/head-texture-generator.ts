@@ -1,4 +1,4 @@
-import { getPlayerHeadTexture, replacePlayerHeadTextureReference, notifyPlayerHeadAtlasesChanged } from '../load-project/display/mesh-builder';
+import { getPlayerHeadTexture, replacePlayerHeadTextureReference } from '../load-project/display/mesh-builder';
 import { getActiveProjectId, hasProject, loadedObjectGroup } from '../load-project/pbde/upload-pbde';
 import { record, isApplying } from '../controls/undo-redo/undo-redo';
 import type { HeadTextureState } from '../player-head-service/head-texture-types';
@@ -22,8 +22,7 @@ function applyResults(): void {
     });
     if (!changes.length) return;
     const refresh = () => {
-      notifyPlayerHeadAtlasesChanged();
-      window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+      window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { texturesOnly: true, skipGizmoRefresh: true } }));
     };
     record({
       undo: () => { for (const item of changes) replacePlayerHeadTextureReference(item.uuid, item.url, item.source); refresh(); },
