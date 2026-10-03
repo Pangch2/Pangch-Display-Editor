@@ -122,8 +122,8 @@ let lastTool: Tool = 'brush';
 let layerMode: LayerMode = 'auto';
 let gridHorizontal = 8;
 let gridVertical = 8;
-let gridEnabled = true;
-let smartGrid = true;
+let gridEnabled = localStorage.getItem('pdeHeadPainterGridEnabled') !== 'false';
+let smartGrid = localStorage.getItem('pdeHeadPainterSmartGrid') !== 'false';
 let gridColor: [number, number, number] = [112, 199, 255];
 let brushWidth = 1;
 let brushHeight = 1;
@@ -133,8 +133,8 @@ let brushShape: 'square' | 'circle' | 'custom' = 'square';
 let eraserSize = 1;
 let eraserHardness = 100;
 let eraserStrength = 100;
-let overwrite = false;
-let paintAdjacentHeads = true;
+let overwrite = localStorage.getItem('pdeHeadPainterOverwrite') === 'true';
+let paintAdjacentHeads = localStorage.getItem('pdeHeadPainterAdjacent') !== 'false';
 let colorMode: 'rgb' | 'oklch' = 'rgb';
 let currentColor: Rgba = [0, 0, 0, 255];
 let palette: Array<Rgba | null> = Array(64).fill(null);
@@ -2314,7 +2314,7 @@ function createPanel(): void {
       <label>2번 레이어 <select id="head-painter-layer"><option value="auto">기본</option><option value="layer">켜기</option><option value="base">끄기</option></select></label>
       <div class="head-painter-inline"><label>가로 <input id="head-painter-grid-horizontal" type="number" min="0" max="8" value="8"></label><label>세로 <input id="head-painter-grid-vertical" type="number" min="0" max="8" value="8"></label></div>
       <label>그리드 색상 <span class="head-painter-brush-color"><button id="head-painter-grid-color-picker" class="head-painter-color-preview" type="button" aria-label="그리드 색상 선택"></button><input id="head-painter-grid-color" value="#70C7FF" aria-label="그리드 색상 코드"></span></label>
-      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" checked> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" checked> 스마트 그리드</label><label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox"> 픽셀 덮어쓰기</label><label><input id="head-painter-adjacent" type="checkbox" checked> 인접 헤드 페인트</label></div>
+      <div class="head-painter-checks"><label><input id="head-painter-grid" type="checkbox" ${gridEnabled ? 'checked' : ''}> 그리드</label><label><input id="head-painter-smart-grid" type="checkbox" ${smartGrid ? 'checked' : ''}> 스마트 그리드</label><label class="head-painter-overwrite"><input id="head-painter-overwrite" type="checkbox" ${overwrite ? 'checked' : ''}> 픽셀 덮어쓰기</label><label><input id="head-painter-adjacent" type="checkbox" ${paintAdjacentHeads ? 'checked' : ''}> 인접 헤드 페인트</label></div>
     </fieldset>
     </div>
     <div class="head-painter-tool-settings" data-head-painter-section="brush">
@@ -2424,8 +2424,8 @@ function createPanel(): void {
     if (color) gridColor = color.slice(0, 3) as [number, number, number];
     syncGridColor();
   };
-  root.querySelector<HTMLInputElement>('#head-painter-grid')!.onchange = event => { gridEnabled = (event.target as HTMLInputElement).checked; invalidateHeadPainterGridOverlay(); };
-  root.querySelector<HTMLInputElement>('#head-painter-smart-grid')!.onchange = event => { smartGrid = (event.target as HTMLInputElement).checked; invalidateHeadPainterGridOverlay(); };
+  root.querySelector<HTMLInputElement>('#head-painter-grid')!.onchange = event => { gridEnabled = (event.target as HTMLInputElement).checked; localStorage.setItem('pdeHeadPainterGridEnabled', String(gridEnabled)); invalidateHeadPainterGridOverlay(); };
+  root.querySelector<HTMLInputElement>('#head-painter-smart-grid')!.onchange = event => { smartGrid = (event.target as HTMLInputElement).checked; localStorage.setItem('pdeHeadPainterSmartGrid', String(smartGrid)); invalidateHeadPainterGridOverlay(); };
   root.querySelector<HTMLSelectElement>('#head-painter-brush-shape')!.onchange = event => {
     brushShape = (event.target as HTMLSelectElement).value as typeof brushShape;
     syncBrushControls();
@@ -2445,8 +2445,8 @@ function createPanel(): void {
   bindRangePair('head-painter-eraser-size', 1, 8, value => { eraserSize = value; });
   bindRangePair('head-painter-eraser-hardness', 0, 100, value => { eraserHardness = value; });
   bindRangePair('head-painter-eraser-strength', 0, 100, value => { eraserStrength = value; });
-  root.querySelector<HTMLInputElement>('#head-painter-overwrite')!.onchange = event => { overwrite = (event.target as HTMLInputElement).checked; };
-  root.querySelector<HTMLInputElement>('#head-painter-adjacent')!.onchange = event => { paintAdjacentHeads = (event.target as HTMLInputElement).checked; };
+  root.querySelector<HTMLInputElement>('#head-painter-overwrite')!.onchange = event => { overwrite = (event.target as HTMLInputElement).checked; localStorage.setItem('pdeHeadPainterOverwrite', String(overwrite)); };
+  root.querySelector<HTMLInputElement>('#head-painter-adjacent')!.onchange = event => { paintAdjacentHeads = (event.target as HTMLInputElement).checked; localStorage.setItem('pdeHeadPainterAdjacent', String(paintAdjacentHeads)); };
   root.querySelector<HTMLInputElement>('#head-painter-stamp-width')!.oninput = event => resizeStamp(Number((event.target as HTMLInputElement).value), stampHeight);
   root.querySelector<HTMLInputElement>('#head-painter-stamp-height')!.oninput = event => resizeStamp(stampWidth, Number((event.target as HTMLInputElement).value));
   root.querySelectorAll<HTMLButtonElement>('[data-stamp]').forEach(button => button.onclick = () => transformStamp(button.dataset.stamp as 'left' | 'right' | 'vertical' | 'horizontal'));
