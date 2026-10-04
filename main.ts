@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, ipcMain } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
+import { trimProcessWorkingSets } from './memory-cleanup.js';
 import { minecraftAssetPrefixes as requiredPrefixes, unzipMinecraftFiles, writeMinecraftAssets } from './minecraft-assets.js';
 import { downloadMinecraftFiles } from './minecraft-download.js';
 import { initHeadTextureService } from './renderer/player-head-service/head-texture-service.js';
@@ -527,6 +528,7 @@ function createWindow() {
         if (typeof globalThis.gc !== 'function') throw new Error('GC is not available.');
         globalThis.gc();
       `);
+      await trimProcessWorkingSets(app.getAppMetrics().map(metric => metric.pid));
       return { success: true };
     } catch (error) {
       return { success: false, error: errorMessage(error) };

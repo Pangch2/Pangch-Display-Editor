@@ -393,7 +393,7 @@ export function notifyPlayerHeadAtlasesChanged(): void {
     }));
 }
 
-export type PlayerHeadAtlasFace = { x: number; y: number; name: string; surfaces: PlayerHeadPaintSurface[] };
+export type PlayerHeadAtlasFace = { x: number; y: number; part: number; name: string; surfaces: PlayerHeadPaintSurface[] };
 
 export function getPlayerHeadAtlasFaces(canvas: HTMLCanvasElement): PlayerHeadAtlasFace[] {
     const faces = new Map<string, PlayerHeadAtlasFace>();
@@ -409,7 +409,7 @@ export function getPlayerHeadAtlasFaces(canvas: HTMLCanvasElement): PlayerHeadAt
             const key = `${x},${y}`;
             let face = faces.get(key);
             if (!face) {
-                face = { x, y, name: `${part < 6 ? '기본' : '겉'} ${names[part % 6]}`, surfaces: [] };
+                face = { x, y, part, name: `${part < 6 ? '기본' : '겉'} ${names[part % 6]}`, surfaces: [] };
                 faces.set(key, face);
             }
             face.surfaces.push(surface);
@@ -919,6 +919,14 @@ export function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): P
             PLAYER_HEAD_PART_SIZE,
             PLAYER_HEAD_PART_SIZE
         );
+        // A moved/resized UV can sample pixels outside its allocated head slot.
+        const mappedRegions = regions.flatMap(region => region.uvs ?? []);
+        for (const { rect } of mappedRegions) {
+            if (!regions.some(region => region.x <= rect.x && region.y <= rect.y
+                && region.x + region.width >= rect.x + rect.width && region.y + region.height >= rect.y + rect.height)) {
+                addRegion(rect.x, rect.y, rect.width, rect.height);
+            }
+        }
         return {
             material: atlas.material,
             instances: instances.get(atlas.material),

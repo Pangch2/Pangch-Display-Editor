@@ -87,10 +87,11 @@ overlay.innerHTML = `
             <button type="button" data-reset-scope="assets">에셋 초기화</button>
           </fieldset>
           <fieldset>
-            <legend>GC</legend>
-            <p>사용하지 않는 JavaScript 메모리를 즉시 정리합니다.</p>
-            <p class="settings-danger-text">작업이 잠시 멈출 수 있습니다. 메모리 사용량이 비정상적으로 높을 때 진단용으로만 사용하세요.</p>
-            <button type="button" id="force-gc">GC 강제 실행</button>
+            <legend>메모리 정리</legend>
+            <p>사용하지 않는 메모리를 정리하고, Windows에서는 RAM 점유량도 줄입니다.</p>
+            <p>이후 작업이 잠시 느려질 수 있으며, 작업을 계속하면 메모리 사용량이 다시 늘어날 수 있습니다.</p>
+            <button type="button" id="force-gc">메모리 정리</button>
+            <p id="memory-cleanup-status" role="status" hidden></p>
           </fieldset>
         </section>
       </main>
@@ -548,11 +549,21 @@ overlay.querySelectorAll<HTMLButtonElement>('[data-reset-scope]').forEach(button
 
 overlay.querySelector<HTMLButtonElement>('#force-gc')!.addEventListener('click', async event => {
   const button = event.currentTarget as HTMLButtonElement;
+  const status = overlay.querySelector<HTMLElement>('#memory-cleanup-status')!;
   button.disabled = true;
-  const result = await window.ipcApi.forceGarbageCollection().catch(error => ({ success: false, error: String(error) }));
-  button.disabled = false;
-  if (result.success) void refreshSceneStatus();
-  else console.error('GC를 실행하지 못했습니다:', result.error ?? '알 수 없는 오류');
+  button.textContent = '정리 중…';
+  status.hidden = true;
+  try {
+    const result = await window.ipcApi.forceGarbageCollection();
+    await refreshSceneStatus();
+    status.textContent = result.success ? '메모리 정리를 완료했습니다.' : `메모리를 정리하지 못했습니다: ${result.error ?? '알 수 없는 오류'}`;
+  } catch (error) {
+    status.textContent = `메모리를 정리하지 못했습니다: ${String(error)}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = '메모리 정리';
+    status.hidden = false;
+  }
 });
 
 settingsButton.addEventListener('click', openSettings);
