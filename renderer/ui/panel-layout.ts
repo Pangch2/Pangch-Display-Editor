@@ -73,9 +73,9 @@ function getPanelFlexBasis(id: PanelId, index: number, panelCount: number): stri
 }
 
 function renderLayout(): void {
-    const scrollPositions = new Map<HTMLElement, number>([...Object.values(docks), ...Object.values(panels)].flatMap(panel =>
-        [panel, ...panel.querySelectorAll<HTMLElement>('#player-head-atlas-scroll, #scene-object-list, .head-painter-color-area')]
-            .map(element => [element, element.scrollTop] as const)
+    const scrollPositions = new Map<HTMLElement, readonly [number, number]>([...Object.values(docks), ...Object.values(panels)].flatMap(panel =>
+        [panel, ...panel.querySelectorAll<HTMLElement>('#player-head-atlas-scroll, .player-head-atlas-box, #scene-object-list, .head-painter-color-area')]
+            .map(element => [element, [element.scrollLeft, element.scrollTop]] as const)
     ));
     for (const side of ['left', 'right'] as DockSide[]) {
         const dock = docks[side];
@@ -97,7 +97,10 @@ function renderLayout(): void {
         dock.classList.toggle('empty', visiblePanels.length === 0);
         dock.classList.toggle('single-panel', visiblePanels.length === 1);
     }
-    for (const [element, scrollTop] of scrollPositions) element.scrollTop = scrollTop;
+    for (const [element, [scrollLeft, scrollTop]] of scrollPositions) {
+        element.scrollLeft = scrollLeft;
+        element.scrollTop = scrollTop;
+    }
     localStorage.setItem('panel-layout', JSON.stringify(layout));
     applyLayout();
 }

@@ -28,6 +28,7 @@ import {
     Camera,
     Vector2
 } from 'three/webgpu';
+import { attribute } from 'three/tsl';
 import { createHeadPainterGridMaterial, createHeadPainterPreviewMaterial } from './head-painter-gpu-preview';
 import * as GroupUtils from '../grouping/group';
 import type { GroupChildObject } from '../grouping/group';
@@ -517,7 +518,7 @@ export function updateHeadPainterGridOverlay(
     enabled: boolean,
     layerMode: 'auto' | 'layer' | 'base',
     color: number,
-    getFaceGridCounts: (objectUuid: string, face: number, worldMatrix: Matrix4) => [number, number]
+    getFaceGridCounts: (objectUuid: string, face: number, worldMatrix: Matrix4, layer: 0 | 1) => [number, number, number, number]
 ): void {
     if (!headPainterGridDirty && _headGridDragMatrix.equals(dragDeltaMatrix)) return;
     if (!enabled) {
@@ -579,8 +580,12 @@ export function updateHeadPainterGridOverlay(
             write(lines.instanceMatrix, slot * 16, worldMatrix.elements);
             write(lines.geometry.getAttribute('headPainterGridScale') as BufferAttribute, slot, [scale]);
             for (let pair = 0; pair < 3; pair++) {
+                const first = getFaceGridCounts(uuid, pair * 2, worldMatrix, showLayer ? 1 : 0);
+                const second = getFaceGridCounts(uuid, pair * 2 + 1, worldMatrix, showLayer ? 1 : 0);
                 write(lines.geometry.getAttribute(`headPainterGrid${pair}`) as BufferAttribute, slot * 4,
-                    [...getFaceGridCounts(uuid, pair * 2, worldMatrix), ...getFaceGridCounts(uuid, pair * 2 + 1, worldMatrix)]);
+                    [first[0], first[1], second[0], second[1]]);
+                write(lines.geometry.getAttribute(`headPainterTexture${pair}`) as BufferAttribute, slot * 4,
+                    [first[2], first[3], second[2], second[3]]);
             }
         }
     }
@@ -605,6 +610,8 @@ function createHeadPainterGridGeometry(capacity: number): BufferGeometry {
     geometry.setAttribute('headPainterGridVertical', new Float32BufferAttribute(vertical, 3));
     geometry.setAttribute('headPainterGridLine', new Float32BufferAttribute(lines, 4));
     for (let pair = 0; pair < 3; pair++) geometry.setAttribute(`headPainterGrid${pair}`,
+        new InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(DynamicDrawUsage));
+    for (let pair = 0; pair < 3; pair++) geometry.setAttribute(`headPainterTexture${pair}`,
         new InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(DynamicDrawUsage));
     geometry.setAttribute('headPainterGridScale', new InstancedBufferAttribute(new Float32Array(capacity), 1).setUsage(DynamicDrawUsage));
     return geometry;
@@ -647,7 +654,7 @@ export function getHeadPainterFaceAxes(face: number, scale: number): [Vector3, V
 
 export function updateHeadPainterStampPreview(
     scene: Scene,
-    hits: Array<{ mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number }>
+    hits: Array<{ mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number; textureWidth?: number; textureHeight?: number }>
 ): void {
     if (!hits.length) return hideHeadPainterStampPreview();
     const faces = new Map<InstancedMesh, Map<number, { hit: typeof hits[number]; low: number; high: number }>>();
@@ -669,13 +676,14 @@ export function updateHeadPainterStampPreview(
         const capacity = Math.max(count, (headPainterStampPreview?.instanceMatrix.count ?? 0) * 2, 16);
         const geometry = new PlaneGeometry(1, 1);
         geometry.setAttribute('headPainterGrid', new InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(DynamicDrawUsage));
+        geometry.setAttribute('headPainterTextureSize', new InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(DynamicDrawUsage));
         geometry.setAttribute('headPainterCells', new InstancedBufferAttribute(new Uint32Array(capacity * 2), 2).setUsage(DynamicDrawUsage));
         if (headPainterStampPreview) {
             headPainterStampPreview.dispose();
             headPainterStampPreview.geometry.dispose();
             headPainterStampPreview.geometry = geometry;
         } else {
-            headPainterStampPreview = new InstancedMesh(geometry, createHeadPainterPreviewMaterial(), capacity);
+            headPainterStampPreview = new InstancedMesh(geometry, createHeadPainterPreviewMaterial(undefined, attribute('headPainterTextureSize', 'vec2')), capacity);
             headPainterStampPreview.name = 'head-painter-stamp-preview';
             headPainterStampPreview.renderOrder = 2000;
             headPainterStampPreview.frustumCulled = false;
@@ -686,6 +694,7 @@ export function updateHeadPainterStampPreview(
     headPainterStampPreview.visible = true;
     headPainterStampPreview.count = count;
     const grid = headPainterStampPreview.geometry.getAttribute('headPainterGrid') as InstancedBufferAttribute;
+    const textureSize = headPainterStampPreview.geometry.getAttribute('headPainterTextureSize') as InstancedBufferAttribute;
     const cells = headPainterStampPreview.geometry.getAttribute('headPainterCells') as InstancedBufferAttribute;
     const matrices = headPainterStampPreview.instanceMatrix.array as Float32Array;
     const packedMatrix = new Float32Array(16);
@@ -703,17 +712,19 @@ export function updateHeadPainterStampPreview(
         faceMatrix.setPosition(origin.addScaledVector(horizontal, 0.5).addScaledVector(vertical, 0.5));
         matrix.multiply(faceMatrix).toArray(packedMatrix);
         if (grid.getX(index) !== hit.columns || grid.getY(index) !== hit.rows
+            || textureSize.getX(index) !== (hit.textureWidth ?? 8) || textureSize.getY(index) !== (hit.textureHeight ?? 8)
             || cells.getX(index) !== low || cells.getY(index) !== high
             || packedMatrix.some((value, component) => value !== matrices[index * 16 + component])) {
             matrices.set(packedMatrix, index * 16);
             grid.setXY(index, hit.columns, hit.rows);
+            textureSize.setXY(index, hit.textureWidth ?? 8, hit.textureHeight ?? 8);
             cells.setXY(index, low, high);
             updateStart = Math.min(updateStart, index);
             updateEnd = index + 1;
         }
         index++;
     }
-    if (updateEnd > updateStart) for (const buffer of [headPainterStampPreview.instanceMatrix, grid, cells]) {
+    if (updateEnd > updateStart) for (const buffer of [headPainterStampPreview.instanceMatrix, grid, textureSize, cells]) {
         let start = updateStart * buffer.itemSize;
         let end = updateEnd * buffer.itemSize;
         // Preserve changes still awaiting consumption by WebGPU.

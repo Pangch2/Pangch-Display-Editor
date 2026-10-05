@@ -25,3 +25,4 @@
 
 ## Rules
 - Never use `npm run build`.
+- Add test files only under `checks/`.

@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { type HeadUvEntry, resetHeadAtlasUvs, createHeadAtlasUvTexture, captureHeadAtlasUvs, setHeadAtlasUvRect, readHeadAtlasRegion } from '../../ui/head-atlas-uv';
+import { type HeadUvEntry, resetHeadAtlasUvs, createHeadAtlasUvTexture, captureHeadAtlasUvs, setHeadAtlasUvRect, readHeadAtlasRegion, copyHeadAtlasRegion, getHeadAtlasUvRect } from '../../ui/head-atlas-uv';
 import { getPlayerHeadDisplayMatrix } from '../scene/scene-parser';
 import { type HeadGeometrySet, type TypedArrayConstructor } from '../pbde/pbde-types';
 import { createEntityMaterial, setEntityStateAttributes } from '../../entity-material';
@@ -1112,8 +1112,7 @@ export function getPlayerHeadPaintSurface(
                 const nextX = nextTile % tilesPerRow * PLAYER_HEAD_PART_SIZE;
                 const nextY = Math.floor(nextTile / tilesPerRow) * PLAYER_HEAD_PART_SIZE;
                 const region = { x, y, width: PLAYER_HEAD_PART_SIZE, height: PLAYER_HEAD_PART_SIZE };
-                atlas.context.putImageData(readHeadAtlasRegion(atlas.context, region), nextX, nextY);
-                resetHeadAtlasUvs(atlas.context.canvas, { ...region, x: nextX, y: nextY });
+                copyHeadAtlasRegion(atlas.context, region, nextX, nextY);
                 usage!.imageTiles.set(oldTile, count - 1);
                 usage!.imageTiles.set(nextTile, 1);
                 x = nextX;
@@ -1145,8 +1144,7 @@ export function getPlayerHeadPaintSurface(
         const oldY = Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
         const nextX = (nextSlot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
         const nextY = Math.floor(nextSlot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
-        atlas.context.putImageData(readHeadAtlasRegion(atlas.context, { x: oldX, y: oldY, width: PLAYER_HEAD_BLOCK_WIDTH, height: PLAYER_HEAD_BLOCK_HEIGHT }), nextX, nextY);
-        resetHeadAtlasUvs(atlas.context.canvas, { x: nextX, y: nextY, width: PLAYER_HEAD_BLOCK_WIDTH, height: PLAYER_HEAD_BLOCK_HEIGHT });
+        copyHeadAtlasRegion(atlas.context, { x: oldX, y: oldY, width: PLAYER_HEAD_BLOCK_WIDTH, height: PLAYER_HEAD_BLOCK_HEIGHT }, nextX, nextY);
         usage!.slots.set(slot, usage!.slots.get(slot)! - 1);
         usage!.slots.set(nextSlot, 1);
         slot = nextSlot;
@@ -1181,7 +1179,34 @@ export function readPlayerHeadPaint(surface: PlayerHeadPaintSurface): ImageData 
     return packed;
 }
 
-export function writePlayerHeadPaint(surface: PlayerHeadPaintSurface, packed: ImageData, updateTexture = true): void {
+export function writePlayerHeadPaint(surface: PlayerHeadPaintSurface, packed: ImageData, updateTexture = true, previous?: ImageData | null): void {
+    const region = { x: surface.x, y: surface.y,
+        width: surface.denseLayer === undefined ? PLAYER_HEAD_BLOCK_WIDTH : PLAYER_HEAD_PART_SIZE,
+        height: surface.denseLayer === undefined ? PLAYER_HEAD_BLOCK_HEIGHT : PLAYER_HEAD_PART_SIZE };
+    if (previous !== null && captureHeadAtlasUvs(surface.context.canvas, region).length) {
+        previous ??= readPlayerHeadPaint(surface);
+        const parts = surface.denseLayer === undefined ? playerHeadPartOrder.map((_, index) => index) : [4 + surface.denseLayer * 6];
+        for (const part of parts) {
+            const partX = part % 3 * PLAYER_HEAD_PART_SIZE, partY = Math.floor(part / 3) * PLAYER_HEAD_PART_SIZE;
+            const rect = getHeadAtlasUvRect(surface.context.canvas,
+                surface.x + (surface.denseLayer === undefined ? partX : 0),
+                surface.y + (surface.denseLayer === undefined ? partY : 0));
+            const pixels = surface.context.getImageData(rect.x, rect.y, rect.width, rect.height);
+            let changed = false;
+            for (let y = 0; y < rect.height; y++) for (let x = 0; x < rect.width; x++) {
+                const sourceX = Math.floor((x + 0.5) * PLAYER_HEAD_PART_SIZE / rect.width);
+                const sourceY = Math.floor((y + 0.5) * PLAYER_HEAD_PART_SIZE / rect.height);
+                const source = ((partY + sourceY) * PLAYER_HEAD_BLOCK_WIDTH + partX + sourceX) * 4;
+                const color = packed.data.subarray(source, source + 4);
+                if (color.every((value, index) => value === previous!.data[source + index])) continue;
+                pixels.data.set(color, (y * rect.width + x) * 4);
+                changed = true;
+            }
+            if (changed) surface.context.putImageData(pixels, rect.x, rect.y);
+        }
+        if (updateTexture) surface.texture.needsUpdate = true;
+        return;
+    }
     resetHeadAtlasUvs(surface.context.canvas, { x: surface.x, y: surface.y,
         width: surface.denseLayer === undefined ? PLAYER_HEAD_BLOCK_WIDTH : PLAYER_HEAD_PART_SIZE,
         height: surface.denseLayer === undefined ? PLAYER_HEAD_BLOCK_HEIGHT : PLAYER_HEAD_PART_SIZE });

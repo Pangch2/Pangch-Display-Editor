@@ -21,6 +21,10 @@ export function getHeadAtlasUvRect(canvas: HTMLCanvasElement, x: number, y: numb
 export function setHeadAtlasUvRect(canvas: HTMLCanvasElement, x: number, y: number, rect: HeadUvRect): void {
     const state = atlasUvs.get(canvas);
     if (!state) return;
+    const width = Math.max(1, Math.min(tileSize, Math.round(rect.width)));
+    const height = Math.max(1, Math.min(tileSize, Math.round(rect.height)));
+    rect = { x: Math.max(0, Math.min(canvas.width - width, Math.round(rect.x))),
+        y: Math.max(0, Math.min(canvas.height - height, Math.round(rect.y))), width, height };
     const key = y / tileSize * (canvas.width / tileSize) + x / tileSize;
     const index = ((canvas.height / tileSize - 1 - y / tileSize) * (canvas.width / tileSize) + x / tileSize) * 4;
     const identity = rect.x === x && rect.y === y && rect.width === tileSize && rect.height === tileSize;
@@ -67,15 +71,31 @@ export function readHeadAtlasRegion(context: CanvasRenderingContext2D, region: H
     return output.getImageData(0, 0, region.width, region.height);
 }
 
+export function hasHeadAtlasUvs(canvas: HTMLCanvasElement): boolean {
+    return !!atlasUvs.get(canvas)?.entries.size;
+}
+
+export function copyHeadAtlasRegion(context: CanvasRenderingContext2D, region: HeadUvRect, x: number, y: number): void {
+    const entries = captureHeadAtlasUvs(context.canvas, region).map(entry => ({ ...entry,
+        image: context.getImageData(entry.rect.x, entry.rect.y, entry.rect.width, entry.rect.height) }));
+    context.putImageData(context.getImageData(region.x, region.y, region.width, region.height), x, y);
+    resetHeadAtlasUvs(context.canvas, { ...region, x, y });
+    for (const entry of entries) {
+        const nextX = x + entry.x - region.x, nextY = y + entry.y - region.y;
+        context.putImageData(entry.image, nextX, nextY);
+        setHeadAtlasUvRect(context.canvas, nextX, nextY, { ...entry.rect, x: nextX, y: nextY });
+    }
+}
+
 export function transformHeadUvRect(rect: HeadUvRect, handle: string, dx: number, dy: number, size: number): HeadUvRect {
     const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value)));
     if (!handle) return { ...rect, x: clamp(rect.x + dx, 0, size - rect.width), y: clamp(rect.y + dy, 0, size - rect.height) };
     let { x, y } = rect;
     let right = x + rect.width;
     let bottom = y + rect.height;
-    if (handle.includes('w')) x = clamp(x + dx, 0, right - 1);
-    if (handle.includes('e')) right = clamp(right + dx, x + 1, size);
-    if (handle.includes('n')) y = clamp(y + dy, 0, bottom - 1);
-    if (handle.includes('s')) bottom = clamp(bottom + dy, y + 1, size);
+    if (handle.includes('w')) x = clamp(x + dx, Math.max(0, right - tileSize), right - 1);
+    if (handle.includes('e')) right = clamp(right + dx, x + 1, Math.min(size, x + tileSize));
+    if (handle.includes('n')) y = clamp(y + dy, Math.max(0, bottom - tileSize), bottom - 1);
+    if (handle.includes('s')) bottom = clamp(bottom + dy, y + 1, Math.min(size, y + tileSize));
     return { x, y, width: right - x, height: bottom - y };
 }

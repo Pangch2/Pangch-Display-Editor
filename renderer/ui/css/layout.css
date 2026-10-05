@@ -198,10 +198,87 @@
   image-rendering: pixelated;
 }
 
+#player-head-atlas-scroll[data-head-painter-tool]:not([data-head-painter-tool="select"]) .player-head-atlas-stage {
+  cursor: crosshair;
+}
+
+#player-head-atlas-scroll .player-head-atlas-box.panning,
+#player-head-atlas-scroll .player-head-atlas-box.panning * {
+  cursor: grabbing !important;
+}
+
+.player-head-paint-grid,
+.player-head-paint-preview,
+.player-head-uv-outlines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  fill: none;
+}
+
+.player-head-paint-grid {
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-opacity: 0.65;
+}
+
+.player-head-paint-preview {
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.player-head-uv-outlines {
+  stroke: #83ceff;
+  stroke-width: 1;
+  fill: #69bcff20;
+}
+
+.player-head-paint-selection {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px dashed #fff;
+  background: #69bcff20;
+  pointer-events: none;
+}
+
 .player-head-uv-caption {
   padding: 6px 0;
   color: #bbb;
 }
+
+.player-head-atlas-tools {
+  display: flex;
+  max-width: 100%;
+  flex: none;
+  gap: 4px;
+  padding-top: 8px;
+}
+
+.player-head-uv-selection > button[hidden] { display: none; }
+
+.player-head-atlas-tools button {
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  background: #252528;
+  color: #bbb;
+  font: normal 400 18px/1 'lucide';
+  cursor: pointer;
+}
+
+.player-head-atlas-tools button:hover,
+.player-head-atlas-tools button[aria-pressed="true"] {
+  border-color: #70c7ff;
+  background: #3a3a3f;
+  color: #fff;
+}
+
+.player-head-atlas-tools button:focus-visible { outline: 2px solid white; }
+.player-head-atlas-tools button:disabled { opacity: 0.4; cursor: default; }
 
 .player-head-uv-selection {
   position: absolute;

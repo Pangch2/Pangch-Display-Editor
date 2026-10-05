@@ -16,11 +16,15 @@ export function createHeadPainterGridMaterial(color: number): LineBasicNodeMater
     const packed = line.x.lessThan(2).select(attribute('headPainterGrid0', 'vec4'),
         line.x.lessThan(4).select(attribute('headPainterGrid1', 'vec4'), attribute('headPainterGrid2', 'vec4')));
     const counts = line.x.mod(2).equal(0).select(packed.xy, packed.zw).max(1);
+    const texturePacked = line.x.lessThan(2).select(attribute('headPainterTexture0', 'vec4'),
+        line.x.lessThan(4).select(attribute('headPainterTexture1', 'vec4'), attribute('headPainterTexture2', 'vec4')));
+    const textureSize = line.x.mod(2).equal(0).select(texturePacked.xy, texturePacked.zw).max(1);
     const count = line.z.equal(0).select(counts.x, counts.y);
+    const size = line.z.equal(0).select(textureSize.x, textureSize.y);
     const visible = line.y.lessThanEqual(count);
     material.opacityNode = varying(visible.toFloat(), 'vHeadPainterGridVisible').mul(0.9);
     material.positionNode = Fn((builder) => {
-        const boundary = line.y.mul(8).div(count).add(0.5).floor().div(8);
+        const boundary = line.y.mul(size).div(count).add(0.5).floor().div(size);
         const coordinate = visible.select(line.z.equal(0).select(vec2(boundary, line.w), vec2(line.w, boundary)), vec2(0));
         const h = attribute('headPainterGridHorizontal', 'vec3');
         const v = attribute('headPainterGridVertical', 'vec3');
@@ -33,7 +37,7 @@ export function createHeadPainterGridMaterial(color: number): LineBasicNodeMater
     return material;
 }
 
-export function createHeadPainterPreviewMaterial(maskNode = attribute('headPainterCells', 'uvec2')): MeshBasicNodeMaterial {
+export function createHeadPainterPreviewMaterial(maskNode = attribute('headPainterCells', 'uvec2'), textureSizeNode = vec2(8)): MeshBasicNodeMaterial {
     const material = new MeshBasicNodeMaterial({ color: 0xffffff, side: DoubleSide, transparent: true,
         alphaTest: 0.001, depthTest: false, depthWrite: false });
     // Empty faces collapse before rasterization, even when the scene table contains every head face.
@@ -41,13 +45,14 @@ export function createHeadPainterPreviewMaterial(maskNode = attribute('headPaint
     material.opacityNode = Fn(() => {
         const counts = varying(attribute('headPainterGrid', 'vec2'), 'vHeadPainterGrid').toVar();
         const mask = varying(maskNode, 'vHeadPainterCells').setInterpolation('flat').toVar();
-        const pixel = vec2(uv().x, float(1).sub(uv().y)).mul(8).toVar();
-        const cell = pixel.floor().add(0.5).mul(counts).div(8).floor().toVar();
-        // Match Math.round(index * 8 / count), including uneven 3/5/6/7-cell grids.
-        const before = cell.mul(8).div(counts).add(0.5).floor().toVar();
-        const after = cell.add(1).mul(8).div(counts).add(0.5).floor().toVar();
+        const textureSize = varying(textureSizeNode, 'vHeadPainterTextureSize').toVar();
+        const pixel = vec2(uv().x, float(1).sub(uv().y)).mul(textureSize).toVar();
+        const cell = pixel.floor().add(0.5).mul(counts).div(textureSize).floor().toVar();
+        // Match the rounded boundaries of the current UV's native pixels.
+        const before = cell.mul(textureSize).div(counts).add(0.5).floor().toVar();
+        const after = cell.add(1).mul(textureSize).div(counts).add(0.5).floor().toVar();
         const boundary = pixel.sub(before).lessThanEqual(after.sub(pixel)).select(cell, cell.add(1)).toVar();
-        const distance = pixel.sub(boundary.mul(8).div(counts).add(0.5).floor()).abs().div(fwidth(pixel).max(1e-6));
+        const distance = pixel.sub(boundary.mul(textureSize).div(counts).add(0.5).floor()).abs().div(fwidth(pixel).max(1e-6));
         const line = float(1).sub(smoothstep(0, 1, distance)).toVar();
         const selected = Fn(([coordinate]) => {
             const index = coordinate.y.mul(8).add(coordinate.x).toUint();

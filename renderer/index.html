@@ -26,6 +26,16 @@
     <section id="player-head-atlas" class="panel-section">
       <div id="player-head-atlas-header" draggable="true">헤드 텍스쳐 아틀라스</div>
       <div id="player-head-atlas-scroll">
+        <div class="player-head-atlas-box"></div>
+        <div class="player-head-atlas-tools" role="group" aria-label="아틀라스 편집">
+          <button type="button" class="lucide-icon" data-atlas-move-mode="uv" title="UV만 이동" aria-label="UV만 이동" aria-pressed="true">&#xE1CB;</button>
+          <button type="button" class="lucide-icon" data-atlas-move-mode="texture" title="텍스처만 이동" aria-label="텍스처만 이동" aria-pressed="false">&#xE0F6;</button>
+          <button type="button" class="lucide-icon" data-atlas-move-mode="both" title="UV와 텍스처 함께 이동" aria-label="UV와 텍스처 함께 이동" aria-pressed="false">&#xE529;</button>
+          <button type="button" class="lucide-icon" data-atlas-action="duplicate" title="선택 영역 복제" aria-label="선택 영역 복제" disabled>&#xE09E;</button>
+          <button type="button" class="lucide-icon" data-atlas-action="deleteSelection" title="선택 영역 텍스처 삭제" aria-label="선택 영역 텍스처 삭제" disabled>&#xE18E;</button>
+          <button type="button" class="lucide-icon" data-atlas-action="flipX" title="X축 반전 (좌우)" aria-label="X축 반전 (좌우)" disabled>&#xE35D;</button>
+          <button type="button" class="lucide-icon" data-atlas-action="flipY" title="Y축 반전 (상하)" aria-label="Y축 반전 (상하)" disabled>&#xE35E;</button>
+        </div>
         <div id="player-head-atlas-list" aria-label="헤드 텍스쳐 아틀라스 선택" hidden></div>
       </div>
     </section>
