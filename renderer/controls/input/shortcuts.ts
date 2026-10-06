@@ -31,6 +31,7 @@ export const shortcutDefinitions = [
   { id: 'group', category: '오브젝트', label: '그룹 생성/해제', defaults: ['G'] },
   { id: 'ungroup', category: '오브젝트', label: '그룹 해제', defaults: ['Ctrl+G'] },
   { id: 'openSettings', category: '열기', label: '설정 열기', defaults: ['Tab'] },
+  { id: 'openSummonCommand', category: '열기', label: '소환 명령어 내보내기', defaults: ['E'] },
   { id: 'openBlockSearch', category: '열기', label: '블록 창 열기', defaults: [] },
   { id: 'openItemSearch', category: '열기', label: '아이템 창 열기', defaults: [] },
   { id: 'toggleShading', category: '보기', label: '셰이딩 전환', defaults: ['L'] },

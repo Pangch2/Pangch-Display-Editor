@@ -6,6 +6,7 @@ import { isNodeBufferLike } from '../pbde/pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from '../pbde/pbde-log';
 import type { GroupData as ParserGroupData } from '../pbde/pbde-types';
 import { applyModelTransform, relativeModelTransform } from '../batching/geometry-batching';
+import { resolveItemModelParts, type ItemModelPart } from './item-model-definition';
 
 interface ResolvedModel {
     id: string;
@@ -16,6 +17,7 @@ interface ResolvedModel {
     texture_size: number[] | null;
     fromHardcoded: boolean;
     ignoreDisplayIds?: string[] | Set<string>;
+    itemTints?: any[];
 }
 
 export interface GeometryData {
@@ -86,6 +88,7 @@ type ItemModelTemplate = {
     geometries: GeometryData[];
     geometryId: string;
     fromHardcoded: boolean;
+    models?: ModelData[];
 };
 
 // tintColor 모듈을 워커에서 직접 불러올 수 없으므로 여기에서 구현을 포함한다.
@@ -263,20 +266,20 @@ function textureIdToAssetPath(texId) {
 // 하드코딩된 블록스테이트 파일이 존재하는지 여부를 판정한다.
 function hasHardcodedBlockstate(p) {
     if (!p) return false;
-    // 침대와 트랩 상자만 고정 블록스테이트를 갖는다.
-    return /(bed|bell|trapped_chest)/i.test(p);
+    return p !== 'straw_bed' && /(bed|bell|trapped_chest)/i.test(p);
 }
 
 // 하드코딩된 모델 JSON을 사용해야 하는 경로인지 확인한다.
 function isHardcodedModelPath(p) {
     if (!p) return false;
+    p = p.replace(/_wall_(head|skull)$/, '_$1');
     return /(chest|conduit|shulker_box|bed|banner|sign|decorated_pot|creeper_head|dragon_head|piglin_head|zombie_head|wither_skeleton_skull|skeleton_skull|shield|trident|spyglass|copper_golem_statue|end_portal|end_gateway)$/i.test(p);
 }
 
 // 모델 ID가 하드코딩 모델 목록에 해당하는지 검사한다.
 function isHardcodedModelId(modelId) {
     const { path } = nsAndPathFromId(modelId);
-    return !/^item\/.*sign$/i.test(path) && isHardcodedModelPath(path);
+    return !/^(item\/.*sign|block\/.*wall_sign)$/i.test(path) && isHardcodedModelPath(path);
 }
 
 function specialItemGeometryModelId(model: any, itemName: string): string | null {
@@ -302,6 +305,7 @@ function getHardcodedModelCandidates(modelId) {
     };
 
     push(normalized);
+    if (/_wall_(head|skull)$/.test(normalized)) push(normalized.replace(/_wall_(head|skull)$/, '_$1'));
 
     if (normalized.startsWith('item/')) {
         const withoutItem = normalized.slice('item/'.length);
@@ -317,24 +321,6 @@ function getHardcodedModelCandidates(modelId) {
     }
 
     return Array.from(candidates);
-}
-
-// 동일 그룹의 모델 ID를 모두 무시 목록에 포함시키기 위한 그룹 정의다.
-const DISPLAY_IGNORE_GROUPS = [
-    ['builtin/generated', 'minecraft:item/generated', 'item/generated'],
-    ['minecraft:item/block', 'item/block', 'minecraft:block/block', 'block/block'],
-];
-
-// 모델 ID가 속한 무시 그룹을 모아 display 탐색에서 제외한다.
-function collectIgnoreDisplayIdsForModelId(modelId) {
-    if (!modelId) return [];
-    const matches = [];
-    for (const group of DISPLAY_IGNORE_GROUPS) {
-        if (group.includes(modelId)) {
-            matches.push(...group);
-        }
-    }
-    return matches;
 }
 
 // 텍스처 참조 체인을 따라가 실제 경로를 찾는다.
@@ -383,7 +369,6 @@ async function resolveModelTree(modelId: string, cache = new Map<string, Resolve
     // 특수 값인 builtin/generated 모델은 실제 파일이 아니므로 가짜 해석 결과를 반환한다.
     // 이렇게 하면 buildItemModelGeometryData 단계에서 일반 모델처럼 처리할 수 있다.
     if (modelId && (modelId.endsWith('builtin/generated'))) {
-        const ignoreDisplayIds = collectIgnoreDisplayIdsForModelId('builtin/generated');
         const resolved: ResolvedModel = {
             id: modelId,
             json: { parent: 'item/generated' },
@@ -393,9 +378,6 @@ async function resolveModelTree(modelId: string, cache = new Map<string, Resolve
             texture_size: null,
             fromHardcoded: false,
         };
-        if (ignoreDisplayIds.length) {
-            resolved.ignoreDisplayIds = ignoreDisplayIds;
-        }
         cache.set(modelId, resolved);
         return resolved;
     }
@@ -491,7 +473,6 @@ async function resolveModelTree(modelId: string, cache = new Map<string, Resolve
         ignoreDisplayIds.push(...json.pbde_ignore_display_ids);
     }
 
-    ignoreDisplayIds.push(...collectIgnoreDisplayIdsForModelId(modelId));
 
     const ignoreDisplayIdsUnique = Array.from(new Set(ignoreDisplayIds.filter(Boolean)));
 
@@ -1004,6 +985,16 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
     try {
         const { baseName, props } = blockNameToBaseAndProps(item.name);
         const { ns, path } = nsAndPathFromId(baseName);
+        if (path === 'bell') {
+            props.attachment ??= 'floor';
+            props.facing ??= 'north';
+        }
+        if (/(?:^|_)shulker_box$/.test(path)) props.facing ??= 'up';
+        const skull = /(?:^|_)(?:head|skull)$/.test(path) && isHardcodedModelPath(path);
+        if (skull) {
+            if (/_wall_/.test(path)) props.facing ??= 'north';
+            else props.rotation ??= '0';
+        }
         const hasHardcodedState = hasHardcodedBlockstate(path);
         const blockstatePath = `assets/${ns}/blockstates/${path}.json`;
         const hardcodedStatePath = `hardcoded/blockstates/${path}.json`;
@@ -1043,7 +1034,17 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
                     }
                 }
             }
-            const picked = bestMatch ? bestMatch.value : blockstate.variants[''] ?? entries[0]?.[1];
+            const compatible = entries.find(([key]) => key.split(',').filter(Boolean).every(pair => {
+                const [property, values] = pair.split('=');
+                return props[property] == null || values.split('|').includes(props[property]);
+            }));
+            const pickedEntry = bestMatch ? entries.find(([, value]) => value === bestMatch.value) : compatible ?? entries[0];
+            const picked = pickedEntry?.[1];
+            // Serialize inferred rendering properties too, so Minecraft selects the model shown here.
+            for (const pair of (pickedEntry?.[0] ?? '').split(',').filter(Boolean)) {
+                const [property, values] = pair.split('=');
+                props[property] ??= values.split('|')[0];
+            }
             if (picked) {
                 const applyList = Array.isArray(picked) ? picked : [picked];
                 if (applyList.length > 0) {
@@ -1083,6 +1084,21 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
             
             const modelMatrix = new THREE.Matrix4();
             applyBlockstateRotation(modelMatrix, apply.x || 0, apply.y || 0);
+            if (resolved.fromHardcoded && /(?:^|_)shulker_box$/.test(path)) {
+                const rotations = { down: [Math.PI, 0, 0], up: [0, 0, 0], north: [Math.PI / 2, 0, Math.PI],
+                    south: [Math.PI / 2, 0, 0], west: [Math.PI / 2, 0, Math.PI / 2], east: [Math.PI / 2, 0, -Math.PI / 2] };
+                const rotation = rotations[props.facing] ?? rotations.up;
+                modelMatrix.multiply(new THREE.Matrix4().makeTranslation(.5, .5, .5))
+                    .multiply(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(...rotation as [number, number, number], 'XYZ')))
+                    .scale(new THREE.Vector3(.9995, .9995, .9995)).multiply(new THREE.Matrix4().makeTranslation(-.5, -.5, -.5));
+            } else if (resolved.fromHardcoded && skull) {
+                if (/_wall_/.test(path)) {
+                    const directions = { north: [0, -1, 0], south: [0, 1, -Math.PI], east: [1, 0, -Math.PI / 2], west: [-1, 0, Math.PI / 2] };
+                    const [x, z, angle] = directions[props.facing] ?? directions.north;
+                    modelMatrix.multiply(new THREE.Matrix4().makeTranslation(.5 - x * .25, .25, .5 - z * .25))
+                        .multiply(new THREE.Matrix4().makeRotationY(angle)).multiply(new THREE.Matrix4().makeTranslation(-.5, 0, -.5));
+                } else applyBlockstateRotation(modelMatrix, 0, Number(props.rotation) * 22.5);
+            }
 
             const geometryData = await buildBlockModelGeometryData(resolved, { 
                 uvlock: !!apply.uvlock, 
@@ -1134,7 +1150,8 @@ const itemModelTemplateCache = new Map<string, ItemModelTemplate | null>();
 const itemModelTemplateKeyByName = new Map<string, string | null>();
 const itemNameParseCache = new Map<string, { baseName: string; displayType: string | null }>();
 const itemDisplayModelMatrices = new Map<string, THREE.Matrix4>();
-const itemDisplayTypes = ['', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
+const bedItemDisplayModelMatrices = new Map<string, THREE.Matrix4>();
+const itemDisplayTypes = ['', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed', 'on_shelf'];
 
 // 🚀 최적화 3: 블록 모델 지오메트리 캐싱 (같은 블록 타입은 재사용)
 const blockModelGeometryCache = new Map(); // 모델 ID별 지오메트리 캐시
@@ -1157,72 +1174,6 @@ const PLAYER_HEAD_DISPLAY_TRANSFORMS = {
     fixed: {
         rotation: [0, 180, 0],
         translation: [0, 4, 0],
-    },
-};
-
-const DEFAULT_ITEM_DISPLAY_TRANSFORMS = {
-    item: {
-        ground: {
-            "rotation": [ 0, 0, 0 ],
-            "translation": [ 0, 2, 0],
-            "scale":[ 0.5, 0.5, 0.5 ]
-        },
-        head: {
-            "rotation": [ 0, 180, 0 ],
-            "translation": [ 0, 13, -7],
-            "scale":[ 1, 1, 1]
-        },
-        thirdperson_righthand: {
-            "rotation": [ 0, 0, 0 ],
-            "translation": [ 0, 3, -1 ],
-            "scale": [ 0.55, 0.55, 0.55 ]
-        },
-        firstperson_righthand: {
-            "rotation": [ 0, -90, -25 ],
-            "translation": [ -1.13, 3.2, -1.13],
-            "scale": [ 0.68, 0.68, 0.68 ]
-        },
-        fixed: {
-            "rotation": [ 0, 180, 0 ],
-            "scale": [ 1, 1, 1 ]
-        },
-    },
-    block: {
-        gui: {
-            rotation: [30, 225, 0],
-            translation: [0, 0, 0],
-            scale: [0.625, 0.625, 0.625],
-        },
-        ground: {
-            rotation: [0, 0, 0],
-            translation: [0, 3, 0],
-            scale: [0.25, 0.25, 0.25],
-        },
-        fixed: {
-            rotation: [0, 0, 0],
-            translation: [0, 0, 0],
-            scale: [0.5, 0.5, 0.5],
-        },
-        on_shelf: {
-            rotation: [0, 180, 0],
-            translation: [0, 0, 0],
-            scale: [1, 1, 1],
-        },
-        thirdperson_righthand: {
-            rotation: [75, 45, 0],
-            translation: [0, 2.5, 0],
-            scale: [0.375, 0.375, 0.375],
-        },
-        firstperson_righthand: {
-            rotation: [0, -45, 0],
-            translation: [0, 0, 0],
-            scale: [0.4, 0.4, 0.4],
-        },
-        firstperson_lefthand: {
-            rotation: [0, 225, 0],
-            translation: [0, 0, 0],
-            scale: [0.4, 0.4, 0.4],
-        },
     },
 };
 
@@ -1272,18 +1223,7 @@ function mirrorRightHandDisplayTransform(def) {
     return cloned;
 }
 
-// 모델이 block 계열인지 판별해 중심 이동 여부를 결정한다.
-function isBlockLikeItemModel(resolved) {
-    if (!resolved) return false;
-    const checkId = (id) => typeof id === 'string' && id.includes('block/');
-    if (checkId(resolved.id)) return true;
-    if (Array.isArray(resolved.parentChain)) {
-        return resolved.parentChain.some(checkId);
-    }
-    return false;
-}
-
-// 모델 상속 체인에서 원하는 display 변환을 탐색한다.
+// 모델과 부모 모델에서 display 타입에 해당하는 변환을 찾는다.
 async function findDisplayTransformInHierarchy(resolved, displayType, cache) {
     if (!resolved || !displayType) return null;
     const ignoreDisplayIds = (() => {
@@ -1327,28 +1267,28 @@ async function findDisplayTransformInHierarchy(resolved, displayType, cache) {
 // display 타입에 맞는 변환 매트릭스를 찾고 기본값 또는 좌우 대체를 적용한다.
 async function getDisplayTransformForItem(resolved, displayType, cache) {
     if (!displayType) return null;
-    const defaultsRoot = isBlockLikeItemModel(resolved)
-        ? (DEFAULT_ITEM_DISPLAY_TRANSFORMS.block || {})
-        : (DEFAULT_ITEM_DISPLAY_TRANSFORMS.item || {});
-
     let transform = await findDisplayTransformInHierarchy(resolved, displayType, cache);
-
-    if (!transform && defaultsRoot[displayType]) {
-        transform = cloneDisplayTransform(defaultsRoot[displayType]);
+    const rightHand = ITEM_DISPLAY_LEFT_HAND_FALLBACK[displayType];
+    if (rightHand) {
+        transform ??= await findDisplayTransformInHierarchy(resolved, rightHand, cache);
+        transform = mirrorRightHandDisplayTransform(transform);
     }
-
-    if (!transform && ITEM_DISPLAY_LEFT_HAND_FALLBACK[displayType]) {
-        const fallbackKey = ITEM_DISPLAY_LEFT_HAND_FALLBACK[displayType];
-        let fallback = await findDisplayTransformInHierarchy(resolved, fallbackKey, cache);
-        if (!fallback && defaultsRoot[fallbackKey]) {
-            fallback = cloneDisplayTransform(defaultsRoot[fallbackKey]);
-        }
-        if (fallback) {
-            transform = mirrorRightHandDisplayTransform(fallback);
-        }
-    }
-
     return transform;
+}
+
+// Minecraft's block skull frame differs by a Y half-turn from the legacy item geometry.
+export function getSkullBlockModelMatrix(id: string, properties: Record<string, string>): THREE.Matrix4 | null {
+    const { path } = nsAndPathFromId(id);
+    if (!/^(?:(?:skeleton|wither_skeleton)_(?:wall_)?skull|(?:zombie|creeper|dragon|piglin)_(?:wall_)?head)$/.test(path)) return null;
+    if (/_wall_/.test(path)) {
+        const directions = { north: [0, -1, 0], south: [0, 1, -Math.PI], east: [1, 0, -Math.PI / 2], west: [-1, 0, Math.PI / 2] };
+        const [x, z, angle] = directions[properties.facing ?? 'north'] ?? directions.north;
+        return new THREE.Matrix4().makeTranslation(.5 - x * .25, .25, .5 - z * .25)
+            .multiply(new THREE.Matrix4().makeRotationY(angle + Math.PI)).multiply(new THREE.Matrix4().makeTranslation(-.5, 0, -.5));
+    }
+    return new THREE.Matrix4().makeTranslation(.5, 0, .5)
+        .multiply(new THREE.Matrix4().makeRotationY(Math.PI - Number(properties.rotation ?? 0) * Math.PI / 8))
+        .multiply(new THREE.Matrix4().makeTranslation(-.5, 0, -.5));
 }
 
 // display 구성을 THREE Matrix4로 변환한다.
@@ -1651,7 +1591,7 @@ export async function buildBlockIconTemplate(name: string, provider: PbdeAssetPr
 export async function buildItemIconModels(name: string, provider: PbdeAssetProvider): Promise<ModelData[] | null> {
     initializeAssetProvider(provider);
     const template = await prepareItemModelTemplate(name);
-    return template ? [{
+    return template ? template.models ?? [{
         modelMatrix: template.modelMatrix,
         geometries: template.geometries,
         geometryId: template.geometryId,
@@ -1666,8 +1606,8 @@ async function buildItemModelGeometryData(resolved, name: string) {
         return await buildBlockModelGeometryData(resolved, { bannerColorHex: getBannerColorHex(name) });
     }
     // generated 또는 builtin 계열은 단순 평면 지오메트리로 처리한다.
-    const layer0 = extractLayer0Texture(resolved);
-    if (!layer0) return null;
+    const layers = Object.keys(resolved.textures).filter(key => /^layer[0-4]$/.test(key)).sort();
+    if (!layers.length) layers.push('layer0');
 
     let tintHex = 0xffffff;
     try {
@@ -1677,22 +1617,41 @@ async function buildItemModelGeometryData(resolved, name: string) {
 
     // builtin 모델이거나 generated/handheld 부모를 가진 경우 외곽 테두리 지오메트리를 사용한다.
     const useBorder = isBuiltinModel(resolved) || resolved.parentChain.some(p => /item\/(generated|handheld)/.test(p));
-    if (useBorder) {
-        //try { console.log('[ItemModel] using builtin border geometry for', resolved.id); } catch {}
-        return await buildBuiltinBorderBetweenPlanesGeometry(layer0, tintHex);
+    const geometries: GeometryData[] = [];
+    for (const key of layers) {
+        const texture = resolveTextureRef(resolved.textures[key], resolved.textures) ?? (key === 'layer0' ? extractLayer0Texture(resolved) : null);
+        if (!texture) continue;
+        const tint = resolved.itemTints?.[Number(key.slice(5))];
+        const color = Number.isFinite(tint?.value) ? tint.value : Number.isFinite(tint?.default) ? tint.default : tintHex;
+        const layer = useBorder ? await buildBuiltinBorderBetweenPlanesGeometry(texture, color & 0xffffff)
+            : buildGeneratedPlaneGeometry(texture, color & 0xffffff);
+        if (layer) geometries.push(...layer);
     }
-    return buildGeneratedPlaneGeometry(layer0, tintHex);
+    return geometries.length ? geometries : null;
 }
 
-async function buildItemModelTemplate(baseName: string, displayType: string | null, modelId: string, displayModelId: string | null, tintList: number[] | null): Promise<ItemModelTemplate | null> {
-    let resolved = await resolveModelTree(modelId, modelTreeCache);
+async function buildItemModelTemplate(baseName: string, displayType: string | null, modelId: string, displayModelId: string | null, tintList: any[] | null, bedDisplayModelId: string | null, part?: ItemModelPart): Promise<ItemModelTemplate | null> {
+    const useHardcoded = !part || part.model.type === 'minecraft:special';
+    const geometryCache = useHardcoded ? modelTreeCache : new Map<string, ResolvedModel | null>();
+    let resolved = await resolveModelTree(modelId, geometryCache, useHardcoded);
     if (!resolved) {
         return null;
     }
-    const displayCache = displayModelId ? new Map<string, ResolvedModel | null>() : modelTreeCache;
+    if (tintList) resolved = { ...resolved, itemTints: tintList };
+    const special = part?.model.model;
+    if (typeof special?.texture === 'string' && /^(minecraft:)?(chest|shulker_box)$/.test(special.type)) {
+        const { ns, path } = nsAndPathFromId(special.texture);
+        const folder = special.type.split(':').pop() === 'chest' ? 'chest' : 'shulker';
+        const texture = `${ns}:entity/${folder}/${path}`;
+        resolved = { ...resolved, id: `${resolved.id}|${texture}`,
+            textures: Object.fromEntries(Object.keys(resolved.textures).map(key => [key, texture])) };
+    }
+    const displayCache = new Map<string, ResolvedModel | null>();
     const displayResolved = displayModelId
         ? await resolveModelTree(displayModelId, displayCache, false) ?? resolved
-        : resolved;
+        : await resolveModelTree(modelId, displayCache, false) ?? resolved;
+    const bedDisplayCache = new Map<string, ResolvedModel | null>();
+    const bedDisplayResolved = bedDisplayModelId ? await resolveModelTree(bedDisplayModelId, bedDisplayCache, false) : null;
 
     const hasElements = !!(resolved.elements && resolved.elements.length > 0);
     const geomData = await buildItemModelGeometryData(resolved, baseName);
@@ -1704,6 +1663,7 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
     if (hasElements) {
         // 블록형 아이템은 중심을 -0.5로 이동해 월드 좌표계와 정렬한다.
         modelMatrix.multiply(new THREE.Matrix4().makeTranslation(-0.5, -0.5, -0.5));
+        if (part && !resolved.fromHardcoded) modelMatrix.multiply(part.transform);
     } else {
         // 평면 아이템은 중심만 이동하고 좌우 반전으로 UV와 노멀 방향을 일치시킨다.
         const translateCenter = new THREE.Matrix4().makeTranslation(-0.5, -0.5, 0);
@@ -1721,6 +1681,16 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
             } catch { /* Display lookup failures keep the base model matrix. */ }
         }
         itemDisplayModelMatrices.set(`${baseName}|${type}`, displayModelMatrix);
+        if (bedDisplayResolved) {
+            const gameModelMatrix = new THREE.Matrix4().makeTranslation(-.5, -.5, -.5);
+            const rightHand = ITEM_DISPLAY_LEFT_HAND_FALLBACK[type];
+            let gameTransform = await findDisplayTransformInHierarchy(bedDisplayResolved, type, bedDisplayCache);
+            if (!gameTransform && rightHand) gameTransform = await findDisplayTransformInHierarchy(bedDisplayResolved, rightHand, bedDisplayCache);
+            if (rightHand) gameTransform = mirrorRightHandDisplayTransform(gameTransform);
+            const gameDisplay = buildDisplayTransformMatrix(gameTransform);
+            if (gameDisplay) gameModelMatrix.premultiply(gameDisplay);
+            bedItemDisplayModelMatrices.set(`${baseName}|${type}`, gameModelMatrix);
+        }
     }));
     modelMatrix.copy(itemDisplayModelMatrices.get(`${baseName}|${displayType ?? ''}`)!);
 
@@ -1742,7 +1712,7 @@ function cloneItemModelTemplate(template: ItemModelTemplate, node: any): RenderI
         originalName: node.name,
         displayType: template.displayType,
         tints: template.tints,
-        models: [{ modelMatrix: template.modelMatrix, geometries: template.geometries, geometryId: template.geometryId }],
+        models: template.models ?? [{ modelMatrix: template.modelMatrix, geometries: template.geometries, geometryId: template.geometryId }],
         transform: node.transform || node.transforms || null,
         itemDisplayType: template.displayType,
         nbt: node.nbt
@@ -1763,8 +1733,37 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
         }
         //try { console.log('[ItemModel] start', node.name, 'base', baseName); } catch {}
         const definition = await loadItemDefinition(baseName);
+        const legacyBed = /^(?:minecraft:)?(white|orange|magenta|light_blue|yellow|lime|pink|gray|light_gray|cyan|purple|blue|brown|green|red|black)_bed$/.test(baseName)
+            && definition?.model?.type === 'minecraft:composite';
+        if (definition?.model && !legacyBed) {
+            const cacheKey = rawName;
+            itemModelTemplateKeyByName.set(rawName, cacheKey);
+            let templatePromise = itemModelTemplatePromiseCache.get(cacheKey);
+            if (!templatePromise) {
+                templatePromise = (async () => {
+                    const parts = resolveItemModelParts(definition.model, displayType ?? 'none', blockNameToBaseAndProps(rawName).props);
+                    const templates = await Promise.all(parts.map(part => {
+                        const leaf = part.model;
+                        const displayId = typeof leaf.base === 'string' ? leaf.base : null;
+                        const geometryId = typeof leaf.model === 'string' ? leaf.model
+                            : specialItemGeometryModelId(leaf, baseName) ?? displayId;
+                        return buildItemModelTemplate(baseName, displayType, geometryId, displayId, leaf.tints ?? null, null, part);
+                    }));
+                    if (templates.some(template => !template) || !templates.length) return null;
+                    const first = templates[0]!;
+                    return { ...first, models: templates.map(template => ({ modelMatrix: template!.modelMatrix,
+                        geometries: template!.geometries, geometryId: template!.geometryId, fromHardcoded: template!.fromHardcoded })) };
+                })();
+                itemModelTemplatePromiseCache.set(cacheKey, templatePromise);
+            }
+            const template = await templatePromise;
+            itemModelTemplateCache.set(cacheKey, template);
+            return template;
+        }
         let modelId;
         let displayModelId = null;
+        const bedDisplayModelId = /_bed$/.test(baseName) && definition?.model?.type === 'minecraft:composite'
+            ? definition.model.models?.find((part: any) => typeof part.model === 'string')?.model ?? null : null;
         let tintList = null;
         if (definition && definition.model) {
             if (typeof definition.model === 'string') {
@@ -1795,7 +1794,7 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
 
         let templatePromise = itemModelTemplatePromiseCache.get(cacheKey);
         if (!templatePromise) {
-            templatePromise = buildItemModelTemplate(baseName, displayType || null, modelId, displayModelId, tintList);
+            templatePromise = buildItemModelTemplate(baseName, displayType || null, modelId, displayModelId, tintList, bedDisplayModelId);
             itemModelTemplatePromiseCache.set(cacheKey, templatePromise);
         }
         const template = await templatePromise;
@@ -1809,8 +1808,14 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
 }
 
 export async function getItemDisplayModelMatrix(rawName: string): Promise<THREE.Matrix4 | null> {
+    const template = await prepareItemModelTemplate(rawName);
+    return template ? new THREE.Matrix4().fromArray(template.modelMatrix) : null;
+}
+
+export function getBedItemDisplayModelMatrix(rawName: string): THREE.Matrix4 | null {
     const { baseName, displayType } = parseItemNameCached(rawName);
-    return itemDisplayModelMatrices.get(`${baseName}|${displayType ?? ''}`)?.clone() ?? null;
+    return bedItemDisplayModelMatrices.get(`${baseName}|${displayType ?? ''}`)?.clone()
+        ?? (!displayType || displayType === 'none' ? new THREE.Matrix4().makeTranslation(-.5, -.5, -.5) : null);
 }
 
 // item_display 노드를 분석해 모델 지오메트리와 display 변환을 계산한다.
@@ -1832,6 +1837,8 @@ function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
     itemModelTemplateCache.clear();
     itemModelTemplateKeyByName.clear();
     itemNameParseCache.clear();
+    itemDisplayModelMatrices.clear();
+    bedItemDisplayModelMatrices.clear();
     blockModelGeometryCache.clear();
     blockDisplayTemplatePromiseCache.clear();
     blockDisplayTemplateCache.clear();

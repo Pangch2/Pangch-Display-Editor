@@ -26,7 +26,8 @@ import {
   vec2,
   sRGBTransferEOTF,
   sRGBTransferOETF,
-  step
+  step,
+  time
 } from 'three/tsl';
 
 export const dragSelectedAttributeName = 'dragSelected';
@@ -217,7 +218,8 @@ export function createEndPortalMaterial(endSkyTexture: Texture, endPortalTexture
       projectedUv.x.mul(Math.cos(angle)).sub(projectedUv.y.mul(Math.sin(angle))),
       projectedUv.x.mul(Math.sin(angle)).add(projectedUv.y.mul(Math.cos(angle)))
     ).mul(scale);
-    const layerUv = rotatedUv.add(vec2(17 / layer, 0)).mul(0.5).add(0.25);
+    // GameTime wraps once per 24,000 ticks (1,200 seconds).
+    const layerUv = rotatedUv.add(vec2(17 / layer, time.div(1_200).fract().mul((2 + layer / 1.5) * 1.5))).mul(0.5).add(0.25);
     portalColor = portalColor.add(sRGBTransferOETF(texture(endPortalTexture, layerUv).rgb).mul(vec3(...endPortalColors[layer - 1])));
   }
 

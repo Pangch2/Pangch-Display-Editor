@@ -7,6 +7,154 @@
   background: #0009;
 }
 
+.summon-command-window {
+  padding: 0;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  font-size: 13px;
+}
+
+.summon-command-window h2 {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.summon-command-window .settings-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 3px;
+  color: #aaa;
+}
+
+.summon-command-window .settings-close:hover {
+  background: #3b3b40;
+  color: #f0f0f0;
+}
+
+.summon-command-window::backdrop {
+  background: #0009;
+}
+
+.summon-command-body {
+  box-sizing: border-box;
+  height: calc(100% - 49px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.summon-command-modes {
+  display: inline-flex;
+  align-self: flex-start;
+  flex: none;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e21;
+}
+
+.summon-command-modes button,
+.summon-command-entry button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  background: #252528;
+  color: #bbb;
+  font: inherit;
+  cursor: pointer;
+}
+
+.summon-command-modes button {
+  min-width: 88px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.summon-command-modes button:hover,
+.summon-command-entry button:hover:not(:disabled) {
+  background: #3b3b40;
+  color: #f0f0f0;
+}
+
+.summon-command-modes button[aria-pressed="true"] {
+  border-color: #70c7ff;
+  background: #70c7ff20;
+  color: #70c7ff;
+}
+
+.summon-command-entry button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#summon-command-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  scrollbar-color: #4a4a50 transparent;
+  scrollbar-width: thin;
+}
+
+.summon-command-entry {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 86px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid #3a3a3e;
+  border-radius: 4px;
+  background: #2b2b2f;
+}
+
+.summon-command-body textarea {
+  box-sizing: border-box;
+  height: 48px;
+  min-height: 48px;
+  width: 100%;
+  padding: 8px;
+  resize: none;
+  font: 13px/20px Consolas, monospace;
+  white-space: pre;
+  overflow-x: auto;
+  scrollbar-color: #4a4a50 #1e1e21;
+  scrollbar-width: thin;
+}
+
+.summon-command-body textarea:focus {
+  border-color: #77777f;
+}
+
+.summon-command-body footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  white-space: nowrap;
+}
+
+.summon-command-body output {
+  color: #aaa;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.summon-command-body p {
+  margin: 0;
+  color: #bbb;
+  overflow-wrap: anywhere;
+}
+
+.summon-command-window :focus-visible {
+  outline: 2px solid #70c7ff;
+  outline-offset: 2px;
+}
+
 .settings-overlay[hidden] {
   display: none;
 }

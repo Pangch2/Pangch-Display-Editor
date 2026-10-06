@@ -47,7 +47,7 @@ const position = new Vector3();
 const rotation = new Euler();
 const quaternion = new Quaternion();
 const scale = new Vector3();
-const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed'];
+const itemDisplayValues = ['none', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed', 'on_shelf'];
 const textAlignValues = ['left', 'center', 'right'];
 const textDisplayContentTypes: TextDisplayContentType[] = ['text', 'sprite', 'player', 'translate', 'keybind', 'score', 'selector', 'nbt'];
 type TextDisplayExtraKey = 'fallback' | 'scoreboard' | 'separator';
@@ -1546,9 +1546,11 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const displayType = (loadedObjectGroup.userData.objectDisplayTypes as Map<string, string> | undefined)?.get(uuid) ?? 'none';
         metadataSection.append(metadataProperty('display', '디스플레이', propertySelect(displayType, itemDisplayValues, async value => {
             const nextName = replaceNameDisplay(name, value);
+            if (!name.startsWith('player_head')) return replaceDisplayObject(uuid, nextName, { pivotMode: currentPivotMode, pivotWorld: currentPivotWorld });
             await updateDisplayObjectMatrix(uuid, nextName);
             const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
             if (partnerUuid) await updateDisplayObjectMatrix(partnerUuid, nextName);
+            return undefined;
         })));
         sortMetadataRows(metadataSection);
     } else {

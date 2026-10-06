@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { createEntityMaterial, dragSelectedAttributeName } from '../entity-material';
 import { mainThreadAssetProvider } from '../load-project/pbde/pbde-assets';
 import { buildBlockIconTemplate, buildItemIconModels, type ModelData } from '../load-project/scene/scene-parser';
+import { resolveItemModelParts } from '../load-project/scene/item-model-definition';
 import { buildTextureAtlasForRenderList, type TexturePixelData } from '../load-project/scene/texture-atlas-builder';
 
 const iconSize = 64;
@@ -142,27 +143,8 @@ export function getBlockIconName(name: string): Promise<string> {
 }
 
 function findDisplayModelId(value: any, properties: Record<string, string> = {}): string | null {
-    if (typeof value === 'string') return value;
-    if (!value || typeof value !== 'object') return null;
-    if (value.type === 'minecraft:condition') return findDisplayModelId(value.on_false, properties);
-    if (value.block_state_property && Array.isArray(value.cases)) {
-        const property = String(value.block_state_property).split(':').pop()!;
-        const selected = value.cases.find((entry: any) => String(entry.when) === properties[property]);
-        return findDisplayModelId(selected?.model ?? value.fallback, properties);
-    }
-    if (typeof value.base === 'string') return value.base;
-    if (typeof value.model === 'string') return value.model;
-    for (const key of ['model', 'fallback', 'on_true', 'on_false']) {
-        const found = findDisplayModelId(value[key], properties);
-        if (found) return found;
-    }
-    for (const key of ['models', 'cases', 'entries']) {
-        for (const entry of Array.isArray(value[key]) ? value[key] : []) {
-            const found = findDisplayModelId(entry, properties);
-            if (found) return found;
-        }
-    }
-    return null;
+    const model = resolveItemModelParts(value, 'gui', properties)[0]?.model;
+    return model?.base ?? (typeof model?.model === 'string' ? model.model : null);
 }
 
 function needsHardcodedItemGeometry(definition: any): boolean {
