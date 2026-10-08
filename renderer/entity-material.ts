@@ -1,4 +1,5 @@
-import { BufferGeometry, FrontSide, InstancedInterleavedBuffer, InterleavedBufferAttribute, Matrix4, MeshBasicNodeMaterial, type Texture } from 'three/webgpu';
+import { BufferGeometry, FrontSide, InstancedInterleavedBuffer, InterleavedBufferAttribute, Matrix3, Matrix4, MeshBasicNodeMaterial, type Texture } from 'three/webgpu';
+import type { Object3D, Renderer, WebGPURenderer } from 'three/webgpu';
 import {
   uniform,
   renderGroup,
@@ -8,14 +9,16 @@ import {
   texture,
   vec3,
   normalize,
-  normalWorld,
   normalGeometry,
+  normalLocal,
+  modelNormalMatrix,
+  Fn,
+  If,
   max,
   dot,
   float,
   add,
   mul,
-  pow,
   min,
   vec4,
   mix,
@@ -29,6 +32,40 @@ import {
   step,
   time
 } from 'three/tsl';
+
+type NodeBuilderLike = {
+  object?: { instanceMatrix?: { array?: unknown } };
+  uniforms: Record<string, { name: string; node: unknown }[]>;
+  getUniformFromNode: (node: { value?: unknown }, type: string, shaderStage: string, name?: string | null) => unknown;
+};
+type WebGpuBackendWithNodeBuilder = {
+  createNodeBuilder?: (object: Object3D, renderer: Renderer) => NodeBuilderLike;
+};
+
+export function stabilizeInstancedMatrixBindingNames(renderer: WebGPURenderer): void {
+  const backend = (renderer as unknown as { backend?: WebGpuBackendWithNodeBuilder }).backend;
+  const createNodeBuilder = backend?.createNodeBuilder;
+  if (!backend || !createNodeBuilder) return;
+
+  backend.createNodeBuilder = function (object, currentRenderer) {
+    const builder = createNodeBuilder.call(this, object, currentRenderer);
+    const prototype = Object.getPrototypeOf(builder) as NodeBuilderLike;
+    const getUniformFromNode = prototype.getUniformFromNode;
+    prototype.getUniformFromNode = function (node, type, shaderStage, name = null) {
+      const instanceMatrix = this.object?.instanceMatrix;
+      const isInstanceMatrix = (type === 'buffer' && node.value === instanceMatrix?.array)
+        || (type === 'storageBuffer' && node.value === instanceMatrix);
+      // Explicit TSL reads can create another node for this buffer; only one owns the stable name.
+      const binding = this.uniforms[shaderStage].find(uniform => uniform.name === 'pdeInstanceMatrix');
+      const stableName = isInstanceMatrix && (!binding || binding.node === node)
+        ? 'pdeInstanceMatrix'
+        : name;
+      return getUniformFromNode.call(this, node, type, shaderStage, stableName);
+    };
+    backend.createNodeBuilder = createNodeBuilder;
+    return builder;
+  };
+}
 
 export const dragSelectedAttributeName = 'dragSelected';
 export const entityVisibleAttributeName = 'entityVisible';
@@ -50,6 +87,9 @@ export function setEntityStateAttributes(geometry: BufferGeometry, count: number
 const tintNodeCache = new Map<number, ReturnType<typeof vec3>>();
 const shadingEnabled = uniform(1.0);
 const dragDeltaMatrixNode = uniform(dragDeltaMatrix).setGroup(renderGroup);
+const dragNormalMatrix = new Matrix3();
+const dragNormalMatrixNode = uniform(dragNormalMatrix).setGroup(renderGroup)
+  .onRenderUpdate(() => dragNormalMatrix.getNormalMatrix(dragDeltaMatrix));
 export const dragPreviewPosition = (basePosition = positionLocal) => mix(
   basePosition,
   modelWorldMatrixInverse
@@ -87,13 +127,23 @@ const getTintNode = (tintHex?: number): ReturnType<typeof vec3> => {
 
 const lightDir0 = normalize(vec3(0.2, 1.0, -0.7));
 const lightDir1 = normalize(vec3(-0.2, 1.0, 0.7));
-const worldNormal = normalize(normalWorld);
+// DisplayRenderer / PoseStack use transformed vertex normals, not screen-space derivatives.
+const worldNormal = Fn(() => {
+  // Three.js already applies the instance normal matrix to normalLocal.
+  const normal = modelNormalMatrix.mul(normalLocal).toVar();
+  If(attribute(dragSelectedAttributeName, 'float').greaterThan(0), () => {
+    normal.assign(dragNormalMatrixNode.mul(normal));
+  });
+  // Zero/invalid normals from a collapsed transform retain only ambient light.
+  const lengthSquared = normal.dot(normal).toVar();
+  return lengthSquared.greaterThan(0).select(normal.div(lengthSquared.sqrt()), vec3(0));
+}).once()();
 const light0 = max(dot(lightDir0, worldNormal), float(0.0));
 const light1 = max(dot(lightDir1, worldNormal), float(0.0));
 const lightSum = add(light0, light1);
 const scaledLight = mul(lightSum, float(0.6));
 const biasedLight = add(scaledLight, float(0.4));
-const directionalLight = pow(min(float(1.0), biasedLight), 2.2);
+const directionalLight = sRGBTransferEOTF(vec3(varying(min(float(1.0), biasedLight), 'pdeDirectionalLight')));
 
 export function toggleShading(): boolean {
   shadingEnabled.value = 1 - shadingEnabled.value;

@@ -23,6 +23,7 @@ import {
     SRGBColorSpace
 } from 'three/webgpu';
 import { initAssets } from './asset-manager';
+import { stabilizeInstancedMatrixBindingNames } from './entity-material';
 import { getItemIconAtlas } from './ui/item-icon-atlas';
 import { ensureSpriteAtlases } from './load-project/scene/sprite-atlas';
 import { loadedObjectGroup } from './load-project/pbde/upload-pbde';
@@ -52,14 +53,6 @@ let gizmoModule: InitGizmoResult | null = null;
 type GpuQueueLike = { onSubmittedWorkDone?: () => Promise<void> };
 type WebGpuRendererWithBackend = { backend?: { device?: { queue?: GpuQueueLike } } };
 type WebGpuRendererWithPipelines = { _pipelines?: { caches?: { size?: number } } };
-type NodeBuilderLike = {
-    object?: { instanceMatrix?: { array?: unknown } };
-    uniforms: Record<string, { name: string; node: unknown }[]>;
-    getUniformFromNode: (node: { value?: unknown }, type: string, shaderStage: string, name?: string | null) => unknown;
-};
-type WebGpuBackendWithNodeBuilder = {
-    createNodeBuilder?: (object: Object3D, renderer: Renderer) => NodeBuilderLike;
-};
 type ScenePrecompileTrace = {
     available: boolean;
     profileEnabled: boolean;
@@ -195,31 +188,6 @@ window.addEventListener('pde:wait-render-settled', (event: Event) => {
 function getPipelineCacheSize(): number {
     const size = (renderer as unknown as WebGpuRendererWithPipelines)?._pipelines?.caches?.size;
     return typeof size === 'number' ? size : -1;
-}
-
-function stabilizeInstancedMatrixBindingNames(renderer: WebGPURenderer): void {
-    const backend = (renderer as unknown as { backend?: WebGpuBackendWithNodeBuilder }).backend;
-    const createNodeBuilder = backend?.createNodeBuilder;
-    if (!backend || !createNodeBuilder) return;
-
-    backend.createNodeBuilder = function (object, currentRenderer) {
-        const builder = createNodeBuilder.call(this, object, currentRenderer);
-        const prototype = Object.getPrototypeOf(builder) as NodeBuilderLike;
-        const getUniformFromNode = prototype.getUniformFromNode;
-        prototype.getUniformFromNode = function (node, type, shaderStage, name = null) {
-            const instanceMatrix = this.object?.instanceMatrix;
-            const isInstanceMatrix = (type === 'buffer' && node.value === instanceMatrix?.array)
-                || (type === 'storageBuffer' && node.value === instanceMatrix);
-            // Explicit TSL reads can create another node for this buffer; only one owns the stable name.
-            const binding = this.uniforms[shaderStage].find(uniform => uniform.name === 'pdeInstanceMatrix');
-            const stableName = isInstanceMatrix && (!binding || binding.node === node)
-                ? 'pdeInstanceMatrix'
-                : name;
-            return getUniformFromNode.call(this, node, type, shaderStage, stableName);
-        };
-        backend.createNodeBuilder = createNodeBuilder;
-        return builder;
-    };
 }
 
 async function precompileScene(): Promise<ScenePrecompileTrace> {

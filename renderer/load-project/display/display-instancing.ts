@@ -20,7 +20,6 @@ export const MAX_INSTANCES_PER_INSTANCED_MESH = 32768;
 export const INITIAL_INSTANCES_PER_INSTANCED_MESH = MAX_INSTANCES_PER_INSTANCED_MESH >> 1;
 const signatureHashScratch = new ArrayBuffer(8);
 const signatureHashView = new DataView(signatureHashScratch);
-const instanceBrightnessColor = new THREE.Color();
 export type Brightness = { sky?: number; block?: number };
 export type SignatureGroup = {
     parts: GeometryMeta[];
@@ -43,6 +42,20 @@ const skyLightColors = [
     0x5e5853, 0x69635e, 0x77716d, 0x87817c,
     0x9c9691, 0xb6b0ac, 0xdad4cf, 0xfcfcfc
 ];
+// Keep the captured sky lightmap; add lightmap.fsh's block contribution in sRGB once.
+const lightMapColors = Array.from({ length: 256 }, (_, index) => {
+    const skyColor = skyLightColors[index & 15];
+    const block = (index >> 4) / 15;
+    // ponytail: fixed BlockFactor (1.4); animate the client's torch flicker only if world simulation is added.
+    const blockBrightness = block / (4 - 3 * block) * 1.4;
+    const whiteMix = 0.9 * (2 * block - 1) ** 2;
+    return new THREE.Color().setRGB(
+        Math.min(1, (skyColor >>> 16) / 255 + blockBrightness),
+        Math.min(1, ((skyColor >>> 8) & 0xff) / 255 + (0xd8 / 255 * (1 - whiteMix) + whiteMix) * blockBrightness),
+        Math.min(1, (skyColor & 0xff) / 255 + (0x8c / 255 * (1 - whiteMix) + whiteMix) * blockBrightness),
+        THREE.SRGBColorSpace
+    );
+});
 
 function effectiveBrightness(brightness?: Brightness): Brightness {
     const global = loadedObjectGroup.userData.globalBrightness as GlobalBrightness | undefined;
@@ -50,8 +63,10 @@ function effectiveBrightness(brightness?: Brightness): Brightness {
 }
 
 export function setInstanceSkyBrightness(mesh: THREE.InstancedMesh, instanceId: number, brightness?: Brightness): void {
-    const level = Math.round(THREE.MathUtils.clamp(effectiveBrightness(brightness).sky ?? 15, 0, 15));
-    mesh.setColorAt(instanceId, instanceBrightnessColor.setHex(skyLightColors[level]));
+    const effective = effectiveBrightness(brightness);
+    const level = Math.round(THREE.MathUtils.clamp(effective.sky ?? 15, 0, 15));
+    const block = Math.round(THREE.MathUtils.clamp(effective.block ?? 0, 0, 15));
+    mesh.setColorAt(instanceId, lightMapColors[level + block * 16]);
     mesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
 }
 
