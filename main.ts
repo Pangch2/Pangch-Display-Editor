@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, dialog, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -8,12 +8,15 @@ import { minecraftAssetPrefixes as requiredPrefixes, unzipMinecraftFiles, writeM
 import { downloadMinecraftFiles } from './minecraft-download.js';
 import { initHeadTextureService } from './renderer/player-head-service/head-texture-service.js';
 import { ProjectFileStore } from './renderer/save/project-file-store.js';
+import { AutoSaveFileStore } from './renderer/save/auto/auto-save-file-store.js';
+import { saveMcfunctionFile } from './renderer/save/mcfunction-file-store.js';
 import { registerProjectClipboard } from './renderer/save/project-clipboard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const CACHE_DIR = path.join(app.getPath('userData'), 'pde-asset-cache-v1');
+const autoSaveDirectory = path.join(CACHE_DIR, 'auto-save');
 const ASSET_CACHE_READY_PATH = path.join(CACHE_DIR, '.assets-complete');
 const registryCacheId = 'server-jar-v2';
 const SPRITE_ATLAS_DIR = path.join(CACHE_DIR, 'sprite-atlases');
@@ -463,6 +466,27 @@ function createWindow() {
   initHeadTextureService(win);
 
   const projectFiles = new ProjectFileStore();
+  const autoSaveFiles = new AutoSaveFileStore(autoSaveDirectory);
+  ipcMain.handle('get-auto-save-directory', event => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Invalid auto-save sender');
+    return autoSaveDirectory;
+  });
+  ipcMain.handle('open-auto-save-directory', async event => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { success: false, error: 'Invalid auto-save sender' };
+    try {
+      await fs.mkdir(autoSaveDirectory, { recursive: true });
+      const error = await shell.openPath(autoSaveDirectory);
+      return error ? { success: false, error } : { success: true };
+    } catch (error) { return { success: false, error: errorMessage(error) }; }
+  });
+  ipcMain.on('set-auto-save-projects', (event, projects: { id: string; name: string; revision: number }[]) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return;
+    try { autoSaveFiles.setProjects(projects); } catch (error) { console.error(error); }
+  });
+  ipcMain.handle('auto-save-project', (event, id: string, name: string, data: Uint8Array, maximum: number) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return { success: false, error: 'Invalid auto-save sender' };
+    return autoSaveFiles.save(id, name, data, maximum);
+  });
   registerProjectClipboard(win.webContents);
   ipcMain.handle('decompress-pde-project', (event, data: Uint8Array) => {
     if (event.sender !== win.webContents) throw new Error('Invalid project decompress sender');
@@ -485,6 +509,17 @@ function createWindow() {
       const result = await dialog.showSaveDialog(win, {
         title: 'PDE 프로젝트 저장', defaultPath: `${defaultName}.pde`,
         filters: [{ name: 'PDE 프로젝트', extensions: ['pde'] }]
+      });
+      return result.canceled ? undefined : result.filePath;
+    });
+  });
+
+  ipcMain.handle('save-mcfunction', (event, name: string, commands: string[]) => {
+    if (event.sender !== win.webContents) return { success: false, error: 'Invalid mcfunction save sender' };
+    return saveMcfunctionFile(name, commands, async defaultName => {
+      const result = await dialog.showSaveDialog(win, {
+        title: 'mcfunction 저장', defaultPath: `${defaultName}.mcfunction`,
+        filters: [{ name: 'Minecraft Function', extensions: ['mcfunction'] }]
       });
       return result.canceled ? undefined : result.filePath;
     });

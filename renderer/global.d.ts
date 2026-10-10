@@ -31,6 +31,11 @@ declare interface IpcApi {
   setActiveProject(id: string): void;
   forgetProjectSavePath(id: string): void;
   saveProject(id: string, name: string, data: Uint8Array): Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
+  setAutoSaveProjects(projects: { id: string; name: string; revision: number }[]): void;
+  autoSaveProject(id: string, name: string, data: Uint8Array, maximum: number): Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
+  getAutoSaveDirectory(): Promise<string>;
+  openAutoSaveDirectory(): Promise<{ success: boolean; error?: string }>;
+  saveMcfunction(name: string, commands: string[]): Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
   decompressPdeProject(data: Uint8Array): Promise<Uint8Array>;
   writeProjectClipboard(data: Uint8Array): Promise<void>;
   readProjectClipboard(): Promise<Uint8Array<ArrayBuffer> | undefined>;

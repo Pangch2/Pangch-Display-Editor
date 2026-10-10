@@ -1090,12 +1090,13 @@ export function getPlayerHeadPaintSurface(
     mesh: InstancedMesh,
     instanceId: number,
     exclusive = false,
-    paintUsage?: Map<Material, ReturnType<typeof getPlayerHeadPaintUsage>>
+    paintUsage?: Map<Material, ReturnType<typeof getPlayerHeadPaintUsage>>,
+    projectData = loadedObjectGroup.userData
 ): PlayerHeadPaintSurface | null {
     const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
     const uvOffsets = mesh.geometry.getAttribute('instancedUvOffset') as BufferAttribute | InterleavedBufferAttribute | undefined;
-    const objectUuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(`${mesh.uuid}_${instanceId}`);
+    const objectUuid = (projectData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(`${mesh.uuid}_${instanceId}`);
     if (!atlas || !uvOffsets || !objectUuid || instanceId < 0 || instanceId >= mesh.count) return null;
     const usage = exclusive ? paintUsage?.get(material) ?? getPlayerHeadPaintUsage(material) : undefined;
     if (usage) paintUsage?.set(material, usage);
@@ -1221,7 +1222,7 @@ export function writePlayerHeadPaint(surface: PlayerHeadPaintSurface, packed: Im
 
 let playerHeadSkinCanvas: HTMLCanvasElement | undefined;
 
-export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = readPlayerHeadPaint(surface)): void {
+export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = readPlayerHeadPaint(surface), projectData = loadedObjectGroup.userData): void {
     let hasHat = false;
     for (let y = PLAYER_HEAD_PART_SIZE * 2; y < PLAYER_HEAD_BLOCK_HEIGHT && !hasHat; y++) {
         for (let x = 0; x < PLAYER_HEAD_BLOCK_WIDTH; x++) {
@@ -1260,21 +1261,21 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = 
         }
         atlas.slotUrls[surface.slot] = dataUrl;
     }
-    (loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined)?.set(surface.objectUuid, dataUrl);
+    (projectData.objectTextures as Map<string, string> | undefined)?.set(surface.objectUuid, dataUrl);
 }
 
-export function getPlayerHeadTexture(objectUuid: string): string | undefined {
-    const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
+export function getPlayerHeadTexture(objectUuid: string, projectData = loadedObjectGroup.userData): string | undefined {
+    const textures = projectData.objectTextures as Map<string, string> | undefined;
     const texture = textures?.get(objectUuid);
-    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const ref = (projectData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) return texture;
-    const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId);
+    const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId, false, undefined, projectData);
     if (!surface) return texture;
     if (texture !== deferredPlayerHeadTexture && !captureHeadAtlasUvs(surface.context.canvas, {
         x: surface.x, y: surface.y, width: surface.denseLayer === undefined ? PLAYER_HEAD_BLOCK_WIDTH : PLAYER_HEAD_PART_SIZE,
         height: surface.denseLayer === undefined ? PLAYER_HEAD_BLOCK_HEIGHT : PLAYER_HEAD_PART_SIZE
     }).length) return texture;
-    commitPlayerHeadPaint(surface);
+    commitPlayerHeadPaint(surface, undefined, projectData);
     return textures?.get(objectUuid);
 }
 

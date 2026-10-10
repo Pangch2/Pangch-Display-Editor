@@ -11,9 +11,13 @@ dialog.setAttribute('aria-labelledby', 'summon-command-title');
 dialog.innerHTML = `
   <header><h2 id="summon-command-title">소환 명령어</h2><button class="settings-close" type="button" aria-label="닫기">×</button></header>
   <div class="summon-command-body">
+    <div class="summon-command-toolbar">
     <div class="summon-command-modes" role="group" aria-label="내보내기 형식">
       <button type="button" data-mode="command" aria-pressed="true" title="커맨드 블록 · 최대 32,500자">Command</button>
       <button type="button" data-mode="datapack" aria-pressed="false" title="mcfunction 한 줄 · 최대 2,000,000자">DataPack</button>
+      <button type="button" data-mode="separate" aria-pressed="false" title="오브젝트 하나당 summon 명령어 하나 · 최대 32,500자">Separate</button>
+    </div>
+    <button type="button" id="summon-command-save" aria-label="mcfunction 저장" title="mcfunction 저장" hidden disabled><span class="lucide-icon" aria-hidden="true">&#xE14D;</span></button>
     </div>
     <div id="summon-command-list">
       <section class="summon-command-entry">
@@ -27,7 +31,10 @@ document.body.append(dialog);
 const text = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
 const list = dialog.querySelector<HTMLDivElement>('#summon-command-list')!;
 const status = dialog.querySelector<HTMLElement>('[role="status"]')!;
+const save = dialog.querySelector<HTMLButtonElement>('#summon-command-save')!;
 let mode: SummonExportMode = 'command';
+let saving = false;
+let exportedCommands: string[] = [];
 let closing = false;
 let generation: AbortController | undefined;
 let commandText = new WeakMap<HTMLTextAreaElement, string>();
@@ -58,6 +65,8 @@ function closeSummonCommand(): void {
   if (!dialog.open || closing) return;
   closing = true;
   generation?.abort();
+  exportedCommands = [];
+  save.disabled = true;
   visibleCommands.disconnect();
   void closeWithAnimation(dialog).then(() => {
     dialog.close();
@@ -108,6 +117,9 @@ async function renderCommands(): Promise<void> {
   generation?.abort();
   const current = generation = new AbortController();
   const exportMode = mode;
+  exportedCommands = [];
+  save.hidden = exportMode === 'command';
+  save.disabled = true;
   const large = (loadedObjectGroup.userData.objectUuidToInstance?.size ?? 0) >= 1000;
   visibleCommands.disconnect();
   commandText = new WeakMap();
@@ -137,6 +149,8 @@ async function renderCommands(): Promise<void> {
     }
     commands = large ? await generateSummonCommandsAsync(loadedObjectGroup, exportMode, current.signal)
       : generateSummonCommands(loadedObjectGroup, exportMode);
+    if (current.signal.aborted) return;
+    exportedCommands = commands;
     status.textContent = '';
   } catch (error) {
     if (current.signal.aborted) return;
@@ -154,7 +168,7 @@ async function renderCommands(): Promise<void> {
     field.id = 'summon-command-text' + suffix;
     count.id = 'summon-command-count' + suffix;
     copy.id = 'summon-command-copy' + suffix;
-    field.setAttribute('aria-label', `${exportMode === 'command' ? 'Command' : 'DataPack'} ${index + 1}`);
+    field.setAttribute('aria-label', `${exportMode === 'command' ? 'Command' : exportMode === 'datapack' ? 'DataPack' : 'Separate'} ${index + 1}`);
     if (large) {
       commandText.set(field, command);
       if (index) visibleCommands.observe(field);
@@ -175,7 +189,25 @@ async function renderCommands(): Promise<void> {
   }
   list.append(fragment);
   list.setAttribute('aria-busy', 'false');
+  save.disabled = saving || !exportedCommands.length;
 }
+
+save.onclick = async () => {
+  if (save.disabled || mode === 'command') return;
+  const current = generation;
+  saving = true;
+  save.disabled = true;
+  try {
+    const result = await window.ipcApi.saveMcfunction(loadedObjectGroup.userData.projectDetails?.name || 'project', exportedCommands);
+    if (!result.success && !result.canceled) throw new Error(result.error ?? '파일을 저장할 수 없습니다.');
+    if (generation === current && !current?.signal.aborted && result.success) status.textContent = '저장했습니다.';
+  } catch (error) {
+    if (generation === current && !current?.signal.aborted) status.textContent = `저장 실패: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    saving = false;
+    save.disabled = !exportedCommands.length || list.getAttribute('aria-busy') === 'true';
+  }
+};
 
 for (const button of dialog.querySelectorAll<HTMLButtonElement>('[data-mode]')) {
   button.onclick = () => {

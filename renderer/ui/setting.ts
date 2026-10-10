@@ -3,6 +3,8 @@ import { closeWithAnimation, openWithAnimation } from './ui-open-close.js';
 import { loadedObjectGroup } from '../load-project/pbde/upload-pbde';
 import { cleanLabel } from './scene-panel/scene-panel-model';
 import { getShortcutConflictDetails, getShortcutMapping, getShortcuts, matchesShortcut, normalizeShortcutKey, resetShortcutMapping, resetShortcuts, setShortcutMapping, setShortcuts, shortcutDefinitions, shortcutFromKeys } from '../controls/input/shortcuts';
+import { autoSaveStorageKey, readAutoSaveSettings, updateAutoSaveSettings } from '../save/auto/auto-save-settings';
+import { autoSaveError } from '../save/auto/auto-save';
 
 const settingsButton = document.getElementById('settings-button')!;
 const toolbar = document.getElementById('scene-toolbar')!;
@@ -37,6 +39,13 @@ overlay.innerHTML = `
             <label class="settings-row"><span>위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdePositionDragValue"><button type="button" aria-label="위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>각도 드래그값</span><span class="settings-drag-value" data-values="0,180,90,45,30,15,10,5,2,1,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeRotationDragValue"><button type="button" aria-label="각도 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeScaleDragValue"><button type="button" aria-label="스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+          </fieldset>
+          <fieldset>
+            <legend>자동저장</legend>
+            <div class="settings-row"><label for="auto-save-enabled">자동저장</label><span class="settings-row-toggle"><input id="auto-save-enabled" type="checkbox"><button id="auto-save-open-folder" type="button">파일위치 열기</button></span></div>
+            <div class="settings-row"><label for="auto-save-time">시간설정</label><span class="settings-auto-save-time"><input id="auto-save-time" type="text" inputmode="decimal"><span class="settings-select"><select id="auto-save-unit" aria-label="자동저장 시간 단위"><option value="hours">시</option><option value="minutes">분</option><option value="seconds">초</option></select><span class="lucide-icon">&#xE06D;</span></span></span></div>
+            <div class="settings-row"><label for="auto-save-maximum">파일 최대 갯수</label><div class="settings-auto-save-files"><input id="auto-save-maximum" type="text" inputmode="numeric"><p class="settings-auto-save-warning">⚠️ 주의 갯수를 초과한 파일은 제거됩니다 ⚠️</p><p>저장 위치: <span id="auto-save-directory"></span></p></div></div>
+            <p id="auto-save-error" role="status" aria-live="polite" hidden></p>
           </fieldset>
           <fieldset>
             <legend>헤드 페인트 계정</legend>
@@ -99,6 +108,49 @@ overlay.innerHTML = `
   </section>
 `;
 document.body.appendChild(overlay);
+
+let autoSaveSettings = readAutoSaveSettings(localStorage);
+const autoSaveEnabled = overlay.querySelector<HTMLInputElement>('#auto-save-enabled')!;
+const autoSaveTime = overlay.querySelector<HTMLInputElement>('#auto-save-time')!;
+const autoSaveUnit = overlay.querySelector<HTMLSelectElement>('#auto-save-unit')!;
+const autoSaveMaximum = overlay.querySelector<HTMLInputElement>('#auto-save-maximum')!;
+const autoSaveStatus = overlay.querySelector<HTMLElement>('#auto-save-error')!;
+const autoSaveFolderButton = overlay.querySelector<HTMLButtonElement>('#auto-save-open-folder')!;
+function renderAutoSaveSettings(): void {
+  autoSaveEnabled.checked = autoSaveSettings.enabled;
+  autoSaveTime.value = String(autoSaveSettings.time);
+  autoSaveUnit.value = autoSaveSettings.unit;
+  autoSaveMaximum.value = String(autoSaveSettings.maximum);
+}
+function commitAutoSaveSettings(values: Parameters<typeof updateAutoSaveSettings>[1]): void {
+  autoSaveSettings = updateAutoSaveSettings(autoSaveSettings, values);
+  renderAutoSaveSettings();
+  localStorage.setItem(autoSaveStorageKey, JSON.stringify(autoSaveSettings));
+  window.dispatchEvent(new Event('pde:auto-save-settings-changed'));
+}
+function renderAutoSaveError(error: string): void {
+  autoSaveStatus.textContent = error;
+  autoSaveStatus.hidden = !error;
+}
+renderAutoSaveSettings();
+renderAutoSaveError(autoSaveError);
+void window.ipcApi.getAutoSaveDirectory().then(directory => {
+  overlay.querySelector<HTMLElement>('#auto-save-directory')!.textContent = directory;
+}).catch(error => renderAutoSaveError(String(error)));
+autoSaveFolderButton.addEventListener('click', async () => {
+  autoSaveFolderButton.disabled = true;
+  try {
+    const result = await window.ipcApi.openAutoSaveDirectory();
+    renderAutoSaveError(result.success ? autoSaveError : `폴더를 열지 못했습니다: ${result.error ?? '알 수 없는 오류'}`);
+  } catch (error) { renderAutoSaveError(String(error)); }
+  finally { autoSaveFolderButton.disabled = false; }
+});
+autoSaveEnabled.addEventListener('change', () => commitAutoSaveSettings({ enabled: autoSaveEnabled.checked }));
+autoSaveTime.addEventListener('blur', () => commitAutoSaveSettings({ time: autoSaveTime.value }));
+autoSaveUnit.addEventListener('change', () => commitAutoSaveSettings({ unit: autoSaveUnit.value }));
+autoSaveMaximum.addEventListener('blur', () => commitAutoSaveSettings({ maximum: autoSaveMaximum.value }));
+for (const input of [autoSaveTime, autoSaveMaximum]) input.addEventListener('keydown', event => { if (event.key === 'Enter') input.blur(); });
+window.addEventListener('pde:auto-save-error', (event: CustomEvent<string>) => renderAutoSaveError(event.detail));
 
 const loginButton = overlay.querySelector<HTMLButtonElement>('.settings-login')!;
 const logoutButton = overlay.querySelector<HTMLButtonElement>('.settings-logout')!;

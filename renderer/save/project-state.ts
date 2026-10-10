@@ -40,6 +40,7 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
         if (!ref || seenObjects.has(uuid)) return undefined;
         seenObjects.add(uuid);
         const { mesh, instanceId } = ref;
+        mesh.updateWorldMatrix(true, false);
         const name = data.objectNames?.get(uuid) ?? mesh.name ?? '';
         const type = mesh.userData.displayTypes?.get(instanceId) ?? mesh.userData.displayType;
         const isText = type === 'text_display' || data.objectTextDisplayOptions?.has(uuid);
@@ -66,7 +67,7 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
         if (layer) object.headLayerVisible = layer.getX(instanceId);
         if (mesh.userData.imageHeadLayer !== undefined) object.imageHeadLayer = mesh.userData.imageHeadLayer;
         state.objects.push(object);
-        const paintTexture = isHead ? getPlayerHeadTexture(uuid) : undefined;
+        const paintTexture = isHead ? getPlayerHeadTexture(uuid, data) : undefined;
         if (mesh.userData.hasHat) object.hasHat = mesh.userData.hasHat[instanceId];
         if (isHead && !paintTexture) throw new Error(`헤드 텍스처를 저장할 수 없습니다: ${uuid}`);
         return {

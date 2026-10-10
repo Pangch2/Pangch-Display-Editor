@@ -1,5 +1,5 @@
 import { openWithAnimation, closeWithAnimation } from '../../ui/ui-open-close.js';
-import { Mesh, Object3D } from 'three/webgpu';
+import { Group, Mesh, Object3D } from 'three/webgpu';
 import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, notifyPlayerHeadAtlasesChanged, performSelection, updateGlobalBrightness } from '../display/mesh-builder';
 import type { GlobalBrightness, LoadedSelection } from '../display/mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
@@ -11,6 +11,9 @@ import { importMcfunctionFiles, openMcfunctionFile } from '../../controls/input/
 import { prepareMcfunctionFiles } from '../mcfunction/mcfunction-import';
 import { currentLoadGen } from '../display/display-instancing';
 import { trackProjectEdit } from '../../save/pending-edits';
+import { autoSave } from '../../save/auto/auto-save';
+import { encodePdeProject } from '../../save/pde-format';
+import { serializeProject } from '../../save/project-state';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 type ScenePrecompileTrace = {
@@ -68,6 +71,7 @@ type CameraState = {
 };
 type ProjectState = {
     id: string;
+    autoSaveRevision: number;
     children: Object3D[];
     data: Record<string, unknown>;
     camera?: CameraState;
@@ -82,6 +86,21 @@ export { loadedObjectGroup };
 
 export function getActiveProjectId(): string | undefined { return projects[activeProject]?.id; }
 export function hasProject(id: string): boolean { return projects.some(project => project.id === id); }
+
+function registerProjectAutoSave(project: ProjectState): void {
+    autoSave.register(project.id, () => {
+        const root = project === projects[activeProject] ? loadedObjectGroup : new Group();
+        if (root !== loadedObjectGroup) root.userData = project.data;
+        const snapshot = serializeProject(root);
+        return { name: snapshot.name, data: encodePdeProject(snapshot) };
+    });
+}
+
+function syncProjectAutoSaveFolders(): void {
+    window.ipcApi.setAutoSaveProjects?.(projects.map(project => ({
+        id: project.id, name: (project.data.projectDetails as Record<string, string> | undefined)?.name ?? '', revision: project.autoSaveRevision
+    })));
+}
 
 function clearProjectTabDropMarker(): void {
     if (projectTabDropMarkerEl && projectTabDropMarkerClass) {
@@ -215,13 +234,15 @@ function switchProject(index: number): void {
 
 function addProject(): void {
     saveActiveProject();
-    projects.push({ id: crypto.randomUUID(), children: [], data: {} });
+    projects.push({ id: crypto.randomUUID(), autoSaveRevision: 0, children: [], data: {} });
     switchProject(projects.length - 1);
+    registerProjectAutoSave(projects[activeProject]);
 }
 
 function deleteProject(index: number): void {
     if (index < 0 || index >= projects.length || projects.length === 1) return;
     const deletedId = projects[index].id;
+    autoSave.forget(deletedId);
     window.ipcApi.forgetProjectSavePath?.(deletedId);
     if (index !== activeProject) {
         const activeId = projects[activeProject]?.id;
@@ -250,6 +271,7 @@ function deleteProject(index: number): void {
 }
 
 function renderProjectTabs(): void {
+    syncProjectAutoSaveFolders();
     clearProjectTabDropMarker();
     const previous = document.getElementById('previous-project') as HTMLButtonElement | null;
     const next = document.getElementById('next-project') as HTMLButtonElement | null;
@@ -439,14 +461,21 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
             if (!reuseCurrentProject && (activeProject < 0 || loadedObjectGroup.children.length > 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails)) addProject();
             clear();
             const generation = beginPbdeLoadGeneration();
-            if (imported.expectedObjects !== undefined) await openMcfunctionFile(imported);
-            else await loadAndRenderPbde(imported.file, false, generation);
+            const project = projects[activeProject];
+            autoSave.suspend(project.id);
+            project.autoSaveRevision++;
+            syncProjectAutoSaveFolders();
+            try {
+                if (imported.expectedObjects !== undefined) await openMcfunctionFile(imported);
+                else await loadAndRenderPbde(imported.file, false, generation);
+            } finally { autoSave.resume(project.id); }
             if (generation !== currentLoadGen) return;
             window.ipcApi.forgetProjectSavePath?.(projects[activeProject].id);
             window.dispatchEvent(new CustomEvent('pde:active-project-changed', { detail: projects[activeProject].id }));
             updateProjectDetails();
             saveActiveProject();
             renderProjectTabs();
+            registerProjectAutoSave(project);
             window.dispatchEvent(new CustomEvent('pde:scene-updated'));
         }
     } catch (e) {

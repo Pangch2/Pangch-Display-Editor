@@ -4,6 +4,7 @@
 
 .head-painter-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 8px;
   box-sizing: border-box;
@@ -45,6 +46,8 @@
 
 .head-painter-panel fieldset {
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   margin: 0;
   border: 1px solid #3a3a3e;
@@ -54,6 +57,11 @@
 .head-painter-tool-settings,
 .head-painter-section {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.head-painter-panel [role="status"] {
+  overflow-wrap: anywhere;
 }
 
 .head-painter-panel > [data-head-painter-section] {

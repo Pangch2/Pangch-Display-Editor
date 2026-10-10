@@ -8,9 +8,9 @@ import { parseSnbt, snbtNumber, SnbtLiteral, stringifySnbt, type SnbtValue } fro
 import { decomposeDisplayTransformation, preserveDisplayTransformation } from './display-transformation';
 
 type Compound = { [key: string]: SnbtValue };
-export type SummonExportMode = 'command' | 'datapack';
+export type SummonExportMode = 'command' | 'datapack' | 'separate';
 // 26.3: AbstractCommandBlockEditScreen.setMaxLength / CommandFunction.checkCommandLineLength.
-export const summonCommandLimits = { command: 32_500, datapack: 2_000_000 } as const;
+export const summonCommandLimits = { command: 32_500, datapack: 2_000_000, separate: 32_500 } as const;
 function getSummonPrefix(project: Group): string {
   const entity = project.userData.projectDetails?.parentEntity?.trim() || 'item_display';
   const position = project.userData.projectDetails?.summonPosition?.trim() || '~ ~ ~';
@@ -204,7 +204,7 @@ function textNbt(name: string, options: TextDisplayOptions): Compound {
 
 type NbtChunks = Generator<string | undefined>;
 
-function* createSummonNbt(project: Group, limit: number): NbtChunks {
+function* createSummonNbt(project: Group, limit: number, separate = false): NbtChunks {
   const data = project.userData;
   const refs = data.objectUuidToInstance as Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }> | undefined;
   const groups = data.groups as Map<string, GroupData> | undefined;
@@ -221,6 +221,7 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
   const editorModel = new Matrix4();
   const transform = new Matrix4();
   const identity = new Matrix4();
+  let separateCount = 0;
 
   const exportObject = (uuid: string, inheritedNbt: Compound): Compound[] => {
     if (seenObjects.has(uuid)) return [];
@@ -321,7 +322,13 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
     });
   };
   const exportObjects = function* (uuid: string, available: number, inheritedNbt: Compound = {}): NbtChunks {
-    for (const entity of exportObject(uuid, inheritedNbt)) {
+    const entities = exportObject(uuid, inheritedNbt);
+    if (separate && entities.length) {
+      if (separateCount++ && 'UUID' in root) throw new Error('프로젝트 mainNBT: UUID를 지정한 엔티티는 여러 summon으로 나눌 수 없습니다.');
+      const nbt = stringifySnbt({ ...omitDisplayDefaults(root), Passengers: entities }, floatCache);
+      if (nbt.length > available) throw oversizedEntity(`오브젝트 ${uuid}`);
+      yield nbt;
+    } else for (const entity of entities) {
       const nbt = stringifySnbt(entity, floatCache);
       if (nbt.length > available) throw oversizedEntity(String(entity.id));
       yield nbt;
@@ -344,7 +351,7 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
       }
     };
     // Display passengers share the summon origin; group transforms are already in the object matrices.
-    if (Object.keys(ownNbt).length) yield* splitPassengers(omitDisplayDefaults(mergeNbt(groupNbt, { id: 'item_display', ...defaults })), passengers, available, `그룹 ${group.name} (${id})`, floatCache);
+    if (!separate && Object.keys(ownNbt).length) yield* splitPassengers(omitDisplayDefaults(mergeNbt(groupNbt, { id: 'item_display', ...defaults })), passengers, available, `그룹 ${group.name} (${id})`, floatCache);
     else yield* passengers(available);
     visitingGroups.delete(id);
     seenGroups.add(id);
@@ -358,7 +365,8 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
     for (const id of groups?.keys() ?? []) yield* exportGroup(id, available);
     for (const uuid of refs?.keys() ?? []) if (!seenObjects.has(uuid)) yield* exportObjects(uuid, available);
   };
-  yield* splitPassengers(omitDisplayDefaults(root), passengers, limit, '프로젝트 mainNBT', floatCache);
+  if (separate) yield* passengers(limit);
+  else yield* splitPassengers(omitDisplayDefaults(root), passengers, limit, '프로젝트 mainNBT', floatCache);
 }
 
 export function generateSummonCommand(project: Group): string {
@@ -397,12 +405,13 @@ function* splitPassengers(entity: Compound, passengers: (limit: number) => NbtCh
 }
 
 function* summonCommands(project: Group, mode: SummonExportMode): NbtChunks {
+  if (!project.userData.objectUuidToInstance?.size) return;
   const limit = summonCommandLimits[mode];
   try {
     const summonPrefix = getSummonPrefix(project);
-    for (const nbt of createSummonNbt(project, limit - summonPrefix.length)) yield nbt === undefined ? undefined : summonPrefix + nbt;
+    for (const nbt of createSummonNbt(project, limit - summonPrefix.length, mode === 'separate')) yield nbt === undefined ? undefined : summonPrefix + nbt;
   } catch (error) {
-    throw new Error(`${mode === 'command' ? 'Command' : 'DataPack'} · 최대 ${limit.toLocaleString()}자: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`${mode === 'command' ? 'Command' : mode === 'datapack' ? 'DataPack' : 'Separate'} · 최대 ${limit.toLocaleString()}자: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

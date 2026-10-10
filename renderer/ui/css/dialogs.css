@@ -14,6 +14,10 @@
   font-size: 13px;
 }
 
+.settings-window.summon-command-window {
+  height: 45%;
+}
+
 .summon-command-window h2 {
   font-size: 15px;
   font-weight: 500;
@@ -45,6 +49,18 @@
   padding: 12px;
 }
 
+.summon-command-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  gap: 12px;
+  padding: 0 0px;
+  overflow-y: hidden;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
 .summon-command-modes {
   display: inline-flex;
   align-self: flex-start;
@@ -57,6 +73,7 @@
 }
 
 .summon-command-modes button,
+.summon-command-toolbar > button,
 .summon-command-entry button {
   height: 30px;
   padding: 0 12px;
@@ -74,7 +91,8 @@
   background: transparent;
 }
 
-.summon-command-modes button:hover,
+.summon-command-modes button:hover:not(:disabled),
+.summon-command-toolbar > button:hover:not(:disabled),
 .summon-command-entry button:hover:not(:disabled) {
   background: #3b3b40;
   color: #f0f0f0;
@@ -86,9 +104,17 @@
   color: #70c7ff;
 }
 
+.summon-command-modes button:disabled,
+.summon-command-toolbar > button:disabled,
 .summon-command-entry button:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+#summon-command-save {
+  min-width: 30px;
+  padding: 0 8px;
+  font-size: 18px;
 }
 
 #summon-command-list {
@@ -451,6 +477,8 @@
 
 .settings-select select,
 .settings-row input[type='number'],
+.settings-auto-save-time input,
+.settings-auto-save-files input,
 .settings-row > input[type='text'] {
   min-width: 0;
   padding: 6px 8px;
@@ -461,6 +489,47 @@
 
 .settings-range output {
   transform: translateX(-4px);
+}
+
+.settings-auto-save-time {
+  display: grid;
+  grid-template-columns: 1fr 80px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#auto-save-enabled {
+  justify-self: start;
+}
+
+#auto-save-error {
+  color: #ff5c67;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.settings-auto-save-files {
+  min-width: 0;
+}
+
+.settings-auto-save-files input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-row:has(.settings-auto-save-files) > label {
+  align-self: start;
+}
+
+.settings-auto-save-files p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-auto-save-files .settings-auto-save-warning {
+  color: #ff5c67;
 }
 
 .settings-select {
@@ -554,7 +623,8 @@
   text-align: right;
 }
 
-.settings-login {
+.settings-login,
+#auto-save-open-folder {
   justify-self: start;
   padding: 7px 14px;
   border: 1px solid #55555a;
