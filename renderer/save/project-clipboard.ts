@@ -4,6 +4,10 @@ import { compressPdeProject } from './project-file-store.js';
 export const projectClipboardFormat = 'web application/x-pde';
 
 export function registerProjectClipboard(sender: WebContents): void {
+    ipcMain.handle('read-clipboard-text', async event => {
+        if (event.sender !== sender) throw new Error('Invalid clipboard sender');
+        return clipboard.readText();
+    });
     ipcMain.handle('write-project-clipboard', async (event, data: Uint8Array) => {
         if (event.sender !== sender) throw new Error('Invalid clipboard sender');
         if (!(data instanceof Uint8Array) || data.length < 4 || Buffer.from(data.subarray(0, 4)).toString() !== 'PRJ2') {

@@ -17,6 +17,10 @@ export function preserveDisplayTransformation(value: SnbtValue): SnbtValue {
   if (!lengths.some(length => length < 1e-6) && !pairs.some(([p, q], index) =>
     2 * dots[index] ** 2 <= 1e-6 && Math.abs(dots[index]) > 1e-6 * Math.sqrt(lengths[p] * lengths[q]))) return value;
 
+  return decomposeDisplayTransformation(m);
+}
+
+export function decomposeDisplayTransformation(m: number[]): SnbtValue {
   const columns = [new Vector3(m[0], m[4], m[8]), new Vector3(m[1], m[5], m[9]), new Vector3(m[2], m[6], m[10])];
   const magnitude = Math.max(...columns.flatMap(column => column.toArray().map(Math.abs)));
   const right = [new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 1)];

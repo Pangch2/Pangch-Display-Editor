@@ -5,7 +5,7 @@ import { getPlayerHeadRenderMatrix } from '../load-project/display/player-head-a
 import type { TextDisplayOptions } from '../load-project/display/text-display';
 import { getBedItemDisplayModelMatrix, getSkullBlockModelMatrix } from '../load-project/scene/scene-parser';
 import { parseSnbt, snbtNumber, SnbtLiteral, stringifySnbt, type SnbtValue } from './snbt';
-import { preserveDisplayTransformation } from './display-transformation';
+import { decomposeDisplayTransformation, preserveDisplayTransformation } from './display-transformation';
 
 type Compound = { [key: string]: SnbtValue };
 export type SummonExportMode = 'command' | 'datapack';
@@ -48,7 +48,7 @@ function rotateBlockY(angle: number): Matrix4 {
     .multiply(new Matrix4().makeTranslation(-.5, 0, -.5));
 }
 
-function blockExportParts(id: string, properties: Record<string, string>, editorModel: Matrix4): Array<{ properties: Record<string, string>; matrix: Matrix4 }> {
+export function blockExportParts(id: string, properties: Record<string, string>, editorModel: Matrix4): Array<{ properties: Record<string, string>; matrix: Matrix4 }> {
   const unchanged = [{ properties, matrix: new Matrix4() }];
   if (id.includes(':')) return unchanged;
   const skullModel = getSkullBlockModelMatrix(id, properties);
@@ -74,6 +74,20 @@ function blockExportParts(id: string, properties: Record<string, string>, editor
     return [{ properties: { rotation: '0', ...properties }, matrix: editorModel.clone().multiply(rotateBlockY(Number(properties.rotation ?? 0) * Math.PI / 8)) }];
   }
   return unchanged;
+}
+
+export function itemExportCorrection(id: string, name: string, display: string, editorModel: Matrix4): Matrix4 {
+  const rotation = new Matrix4().makeRotationY(Math.PI);
+  if (coloredBlockPattern.exec(id)?.[2] === 'bed') {
+    const gameModel = getBedItemDisplayModelMatrix(`${name.split('[')[0]}[display=${display}]`);
+    if (!gameModel) throw new Error('침대 아이템 표시 모드의 모델 변환을 찾을 수 없습니다.');
+    return editorModel.clone().multiply(rotateBlockY(Math.PI)).multiply(gameModel.invert()).multiply(rotation);
+  }
+  if (id === 'trident' && !['gui', 'ground', 'fixed', 'on_shelf'].includes(display)) {
+    return editorModel.clone().multiply(new Matrix4().makeTranslation(1, 0, 1))
+      .multiply(editorModel.clone().invert()).multiply(rotation);
+  }
+  return id === 'player_head' ? new Matrix4() : rotation;
 }
 
 function omitDisplayDefaults(entity: Compound): Compound {
@@ -207,7 +221,6 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
   const editorModel = new Matrix4();
   const transform = new Matrix4();
   const identity = new Matrix4();
-  const itemRotation = new Matrix4().makeRotationY(Math.PI);
 
   const exportObject = (uuid: string, inheritedNbt: Compound): Compound[] => {
     if (seenObjects.has(uuid)) return [];
@@ -233,7 +246,12 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
     const itemId = resourceId(name.split('[')[0]);
     const display = data.objectDisplayTypes?.get(uuid) ?? name.match(/\bdisplay=([^,\]]+)/)?.[1] ?? 'none';
     let blockProperties: Record<string, string> = {};
-    if (type === 'text_display') Object.assign(entity, textNbt(name, data.objectTextDisplayOptions?.get(uuid) ?? {}));
+    if (type === 'text_display') {
+      Object.assign(entity, textNbt(name, data.objectTextDisplayOptions?.get(uuid) ?? {}));
+      const text = customNbt.text;
+      if (typeof text === 'string' || Array.isArray(text) || (isCompound(text)
+        && ['text', 'sprite', 'player', 'translate', 'keybind', 'score', 'selector', 'nbt'].some(key => text[key] !== undefined))) delete entity.text;
+    }
     else if (type === 'block_display') {
       const properties = data.objectBlockProps?.get(uuid) ?? Object.fromEntries((name.match(/\[([^\]]*)\]/)?.[1] ?? '').split(',').filter(Boolean).map(value => value.split('=').map(part => part.trim())));
       blockProperties = Object.fromEntries(Object.entries(properties).map(([key, value]) => [key, String(value)]));
@@ -243,12 +261,15 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
       const item: Compound = { id: itemId };
       if (display !== 'none') entity.item_display = display;
       if (itemId === 'player_head') {
-        const texture = data.objectTextures?.get(uuid) as string | undefined;
-        if (!texture || !/^https?:\/\/textures\.minecraft\.net\/texture\/[\da-f]+$/i.test(texture)) {
-          throw new Error(`${target}: 헤드 페인터의 ‘텍스쳐 생성’을 먼저 사용해 주세요. PNG 또는 누락된 헤드 텍스처는 내보낼 수 없습니다.`);
+        const components = isCompound(customNbt.item) && isCompound(customNbt.item.components) ? customNbt.item.components : {};
+        if (components.profile === undefined && components['minecraft:profile'] === undefined) {
+          const texture = data.objectTextures?.get(uuid) as string | undefined;
+          if (!texture || !/^https?:\/\/textures\.minecraft\.net\/texture\/[\da-f]+$/i.test(texture)) {
+            throw new Error(`${target}: 헤드 페인터의 ‘텍스쳐 생성’을 먼저 사용해 주세요. PNG 또는 누락된 헤드 텍스처는 내보낼 수 없습니다.`);
+          }
+          const value = btoa(JSON.stringify({ textures: { SKIN: { url: texture } } }));
+          item.components = { profile: { properties: [{ name: 'textures', value }] } };
         }
-        const value = btoa(JSON.stringify({ textures: { SKIN: { url: texture } } }));
-        item.components = { profile: { properties: [{ name: 'textures', value }] } };
       }
       entity.item = item;
     }
@@ -262,18 +283,16 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
       if (type === 'item_display' && itemId === 'player_head') matrix.multiply(getPlayerHeadRenderMatrix(display).invert());
     } else matrix.identity();
     // Minecraft adds a Y half-turn to item displays. Player heads already use that frame in the editor.
-    if (type === 'item_display' && coloredBlockPattern.exec(itemId)?.[2] === 'bed') {
-      const gameModel = getBedItemDisplayModelMatrix(`${name.split('[')[0]}[display=${display}]`);
-      if (!gameModel) throw new Error(`${target}: 침대 아이템 표시 모드의 모델 변환을 찾을 수 없습니다.`);
-      matrix.multiply(editorModel).multiply(rotateBlockY(Math.PI)).multiply(gameModel.invert())
-        .multiply(itemRotation);
-    } else if (type === 'item_display' && itemId === 'trident' && !['gui', 'ground', 'fixed', 'on_shelf'].includes(display)) {
-      // The legacy mesh is offset by one block on X/Z. Apply that offset in its display frame.
-      matrix.multiply(editorModel).multiply(new Matrix4().makeTranslation(1, 0, 1))
-        .multiply(editorModel.clone().invert()).multiply(itemRotation);
-    } else if (type === 'item_display' && itemId !== 'player_head') matrix.multiply(itemRotation);
+    if (type === 'item_display') {
+      try { matrix.multiply(itemExportCorrection(itemId, name, display, editorModel)); }
+      catch (error) { throw new Error(`${target}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     matrix.premultiply(mesh.matrixWorld).premultiply(projectInverse);
-    const parts = type === 'block_display' ? blockExportParts(itemId, blockProperties, editorModel) : [{ matrix: identity, properties: blockProperties }];
+    let parts = type === 'block_display' ? blockExportParts(itemId, blockProperties, editorModel) : [{ matrix: identity, properties: blockProperties }];
+    const bedPart = isCompound(customNbt.block_state) && isCompound(customNbt.block_state.properties) ? customNbt.block_state.properties.part : undefined;
+    if (type === 'block_display' && coloredBlockPattern.exec(itemId)?.[2] === 'bed' && (bedPart === 'head' || bedPart === 'foot')) {
+      parts = parts.filter(part => part.properties.part === bedPart);
+    }
     return parts.map(part => {
       const result: Compound = { ...entity };
       if (type === 'block_display') result.block_state = { id: itemId, ...(Object.keys(part.properties).length ? { properties: part.properties } : {}) };
@@ -291,7 +310,13 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
         transform.elements[index] = snapped;
         if (Math.fround(snapped) !== (index % 5 === 0 ? 1 : 0)) isIdentity = false;
       }
-      if (!isIdentity) result.transformation = transform.transpose().elements.slice();
+      const customTransformation = customNbt.transformation;
+      const partialTransformation = isCompound(customTransformation)
+        && ['translation', 'scale', 'left_rotation', 'right_rotation'].some(key => customTransformation[key] === undefined);
+      if (!isIdentity || partialTransformation) {
+        const elements = transform.transpose().elements.slice();
+        result.transformation = partialTransformation ? decomposeDisplayTransformation(elements) : elements;
+      }
       return omitDisplayDefaults(mergeNbt(customNbt, result));
     });
   };

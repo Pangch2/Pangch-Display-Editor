@@ -7,6 +7,10 @@ import { captureHistoryUiState, recordCreationChange, recordStateChange, refresh
 import { deleteSelectedItems } from '../../controls/grouping/delete';
 import { clear, deleteHistoryContext, setHistoryContext } from '../../controls/undo-redo/undo-redo.js';
 import '../../save/save-project';
+import { importMcfunctionFiles, openMcfunctionFile } from '../../controls/input/selection-clipboard';
+import { prepareMcfunctionFiles } from '../mcfunction/mcfunction-import';
+import { currentLoadGen } from '../display/display-instancing';
+import { trackProjectEdit } from '../../save/pending-edits';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 type ScenePrecompileTrace = {
@@ -426,12 +430,18 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
     if (fileList.length === 0) return;
 
     const perceivedLoadStartMs = performance.now();
+    const initialGeneration = currentLoadGen;
 
     try {
-        for (const file of fileList) {
+        const imports = await prepareMcfunctionFiles(fileList);
+        if (initialGeneration !== currentLoadGen || !imports.length) return;
+        for (const imported of imports) {
             if (!reuseCurrentProject && (activeProject < 0 || loadedObjectGroup.children.length > 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails)) addProject();
             clear();
-            await loadAndRenderPbde(file, false, beginPbdeLoadGeneration());
+            const generation = beginPbdeLoadGeneration();
+            if (imported.expectedObjects !== undefined) await openMcfunctionFile(imported);
+            else await loadAndRenderPbde(imported.file, false, generation);
+            if (generation !== currentLoadGen) return;
             window.ipcApi.forgetProjectSavePath?.(projects[activeProject].id);
             window.dispatchEvent(new CustomEvent('pde:active-project-changed', { detail: projects[activeProject].id }));
             updateProjectDetails();
@@ -450,6 +460,12 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
 async function mergepbde(files: File | File[]): Promise<void> {
     const fileList = Array.isArray(files) ? files : [files];
     if (fileList.length === 0) return;
+
+    if (fileList.some(file => /\.mcfunction$/i.test(file.name))) {
+        try { await importMcfunctionFiles(fileList); }
+        catch (error) { window.alert(error instanceof Error ? error.message : String(error)); }
+        return;
+    }
 
     const perceivedLoadStartMs = performance.now();
     const beforeUi = captureHistoryUiState();
@@ -499,8 +515,9 @@ async function mergepbde(files: File | File[]): Promise<void> {
 // 파일 드래그 앤 드롭 처리 로직
 
 function createDropModal(files?: File[]) {
-    const existingModal = document.getElementById('drop-modal-overlay');
+    const existingModal = document.getElementById('drop-modal-overlay') as ModalOverlayElement | null;
     if (existingModal) {
+        if (existingModal.escHandler) document.removeEventListener('keydown', existingModal.escHandler);
         existingModal.remove();
     }
     const modalOverlay = document.createElement('div') as ModalOverlayElement;
@@ -571,7 +588,7 @@ function createDropModal(files?: File[]) {
     if (newProjectBtn) {
         newProjectBtn.addEventListener('click', () => {
             if (files && files.length > 0) {
-                loadpbde(files, reuseCurrentProject?.checked);
+                void trackProjectEdit(loadpbde(files, reuseCurrentProject?.checked));
             }
             closeDropModal();
         });
@@ -581,7 +598,7 @@ function createDropModal(files?: File[]) {
     if (mergeProjectBtn) {
         mergeProjectBtn.addEventListener('click', () => {
             if (files && files.length > 0) {
-                mergepbde(files);
+                void trackProjectEdit(mergepbde(files));
             }
             closeDropModal();
         });
@@ -612,6 +629,7 @@ window.addEventListener('dragover', (e) => {
 
 window.addEventListener('drop', (e) => {
     e.preventDefault();
+    if (!e.dataTransfer) return;
     
     const validFiles: File[] = [];
     
@@ -621,7 +639,7 @@ window.addEventListener('drop', (e) => {
                 const file = item.getAsFile();
                 if (file) {
                     const extension = file.name.split('.').pop()?.toLowerCase();
-                    if (extension === 'bdengine' || extension === 'pde') {
+                    if (extension === 'bdengine' || extension === 'pde' || extension === 'mcfunction') {
                         validFiles.push(file);
                     }
                 }
@@ -630,14 +648,12 @@ window.addEventListener('drop', (e) => {
     } else {
         for (const file of e.dataTransfer.files) {  
             const extension = file.name.split('.').pop()?.toLowerCase();
-            if (extension === 'bdengine' || extension === 'pde') {
+            if (extension === 'bdengine' || extension === 'pde' || extension === 'mcfunction') {
                 validFiles.push(file);
             }
         }
     }
 
-    if (validFiles.length > 0) {
-        createDropModal(validFiles);
-    }
+    if (validFiles.length) createDropModal(validFiles);
 });
 

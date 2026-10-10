@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('ipcApi', {
   decompressPdeProject: (data: Uint8Array) => ipcRenderer.invoke('decompress-pde-project', data),
   writeProjectClipboard: (data: Uint8Array) => ipcRenderer.invoke('write-project-clipboard', data),
   readProjectClipboard: () => ipcRenderer.invoke('read-project-clipboard'),
+  readClipboardText: () => ipcRenderer.invoke('read-clipboard-text'),
   headTextures: {
     account: () => ipcRenderer.invoke('head-account-state'),
     login: () => ipcRenderer.invoke('head-account-login'),

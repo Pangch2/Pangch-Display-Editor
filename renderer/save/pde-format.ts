@@ -300,6 +300,10 @@ export function encodePdeProject(project: PdeProject): Uint8Array {
         indexed && key === 'uuid' ? undefined : indexed && key === 'mirrorId' && typeof value === 'string' ? reference(value)
             : key === 'paintTexture' && typeof value === 'string' ? textureIds.get(value) ?? value
                 : typeof value === 'number' ? Number(value.toFixed(8)) : value));
+    return encodeProjectArchive(json);
+}
+
+export function encodeProjectArchive(json: Uint8Array): Uint8Array {
     const raw = new Uint8Array(18 + json.length);
     raw.set(strToU8('PRJ2scene.json'));
     new DataView(raw.buffer).setUint32(14, json.length, true);

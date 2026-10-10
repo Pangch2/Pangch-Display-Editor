@@ -71,6 +71,7 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 }
 
 function loadSpriteSource(atlas: string): Promise<SpriteAtlasSource> {
+  atlas = minecraftId(atlas);
   const cached = spriteSources.get(atlas);
   if (cached) return cached;
   const promise = loadAtlases().then(async atlases => {

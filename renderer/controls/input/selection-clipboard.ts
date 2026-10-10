@@ -8,6 +8,7 @@ import { deleteSelectedItems } from '../grouping/delete';
 import { getGroups, getObjectToGroup, type SceneOrderEntry } from '../grouping/group';
 import type { SelectionState } from '../selection/select';
 import { captureHistoryUiState, restoreHistoryUiState, recordCreationChange, refreshHistory } from '../undo-redo/scene-history';
+import { prepareMcfunctionFiles, type PreparedSceneFile } from '../../load-project/mcfunction/mcfunction-import';
 
 let projectRevision = 0;
 let commands = Promise.resolve();
@@ -40,7 +41,23 @@ export async function copySelection(selection: SelectionState): Promise<void> {
 }
 
 export function pasteSelection(selection: SelectionState): Promise<void> {
-    const targets = [...selection.groups];
+    return mergeSelectionFiles([...selection.groups], async () => {
+        const bytes = await window.ipcApi.readProjectClipboard();
+        if (bytes) return [{ file: new File([bytes], 'selection.pde') }];
+        const text = await window.ipcApi.readClipboardText();
+        return text ? prepareMcfunctionFiles([new File([text], 'mcfunction.mcfunction')]) : [];
+    });
+}
+
+export function importMcfunctionFiles(files: File[]): Promise<void> {
+    return mergeSelectionFiles([], () => prepareMcfunctionFiles(files));
+}
+
+export function openMcfunctionFile(file: PreparedSceneFile): Promise<void> {
+    return mergeSelectionFiles([], async () => [file], false);
+}
+
+function mergeSelectionFiles(targets: string[], readFiles: () => Promise<PreparedSceneFile[]>, isMerge = true): Promise<void> {
     const revision = projectRevision;
     pendingPastes++;
     return enqueue(async () => {
@@ -79,7 +96,8 @@ export function pasteSelection(selection: SelectionState): Promise<void> {
                 data.groupMirrorPairs?.delete(id);
             }
             data.sceneOrder = data.sceneOrder?.filter((entry: SceneOrderEntry) => !(entry.type === 'group' ? created.groups : created.objects).has(entry.id));
-            restoreHistoryUiState(beforeUi);
+            if (isMerge) restoreHistoryUiState(beforeUi);
+            else data.resetSelection?.();
             refreshHistory(loadedObjectGroup);
         };
         const cancel = () => {
@@ -90,16 +108,19 @@ export function pasteSelection(selection: SelectionState): Promise<void> {
         window.addEventListener('pde:before-project-load', cancel);
         window.addEventListener('pde:active-project-changed', cancel);
         try {
-            const bytes = await window.ipcApi.readProjectClipboard();
-            if (canceled || !bytes) return;
-            const file = new File([bytes], 'selection.pde');
+            const files = await readFiles();
+            if (canceled || !files.length) return;
             for (const targetId of targets.length ? targets : [null]) {
+              for (const { file, expectedObjects } of files) {
                 if (targetId && !groups.has(targetId)) throw new Error('붙여넣을 그룹이 사라졌습니다.');
                 const previousIds = new Set([...created.objects, ...created.groups]);
-                await loadAndRenderPbde(file, true, generation, created);
+                await loadAndRenderPbde(file, isMerge, generation, created);
                 if (canceled) return;
                 if (generation !== currentLoadGen || revision !== projectRevision) { cancel(); return; }
                 for (const uuid of created.objects) if (!data.objectUuidToInstance?.has(uuid)) throw new Error('붙여넣은 오브젝트를 불러오지 못했습니다.');
+                if (expectedObjects !== undefined && [...created.objects].filter(id => !previousIds.has(id)).length !== expectedObjects) {
+                    throw new Error('가져온 디스플레이 모델을 모두 불러오지 못했습니다.');
+                }
                 const entries = (data.sceneOrder as SceneOrderEntry[] ?? []).filter(entry =>
                     !previousIds.has(entry.id) && (entry.type === 'group' ? created.groups : created.objects).has(entry.id));
                 const target = targetId ? groups.get(targetId) : undefined;
@@ -127,10 +148,11 @@ export function pasteSelection(selection: SelectionState): Promise<void> {
                     const attachedIds = new Set(entries.map(entry => entry.id));
                     data.sceneOrder = data.sceneOrder.filter((entry: SceneOrderEntry) => !attachedIds.has(entry.id));
                 }
+              }
             }
             if (!created.objects.size && !created.groups.size) return;
             data.replaceSelectionWithGroupsAndObjects(selectedGroups, selectedObjects, { anchorMode: 'center', primaryIsRangeStart: true });
-            recordCreationChange(loadedObjectGroup, { groups: created.groups, objects: objectSelection() }, beforeUi);
+            if (isMerge) recordCreationChange(loadedObjectGroup, { groups: created.groups, objects: objectSelection() }, beforeUi);
             window.dispatchEvent(new CustomEvent('pde:scene-updated'));
         } catch (error) {
             if (!canceled) { rollback(); throw error; }

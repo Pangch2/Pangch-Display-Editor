@@ -679,6 +679,20 @@ export function ungroupGroupStructure(
         } else {
             parentGroup.children.push(...children);
         }
+    } else if (parentId === null) {
+        const sceneOrder = loadedObjectGroup.userData.sceneOrder as SceneOrderEntry[] | undefined;
+        if (Array.isArray(sceneOrder)) {
+            const entries: SceneOrderEntry[] = [];
+            for (const child of children) {
+                if (!child) continue;
+                const id = child.id ?? (child.type === 'object'
+                    ? loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(getGroupKey(child.mesh, child.instanceId)) : undefined);
+                if (id) entries.push({ type: child.type, id });
+            }
+            const idx = sceneOrder.findIndex(entry => entry.type === 'group' && entry.id === groupId);
+            loadedObjectGroup.userData.sceneOrder = idx !== -1
+                ? sceneOrder.slice(0, idx).concat(entries, sceneOrder.slice(idx + 1)) : sceneOrder.concat(entries);
+        }
     }
 
     groups.delete(groupId);

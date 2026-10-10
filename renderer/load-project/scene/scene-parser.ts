@@ -7,6 +7,7 @@ import { isPbdeLogEnabled, pbdeLogNames } from '../pbde/pbde-log';
 import type { GroupData as ParserGroupData } from '../pbde/pbde-types';
 import { applyModelTransform, relativeModelTransform } from '../batching/geometry-batching';
 import { resolveItemModelParts, type ItemModelPart } from './item-model-definition';
+import { parseSnbt } from '../../export/snbt';
 
 interface ResolvedModel {
     id: string;
@@ -819,7 +820,7 @@ function cloneBlockDisplayTemplate(template: BlockDisplayTemplate): RenderItem {
 }
 
 async function prepareBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplate | null> {
-    const cacheKey = String(item.name || '');
+    const cacheKey = blockTemplateKey(item);
     if (blockDisplayTemplateCache.has(cacheKey)) {
         return blockDisplayTemplateCache.get(cacheKey) ?? null;
     }
@@ -832,6 +833,21 @@ async function prepareBlockDisplayTemplate(item: any): Promise<BlockDisplayTempl
     const template = await templatePromise;
     blockDisplayTemplateCache.set(cacheKey, template);
     return template;
+}
+
+function blockTemplateKey(item: { name?: string; nbt?: string }): string {
+    const part = getBedBlockPart(item);
+    return String(item.name || '') + (part ? '|' + part : '');
+}
+
+function getBedBlockPart(item: { name?: string; nbt?: string }): 'head' | 'foot' | undefined {
+    if (!/_bed(?:\[|$)/.test(item.name ?? '') || !item.nbt) return undefined;
+    try {
+        const source = item.nbt.trim();
+        const nbt = parseSnbt(source.startsWith('{') ? source : '{' + source + '}') as { block_state?: { properties?: { part?: string } } };
+        const part = nbt.block_state?.properties?.part;
+        return part === 'head' || part === 'foot' ? part : undefined;
+    } catch { return undefined; }
 }
 
 function blockTemplateSurfaceSignature(template: BlockDisplayTemplate, mirrorAxis = -1): string {
@@ -958,7 +974,7 @@ export async function findMirroredBlockName(name: string, axis: 'x' | 'y' | 'z',
 
 // block_display 엔티티 노드를 Minecraft 블록 모델 지오메트리로 변환한다.
 function processBlockDisplay(item: any): RenderItem | null {
-    const cacheKey = String(item.name || '');
+    const cacheKey = blockTemplateKey(item);
     const template = blockDisplayTemplateCache.get(cacheKey);
     return template ? cloneBlockDisplayTemplate(template) : null;
 }
@@ -986,6 +1002,7 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
     try {
         const { baseName, props } = blockNameToBaseAndProps(item.name);
         const { ns, path } = nsAndPathFromId(baseName);
+        const bedPart = getBedBlockPart(item);
         if (path === 'bell') {
             props.attachment ??= 'floor';
             props.facing ??= 'north';
@@ -1081,6 +1098,8 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
                 resolved = await resolveModelTree(`${ns}:block/${path}`, modelCache);
             }
             if (!resolved || !resolved.elements) continue;
+            if (bedPart && resolved.fromHardcoded) resolved = { ...resolved, id: resolved.id + '|' + bedPart,
+                elements: resolved.elements.filter(element => element.name?.startsWith(bedPart)) };
             fromHardcoded ||= resolved.fromHardcoded;
             
             const modelMatrix = new Matrix4();
@@ -1892,10 +1911,10 @@ function split_children(children: any): any[] {
     return Array.isArray(children) ? children : [];
 }
 
-function collectTemplateNames(nodes: any[], itemNames: Set<string>, blockNames: Set<string>): void {
+function collectTemplateNames(nodes: any[], itemNames: Set<string>, blockNames: Map<string, { name: string; nbt?: string }>): void {
     for (const node of nodes) {
         if (node?.isBlockDisplay) {
-            blockNames.add(String(node.name || ''));
+            blockNames.set(blockTemplateKey(node), { name: String(node.name || ''), nbt: node.nbt });
         } else if (node?.isItemDisplay && typeof node.name === 'string' && !node.name.startsWith('player_head')) {
             itemNames.add(node.name);
         }
@@ -1908,11 +1927,11 @@ function collectTemplateNames(nodes: any[], itemNames: Set<string>, blockNames: 
 
 async function prepareSceneTemplates(nodes: any[]): Promise<void> {
     const itemNames = new Set<string>();
-    const blockNames = new Set<string>();
+    const blockNames = new Map<string, { name: string; nbt?: string }>();
     collectTemplateNames(nodes, itemNames, blockNames);
 
     await Promise.all([
-        ...Array.from(blockNames, name => prepareBlockDisplayTemplate({ name })),
+        ...Array.from(blockNames.values(), item => prepareBlockDisplayTemplate(item)),
         ...Array.from(itemNames, name => prepareItemModelTemplate(name))
     ]);
 }
