@@ -1,11 +1,14 @@
-import { app, BrowserWindow, Menu, ipcMain } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, dialog } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
+import { zstdDecompressSync } from 'node:zlib';
 import { trimProcessWorkingSets } from './memory-cleanup.js';
 import { minecraftAssetPrefixes as requiredPrefixes, unzipMinecraftFiles, writeMinecraftAssets } from './minecraft-assets.js';
 import { downloadMinecraftFiles } from './minecraft-download.js';
 import { initHeadTextureService } from './renderer/player-head-service/head-texture-service.js';
+import { ProjectFileStore } from './renderer/save/project-file-store.js';
+import { registerProjectClipboard } from './renderer/save/project-clipboard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -458,6 +461,34 @@ function createWindow() {
 
   Menu.setApplicationMenu(null);
   initHeadTextureService(win);
+
+  const projectFiles = new ProjectFileStore();
+  registerProjectClipboard(win.webContents);
+  ipcMain.handle('decompress-pde-project', (event, data: Uint8Array) => {
+    if (event.sender !== win.webContents) throw new Error('Invalid project decompress sender');
+    if (!(data instanceof Uint8Array) || data.length < 5
+      || data[0] !== 0x28 || data[1] !== 0xb5 || data[2] !== 0x2f || data[3] !== 0xfd) {
+      throw new Error('Invalid PDE project: expected Zstd data');
+    }
+    return zstdDecompressSync(data);
+  });
+  ipcMain.on('active-project-changed', (event, id: string) => {
+    if (event.sender !== win.webContents) return;
+    try { projectFiles.setActiveProject(id); } catch (error) { console.error(error); }
+  });
+  ipcMain.on('forget-project-save-path', (event, id: string) => {
+    if (event.sender === win.webContents && typeof id === 'string') projectFiles.forgetProject(id);
+  });
+  ipcMain.handle('save-project', (event, id: string, name: string, data: Uint8Array) => {
+    if (event.sender !== win.webContents) return { success: false, error: 'Invalid project save sender' };
+    return projectFiles.save(id, name, data, async defaultName => {
+      const result = await dialog.showSaveDialog(win, {
+        title: 'PDE 프로젝트 저장', defaultPath: `${defaultName}.pde`,
+        filters: [{ name: 'PDE 프로젝트', extensions: ['pde'] }]
+      });
+      return result.canceled ? undefined : result.filePath;
+    });
+  });
 
   ipcMain.handle('get-asset-content', async (_event, assetPath: string) => {
     const fullPath = path.join(CACHE_DIR, assetPath);

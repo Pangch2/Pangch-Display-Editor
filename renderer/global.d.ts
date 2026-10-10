@@ -28,6 +28,12 @@ declare interface MinecraftSkinResult {
 }
 
 declare interface IpcApi {
+  setActiveProject(id: string): void;
+  forgetProjectSavePath(id: string): void;
+  saveProject(id: string, name: string, data: Uint8Array): Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
+  decompressPdeProject(data: Uint8Array): Promise<Uint8Array>;
+  writeProjectClipboard(data: Uint8Array): Promise<void>;
+  readProjectClipboard(): Promise<Uint8Array<ArrayBuffer> | undefined>;
   headTextures: import('./player-head-service/head-texture-types').HeadTextureApi;
   getAssetContent(path: string): Promise<AssetContentResult>;
   saveIconAtlas(name: 'block-atlas.png' | 'item-atlas.png', data: Uint8Array): Promise<{ success: boolean; error?: string }>;

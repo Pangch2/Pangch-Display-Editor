@@ -13,6 +13,7 @@ export type LoadedSelection = Map<THREE.Object3D, Set<number>>;
 export let currentLoadGen = 0;
 
 export function beginPbdeLoadGeneration(): number {
+    window.dispatchEvent(new Event('pde:before-project-load'));
     return ++currentLoadGen;
 }
 
@@ -79,9 +80,14 @@ export function addLoadedInstance(selection: LoadedSelection, mesh: THREE.Object
 export async function addTextDisplayItems(
     items: OtherItem[],
     registerObject: (mesh: THREE.InstancedMesh, instanceId: number, uuid: string, groupId: string | null) => void,
-    selection?: LoadedSelection
+    selection?: LoadedSelection,
+    loadGen = currentLoadGen
 ): Promise<void> {
     const templates = await createTextDisplayTemplates(items);
+    if (loadGen !== currentLoadGen) {
+        for (const template of templates.values()) template.geometry.dispose();
+        return;
+    }
     const reusableByMaterial = new Map<THREE.Material, THREE.InstancedMesh>();
     for (const child of loadedObjectGroup.children) {
         const mesh = child as THREE.InstancedMesh;

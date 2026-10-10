@@ -24,6 +24,7 @@ import { getLinkedMirrorSelection } from '../transform/mirroring';
 import { redo, undo } from '../undo-redo/undo-redo';
 import { captureSelectionTransformState, recordTransformChange } from '../undo-redo/scene-history';
 import { matchesShortcut, type ShortcutId } from './shortcuts';
+import { copySelection, pasteSelection, isSelectionPastePending } from './selection-clipboard';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
@@ -342,7 +343,20 @@ export function initHandleKey(p: HandleKeyParams): void {
             return;
         }
 
-        if ((event.target as HTMLElement).tagName === 'INPUT' || (event.target as HTMLElement).tagName === 'TEXTAREA') return;
+        const target = event.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+        if (matchesShortcut(event, 'copySelection') || matchesShortcut(event, 'pasteSelection')) {
+            event.preventDefault();
+            if (event.repeat || event.isComposing || p.loadedObjectGroup.userData.headPainterActive || p.state.isGizmoBusy || p.getTransformControls().dragging) return;
+            const action = matchesShortcut(event, 'copySelection') ? copySelection : pasteSelection;
+            if (action === copySelection && isSelectionPastePending()) return;
+            void action(p.currentSelection).catch(error => {
+                console.error('Scene clipboard failed.', error);
+                window.alert(`복사·붙여넣기 실패: ${error instanceof Error ? error.message : String(error)}`);
+            });
+            return;
+        }
+        if (isSelectionPastePending()) { event.preventDefault(); return; }
         if (event.repeat && matchesShortcut(event, 'knife')) return;
 
         if (matchesShortcut(event, 'undo') || matchesShortcut(event, 'redo')) {

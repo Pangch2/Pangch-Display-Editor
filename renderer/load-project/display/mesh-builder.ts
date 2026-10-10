@@ -7,6 +7,7 @@ import { getPlayerHeadRenderMatrix, PLAYER_HEAD_LAYER_SCALE, getPlayerHeadTextur
 import { getItemDisplayModelMatrix } from '../scene/scene-parser';
 import { isApplying } from '../../controls/undo-redo/undo-redo';
 import { changeInstanceModelTransform, removeInstanceModelTransform } from '../batching/instance-model-transform';
+import { trackProjectEdit } from '../../save/pending-edits';
 import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-history';
 import { entityVisibleAttributeName, setEntityStateAttributes, dragSelectedAttributeName } from '../../entity-material';
 import { type GroupData, type OtherItem } from '../pbde/pbde-types';
@@ -42,7 +43,11 @@ export { flipPlayerHeadTextures } from './player-head-atlas';
 export type DisplayReplacementResult = string[] & {
     history?: { removed: DeletedSceneDelta; created: Map<THREE.InstancedMesh, Set<number>> };
 };
-export async function updateDisplayObjectMatrix(objectUuid: string, name: string): Promise<void> {
+export function updateDisplayObjectMatrix(objectUuid: string, name: string): Promise<void> {
+    return trackProjectEdit(updateObjectMatrix(objectUuid, name));
+}
+
+async function updateObjectMatrix(objectUuid: string, name: string): Promise<void> {
     const userData = loadedObjectGroup.userData;
     const ref = (userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) throw new Error('변경할 디스플레이 오브젝트를 찾을 수 없습니다.');
@@ -223,7 +228,11 @@ export function isolateTextDisplay(objectUuid: string): void {
     }] }));
 }
 
-export async function updateTextDisplay(objectUuid: string, name: string, options: TextDisplayOptions): Promise<void> {
+export function updateTextDisplay(objectUuid: string, name: string, options: TextDisplayOptions): Promise<void> {
+    return trackProjectEdit(updateTextObject(objectUuid, name, options));
+}
+
+async function updateTextObject(objectUuid: string, name: string, options: TextDisplayOptions): Promise<void> {
     const userData = loadedObjectGroup.userData;
     const refs = userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
     let ref = refs?.get(objectUuid);
@@ -325,7 +334,7 @@ window.addEventListener('pde:history-restored', event => {
         .catch(error => console.error('텍스트 디스플레이 복원에 실패했습니다.', error));
 });
 
-export async function replaceDisplayObjects(requests: Array<{
+export function replaceDisplayObjects(requests: Array<{
     objectUuid: string;
     name: string;
     transformContext?: { pivotMode: string; pivotWorld?: THREE.Vector3 };
@@ -333,6 +342,10 @@ export async function replaceDisplayObjects(requests: Array<{
     isTextDisplay?: boolean;
     options?: TextDisplayOptions;
 }>, syncMirror = true): Promise<DisplayReplacementResult> {
+    return trackProjectEdit(replaceObjects(requests, syncMirror));
+}
+
+async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>[0], syncMirror: boolean): Promise<DisplayReplacementResult> {
     if (requests.length === 0) return [] as DisplayReplacementResult;
     const requestedCount = requests.length;
     if (syncMirror && isMirrorModelingEnabled()) {

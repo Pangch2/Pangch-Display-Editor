@@ -4,6 +4,8 @@ import { loadedObjectGroup } from '../load-project/pbde/upload-pbde';
 import { getPlayerHeadTexture, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../load-project/display/mesh-builder';
 import type { DisplayReplacementResult } from '../load-project/display/mesh-builder';
 import type { TextDisplayContentType, TextDisplayOptions } from '../load-project/display/text-display';
+import { defaultTextDisplayOptions } from '../load-project/display/text-display';
+import { queueProjectEdit, startProjectEdit, trackProjectEdit } from '../save/pending-edits';
 import { getBlockPropertyOptions } from '../load-project/pbde/pbde-assets';
 import type { GroupData } from './scene-panel/scene-panel-types';
 import { cleanLabel } from './scene-panel/scene-panel-model';
@@ -56,11 +58,6 @@ const textDisplayContentFields: Partial<Record<TextDisplayContentType, { primary
     keybind: { primaryLabel: '값' },
     score: { primaryLabel: '플레이어', extra: ['scoreboard', '스코어보드'] },
     selector: { primaryLabel: '값', extra: ['separator', '중간 글자'] }
-};
-const defaultTextDisplayOptions: Required<TextDisplayOptions> = {
-    color: '#FFFFFF', shadowColor: '#3F3F3F', shadowAlpha: 0, pageColors: [], pageAlphas: [], pageShadowColors: [], pageShadowAlphas: [], pageEffects: [], pageAligns: [], pageTypes: [], pageAtlases: [], pageHats: [], pageTypeValues: [], pageExtraValues: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
-    bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
-    lineLength: 50, align: 'center', font: 'minecraft:default'
 };
 const metadataOrderKey = 'pde-object-metadata-order';
 const matrixInputModeKey = 'pde-matrix-input-mode';
@@ -315,7 +312,7 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
     const optionValues = values.includes(value) ? values : [value, ...values];
     [...new Set(optionValues)].forEach(optionValue => select.add(new Option(optionValue, optionValue)));
     select.value = value;
-    select.onchange = async () => {
+    select.onchange = () => trackProjectEdit((async () => {
         const beforeUi = captureHistoryUiState();
         const before = value;
         const after = select.value;
@@ -338,7 +335,7 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
         } finally {
             select.disabled = false;
         }
-    };
+    })());
     return select;
 }
 
@@ -360,9 +357,11 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
         let debounceTimer = 0;
         let flushPromise: Promise<void> | null = null;
         const flushLive = () => {
+            startProjectEdit(flushLive);
+            window.clearTimeout(debounceTimer);
             if (updating) return flushPromise!;
             updating = true;
-            flushPromise = (async () => {
+            flushPromise = trackProjectEdit((async () => {
                 while (queuedValue !== null) {
                     const next = queuedValue;
                     queuedValue = null;
@@ -377,11 +376,12 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
                     }
                 }
                 updating = false;
-            })();
+            })());
             return flushPromise;
         };
         const updateLive = () => {
             queuedValue = read();
+            queueProjectEdit(flushLive);
             window.clearTimeout(debounceTimer);
             if (typeof live === 'number') debounceTimer = window.setTimeout(flushLive, live);
             else void flushLive();
@@ -393,7 +393,7 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
         });
         return control;
     }
-    control.onchange = async () => {
+    control.onchange = () => trackProjectEdit((async () => {
         const before = committed;
         const next = read();
         control.disabled = true;
@@ -413,7 +413,7 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
         } finally {
             control.disabled = false;
         }
-    };
+    })());
     return control;
 }
 
@@ -987,7 +987,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         Object.assign(options, pageEffects[pageIndex]);
         options.align = pageAligns[pageIndex];
         let text = pages[pageIndex];
-        const update = async () => {
+        const update = () => trackProjectEdit((async () => {
             options.pages = pages;
             options.pageColors = pageColors;
             options.pageAlphas = pageAlphas;
@@ -1005,7 +1005,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             await updateTextDisplay(uuid, sceneText, options);
             const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
             if (partnerUuid) await updateTextDisplay(partnerUuid, sceneText, options);
-        };
+        })());
         const updateOptions = async (patch: Partial<TextDisplayOptions>) => {
             const previous = { ...options };
             Object.assign(options, patch);
@@ -1093,7 +1093,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             button.disabled = disabled;
             button.textContent = label;
             button.title = button.ariaLabel = title;
-            button.onclick = () => void onClick();
+            button.onclick = () => void trackProjectEdit(onClick());
             return button;
         };
         const typeSelect = propertySelect(contentType, textDisplayContentTypes, async value => {

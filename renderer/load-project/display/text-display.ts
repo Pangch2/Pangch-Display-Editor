@@ -47,6 +47,12 @@ export type TextDisplayOptions = {
 export type TextDisplayContentType = 'text' | 'sprite' | 'player' | 'translate' | 'keybind' | 'score' | 'selector' | 'nbt';
 export type TextDisplayEffects = Pick<TextDisplayOptions, 'bold' | 'italic' | 'underline' | 'strikeThrough' | 'obfuscated'>;
 
+export const defaultTextDisplayOptions: Required<TextDisplayOptions> = {
+    color: '#FFFFFF', shadowColor: '#3F3F3F', shadowAlpha: 0, pageColors: [], pageAlphas: [], pageShadowColors: [], pageShadowAlphas: [], pageEffects: [], pageAligns: [], pageTypes: [], pageAtlases: [], pageHats: [], pageTypeValues: [], pageExtraValues: [], pages: [], pageIndex: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
+    bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
+    lineLength: 50, align: 'center', font: 'minecraft:default'
+};
+
 export type TextDisplayItem = {
     name?: string;
     options?: TextDisplayOptions;

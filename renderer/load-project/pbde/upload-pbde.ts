@@ -6,6 +6,7 @@ import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
 import { captureHistoryUiState, recordCreationChange, recordStateChange, refreshHistory } from '../../controls/undo-redo/scene-history.js';
 import { deleteSelectedItems } from '../../controls/grouping/delete';
 import { clear, deleteHistoryContext, setHistoryContext } from '../../controls/undo-redo/undo-redo.js';
+import '../../save/save-project';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 type ScenePrecompileTrace = {
@@ -185,6 +186,7 @@ function saveActiveProject(): void {
 
 function switchProject(index: number): void {
     if (index < 0 || index >= projects.length || index === activeProject) return;
+    beginPbdeLoadGeneration();
     loadedObjectGroup.userData.resetSelection?.();
     saveActiveProject();
     loadedObjectGroup.clear();
@@ -192,6 +194,7 @@ function switchProject(index: number): void {
         if (typeof value !== 'function') delete loadedObjectGroup.userData[key];
     }
     activeProject = index;
+    window.dispatchEvent(new CustomEvent('pde:active-project-changed', { detail: projects[index].id }));
     setHistoryContext(projects[index].id);
     Object.assign(loadedObjectGroup.userData, projects[index].data);
     for (const child of projects[index].children) loadedObjectGroup.add(child);
@@ -213,6 +216,7 @@ function addProject(): void {
 function deleteProject(index: number): void {
     if (index < 0 || index >= projects.length || projects.length === 1) return;
     const deletedId = projects[index].id;
+    window.ipcApi.forgetProjectSavePath?.(deletedId);
     if (index !== activeProject) {
         const activeId = projects[activeProject]?.id;
         projects.splice(index, 1);
@@ -221,6 +225,7 @@ function deleteProject(index: number): void {
         renderProjectTabs();
         return;
     }
+    beginPbdeLoadGeneration();
     loadedObjectGroup.userData.resetSelection?.();
     loadedObjectGroup.clear();
     for (const [key, value] of Object.entries(loadedObjectGroup.userData)) {
@@ -425,6 +430,8 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
             if (!reuseCurrentProject && (activeProject < 0 || loadedObjectGroup.children.length > 0 || projects[activeProject].children.length > 0 || projects[activeProject].data.projectDetails)) addProject();
             clear();
             await loadAndRenderPbde(file, false, beginPbdeLoadGeneration());
+            window.ipcApi.forgetProjectSavePath?.(projects[activeProject].id);
+            window.dispatchEvent(new CustomEvent('pde:active-project-changed', { detail: projects[activeProject].id }));
             updateProjectDetails();
             saveActiveProject();
             renderProjectTabs();
@@ -432,6 +439,7 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
         }
     } catch (e) {
         console.error("Error loading project files:", e);
+        window.alert(e instanceof Error ? e.message : String(e));
     }
     await precompileLoadedScene('open', fileList.length);
     await logFinalPbdeLoadTime(perceivedLoadStartMs, 'open', fileList.length);
@@ -466,6 +474,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
 
     } catch (e) {
         console.error("Error merging project files:", e);
+        window.alert(e instanceof Error ? e.message : String(e));
         const newGroupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
         deleteSelectedItems(loadedObjectGroup, {
             groups: newGroupIds,
@@ -610,7 +619,7 @@ window.addEventListener('drop', (e) => {
                 const file = item.getAsFile();
                 if (file) {
                     const extension = file.name.split('.').pop()?.toLowerCase();
-                    if (extension === 'bdengine' || extension === 'pdengine') {
+                    if (extension === 'bdengine' || extension === 'pde') {
                         validFiles.push(file);
                     }
                 }
@@ -619,7 +628,7 @@ window.addEventListener('drop', (e) => {
     } else {
         for (const file of e.dataTransfer.files) {  
             const extension = file.name.split('.').pop()?.toLowerCase();
-            if (extension === 'bdengine' || extension === 'pdengine') {
+            if (extension === 'bdengine' || extension === 'pde') {
                 validFiles.push(file);
             }
         }

@@ -6,6 +6,7 @@ import { createEntityMaterial, setEntityStateAttributes } from '../../entity-mat
 import { loadedObjectGroup } from './display-instancing';
 import { MAX_INSTANCES_PER_INSTANCED_MESH } from './display-instancing';
 import { isApplying } from '../../controls/undo-redo/undo-redo';
+import { trackProjectEdit } from '../../save/pending-edits';
 
 export const PLAYER_HEAD_ATLAS_SIZE = 2048;
 const PLAYER_HEAD_PART_SIZE = 8;
@@ -280,7 +281,7 @@ export function createPlayerHeadAtlasGeometry(includeLayer = true): THREE.Buffer
     return geometry;
 }
 
-function createImageHeadAtlasGeometry(layer: 0 | 1): THREE.BufferGeometry {
+export function createImageHeadAtlasGeometry(layer: 0 | 1): THREE.BufferGeometry {
     const geometry = createPlayerHeadAtlasGeometry(layer === 1);
     const blackUvs = geometry.getAttribute('uv') as THREE.BufferAttribute;
     const frontFace = layer ? 10 : 4;
@@ -1364,12 +1365,27 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
     (userData.objectTextures as Map<string, string> | undefined)?.set(objectUuid, storedUrl);
 }
 
-export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
+export function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
+    return trackProjectEdit(updateHeadTexture(objectUuid, textureUrl));
+}
+
+export function getImageHeadAtlasMaterial(atlas: PlayerHeadAtlas): THREE.Material[] {
+    atlas.context.fillStyle = '#000000';
+    atlas.context.fillRect(PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE, 0, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
+    atlas.texture.needsUpdate = true;
+    return [atlas.material, getImageHeadBlackMaterial(atlas.texture)];
+}
+
+async function updateHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
     applyPlayerHeadTexture(objectUuid, textureUrl, await loadPlayerHeadImage(textureUrl));
     if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
-export async function flipPlayerHeadTextures(objectUuids: string[], axis: PlayerHeadMirrorAxis): Promise<void> {
+export function flipPlayerHeadTextures(objectUuids: string[], axis: PlayerHeadMirrorAxis): Promise<void> {
+    return trackProjectEdit(flipHeadTextures(objectUuids, axis));
+}
+
+async function flipHeadTextures(objectUuids: string[], axis: PlayerHeadMirrorAxis): Promise<void> {
     const userData = loadedObjectGroup.userData;
     const refs = userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
     const prepared = (await Promise.all(objectUuids.map(async objectUuid => {

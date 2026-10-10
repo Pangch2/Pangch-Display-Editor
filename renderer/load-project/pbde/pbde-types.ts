@@ -105,6 +105,7 @@ export interface ProjectDetails {
 }
 
 export interface WorkerMetadata {
+    editorState?: import('../../save/pde-format').PdeEditorState;
     geometries: GeometryMeta[];
     geometryBatches?: GeometryInstanceBatch[];
     otherItems: OtherItem[];

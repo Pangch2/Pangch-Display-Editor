@@ -6,6 +6,12 @@ type PainterAssetType = 'brush' | 'palette';
 
 // 렌더러 프로세스의 window 객체에 안전하게 API 노출
 contextBridge.exposeInMainWorld('ipcApi', {
+  setActiveProject: (id: string) => ipcRenderer.send('active-project-changed', id),
+  forgetProjectSavePath: (id: string) => ipcRenderer.send('forget-project-save-path', id),
+  saveProject: (id: string, name: string, data: Uint8Array) => ipcRenderer.invoke('save-project', id, name, data),
+  decompressPdeProject: (data: Uint8Array) => ipcRenderer.invoke('decompress-pde-project', data),
+  writeProjectClipboard: (data: Uint8Array) => ipcRenderer.invoke('write-project-clipboard', data),
+  readProjectClipboard: () => ipcRenderer.invoke('read-project-clipboard'),
   headTextures: {
     account: () => ipcRenderer.invoke('head-account-state'),
     login: () => ipcRenderer.invoke('head-account-login'),

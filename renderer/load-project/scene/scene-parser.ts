@@ -1,4 +1,4 @@
-import { decompressSync, strFromU8 } from 'fflate';
+import { decodeProject, type PdeEditorState } from '../../save/pde-format';
 import * as THREE from 'three/webgpu';
 import { buildTextureAtlasForRenderList } from './texture-atlas-builder';
 import type { TexturePixelData } from './texture-atlas-builder';
@@ -204,6 +204,7 @@ export interface ParsedPbdeProject {
         atlas: { key: string; width: number; height: number; data: Uint8ClampedArray } | null;
         groups: Map<string, ParserGroupData>;
         sceneOrder: { type: 'group' | 'object'; id: string }[];
+        editorState?: PdeEditorState;
     };
     geometryBuffer: ArrayBuffer;
 }
@@ -1917,7 +1918,7 @@ async function prepareSceneTemplates(nodes: any[]): Promise<void> {
 }
 
 // 씬 그래프 노드를 재귀적으로 순회하며 렌더 항목을 만든다.
-function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null, renderItems: RenderItem[], inheritedRefs?: any): void {
+function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null, renderItems: RenderItem[], inheritedRefs?: any, pdeFormatVersion?: number): void {
     const refs = node.refs ?? inheritedRefs;
     const localTransform = (Array.isArray(node.transforms) || ArrayBuffer.isView(node.transforms))
         ? node.transforms
@@ -1927,7 +1928,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
     let currentGroupId = parentGroupId;
 
     if (node.isCollection) {
-        const newGroupId = generateUUID();
+        const newGroupId = pdeFormatVersion === 1 ? node.uuid : generateUUID();
 
         const m = new THREE.Matrix4().fromArray(worldTransform).transpose();
         const position = new THREE.Vector3();
@@ -2043,7 +2044,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
                     ? btoa(String.fromCharCode(...Uint8Array.from(paintTextureBytes)))
                     : paintTextureValue;
                 if (typeof paintTexture === 'string') {
-                    textureUrl = paintTexture.startsWith('data:image') ? paintTexture : `data:image/png;base64,${paintTexture}`;
+                    textureUrl = /^(?:data:image|https?:\/\/)/i.test(paintTexture) ? paintTexture : `data:image/png;base64,${paintTexture}`;
                 }
             }
             itemData.textureUrl = textureUrl || defaultTextureValue;
@@ -2125,7 +2126,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
 
     if (node.children) {
         for (const child of node.children) {
-            processNode(child, worldTransform, currentGroupId, renderItems, refs);
+            processNode(child, worldTransform, currentGroupId, renderItems, refs, pdeFormatVersion);
         }
     }
 }
@@ -2139,46 +2140,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
 
     try {
         const archiveStartMs = performance.now();
-        let uint8Array: Uint8Array;
-        if (fileContent instanceof ArrayBuffer) {
-            uint8Array = new Uint8Array(fileContent);
-        } else if (fileContent instanceof Uint8Array) {
-            uint8Array = fileContent;
-        } else {
-            throw new Error('Unsupported PBDE buffer input');
-        }
-        const decompressedU8 = decompressSync(uint8Array);
-
-        // "PRJ2" 마술 바이트 확인 (ASCII: P=80, R=82, J=74, 2=50)
-        if (decompressedU8[0] !== 80 || decompressedU8[1] !== 82 || decompressedU8[2] !== 74 || decompressedU8[3] !== 50) {
-            throw new Error('Invalid magic bytes. Expected PRJ2.');
-        }
-
-        const target = [115, 99, 101, 110, 101, 46, 106, 115, 111, 110]; // "scene.json"
-        let index = -1;
-        for (let i = 0; i <= decompressedU8.length - target.length; i++) {
-            let found = true;
-            for (let j = 0; j < target.length; j++) {
-                if (decompressedU8[i + j] !== target[j]) {
-                    found = false;
-                    break;
-                }
-            }
-            if (found) {
-                index = i;
-                break;
-            }
-        }
-        if (index === -1) {
-            throw new Error('scene.json not found in PRJ2 archive');
-        }
-        const sizeIndex = index + target.length;
-        const view = new DataView(decompressedU8.buffer, decompressedU8.byteOffset + sizeIndex, 4);
-        const dataSize = view.getUint32(0, true);
-        const jsonStartIndex = sizeIndex + 4;
-        const jsonBytes = decompressedU8.subarray(jsonStartIndex, jsonStartIndex + dataSize);
-        const jsonData = JSON.parse(strFromU8(jsonBytes));
-        const project = jsonData[0] ?? {};
+        const project = decodeProject(fileContent);
         const archiveElapsedMs = performance.now() - archiveStartMs;
 
         // 렌더링에 필요한 필드만 남기도록 씬 트리를 단순화한다.
@@ -2196,7 +2158,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         const sceneTraverseStartMs = performance.now();
         const renderList: RenderItem[] = [];
         for (const node of processedChildren) {
-            processNode(node, identityMatrix, null, renderList, project.refs);
+            processNode(node, identityMatrix, null, renderList, project.refs, project.pdeFormatVersion);
         }
         const sceneTraverseElapsedMs = performance.now() - sceneTraverseStartMs;
 
@@ -2506,6 +2468,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             atlas: atlasInfo,
             groups: groups,
             sceneOrder: sceneOrder.map(({ type, id }) => ({ type, id })),
+            editorState: project.pdeFormatVersion === 1 ? project.editorState : undefined,
             projectDetails: {
                 name: typeof project.name === 'string' ? project.name : '',
                 mainNBT: typeof project.mainNBT === 'string' ? project.mainNBT : '',
