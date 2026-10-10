@@ -1,30 +1,30 @@
-import * as THREE from 'three/webgpu';
+import { CanvasTexture, ClampToEdgeWrapping, FrontSide, Material, MeshLambertMaterial, NearestFilter, RepeatWrapping, SRGBColorSpace, Texture } from 'three/webgpu';
 import { type GeometryMeta, type WorkerMetadata, type GeometryInstanceBatch } from '../pbde/pbde-types';
 import { loadedObjectGroup, currentLoadGen } from './display-instancing';
 import { isNodeBufferLike, toUint8Array } from '../pbde/pbde-assets';
 import { createEndPortalMaterial, createEntityMaterial } from '../../entity-material';
 
 // 블록 텍스처 및 머티리얼 캐시
-const blockTextureCache = new Map<string, THREE.Texture>(); // 텍스처 경로별 THREE.Texture 매핑
-const blockTexturePromiseCache = new Map<string, Promise<THREE.Texture>>(); // 텍스처 경로별 로드 프라미스 매핑
-const blockMaterialCache = new Map<string, THREE.Material>(); // `${texPath}|${tintHex}` 조합별 머티리얼 캐시
-const blockMaterialPromiseCache = new Map<string, Promise<THREE.Material>>(); // 동일 키에 대한 생성 프라미스 캐시
+const blockTextureCache = new Map<string, Texture>(); // 텍스처 경로별 Texture 매핑
+const blockTexturePromiseCache = new Map<string, Promise<Texture>>(); // 텍스처 경로별 로드 프라미스 매핑
+const blockMaterialCache = new Map<string, Material>(); // `${texPath}|${tintHex}` 조합별 머티리얼 캐시
+const blockMaterialPromiseCache = new Map<string, Promise<Material>>(); // 동일 키에 대한 생성 프라미스 캐시
 // Leave room for subsequently added color variants on the same texture page.
 const BLOCK_ATLAS_MIN_PAGE_SIZE = 1024;
 type BlockAtlasRegion = { x: number; y: number; width: number; height: number };
 type BlockAtlasPage = {
     context: CanvasRenderingContext2D;
-    texture: THREE.Texture;
+    texture: Texture;
     index: number;
     nextX: number;
     nextY: number;
     rowHeight: number;
     regions: Map<string, BlockAtlasRegion>;
 };
-const blockAtlasPages = new WeakMap<THREE.Texture, BlockAtlasPage>();
+const blockAtlasPages = new WeakMap<Texture, BlockAtlasPage>();
 
 // 공유 플레이스홀더 자원
-export let sharedPlaceholderMaterial: THREE.Material | null = null;
+export let sharedPlaceholderMaterial: Material | null = null;
 
 // 텍스처 디코더와 GC가 과부하되지 않도록 동시 디코딩을 제한한다.
 const MAX_TEXTURE_DECODE_CONCURRENCY = 512;
@@ -58,8 +58,8 @@ function isTranslucentAtlasTexturePath(texPath: string): boolean {
     return texPath.startsWith('__ATLAS_TRANSLUCENT__');
 }
 
-function getBlockAtlasTextures(): THREE.Texture[] {
-    return (loadedObjectGroup.userData.blockAtlasTextures as THREE.Texture[] | undefined)
+function getBlockAtlasTextures(): Texture[] {
+    return (loadedObjectGroup.userData.blockAtlasTextures as Texture[] | undefined)
         ?? (loadedObjectGroup.userData.blockAtlasTextures = []);
 }
 
@@ -76,11 +76,11 @@ function createBlockAtlasPage(width: number, height: number): BlockAtlasPage {
     const context = canvas.getContext('2d');
     if (!context) throw new Error('블록 아틀라스 캔버스를 만들 수 없습니다.');
     context.imageSmoothingEnabled = false;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
+    const texture = new CanvasTexture(canvas);
+    texture.magFilter = NearestFilter;
+    texture.minFilter = NearestFilter;
     texture.generateMipmaps = false;
-    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.colorSpace = SRGBColorSpace;
     const textures = getBlockAtlasTextures();
     const page: BlockAtlasPage = { context, texture, index: textures.length, nextX: 0, nextY: 0, rowHeight: 0, regions: new Map() };
     textures.push(texture);
@@ -197,7 +197,7 @@ export function remapBlockAtlasMetadata(
 
 
 
-export function disposeTexture(tex: THREE.Texture | null | undefined): void {
+export function disposeTexture(tex: Texture | null | undefined): void {
     if (!tex) return;
     try {
         const img = tex.image || tex.source?.data;
@@ -211,7 +211,7 @@ export function disposeTexture(tex: THREE.Texture | null | undefined): void {
 export function ensureSharedPlaceholder(): void {
     if (!sharedPlaceholderMaterial) {
         // 텍스처가 준비되기 전까지 메시마다 NodeMaterial을 만들지 않도록 가벼운 플레이스홀더를 사용한다.
-        sharedPlaceholderMaterial = new THREE.MeshLambertMaterial({ transparent: true, opacity: 0 });
+        sharedPlaceholderMaterial = new MeshLambertMaterial({ transparent: true, opacity: 0 });
         sharedPlaceholderMaterial.toneMapped = false;
         sharedPlaceholderMaterial.fog = false;
         sharedPlaceholderMaterial.flatShading = true;
@@ -237,7 +237,7 @@ function decodeIpcContentToUint8Array(content: unknown): Uint8Array {
     }
 }
 
-async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Texture> {
+async function loadBlockTexture(texPath: string, gen: number): Promise<Texture> {
     if (isAtlasTexturePath(texPath)) {
         const page = getBlockAtlasPage(texPath);
         if (page) return page.texture;
@@ -257,17 +257,17 @@ async function loadBlockTexture(texPath: string, gen: number): Promise<THREE.Tex
     // ImageBitmap 디코딩은 가능하면 메인 스레드 밖에서 더 빠르게 처리된다.
         try {
             const imageBitmap = await createImageBitmap(blob);
-            let tex = new THREE.Texture(imageBitmap);
+            let tex = new Texture(imageBitmap);
             const isEntityTex = texPath.includes('/textures/entity/');
             
-            tex.magFilter = THREE.NearestFilter;
-            tex.minFilter = THREE.NearestFilter;
+            tex.magFilter = NearestFilter;
+            tex.minFilter = NearestFilter;
             tex.generateMipmaps = false;
-            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.colorSpace = SRGBColorSpace;
             if (isEntityTex) {
                 tex.anisotropy = 1;
-                tex.wrapS = THREE.ClampToEdgeWrapping;
-                tex.wrapT = THREE.ClampToEdgeWrapping;
+                tex.wrapS = ClampToEdgeWrapping;
+                tex.wrapT = ClampToEdgeWrapping;
             }
             tex.needsUpdate = true;
 
@@ -298,7 +298,7 @@ enum TransparencyType {
     Translucent = 2
 }
 
-function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
+function analyzeTextureTransparency(texture: Texture): TransparencyType {
     if (texture.userData.transparencyType !== undefined) {
         return texture.userData.transparencyType;
     }
@@ -350,7 +350,7 @@ function analyzeTextureTransparency(texture: THREE.Texture): TransparencyType {
     }
 }
 
-export async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, instancedUvTransformCount = 0, instancedUvTransformIndex = 0, instancedTintIndex = -1, useVertexTint = false): Promise<THREE.Material> {
+export async function getBlockMaterial(texPath: string, tintHex: number | undefined, gen: number, instancedUvTransformCount = 0, instancedUvTransformIndex = 0, instancedTintIndex = -1, useVertexTint = false): Promise<Material> {
     // undefined는 흰색(0xffffff)으로 정규화하여 캐시 키 불일치를 방지한다.
     const effectiveTint = (tintHex ?? 0xffffff) >>> 0;
     const key = getMaterialKey({ texPath, tintHex }, instancedUvTransformCount, instancedUvTransformIndex, instancedTintIndex, useVertexTint);
@@ -374,8 +374,8 @@ export async function getBlockMaterial(texPath: string, tintHex: number | undefi
                 loadBlockTexture('assets/minecraft/textures/entity/end_portal/end_portal.png', gen)
             ]);
             for (const texture of [endSkyTexture, endPortalTexture]) {
-                texture.wrapS = THREE.RepeatWrapping;
-                texture.wrapT = THREE.RepeatWrapping;
+                texture.wrapS = RepeatWrapping;
+                texture.wrapT = RepeatWrapping;
                 texture.needsUpdate = true;
             }
             const material = createEndPortalMaterial(endSkyTexture, endPortalTexture, endPortalLayerCount, true);
@@ -415,7 +415,7 @@ export async function getBlockMaterial(texPath: string, tintHex: number | undefi
             material.transparent = false;
             material.depthWrite = true;
             material.alphaTest = 0;
-            material.side = THREE.FrontSide;
+            material.side = FrontSide;
         }
 
         if (gen !== currentLoadGen) {

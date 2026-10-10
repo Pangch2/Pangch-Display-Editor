@@ -1,5 +1,5 @@
 import { decodeProject, type PdeEditorState } from '../../save/pde-format';
-import * as THREE from 'three/webgpu';
+import { Euler, MathUtils, Matrix3, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import { buildTextureAtlasForRenderList } from './texture-atlas-builder';
 import type { TexturePixelData } from './texture-atlas-builder';
 import { isNodeBufferLike } from '../pbde/pbde-assets';
@@ -527,25 +527,25 @@ function whenMatches(when, props) {
 // 블록스테이트 회전을 THREE 행렬에 적용한다.
 function applyBlockstateRotation(matrix, rotX = 0, rotY = 0) {
     if (rotX === 0 && rotY === 0) return;
-    const pivot = new THREE.Vector3(0.5, 0.5, 0.5);
-    const t1 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
-    const t2 = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
+    const pivot = new Vector3(0.5, 0.5, 0.5);
+    const t1 = new Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
+    const t2 = new Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
 
-    const rx = new THREE.Matrix4().makeRotationX(THREE.MathUtils.degToRad(-rotX));
-    const ry = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(-rotY));
-    const r = new THREE.Matrix4().multiply(ry).multiply(rx);
-    const m = new THREE.Matrix4().multiply(t2).multiply(r).multiply(t1);
+    const rx = new Matrix4().makeRotationX(MathUtils.degToRad(-rotX));
+    const ry = new Matrix4().makeRotationY(MathUtils.degToRad(-rotY));
+    const r = new Matrix4().multiply(ry).multiply(rx);
+    const m = new Matrix4().multiply(t2).multiply(r).multiply(t1);
     matrix.premultiply(m);
 }
 
-function getElementRotation(el: any): { matrix: THREE.Matrix4; rotation: THREE.Matrix4; hasRotation: boolean } {
-    const matrix = new THREE.Matrix4();
-    const rotation = new THREE.Matrix4();
+function getElementRotation(el: any): { matrix: Matrix4; rotation: Matrix4; hasRotation: boolean } {
+    const matrix = new Matrix4();
+    const rotation = new Matrix4();
     const rot = el.rotation;
     const hasRotation = rot && typeof rot.angle === 'number' && rot.angle !== 0 && typeof rot.axis === 'string' && Array.isArray(rot.origin);
     if (!hasRotation) return { matrix, rotation, hasRotation: false };
 
-    const pivot = new THREE.Vector3(rot.origin[0] / 16, rot.origin[1] / 16, rot.origin[2] / 16);
+    const pivot = new Vector3(rot.origin[0] / 16, rot.origin[1] / 16, rot.origin[2] / 16);
     const angleRad = rot.angle * Math.PI / 180;
     if (rot.axis === 'x') rotation.makeRotationX(angleRad);
     else if (rot.axis === 'y') rotation.makeRotationY(angleRad);
@@ -553,11 +553,11 @@ function getElementRotation(el: any): { matrix: THREE.Matrix4; rotation: THREE.M
     matrix.makeTranslation(pivot.x, pivot.y, pivot.z).multiply(rotation);
     if (rot.rescale === true) {
         const scaleFactor = 1 / Math.cos(angleRad);
-        if (rot.axis === 'x') matrix.scale(new THREE.Vector3(1, scaleFactor, scaleFactor));
-        else if (rot.axis === 'y') matrix.scale(new THREE.Vector3(scaleFactor, 1, scaleFactor));
-        else matrix.scale(new THREE.Vector3(scaleFactor, scaleFactor, 1));
+        if (rot.axis === 'x') matrix.scale(new Vector3(1, scaleFactor, scaleFactor));
+        else if (rot.axis === 'y') matrix.scale(new Vector3(scaleFactor, 1, scaleFactor));
+        else matrix.scale(new Vector3(scaleFactor, scaleFactor, 1));
     }
-    matrix.multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
+    matrix.multiply(new Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
     return { matrix, rotation, hasRotation: true };
 }
 
@@ -647,12 +647,12 @@ function getFaceVertices(dir, from, to) {
     const x1 = from[0] / 16, y1 = from[1] / 16, z1 = from[2] / 16;
     const x2 = to[0] / 16,   y2 = to[1] / 16,   z2 = to[2] / 16;
     switch (dir) {
-        case 'north': return { a: new THREE.Vector3(x1, y2, z1), b: new THREE.Vector3(x2, y2, z1), c: new THREE.Vector3(x2, y1, z1), d: new THREE.Vector3(x1, y1, z1), n: new THREE.Vector3(0, 0, -1) };
-        case 'south': return { a: new THREE.Vector3(x2, y2, z2), b: new THREE.Vector3(x1, y2, z2), c: new THREE.Vector3(x1, y1, z2), d: new THREE.Vector3(x2, y1, z2), n: new THREE.Vector3(0, 0, 1) };
-        case 'west':  return { a: new THREE.Vector3(x1, y2, z2), b: new THREE.Vector3(x1, y2, z1), c: new THREE.Vector3(x1, y1, z1), d: new THREE.Vector3(x1, y1, z2), n: new THREE.Vector3(-1, 0, 0) };
-        case 'east':  return { a: new THREE.Vector3(x2, y2, z1), b: new THREE.Vector3(x2, y2, z2), c: new THREE.Vector3(x2, y1, z2), d: new THREE.Vector3(x2, y1, z1), n: new THREE.Vector3(1, 0, 0) };
-        case 'up':    return { a: new THREE.Vector3(x1, y2, z1), b: new THREE.Vector3(x1, y2, z2), c: new THREE.Vector3(x2, y2, z2), d: new THREE.Vector3(x2, y2, z1), n: new THREE.Vector3(0, 1, 0) };
-        case 'down':  return { a: new THREE.Vector3(x2, y1, z1), b: new THREE.Vector3(x2, y1, z2), c: new THREE.Vector3(x1, y1, z2), d: new THREE.Vector3(x1, y1, z1), n: new THREE.Vector3(0, -1, 0) };
+        case 'north': return { a: new Vector3(x1, y2, z1), b: new Vector3(x2, y2, z1), c: new Vector3(x2, y1, z1), d: new Vector3(x1, y1, z1), n: new Vector3(0, 0, -1) };
+        case 'south': return { a: new Vector3(x2, y2, z2), b: new Vector3(x1, y2, z2), c: new Vector3(x1, y1, z2), d: new Vector3(x2, y1, z2), n: new Vector3(0, 0, 1) };
+        case 'west':  return { a: new Vector3(x1, y2, z2), b: new Vector3(x1, y2, z1), c: new Vector3(x1, y1, z1), d: new Vector3(x1, y1, z2), n: new Vector3(-1, 0, 0) };
+        case 'east':  return { a: new Vector3(x2, y2, z1), b: new Vector3(x2, y2, z2), c: new Vector3(x2, y1, z2), d: new Vector3(x2, y1, z1), n: new Vector3(1, 0, 0) };
+        case 'up':    return { a: new Vector3(x1, y2, z1), b: new Vector3(x1, y2, z2), c: new Vector3(x2, y2, z2), d: new Vector3(x2, y2, z1), n: new Vector3(0, 1, 0) };
+        case 'down':  return { a: new Vector3(x2, y1, z1), b: new Vector3(x2, y1, z2), c: new Vector3(x1, y1, z2), d: new Vector3(x1, y1, z1), n: new Vector3(0, -1, 0) };
     }
     return null;
 }
@@ -722,7 +722,7 @@ async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = 
                 v.b.applyMatrix4(rotMat);
                 v.c.applyMatrix4(rotMat);
                 v.d.applyMatrix4(rotMat);
-                const n3 = new THREE.Matrix3().setFromMatrix4(rotOnly);
+                const n3 = new Matrix3().setFromMatrix4(rotOnly);
                 v.n.applyMatrix3(n3).normalize();
                 const { x, y, z } = v.n;
                 if (Math.abs(x) > 0.99) effectiveDir = x > 0 ? 'east' : 'west';
@@ -836,8 +836,8 @@ async function prepareBlockDisplayTemplate(item: any): Promise<BlockDisplayTempl
 
 function blockTemplateSurfaceSignature(template: BlockDisplayTemplate, mirrorAxis = -1): string {
     const faces = new Set<string>();
-    const matrix = new THREE.Matrix4();
-    const point = new THREE.Vector3();
+    const matrix = new Matrix4();
+    const point = new Vector3();
     for (const model of template.models) {
         matrix.fromArray(model.modelMatrix);
         for (const geometry of model.geometries) {
@@ -858,10 +858,10 @@ function blockTemplateSurfaceSignature(template: BlockDisplayTemplate, mirrorAxi
 function blockTemplateOccupancySignature(template: BlockDisplayTemplate, mirrorAxis = -1): string {
     const volumes = template.volumes.map(volume => ({
         ...volume,
-        inverse: new THREE.Matrix4().fromArray(volume.matrix).invert()
+        inverse: new Matrix4().fromArray(volume.matrix).invert()
     }));
-    const point = new THREE.Vector3();
-    const local = new THREE.Vector3();
+    const point = new Vector3();
+    const local = new Vector3();
     const cells: string[] = [];
     for (let x = 0; x < 16; x++) for (let y = 0; y < 16; y++) for (let z = 0; z < 16; z++) {
         point.set((x + 0.5) / 16, (y + 0.5) / 16, (z + 0.5) / 16);
@@ -877,7 +877,7 @@ function blockTemplateOccupancySignature(template: BlockDisplayTemplate, mirrorA
 }
 
 if (import.meta.env.DEV) {
-    const matrix = new THREE.Matrix4().toArray();
+    const matrix = new Matrix4().toArray();
     const lower = { models: [], blockProps: {}, volumes: [{ from: [0, 0, 0] as [number, number, number], to: [1, 0.5, 1] as [number, number, number], matrix }] };
     const upper = { models: [], blockProps: {}, volumes: [{ from: [0, 0.5, 0] as [number, number, number], to: [1, 1, 1] as [number, number, number], matrix }] };
     console.assert(blockTemplateOccupancySignature(lower, 1) === blockTemplateOccupancySignature(upper), 'Block occupancy reflection failed.');
@@ -1083,21 +1083,21 @@ async function buildBlockDisplayTemplate(item: any): Promise<BlockDisplayTemplat
             if (!resolved || !resolved.elements) continue;
             fromHardcoded ||= resolved.fromHardcoded;
             
-            const modelMatrix = new THREE.Matrix4();
+            const modelMatrix = new Matrix4();
             applyBlockstateRotation(modelMatrix, apply.x || 0, apply.y || 0);
             if (resolved.fromHardcoded && /(?:^|_)shulker_box$/.test(path)) {
                 const rotations = { down: [Math.PI, 0, 0], up: [0, 0, 0], north: [Math.PI / 2, 0, Math.PI],
                     south: [Math.PI / 2, 0, 0], west: [Math.PI / 2, 0, Math.PI / 2], east: [Math.PI / 2, 0, -Math.PI / 2] };
                 const rotation = rotations[props.facing] ?? rotations.up;
-                modelMatrix.multiply(new THREE.Matrix4().makeTranslation(.5, .5, .5))
-                    .multiply(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(...rotation as [number, number, number], 'XYZ')))
-                    .scale(new THREE.Vector3(.9995, .9995, .9995)).multiply(new THREE.Matrix4().makeTranslation(-.5, -.5, -.5));
+                modelMatrix.multiply(new Matrix4().makeTranslation(.5, .5, .5))
+                    .multiply(new Matrix4().makeRotationFromEuler(new Euler(...rotation as [number, number, number], 'XYZ')))
+                    .scale(new Vector3(.9995, .9995, .9995)).multiply(new Matrix4().makeTranslation(-.5, -.5, -.5));
             } else if (resolved.fromHardcoded && skull) {
                 if (/_wall_/.test(path)) {
                     const directions = { north: [0, -1, 0], south: [0, 1, -Math.PI], east: [1, 0, -Math.PI / 2], west: [-1, 0, Math.PI / 2] };
                     const [x, z, angle] = directions[props.facing] ?? directions.north;
-                    modelMatrix.multiply(new THREE.Matrix4().makeTranslation(.5 - x * .25, .25, .5 - z * .25))
-                        .multiply(new THREE.Matrix4().makeRotationY(angle)).multiply(new THREE.Matrix4().makeTranslation(-.5, 0, -.5));
+                    modelMatrix.multiply(new Matrix4().makeTranslation(.5 - x * .25, .25, .5 - z * .25))
+                        .multiply(new Matrix4().makeRotationY(angle)).multiply(new Matrix4().makeTranslation(-.5, 0, -.5));
                 } else applyBlockstateRotation(modelMatrix, 0, Number(props.rotation) * 22.5);
             }
 
@@ -1150,8 +1150,8 @@ const itemModelTemplatePromiseCache = new Map<string, Promise<ItemModelTemplate 
 const itemModelTemplateCache = new Map<string, ItemModelTemplate | null>();
 const itemModelTemplateKeyByName = new Map<string, string | null>();
 const itemNameParseCache = new Map<string, { baseName: string; displayType: string | null }>();
-const itemDisplayModelMatrices = new Map<string, THREE.Matrix4>();
-const bedItemDisplayModelMatrices = new Map<string, THREE.Matrix4>();
+const itemDisplayModelMatrices = new Map<string, Matrix4>();
+const bedItemDisplayModelMatrices = new Map<string, Matrix4>();
 const itemDisplayTypes = ['', 'thirdperson_lefthand', 'thirdperson_righthand', 'firstperson_lefthand', 'firstperson_righthand', 'head', 'gui', 'ground', 'fixed', 'on_shelf'];
 
 // 🚀 최적화 3: 블록 모델 지오메트리 캐싱 (같은 블록 타입은 재사용)
@@ -1278,18 +1278,18 @@ async function getDisplayTransformForItem(resolved, displayType, cache) {
 }
 
 // Minecraft's block skull frame differs by a Y half-turn from the legacy item geometry.
-export function getSkullBlockModelMatrix(id: string, properties: Record<string, string>): THREE.Matrix4 | null {
+export function getSkullBlockModelMatrix(id: string, properties: Record<string, string>): Matrix4 | null {
     const { path } = nsAndPathFromId(id);
     if (!/^(?:(?:skeleton|wither_skeleton)_(?:wall_)?skull|(?:zombie|creeper|dragon|piglin)_(?:wall_)?head)$/.test(path)) return null;
     if (/_wall_/.test(path)) {
         const directions = { north: [0, -1, 0], south: [0, 1, -Math.PI], east: [1, 0, -Math.PI / 2], west: [-1, 0, Math.PI / 2] };
         const [x, z, angle] = directions[properties.facing ?? 'north'] ?? directions.north;
-        return new THREE.Matrix4().makeTranslation(.5 - x * .25, .25, .5 - z * .25)
-            .multiply(new THREE.Matrix4().makeRotationY(angle + Math.PI)).multiply(new THREE.Matrix4().makeTranslation(-.5, 0, -.5));
+        return new Matrix4().makeTranslation(.5 - x * .25, .25, .5 - z * .25)
+            .multiply(new Matrix4().makeRotationY(angle + Math.PI)).multiply(new Matrix4().makeTranslation(-.5, 0, -.5));
     }
-    return new THREE.Matrix4().makeTranslation(.5, 0, .5)
-        .multiply(new THREE.Matrix4().makeRotationY(Math.PI - Number(properties.rotation ?? 0) * Math.PI / 8))
-        .multiply(new THREE.Matrix4().makeTranslation(-.5, 0, -.5));
+    return new Matrix4().makeTranslation(.5, 0, .5)
+        .multiply(new Matrix4().makeRotationY(Math.PI - Number(properties.rotation ?? 0) * Math.PI / 8))
+        .multiply(new Matrix4().makeTranslation(-.5, 0, -.5));
 }
 
 // display 구성을 THREE Matrix4로 변환한다.
@@ -1303,25 +1303,25 @@ function buildDisplayTransformMatrix(transform) {
     const ty = (translation[1] || 0) / 16;
     const tz = (translation[2] || 0) / 16;
 
-    const rx = THREE.MathUtils.degToRad(rotation[0] || 0);
-    const ry = THREE.MathUtils.degToRad(rotation[1] || 0);
-    const rz = THREE.MathUtils.degToRad(rotation[2] || 0);
+    const rx = MathUtils.degToRad(rotation[0] || 0);
+    const ry = MathUtils.degToRad(rotation[1] || 0);
+    const rz = MathUtils.degToRad(rotation[2] || 0);
 
     const sx = scale[0] == null ? 1 : scale[0];
     const sy = scale[1] == null ? 1 : scale[1];
     const sz = scale[2] == null ? 1 : scale[2];
 
-    const translationVec = new THREE.Vector3(tx, ty, tz);
-    const rotationEuler = new THREE.Euler(rx, ry, rz, 'XYZ');
-    const rotationQuat = new THREE.Quaternion().setFromEuler(rotationEuler);
-    const scaleVec = new THREE.Vector3(sx, sy, sz);
+    const translationVec = new Vector3(tx, ty, tz);
+    const rotationEuler = new Euler(rx, ry, rz, 'XYZ');
+    const rotationQuat = new Quaternion().setFromEuler(rotationEuler);
+    const scaleVec = new Vector3(sx, sy, sz);
 
-    const matrix = new THREE.Matrix4();
+    const matrix = new Matrix4();
     matrix.compose(translationVec, rotationQuat, scaleVec);
     return matrix;
 }
 
-export function getPlayerHeadDisplayMatrix(displayType?: string): THREE.Matrix4 | null {
+export function getPlayerHeadDisplayMatrix(displayType?: string): Matrix4 | null {
     return buildDisplayTransformMatrix(displayType ? PLAYER_HEAD_DISPLAY_TRANSFORMS[displayType] : null);
 }
 
@@ -1660,16 +1660,16 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
         return null;
     }
 
-    const modelMatrix = new THREE.Matrix4();
+    const modelMatrix = new Matrix4();
     if (hasElements) {
         // 블록형 아이템은 중심을 -0.5로 이동해 월드 좌표계와 정렬한다.
-        modelMatrix.multiply(new THREE.Matrix4().makeTranslation(-0.5, -0.5, -0.5));
+        modelMatrix.multiply(new Matrix4().makeTranslation(-0.5, -0.5, -0.5));
         if (part && !resolved.fromHardcoded) modelMatrix.multiply(part.transform);
     } else {
         // 평면 아이템은 중심만 이동하고 좌우 반전으로 UV와 노멀 방향을 일치시킨다.
-        const translateCenter = new THREE.Matrix4().makeTranslation(-0.5, -0.5, 0);
+        const translateCenter = new Matrix4().makeTranslation(-0.5, -0.5, 0);
         modelMatrix.multiply(translateCenter);
-        modelMatrix.premultiply(new THREE.Matrix4().makeScale(-1, 1, 1));
+        modelMatrix.premultiply(new Matrix4().makeScale(-1, 1, 1));
     }
 
     await Promise.all(itemDisplayTypes.map(async type => {
@@ -1683,7 +1683,7 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
         }
         itemDisplayModelMatrices.set(`${baseName}|${type}`, displayModelMatrix);
         if (bedDisplayResolved) {
-            const gameModelMatrix = new THREE.Matrix4().makeTranslation(-.5, -.5, -.5);
+            const gameModelMatrix = new Matrix4().makeTranslation(-.5, -.5, -.5);
             const rightHand = ITEM_DISPLAY_LEFT_HAND_FALLBACK[type];
             let gameTransform = await findDisplayTransformInHierarchy(bedDisplayResolved, type, bedDisplayCache);
             if (!gameTransform && rightHand) gameTransform = await findDisplayTransformInHierarchy(bedDisplayResolved, rightHand, bedDisplayCache);
@@ -1808,15 +1808,15 @@ async function prepareItemModelTemplate(rawName: string): Promise<ItemModelTempl
     }
 }
 
-export async function getItemDisplayModelMatrix(rawName: string): Promise<THREE.Matrix4 | null> {
+export async function getItemDisplayModelMatrix(rawName: string): Promise<Matrix4 | null> {
     const template = await prepareItemModelTemplate(rawName);
-    return template ? new THREE.Matrix4().fromArray(template.modelMatrix) : null;
+    return template ? new Matrix4().fromArray(template.modelMatrix) : null;
 }
 
-export function getBedItemDisplayModelMatrix(rawName: string): THREE.Matrix4 | null {
+export function getBedItemDisplayModelMatrix(rawName: string): Matrix4 | null {
     const { baseName, displayType } = parseItemNameCached(rawName);
     return bedItemDisplayModelMatrices.get(`${baseName}|${displayType ?? ''}`)?.clone()
-        ?? (!displayType || displayType === 'none' ? new THREE.Matrix4().makeTranslation(-.5, -.5, -.5) : null);
+        ?? (!displayType || displayType === 'none' ? new Matrix4().makeTranslation(-.5, -.5, -.5) : null);
 }
 
 // item_display 노드를 분석해 모델 지오메트리와 display 변환을 계산한다.
@@ -1930,15 +1930,15 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
     if (node.isCollection) {
         const newGroupId = pdeFormatVersion === 1 ? node.uuid : generateUUID();
 
-        const m = new THREE.Matrix4().fromArray(worldTransform).transpose();
-        const position = new THREE.Vector3();
-        const quaternion = new THREE.Quaternion();
-        const scale = new THREE.Vector3();
+        const m = new Matrix4().fromArray(worldTransform).transpose();
+        const position = new Vector3();
+        const quaternion = new Quaternion();
+        const scale = new Vector3();
         m.decompose(position, quaternion, scale);
 
         const hasCustomPivot = Array.isArray(node.pivotCustom) && node.pivotCustom.length >= 3;
         const pivot = hasCustomPivot
-            ? new THREE.Vector3().fromArray(node.pivotCustom).applyMatrix4(m).toArray()
+            ? new Vector3().fromArray(node.pivotCustom).applyMatrix4(m).toArray()
             : [0.5, 0.5, 0.5];
 
         groups.set(newGroupId, {
@@ -2305,10 +2305,10 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             const useMultipartAtlasUv = !uniformPartModelMatrix && allPartsHaveAtlasUv
                 && parts.every(part => part.geomData.texPath === '__ATLAS__'
                     && ((part.geomData.tintHex ?? 0xffffff) >>> 0) <= 0xffffff)
-                && new THREE.Matrix4().fromArray(parts[0].modelMatrix).determinant() !== 0;
+                && new Matrix4().fromArray(parts[0].modelMatrix).determinant() !== 0;
             const useInstancedAtlasUv = useMultipartAtlasUv || allPartsHaveAtlasUv
                 && !!uniformPartModelMatrix
-                && new THREE.Matrix4().fromArray(uniformPartModelMatrix).determinant() !== 0;
+                && new Matrix4().fromArray(uniformPartModelMatrix).determinant() !== 0;
             const atlasUvTransform = useInstancedAtlasUv ? parts[0].geomData.uvTransform : undefined;
             const atlasUvTransforms = useInstancedAtlasUv
                 ? parts.map(part => part.geomData.uvTransform as [number, number, number, number])

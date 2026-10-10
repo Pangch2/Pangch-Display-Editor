@@ -1,5 +1,5 @@
 import { openWithAnimation, closeWithAnimation } from '../../ui/ui-open-close.js';
-import * as THREE from 'three/webgpu';
+import { Mesh, Object3D } from 'three/webgpu';
 import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, notifyPlayerHeadAtlasesChanged, performSelection, updateGlobalBrightness } from '../display/mesh-builder';
 import type { GlobalBrightness, LoadedSelection } from '../display/mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
@@ -64,7 +64,7 @@ type CameraState = {
 };
 type ProjectState = {
     id: string;
-    children: THREE.Object3D[];
+    children: Object3D[];
     data: Record<string, unknown>;
     camera?: CameraState;
 };
@@ -478,7 +478,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
         const newGroupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
         deleteSelectedItems(loadedObjectGroup, {
             groups: newGroupIds,
-            objects: new Map([...allNewMeshes].filter(([mesh]) => (mesh as THREE.Mesh).isMesh)) as Map<THREE.Mesh, Set<number>>
+            objects: new Map([...allNewMeshes].filter(([mesh]) => (mesh as Mesh).isMesh)) as Map<Mesh, Set<number>>
         }, { resetSelectionAndDeselect: () => {} })?.dispose();
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
@@ -486,7 +486,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
         const newGroupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
         recordCreationChange(loadedObjectGroup, {
             groups: newGroupIds,
-            objects: new Map([...allNewMeshes].filter(([mesh]) => (mesh as THREE.Mesh).isMesh)) as Map<THREE.Mesh, Set<number>>
+            objects: new Map([...allNewMeshes].filter(([mesh]) => (mesh as Mesh).isMesh)) as Map<Mesh, Set<number>>
         }, beforeUi);
     }
     await precompileLoadedScene('merge', fileList.length);

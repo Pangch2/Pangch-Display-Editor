@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import { Box3, BufferGeometry, Float32BufferAttribute, Group, Material, MathUtils, Mesh, NearestFilter, OrthographicCamera, Scene, SRGBColorSpace, Texture, Vector3, WebGPURenderer } from 'three/webgpu';
 import { createEntityMaterial, dragSelectedAttributeName } from '../entity-material';
 import { mainThreadAssetProvider } from '../load-project/pbde/pbde-assets';
 import { buildBlockIconTemplate, buildItemIconModels, type ModelData } from '../load-project/scene/scene-parser';
@@ -364,13 +364,13 @@ async function prepareIcons(names: string[]): Promise<PreparedIcon[]> {
     return icons.filter((icon): icon is PreparedIcon => icon !== null);
 }
 
-function createAtlasTexture(data: Uint8ClampedArray, width: number, height: number): Promise<THREE.Texture> {
+function createAtlasTexture(data: Uint8ClampedArray, width: number, height: number): Promise<Texture> {
     return createImageBitmap(new ImageData(new Uint8ClampedArray(data), width, height)).then(bitmap => {
-        const texture = new THREE.Texture(bitmap);
-        texture.magFilter = THREE.NearestFilter;
-        texture.minFilter = THREE.NearestFilter;
+        const texture = new Texture(bitmap);
+        texture.magFilter = NearestFilter;
+        texture.minFilter = NearestFilter;
         texture.generateMipmaps = false;
-        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.colorSpace = SRGBColorSpace;
         texture.needsUpdate = true;
         return texture;
     });
@@ -378,17 +378,17 @@ function createAtlasTexture(data: Uint8ClampedArray, width: number, height: numb
 
 function createModelGroup(
     icon: PreparedIcon,
-    atlasTexture: THREE.Texture,
-    materials: Map<string, THREE.Material>
-): THREE.Group {
-    const group = new THREE.Group();
+    atlasTexture: Texture,
+    materials: Map<string, Material>
+): Group {
+    const group = new Group();
     if (icon.applyGuiTransform) {
         const { rotation, translation, scale } = icon.guiTransform ?? defaultBlockGuiTransform;
         group.position.set(translation?.[0] ?? 0, translation?.[1] ?? 0, translation?.[2] ?? 0).multiplyScalar(1 / 16);
         group.rotation.set(
-            THREE.MathUtils.degToRad(rotation?.[0] ?? 0),
-            THREE.MathUtils.degToRad(rotation?.[1] ?? 0),
-            THREE.MathUtils.degToRad(rotation?.[2] ?? 0),
+            MathUtils.degToRad(rotation?.[0] ?? 0),
+            MathUtils.degToRad(rotation?.[1] ?? 0),
+            MathUtils.degToRad(rotation?.[2] ?? 0),
             'XYZ'
         );
         if (matchesIconModelOverride(icon.name, ['*_bed'])) group.rotation.y += Math.PI;
@@ -396,11 +396,11 @@ function createModelGroup(
     }
 
     for (const model of icon.models) for (const part of model.geometries) {
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.Float32BufferAttribute(part.positions, 3));
-        geometry.setAttribute('normal', new THREE.Float32BufferAttribute(part.normals, 3));
-        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(part.uvs, 2));
-        geometry.setAttribute(dragSelectedAttributeName, new THREE.Float32BufferAttribute(new Float32Array(part.positions.length / 3), 1));
+        const geometry = new BufferGeometry();
+        geometry.setAttribute('position', new Float32BufferAttribute(part.positions, 3));
+        geometry.setAttribute('normal', new Float32BufferAttribute(part.normals, 3));
+        geometry.setAttribute('uv', new Float32BufferAttribute(part.uvs, 2));
+        geometry.setAttribute(dragSelectedAttributeName, new Float32BufferAttribute(new Float32Array(part.positions.length / 3), 1));
         geometry.setIndex(part.indices);
 
         const translucent = part.texPath === '__ATLAS_TRANSLUCENT__';
@@ -418,7 +418,7 @@ function createModelGroup(
             materials.set(materialKey, material);
         }
 
-        const mesh = new THREE.Mesh(geometry, material);
+        const mesh = new Mesh(geometry, material);
         mesh.matrix.fromArray(model.modelMatrix);
         mesh.matrixAutoUpdate = false;
         group.add(mesh);
@@ -426,13 +426,13 @@ function createModelGroup(
     return group;
 }
 
-function placeIconGroup(group: THREE.Group, x: number, y: number): THREE.Group {
+function placeIconGroup(group: Group, x: number, y: number): Group {
     group.updateMatrixWorld(true);
-    const bounds = new THREE.Box3().setFromObject(group);
-    const center = bounds.getCenter(new THREE.Vector3());
-    const size = bounds.getSize(new THREE.Vector3());
+    const bounds = new Box3().setFromObject(group);
+    const center = bounds.getCenter(new Vector3());
+    const size = bounds.getSize(new Vector3());
     const scale = 0.88 / Math.max(1, size.x, size.y);
-    const cell = new THREE.Group();
+    const cell = new Group();
     cell.add(group);
     cell.scale.setScalar(scale);
     cell.position.set(x - center.x * scale, y - center.y * scale, -center.z * scale);
@@ -443,11 +443,11 @@ async function buildAtlases(
     itemNames: string[],
     blockNames: string[],
     prepared: Map<string, PreparedIcon>,
-    renderer: THREE.WebGPURenderer,
-    scene: THREE.Scene,
-    camera: THREE.OrthographicCamera,
-    atlasTexture: THREE.Texture,
-    materials: Map<string, THREE.Material>
+    renderer: WebGPURenderer,
+    scene: Scene,
+    camera: OrthographicCamera,
+    atlasTexture: Texture,
+    materials: Map<string, Material>
 ): Promise<{
     items: { image: OffscreenCanvas; icons: IconMap };
     blocks: { image: OffscreenCanvas; icons: IconMap };
@@ -556,12 +556,12 @@ async function createAtlases(): Promise<ItemIconAtlas> {
     window.dispatchEvent(new Event('pde:creating-icon-atlases'));
     const atlasStart = performance.now();
     let entries: PreparedIcon[] = [];
-    let atlasTexture: THREE.Texture | undefined;
-    let renderer: THREE.WebGPURenderer | undefined;
+    let atlasTexture: Texture | undefined;
+    let renderer: WebGPURenderer | undefined;
     let outputCanvases: OffscreenCanvas[] = [];
-    const scene = new THREE.Scene();
-    const camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0.01, 100);
-    const materials = new Map<string, THREE.Material>();
+    const scene = new Scene();
+    const camera = new OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0.01, 100);
+    const materials = new Map<string, Material>();
 
     try {
         const list = await readJson('item-block-list.json');
@@ -576,7 +576,7 @@ async function createAtlases(): Promise<ItemIconAtlas> {
         if (!textureAtlas) throw new Error('Failed to build the item icon texture atlas.');
 
         atlasTexture = await createAtlasTexture(textureAtlas.data, textureAtlas.width, textureAtlas.height);
-        renderer = new THREE.WebGPURenderer({ antialias: false, alpha: true, logarithmicDepthBuffer: true });
+        renderer = new WebGPURenderer({ antialias: false, alpha: true, logarithmicDepthBuffer: true });
         renderer.setClearColor(0x000000, 0);
         await renderer.init();
         const { items, blocks } = await buildAtlases(
@@ -597,7 +597,7 @@ async function createAtlases(): Promise<ItemIconAtlas> {
         iconAssetPromises.clear();
         entries.forEach(entry => entry.image?.close());
         scene.traverse(object => {
-            if (object instanceof THREE.Mesh) object.geometry.dispose();
+            if (object instanceof Mesh) object.geometry.dispose();
         });
         materials.forEach(material => material.dispose());
         (atlasTexture?.image as ImageBitmap | undefined)?.close();

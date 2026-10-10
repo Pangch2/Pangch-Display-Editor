@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import { BufferAttribute, BufferGeometry, Cache, Color, InstancedBufferAttribute, InstancedInterleavedBuffer, InstancedMesh, InterleavedBufferAttribute, Material, MathUtils, Matrix4, Object3D, Quaternion, StorageInstancedBufferAttribute, Texture, Vector3 } from 'three/webgpu';
 import { gunzipSync } from 'fflate';
 import { loadedObjectGroup, type LoadedSelection, currentLoadGen, beginPbdeLoadGeneration } from './display-instancing';
 import { headGeometries, PLAYER_HEAD_ATLAS_SIZE, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT, PLAYER_HEAD_BLOCKS_PER_ROW, type PlayerHeadSkin, type PlayerHeadAtlas, getPlayerHeadRenderMatrix, clearImageHeadBlackMaterial, mergeIndexedGeometries, createHeadGeometries, createPlayerHeadAtlasGeometry, loadPlayerHeadImage, drawPlayerHeadSlot, getProjectPlayerHeadAtlases, notifyPlayerHeadAtlasesChanged, getOrCreatePlayerHeadAtlas, createPlayerHeadAtlas, takePlayerHeadSlot } from './player-head-atlas';
@@ -26,9 +26,9 @@ function _clearSceneAndCaches(): void {
     clearBlockRenderResources();
 
     // 1-2. 씬에 있는 객체의 지오메트리 및 재질 해제
-    const disposedGeometries = new Set<THREE.BufferGeometry>();
-    const disposedMaterials = new Set<THREE.Material>();
-    const disposedTextures = new Set<THREE.Texture>();
+    const disposedGeometries = new Set<BufferGeometry>();
+    const disposedMaterials = new Set<Material>();
+    const disposedTextures = new Set<Texture>();
     loadedObjectGroup.traverse(object => {
         if (object.isMesh) {
             // 최적화: 재사용되는 지오메트리는 dispose하지 않도록 예외 처리
@@ -59,7 +59,7 @@ function _clearSceneAndCaches(): void {
     }
 
     // 1-4. Three.js 전역 캐시 비우기
-    THREE.Cache.clear();
+    Cache.clear();
 }
 
 /**
@@ -70,10 +70,10 @@ export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, an
     if (loadedObjectGroup.userData.headPainterActive) return;
     const selectGroupsObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithGroupsAndObjects as
         | undefined
-        | ((groupIds: Set<string>, meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
+        | ((groupIds: Set<string>, meshToIds: Map<Object3D, Set<number>>, opts?: unknown) => void);
     const selectObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithObjectsMap as
         | undefined
-        | ((meshToIds: Map<THREE.Object3D, Set<number>>, opts?: unknown) => void);
+        | ((meshToIds: Map<Object3D, Set<number>>, opts?: unknown) => void);
 
     if (newlyAddedSelectableMeshes.size > 0) {
         const groupsMap = (loadedObjectGroup.userData.groups as Map<string, GroupData>) ?? new Map<string, GroupData>();
@@ -97,7 +97,7 @@ export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, an
 
         for (const [mesh, instanceIds] of newlyAddedSelectableMeshes) {
             if (!mesh) continue;
-            const instancedMesh = mesh as THREE.InstancedMesh;
+            const instancedMesh = mesh as InstancedMesh;
 
             if (!instancedMesh.isInstancedMesh) continue;
 
@@ -161,7 +161,7 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
         const fileBuffer = await file.arrayBuffer();
         const fileReadElapsedMs = performance.now() - fileReadStartMs;
         if (myGen !== currentLoadGen) {
-            return new Map<THREE.Object3D, Set<number>>();
+            return new Map<Object3D, Set<number>>();
         }
 
         const parseStartMs = performance.now();
@@ -169,11 +169,11 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
         const raw = file.name.toLowerCase().endsWith('.pde')
             ? await window.ipcApi.decompressPdeProject(bytes)
             : gunzipSync(bytes);
-        if (myGen !== currentLoadGen) return new Map<THREE.Object3D, Set<number>>();
+        if (myGen !== currentLoadGen) return new Map<Object3D, Set<number>>();
         const { metadata, geometryBuffer } = await parsePbdeProject(raw, mainThreadAssetProvider);
         const parseElapsedMs = performance.now() - parseStartMs;
         if (myGen !== currentLoadGen) {
-            return new Map<THREE.Object3D, Set<number>>();
+            return new Map<Object3D, Set<number>>();
         }
 
         if (!isMerge) {
@@ -188,17 +188,17 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
 
                 if (!(geometryBuffer instanceof ArrayBuffer)) {
                     console.error('[Debug] geometryBuffer is not an ArrayBuffer. Aborting render pipeline.');
-                    return new Map<THREE.Object3D, Set<number>>();
+                    return new Map<Object3D, Set<number>>();
                 }
                 const sharedBuffer = geometryBuffer as ArrayBuffer;
                 if (!metadata || typeof metadata !== 'object') {
                     console.error('[Debug] Invalid metadata payload from parser.');
-                    return new Map<THREE.Object3D, Set<number>>();
+                    return new Map<Object3D, Set<number>>();
                 }
                 const metadataPayload = metadata as WorkerMetadata;
                 if (!Array.isArray(metadataPayload.geometries) || !Array.isArray(metadataPayload.otherItems)) {
                     console.error('[Debug] Invalid metadata payload from parser.');
-                    return new Map<THREE.Object3D, Set<number>>();
+                    return new Map<Object3D, Set<number>>();
                 }
                 const { geometries: geometryMetas, geometryBatches, otherItems, useUint32Indices, atlas, groups, sceneOrder, projectDetails } = metadataPayload;
                 if (!isMerge) loadedObjectGroup.userData.projectDetails = projectDetails;
@@ -212,7 +212,7 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                     const incomingObjects = [...geometryMetas, ...(activeGeometryBatches ?? []).flatMap(batch => batch.instances), ...otherItems];
                     for (const item of incomingObjects) {
                         if (!item.uuid) continue;
-                        if (existingIds.has(item.uuid) && !objectIdRemap.has(item.uuid)) objectIdRemap.set(item.uuid, THREE.MathUtils.generateUUID());
+                        if (existingIds.has(item.uuid) && !objectIdRemap.has(item.uuid)) objectIdRemap.set(item.uuid, MathUtils.generateUUID());
                     }
                     for (const item of incomingObjects) item.uuid = objectIdRemap.get(item.uuid) ?? item.uuid;
                     for (const group of groups?.values() ?? []) {
@@ -248,7 +248,7 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                     if (isMerge) {
                         for (const [id] of incomingGroups) {
                             if (effectiveGroups.has(id) || loadedObjectGroup.userData.objectUuidToInstance?.has(id)) {
-                                groupIdRemap.set(id, THREE.MathUtils.generateUUID());
+                                groupIdRemap.set(id, MathUtils.generateUUID());
                             }
                         }
                     }
@@ -273,28 +273,28 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                         // Restore THREE objects for group transforms
                         if (group.quaternion) {
                             const q = group.quaternion;
-                            if (!(q instanceof THREE.Quaternion)) {
+                            if (!(q instanceof Quaternion)) {
                                 const x = q._x !== undefined ? q._x : q.x;
                                 const y = q._y !== undefined ? q._y : q.y;
                                 const z = q._z !== undefined ? q._z : q.z;
                                 const w = q._w !== undefined ? q._w : q.w;
-                                group.quaternion = new THREE.Quaternion(x, y, z, w);
+                                group.quaternion = new Quaternion(x, y, z, w);
                             }
                         }
                         if (group.scale) {
                             const s = group.scale;
-                            if (!(s instanceof THREE.Vector3)) {
-                                group.scale = new THREE.Vector3(s.x, s.y, s.z);
+                            if (!(s instanceof Vector3)) {
+                                group.scale = new Vector3(s.x, s.y, s.z);
                             }
                         }
                         if (group.position) {
                             const p = group.position;
-                            if (!(p instanceof THREE.Vector3)) {
-                                group.position = new THREE.Vector3(p.x, p.y, p.z);
+                            if (!(p instanceof Vector3)) {
+                                group.position = new Vector3(p.x, p.y, p.z);
                             }
                         }
-                        if (group.pivot && !(group.pivot instanceof THREE.Vector3)) {
-                            group.pivot = new THREE.Vector3(group.pivot[0], group.pivot[1], group.pivot[2]);
+                        if (group.pivot && !(group.pivot instanceof Vector3)) {
+                            group.pivot = new Vector3(group.pivot[0], group.pivot[1], group.pivot[2]);
                         }
 
                         effectiveGroups.set(newId, group);
@@ -303,12 +303,12 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
 
                 const groupObjectChildIndices = new WeakMap<GroupData, Map<string, number>>();
 
-                function registerObject(mesh: THREE.Object3D, instanceId: number, uuid: string, groupId: string) {
+                function registerObject(mesh: Object3D, instanceId: number, uuid: string, groupId: string) {
                     const key = `${mesh.uuid}_${instanceId}`;
                     // Always store reverse lookup: instanceKey → custom uuid
                     (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string>).set(key, uuid);
                     // Forward reverse lookup: custom uuid → { mesh, instanceId }
-                    (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.Object3D; instanceId: number }>)
+                    (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: Object3D; instanceId: number }>)
                         .set(uuid, { mesh, instanceId });
 
                     if (!groupId || !incomingGroups) return;
@@ -364,12 +364,12 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                     loadedObjectGroup.userData.objectBrightness = new Map<string, unknown>();
                     loadedObjectGroup.userData.objectTextures = new Map<string, string>();
                     loadedObjectGroup.userData.instanceKeyToObjectUuid = new Map<string, string>();
-                    loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: THREE.Object3D; instanceId: number }>();
+                    loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: Object3D; instanceId: number }>();
                 } else {
                     if (!loadedObjectGroup.userData.instanceKeyToObjectUuid)
                         loadedObjectGroup.userData.instanceKeyToObjectUuid = new Map<string, string>();
                     if (!loadedObjectGroup.userData.objectUuidToInstance)
-                        loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: THREE.Object3D; instanceId: number }>();
+                        loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: Object3D; instanceId: number }>();
                 }
                 const objectNamesMap: Map<string, string> =
                     (loadedObjectGroup.userData.objectNames as Map<string, string>) ?? new Map<string, string>();
@@ -466,10 +466,10 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                     type: entry.type, id: (entry.type === 'group' ? groupIdRemap : objectIdRemap).get(entry.id) ?? entry.id
                 })));
 
-                const instancedGeometries = new Map<string, THREE.BufferGeometry>();
-                const mergedGeometryCache = new Map<string, THREE.BufferGeometry>();
-                const instancedMaterials = new Map<string, THREE.Material>();
-                const materialPromises = new Map<string, Promise<THREE.Material>>();
+                const instancedGeometries = new Map<string, BufferGeometry>();
+                const mergedGeometryCache = new Map<string, BufferGeometry>();
+                const instancedMaterials = new Map<string, Material>();
+                const materialPromises = new Map<string, Promise<Material>>();
                 const materialUpdates: MaterialUpdate[] = [];
                 let createdInstancedMeshCount = 0;
                 
@@ -477,14 +477,14 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                 const blocks = new Map<string, GeometryMeta[]>();
 
                 ensureSharedPlaceholder();
-                const placeholderMaterial = sharedPlaceholderMaterial as THREE.Material;
+                const placeholderMaterial = sharedPlaceholderMaterial as Material;
 
                 const ensureInstancedMaterialPromise = (
                     part: GeometryMeta,
                     instancedUvTransformCount: number,
                     instancedUvTransformIndex: number,
                     instancedTintIndex = -1
-                ): Promise<THREE.Material> => {
+                ): Promise<Material> => {
                     const matKey = getMaterialKey(part, instancedUvTransformCount, instancedUvTransformIndex, instancedTintIndex);
                     const cachedMaterial = instancedMaterials.get(matKey);
                     if (cachedMaterial) return Promise.resolve(cachedMaterial);
@@ -507,7 +507,7 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                     let geometry = instancedGeometries.get(geomKey);
 
                     if (!geometry) {
-                        geometry = new THREE.BufferGeometry();
+                        geometry = new BufferGeometry();
                         const positions = new Float32Array(sharedBuffer, meta.posByteOffset, meta.posLen);
                         const normals = new Float32Array(sharedBuffer, meta.normByteOffset, meta.normLen);
                         const uvs = new Float32Array(sharedBuffer, meta.uvByteOffset, meta.uvLen);
@@ -515,10 +515,10 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                             ? new Uint32Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen)
                             : new Uint16Array(sharedBuffer, meta.indicesByteOffset, meta.indicesLen);
 
-                        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                        geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-                        geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-                        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+                        geometry.setAttribute('position', new BufferAttribute(positions, 3));
+                        geometry.setAttribute('normal', new BufferAttribute(normals, 3));
+                        geometry.setAttribute('uv', new BufferAttribute(uvs, 2));
+                        geometry.setIndex(new BufferAttribute(indices, 1));
                         instancedGeometries.set(geomKey, geometry);
                     }
                 };
@@ -571,10 +571,10 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                 }
                 const signatureElapsedMs = performance.now() - signatureStartMs;
 
-                const reusableMeshes = new Map<string, THREE.InstancedMesh[]>();
+                const reusableMeshes = new Map<string, InstancedMesh[]>();
                 if (isMerge) {
                     for (const child of loadedObjectGroup.children) {
-                        const mesh = child as THREE.InstancedMesh;
+                        const mesh = child as InstancedMesh;
                         const signature = mesh.isInstancedMesh ? mesh.userData.pbdeSignature as string | undefined : undefined;
                         if (!signature) continue;
                         const meshes = reusableMeshes.get(signature) ?? [];
@@ -584,7 +584,7 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                 }
 
                 const materialAwaitStartMs = performance.now();
-                const materialPreloadPromises = new Set<Promise<THREE.Material>>();
+                const materialPreloadPromises = new Set<Promise<Material>>();
                 for (const [signature, group] of signatureGroups) {
                     group.uvPlan = planUvTransforms(group.parts, group.instances);
                     group.tintParts = getTintParts(group.parts, group.instances);
@@ -616,7 +616,7 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                         const usesAtlasUvTransform = instancedUvTransformCount > 0;
                         const hasReusableSignature = group.isAtlasBatch || !usesAtlasUvTransform && group.tintParts!.length === 0;
                         const canReuseExisting = isMerge && hasReusableSignature;
-                        const instanceMatrix = new THREE.Matrix4();
+                        const instanceMatrix = new Matrix4();
                         let transformStart = 0;
 
                         if (canReuseExisting) {
@@ -671,13 +671,13 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                         if (transformStart === instances.length) continue;
 
                         // Merge Geometries
-                        const materials: THREE.Material[] = [];
-                        const pendingMaterialSlots: Array<{ index: number; promise: Promise<THREE.Material> }> = [];
+                        const materials: Material[] = [];
+                        const pendingMaterialSlots: Array<{ index: number; promise: Promise<Material> }> = [];
                         let mergedGeo = mergedGeometryCache.get(group.geometryKey);
 
                         if (!mergedGeo) {
-                            const geometriesToMerge: THREE.BufferGeometry[] = [];
-                            const localMatrix = new THREE.Matrix4();
+                            const geometriesToMerge: BufferGeometry[] = [];
+                            const localMatrix = new Matrix4();
 
                             for (const part of representativeParts) {
                                 const geomKey = getGeometryBufferKey(part);
@@ -746,20 +746,20 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                                         const attributeName = instancedUvTransformCount === 1
                                             ? 'instancedUvTransform'
                                             : `instancedUvTransform${slot}`;
-                                        meshGeometry.setAttribute(attributeName, new THREE.InstancedBufferAttribute(uvTransforms, 4));
+                                        meshGeometry.setAttribute(attributeName, new InstancedBufferAttribute(uvTransforms, 4));
                                     }
                                 }
                                 setEntityStateAttributes(meshGeometry, chunkCapacity);
                                 for (const partIndex of group.tintParts!) {
                                     const values = new Float32Array(chunkCapacity * 3).fill(1);
                                     for (let i = 0; i < chunkCount; i++) {
-                                        new THREE.Color(instances[chunkStart + i].partTints?.[partIndex] ?? representativeParts[partIndex].tintHex ?? 0xffffff).toArray(values, i * 3);
+                                        new Color(instances[chunkStart + i].partTints?.[partIndex] ?? representativeParts[partIndex].tintHex ?? 0xffffff).toArray(values, i * 3);
                                     }
-                                    meshGeometry.setAttribute(`instancedTint${partIndex}`, new THREE.InstancedBufferAttribute(values, 3));
+                                    meshGeometry.setAttribute(`instancedTint${partIndex}`, new InstancedBufferAttribute(values, 3));
                                 }
                                 const meshMaterial = setAtlasPartMaterial(meshGeometry, representativeParts, group.uvPlan!, group.tintParts!, materials, chunkCount, atlasMaterial);
-                                const instancedMesh = new THREE.InstancedMesh(meshGeometry, meshMaterial, chunkCapacity);
-                                instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(chunkCapacity, 16);
+                                const instancedMesh = new InstancedMesh(meshGeometry, meshMaterial, chunkCapacity);
+                                instancedMesh.instanceMatrix = new StorageInstancedBufferAttribute(chunkCapacity, 16);
                                 instancedMesh.count = chunkCount;
                                 
                                 instancedMesh.userData.displayType = getInstanceDisplayType(instances[chunkStart], representativeParts[0]);
@@ -889,12 +889,12 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                                 const headCapacity = getAppendableInstanceCapacity(totalInstances);
                                 const matrices = new Float32Array(headCapacity * 16);
                                 const uvData = new Float32Array(headCapacity * 11);
-                                const interleavedUvData = new THREE.InstancedInterleavedBuffer(uvData, 11);
-                                const uvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 0);
-                                const uvFlips = new THREE.InterleavedBufferAttribute(interleavedUvData, 2, 2);
-                                const knifeUvScales = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 4);
-                                const knifeUvOffsets = new THREE.InterleavedBufferAttribute(interleavedUvData, 3, 7);
-                                const headLayerVisible = new THREE.InterleavedBufferAttribute(interleavedUvData, 1, 10);
+                                const interleavedUvData = new InstancedInterleavedBuffer(uvData, 11);
+                                const uvOffsets = new InterleavedBufferAttribute(interleavedUvData, 2, 0);
+                                const uvFlips = new InterleavedBufferAttribute(interleavedUvData, 2, 2);
+                                const knifeUvScales = new InterleavedBufferAttribute(interleavedUvData, 3, 4);
+                                const knifeUvOffsets = new InterleavedBufferAttribute(interleavedUvData, 3, 7);
+                                const headLayerVisible = new InterleavedBufferAttribute(interleavedUvData, 1, 10);
                                 const hasHatArray = new Array(totalInstances).fill(false);
 
                                 for (let index = 0; index < headCapacity; index++) {
@@ -903,7 +903,7 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                                 }
 
                                 entries.forEach(({ item, skin }, index) => {
-                                    const matrix = new THREE.Matrix4().fromArray(item.transform).transpose();
+                                    const matrix = new Matrix4().fromArray(item.transform).transpose();
                                     matrix.multiply(getPlayerHeadRenderMatrix(item.displayType));
                                     matrix.toArray(matrices, index * 16);
                                     const x = (skin.slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
@@ -919,8 +919,8 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                                 geometry.setAttribute('instancedKnifeUvOffset', knifeUvOffsets);
                                 setEntityStateAttributes(geometry, headCapacity);
 
-                                const instancedMesh = new THREE.InstancedMesh(geometry, layer === undefined ? atlas.material : getImageHeadAtlasMaterial(atlas), headCapacity);
-                                instancedMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
+                                const instancedMesh = new InstancedMesh(geometry, layer === undefined ? atlas.material : getImageHeadAtlasMaterial(atlas), headCapacity);
+                                instancedMesh.instanceMatrix = new StorageInstancedBufferAttribute(matrices, 16);
                                 instancedMesh.count = totalInstances;
                                 instancedMesh.userData.displayType = 'item_display';
                                 instancedMesh.userData.playerHeadBatch = true;
@@ -953,7 +953,7 @@ async function renderPbdeProject(file: File, isMerge: boolean, overrideGen?: num
                 await addTextDisplayItems(textItems, registerObject, newlyAddedSelectableMeshes, myGen);
                 if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
                 restoreEditorState(loadedObjectGroup, metadataPayload.editorState, isMerge, objectIdRemap, groupIdRemap);
-                for (const [uuid, ref] of loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }>) {
+                for (const [uuid, ref] of loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }>) {
                     setInstanceSkyBrightness(ref.mesh, ref.instanceId, objectBrightness.get(uuid) as Brightness | undefined);
                 }
                 const playerHeadElapsedMs = performance.now() - playerHeadStartMs;

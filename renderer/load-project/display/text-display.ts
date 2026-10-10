@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import { Box3, BufferGeometry, CanvasTexture, Float32BufferAttribute, FrontSide, InstancedBufferAttribute, InstancedMesh, MathUtils, MeshBasicNodeMaterial, NearestFilter, Sphere, SRGBColorSpace, Texture, Vector3 } from 'three/webgpu';
 import { attribute, mix, positionGeometry, positionLocal, texture, uv, vec2, vec3 } from 'three/tsl';
 import { strFromU8 } from 'fflate';
 import { getAssetBytes } from '../../asset-manager';
@@ -352,7 +352,7 @@ function createUnihexFont(text: string, source: UnihexFontSource): Map<string, B
 
 function clampAlpha(value: unknown, fallback: number): number {
     return typeof value === 'number' && Number.isFinite(value)
-        ? THREE.MathUtils.clamp(value, 0, 1)
+        ? MathUtils.clamp(value, 0, 1)
         : fallback;
 }
 
@@ -574,7 +574,7 @@ if (import.meta.env.DEV) {
     console.assert(alphaCheck[3] === 128 && alphaCheck[7] === 255, 'Page alpha must not erase adjacent text.');
 }
 
-class TextDisplayMaterial extends THREE.MeshBasicNodeMaterial {
+class TextDisplayMaterial extends MeshBasicNodeMaterial {
     declare positionNode: ReturnType<typeof entityVisiblePosition>;
     declare colorNode: ReturnType<typeof texture>;
 
@@ -598,13 +598,13 @@ class TextDisplayMaterial extends THREE.MeshBasicNodeMaterial {
     }
 }
 
-function createTextDisplayMaterial(textTexture: THREE.Texture, opaqueBackground: boolean): THREE.MeshBasicNodeMaterial {
+function createTextDisplayMaterial(textTexture: Texture, opaqueBackground: boolean): MeshBasicNodeMaterial {
     const material = new TextDisplayMaterial({
         map: textTexture,
         transparent: true,
         depthWrite: opaqueBackground,
         alphaTest: 0.1,
-        side: THREE.FrontSide,
+        side: FrontSide,
         toneMapped: false,
         fog: false
     });
@@ -622,7 +622,7 @@ function createTextDisplayMaterial(textTexture: THREE.Texture, opaqueBackground:
     return material;
 }
 
-export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THREE.InstancedMesh> {
+export async function createTextDisplayMesh(item: TextDisplayItem): Promise<InstancedMesh> {
     const options = item.options ?? {};
     const { text, pageEnds, spriteReferences, playerReferences } = prepareTextContent(item.name ?? '', options);
     const spriteCharacterIndices = new Set([...spriteReferences, ...playerReferences].map(sprite => sprite.characterIndex));
@@ -807,10 +807,10 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     context.fillRect(1 / renderScale, 0, 1 / renderScale, 1 / renderScale);
     context.globalCompositeOperation = 'source-over';
 
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace;
+    texture.magFilter = NearestFilter;
+    texture.minFilter = NearestFilter;
     texture.generateMipmaps = false;
 
     const positions: number[] = [];
@@ -830,35 +830,35 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     addQuad();
     addQuad();
 
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geometry.setAttribute(textDisplayBackgroundAttributeName, new THREE.Float32BufferAttribute([
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
+    geometry.setAttribute(textDisplayBackgroundAttributeName, new Float32BufferAttribute([
         1, 1, 1, 1,
         0, 0, 0, 0
     ], 1));
-    geometry.setAttribute(textDisplayLayoutAttributeName, new THREE.InstancedBufferAttribute(new Float32Array([
+    geometry.setAttribute(textDisplayLayoutAttributeName, new InstancedBufferAttribute(new Float32Array([
         left,
         right,
         logicalHeight * textPixelSize,
         logicalWidth * textPixelSize
     ]), 4));
-    geometry.setAttribute(textDisplayUvBoundsAttributeName, new THREE.InstancedBufferAttribute(new Float32Array([
+    geometry.setAttribute(textDisplayUvBoundsAttributeName, new InstancedBufferAttribute(new Float32Array([
         0,
         1,
         0,
         1 - topGlyphOverflow / renderHeight
     ]), 4));
-    geometry.setAttribute(textDisplayBackgroundUvAttributeName, new THREE.InstancedBufferAttribute(new Float32Array([
+    geometry.setAttribute(textDisplayBackgroundUvAttributeName, new InstancedBufferAttribute(new Float32Array([
         backgroundSwatchU,
         swatchV
     ]), 2));
     geometry.setIndex(indices);
-    geometry.boundingBox = new THREE.Box3(
-        new THREE.Vector3((0.5 - logicalWidth / 2) * textPixelSize, 0, textBackgroundOffset),
-        new THREE.Vector3((0.5 + logicalWidth / 2) * textPixelSize, logicalHeight * textPixelSize, 0)
+    geometry.boundingBox = new Box3(
+        new Vector3((0.5 - logicalWidth / 2) * textPixelSize, 0, textBackgroundOffset),
+        new Vector3((0.5 + logicalWidth / 2) * textPixelSize, logicalHeight * textPixelSize, 0)
     );
-    geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
+    geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new Sphere());
     if (import.meta.env.DEV) {
         console.assert(geometry.getAttribute(textDisplayBackgroundAttributeName).getX(0) === 1 && geometry.getAttribute(textDisplayBackgroundAttributeName).getX(4) === 0, 'Text display layers must stay separated.');
     }
@@ -868,14 +868,14 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<THRE
     material.visible = text.length > 0;
 
     // ponytail: live edits stay standalone; static project text is packed by createTextDisplayTemplates.
-    return new THREE.InstancedMesh(geometry, material, 1);
+    return new InstancedMesh(geometry, material, 1);
 }
 
 type TextDisplayAtlasPage = {
     canvas: HTMLCanvasElement;
     context: CanvasRenderingContext2D;
-    texture: THREE.CanvasTexture;
-    materials: Map<string, THREE.MeshBasicNodeMaterial>;
+    texture: CanvasTexture;
+    materials: Map<string, MeshBasicNodeMaterial>;
     nextX: number;
     nextY: number;
     rowHeight: number;
@@ -902,10 +902,10 @@ function createTextDisplayAtlasPage(): TextDisplayAtlasPage {
     canvas.width = canvas.height = textDisplayAtlasSize;
     const context = canvas.getContext('2d', { willReadFrequently: true })!;
     context.imageSmoothingEnabled = false;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace;
+    texture.magFilter = NearestFilter;
+    texture.minFilter = NearestFilter;
     texture.generateMipmaps = false;
     const page = { canvas, context, texture, materials: new Map(), nextX: 0, nextY: 0, rowHeight: 0 };
     textDisplayAtlasPages.push(page);
@@ -957,7 +957,7 @@ function placeTextDisplayAtlasRegion(key: string, source: HTMLCanvasElement, rep
     return region;
 }
 
-function getTextDisplayAtlasMaterial(region: TextDisplayAtlasRegion, source: THREE.MeshBasicNodeMaterial): THREE.MeshBasicNodeMaterial {
+function getTextDisplayAtlasMaterial(region: TextDisplayAtlasRegion, source: MeshBasicNodeMaterial): MeshBasicNodeMaterial {
     const materialKey = `${source.depthWrite}:${source.visible}`;
     let material = region.page.materials.get(materialKey);
     if (!material) {
@@ -969,14 +969,14 @@ function getTextDisplayAtlasMaterial(region: TextDisplayAtlasRegion, source: THR
     return material;
 }
 
-export async function createTextDisplayTemplates(items: TextDisplayItem[]): Promise<Map<string, THREE.InstancedMesh>> {
+export async function createTextDisplayTemplates(items: TextDisplayItem[]): Promise<Map<string, InstancedMesh>> {
     const uniqueItems = new Map(items.map(item => [getTextDisplayTemplateKey(item), item]));
     const templates = new Map(await Promise.all(Array.from(uniqueItems, async ([key, item]) => [
         key,
         await createTextDisplayMesh(item)
     ] as const)));
     for (const [key, mesh] of templates) {
-        const material = mesh.material as THREE.MeshBasicNodeMaterial;
+        const material = mesh.material as MeshBasicNodeMaterial;
         const canvas = material.map?.image as HTMLCanvasElement | undefined;
         if (!canvas) continue;
         const atlasKey = uniqueItems.get(key)?.atlasKey;

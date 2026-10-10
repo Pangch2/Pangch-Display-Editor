@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import { BoxGeometry, BufferAttribute, BufferGeometry, DoubleSide, InstancedBufferAttribute, InstancedInterleavedBuffer, InstancedMesh, InterleavedBufferAttribute, Material, Matrix4, NearestFilter, SRGBColorSpace, StorageInstancedBufferAttribute, Texture } from 'three/webgpu';
 import { type HeadUvEntry, resetHeadAtlasUvs, createHeadAtlasUvTexture, captureHeadAtlasUvs, setHeadAtlasUvRect, readHeadAtlasRegion, copyHeadAtlasRegion, getHeadAtlasUvRect } from '../../ui/head-atlas-uv';
 import { getPlayerHeadDisplayMatrix } from '../scene/scene-parser';
 import { type HeadGeometrySet, type TypedArrayConstructor } from '../pbde/pbde-types';
@@ -24,8 +24,8 @@ const playerHeadLayerRegions = [[48, 8, 8, 8], [32, 8, 8, 8], [40, 0, 8, 8], [48
 export type PlayerHeadSkin = { slot: number; hasHat: boolean };
 export type PlayerHeadAtlas = {
     context: CanvasRenderingContext2D;
-    texture: THREE.Texture;
-    material: THREE.Material;
+    texture: Texture;
+    material: Material;
     nextSlot: number;
     freeSlots: number[];
     imageHeadNextTile?: number;
@@ -44,7 +44,7 @@ type PlayerHeadAtlasRegionSnapshot = {
     uvs?: HeadUvEntry[];
 };
 type PlayerHeadAtlasSnapshot = {
-    material: THREE.Material;
+    material: Material;
     targeted?: boolean;
     nextSlot?: number;
     freeSlots?: number[];
@@ -58,22 +58,22 @@ type PlayerHeadAtlasSnapshot = {
     instances?: Array<{ uuid: string; offset: [number, number]; flip?: [number, number]; texture?: string; hasHat?: boolean; tile?: [number, number]; knifeScale?: [number, number, number]; knifeOffset?: [number, number, number] }>;
     regions: PlayerHeadAtlasRegionSnapshot[];
 };
-const playerHeadAtlases = new WeakMap<THREE.Material, PlayerHeadAtlas>();
-let imageHeadBlackMaterial: THREE.Material | null = null;
+const playerHeadAtlases = new WeakMap<Material, PlayerHeadAtlas>();
+let imageHeadBlackMaterial: Material | null = null;
 export const deferredPlayerHeadTexture = 'pde:deferred-player-head-texture';
 
-export function getPlayerHeadRenderMatrix(displayType?: string): THREE.Matrix4 {
-    return (getPlayerHeadDisplayMatrix(displayType) ?? new THREE.Matrix4())
-        .multiply(new THREE.Matrix4().makeScale(0.5, 0.5, 0.5));
+export function getPlayerHeadRenderMatrix(displayType?: string): Matrix4 {
+    return (getPlayerHeadDisplayMatrix(displayType) ?? new Matrix4())
+        .multiply(new Matrix4().makeScale(0.5, 0.5, 0.5));
 }
 
 
 export type PlayerHeadPaintSurface = {
-    mesh: THREE.InstancedMesh;
+    mesh: InstancedMesh;
     instanceId: number;
     objectUuid: string;
     context: CanvasRenderingContext2D;
-    texture: THREE.Texture;
+    texture: Texture;
     slot: number;
     x: number;
     y: number;
@@ -85,10 +85,10 @@ export let headGeometries: HeadGeometrySet | null = null;
 
 
 // 동일한 속성 구성을 가진 인덱스 지오메트리를 하나로 병합한다.
-export function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
+export function mergeIndexedGeometries(geometries: BufferGeometry[]): BufferGeometry | null {
     if (!geometries || geometries.length === 0) return null;
     const first = geometries[0];
-    const merged = new THREE.BufferGeometry();
+    const merged = new BufferGeometry();
 
     const attrNames = Object.keys(first.attributes);
 
@@ -96,11 +96,11 @@ export function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THRE
     const itemSizes: Record<string, number> = {};
     const arrayTypes: Record<string, TypedArrayConstructor> = {};
     for (const g of geometries) {
-        const pos = g.getAttribute('position') as THREE.BufferAttribute;
+        const pos = g.getAttribute('position') as BufferAttribute;
         const count = pos.count;
         totalVertices += count;
         for (const name of attrNames) {
-            const attr = g.getAttribute(name) as THREE.BufferAttribute;
+            const attr = g.getAttribute(name) as BufferAttribute;
             itemSizes[name] = attr.itemSize;
             arrayTypes[name] = attr.array.constructor as TypedArrayConstructor;
         }
@@ -113,11 +113,11 @@ export function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THRE
         const mergedArray = new ArrayType(totalLen);
         let offset = 0;
         for (const g of geometries) {
-            const attr = g.getAttribute(name) as THREE.BufferAttribute;
+            const attr = g.getAttribute(name) as BufferAttribute;
             mergedArray.set(attr.array, offset);
             offset += attr.array.length;
         }
-        merged.setAttribute(name, new THREE.BufferAttribute(mergedArray, itemSize));
+        merged.setAttribute(name, new BufferAttribute(mergedArray, itemSize));
     }
 
     let vertexOffset = 0;
@@ -134,7 +134,7 @@ export function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THRE
         const index = g.getIndex();
         if (!index) continue;
         const idxArray = index.array;
-        const pos = g.getAttribute('position') as THREE.BufferAttribute;
+        const pos = g.getAttribute('position') as BufferAttribute;
         const vertCount = pos.count;
         for (let i = 0; i < idxArray.length; i++) {
             mergedIndex[idxOffset + i] = idxArray[i] + vertexOffset;
@@ -142,7 +142,7 @@ export function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THRE
         idxOffset += idxArray.length;
         vertexOffset += vertCount;
     }
-    merged.setIndex(new THREE.BufferAttribute(mergedIndex, 1));
+    merged.setIndex(new BufferAttribute(mergedIndex, 1));
 
     merged.computeBoundingSphere();
     return merged;
@@ -156,12 +156,12 @@ export function mergeIndexedGeometries(geometries: THREE.BufferGeometry[]): THRE
 export function createHeadGeometries() {
     if (headGeometries) return; // 이미 생성되었다면 실행하지 않음
 
-    const createGeometry = (isLayer: boolean): THREE.BoxGeometry => {
+    const createGeometry = (isLayer: boolean): BoxGeometry => {
         const scale = isLayer ? PLAYER_HEAD_LAYER_SCALE : 1.0;
-        const geometry = new THREE.BoxGeometry(scale, scale, scale);
+        const geometry = new BoxGeometry(scale, scale, scale);
         geometry.translate(0, -0.5, 0);
-        geometry.setAttribute('headLayer', new THREE.BufferAttribute(
-            new Float32Array((geometry.getAttribute('position') as THREE.BufferAttribute).count).fill(isLayer ? 1 : 0), 1
+        geometry.setAttribute('headLayer', new BufferAttribute(
+            new Float32Array((geometry.getAttribute('position') as BufferAttribute).count).fill(isLayer ? 1 : 0), 1
         ));
         
 
@@ -188,7 +188,7 @@ export function createHeadGeometries() {
 
     const uvs = (isLayer ? layerUVs : faceUVs) as typeof faceUVs;
         const order: Array<keyof typeof faceUVs> = ['left', 'right', 'top', 'bottom', 'front', 'back'];
-        const uvAttr = geometry.getAttribute('uv') as THREE.BufferAttribute;
+        const uvAttr = geometry.getAttribute('uv') as BufferAttribute;
 
         for (let i = 0; i < order.length; i++) {
             const faceName = order[i];
@@ -245,11 +245,11 @@ export function createHeadGeometries() {
     }
 }
 
-export function createPlayerHeadAtlasGeometry(includeLayer = true): THREE.BufferGeometry {
+export function createPlayerHeadAtlasGeometry(includeLayer = true): BufferGeometry {
     createHeadGeometries();
     if (!headGeometries?.merged) throw new Error('Head geometries not available for instancing.');
     const geometry = (includeLayer ? headGeometries.merged : headGeometries.base).clone();
-    const uvs = geometry.getAttribute('uv') as THREE.BufferAttribute;
+    const uvs = geometry.getAttribute('uv') as BufferAttribute;
     const uvMirrorCenters = new Float32Array(uvs.count * 2);
     const faceOrder = ['left', 'right', 'top', 'bottom', 'front', 'back'];
 
@@ -277,13 +277,13 @@ export function createPlayerHeadAtlasGeometry(includeLayer = true): THREE.Buffer
             uvs.setXY(offset + 2, u0, v0); uvs.setXY(offset + 3, u1, v0);
         }
     });
-    geometry.setAttribute('uvMirrorCenter', new THREE.BufferAttribute(uvMirrorCenters, 2));
+    geometry.setAttribute('uvMirrorCenter', new BufferAttribute(uvMirrorCenters, 2));
     return geometry;
 }
 
-export function createImageHeadAtlasGeometry(layer: 0 | 1): THREE.BufferGeometry {
+export function createImageHeadAtlasGeometry(layer: 0 | 1): BufferGeometry {
     const geometry = createPlayerHeadAtlasGeometry(layer === 1);
-    const blackUvs = geometry.getAttribute('uv') as THREE.BufferAttribute;
+    const blackUvs = geometry.getAttribute('uv') as BufferAttribute;
     const frontFace = layer ? 10 : 4;
     for (let vertex = 0; vertex < blackUvs.count; vertex++) {
         if (Math.floor(vertex / 4) !== frontFace) blackUvs.setXY(vertex, 1 - 4 / PLAYER_HEAD_ATLAS_SIZE, 1 - 4 / PLAYER_HEAD_ATLAS_SIZE);
@@ -300,7 +300,7 @@ export function createImageHeadAtlasGeometry(layer: 0 | 1): THREE.BufferGeometry
     return geometry;
 }
 
-function getImageHeadBlackMaterial(texture: THREE.Texture): THREE.Material {
+function getImageHeadBlackMaterial(texture: Texture): Material {
     if (imageHeadBlackMaterial) return imageHeadBlackMaterial;
     imageHeadBlackMaterial = createEntityMaterial(texture, 0xffffff, false, false, 1, 0, true, true).material;
     return imageHeadBlackMaterial;
@@ -383,7 +383,7 @@ export function drawPlayerHeadSlot(context: CanvasRenderingContext2D, image: HTM
 }
 
 export function getProjectPlayerHeadAtlases(): PlayerHeadAtlas[] {
-    const materials = (loadedObjectGroup.userData.playerHeadAtlasMaterials as THREE.Material[] | undefined)
+    const materials = (loadedObjectGroup.userData.playerHeadAtlasMaterials as Material[] | undefined)
         ?? (loadedObjectGroup.userData.playerHeadAtlasMaterials = []);
     return materials.map(material => playerHeadAtlases.get(material)).filter(atlas => atlas !== undefined);
 }
@@ -454,12 +454,12 @@ export function createPlayerHeadAtlas(notify = true): PlayerHeadAtlas {
     if (!context) throw new Error('플레이어 헤드 아틀라스 캔버스를 만들 수 없습니다.');
     context.imageSmoothingEnabled = false;
 
-    const texture = new THREE.Texture(canvas);
+    const texture = new Texture(canvas);
     texture.needsUpdate = true;
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
+    texture.magFilter = NearestFilter;
+    texture.minFilter = NearestFilter;
     texture.generateMipmaps = false;
-    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.colorSpace = SRGBColorSpace;
 
     const headUvTexture = createHeadAtlasUvTexture(canvas);
     texture.addEventListener('dispose', () => headUvTexture.dispose());
@@ -467,11 +467,11 @@ export function createPlayerHeadAtlas(notify = true): PlayerHeadAtlas {
     material.toneMapped = false;
     material.fog = false;
     material.flatShading = true;
-    material.side = THREE.DoubleSide;
+    material.side = DoubleSide;
 
     const atlas: PlayerHeadAtlas = { context, texture, material, nextSlot: 0, freeSlots: [], skins: new Map(), slotUrls: [] };
     playerHeadAtlases.set(material, atlas);
-    (loadedObjectGroup.userData.playerHeadAtlasMaterials as THREE.Material[]).push(material);
+    (loadedObjectGroup.userData.playerHeadAtlasMaterials as Material[]).push(material);
     loadedObjectGroup.userData.cleanupUnusedPlayerHeadAtlasSlots = cleanupUnusedPlayerHeadAtlasSlots;
     loadedObjectGroup.userData.capturePlayerHeadAtlasState = capturePlayerHeadAtlasState;
     loadedObjectGroup.userData.restorePlayerHeadAtlasState = restorePlayerHeadAtlasState;
@@ -537,13 +537,13 @@ export function createImageHeadAtlasMeshes(
     columns: number,
     rows: number,
     layer: 0 | 1
-): THREE.InstancedMesh[] {
-    const meshes: THREE.InstancedMesh[] = [];
+): InstancedMesh[] {
+    const meshes: InstancedMesh[] = [];
     const total = columns * rows;
     const spacing = layer ? 0.5 * PLAYER_HEAD_LAYER_SCALE : 0.5;
     const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
     const tilesPerAtlas = tilesPerRow * tilesPerRow;
-    const matrix = new THREE.Matrix4();
+    const matrix = new Matrix4();
     const atlases = getProjectPlayerHeadAtlases();
     const sourceContext = source.getContext('2d', { willReadFrequently: true });
     if (!sourceContext) throw new Error('Image head source canvas is unavailable.');
@@ -642,14 +642,14 @@ export function createImageHeadAtlasMeshes(
             ] as [number, number]);
             const geometry = createImageHeadAtlasGeometry(layer);
             const uvData = new Float32Array(count * 11);
-            const interleaved = new THREE.InstancedInterleavedBuffer(uvData, 11);
-            const uvOffsets = new THREE.InterleavedBufferAttribute(interleaved, 2, 0);
+            const interleaved = new InstancedInterleavedBuffer(uvData, 11);
+            const uvOffsets = new InterleavedBufferAttribute(interleaved, 2, 0);
             geometry.setAttribute('instancedUvOffset', uvOffsets);
-            geometry.setAttribute('instancedUvFlip', new THREE.InterleavedBufferAttribute(interleaved, 2, 2));
-            const knifeUvScales = new THREE.InterleavedBufferAttribute(interleaved, 3, 4);
+            geometry.setAttribute('instancedUvFlip', new InterleavedBufferAttribute(interleaved, 2, 2));
+            const knifeUvScales = new InterleavedBufferAttribute(interleaved, 3, 4);
             geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
-            geometry.setAttribute('instancedKnifeUvOffset', new THREE.InterleavedBufferAttribute(interleaved, 3, 7));
-            const layerVisible = new THREE.InterleavedBufferAttribute(interleaved, 1, 10);
+            geometry.setAttribute('instancedKnifeUvOffset', new InterleavedBufferAttribute(interleaved, 3, 7));
+            const layerVisible = new InterleavedBufferAttribute(interleaved, 1, 10);
             geometry.setAttribute('headLayerVisible', layerVisible);
             setEntityStateAttributes(geometry, count);
 
@@ -671,8 +671,8 @@ export function createImageHeadAtlasMeshes(
             }
             atlas.texture.needsUpdate = true;
 
-            const mesh = new THREE.InstancedMesh(geometry, [atlas.material, blackMaterial], count);
-            mesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(matrices, 16);
+            const mesh = new InstancedMesh(geometry, [atlas.material, blackMaterial], count);
+            mesh.instanceMatrix = new StorageInstancedBufferAttribute(matrices, 16);
             mesh.name = 'player_head[display=none]';
             mesh.userData.displayType = 'item_display';
             mesh.userData.hasHat = new Array(count).fill(layer === 1);
@@ -775,22 +775,22 @@ if (import.meta.env.DEV) {
     }
 }
 
-function getPlayerHeadSlot(uvOffsets: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, instanceId: number): number {
+function getPlayerHeadSlot(uvOffsets: BufferAttribute | InterleavedBufferAttribute, instanceId: number): number {
     return Math.round(uvOffsets.getX(instanceId) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH)
         + Math.round((1 - uvOffsets.getY(instanceId)) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT - 1) * PLAYER_HEAD_BLOCKS_PER_ROW;
 }
 
-function getPlayerHeadPaintUsage(material: THREE.Material): { slots: Map<number, number>; imageTiles: Map<number, number> } {
+function getPlayerHeadPaintUsage(material: Material): { slots: Map<number, number>; imageTiles: Map<number, number> } {
     const slots = new Map<number, number>();
     const imageTiles = new Map<number, number>();
     const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
     loadedObjectGroup.traverse(object => {
-        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
-        const mesh = object as THREE.InstancedMesh;
+        if (!(object as InstancedMesh).isInstancedMesh) return;
+        const mesh = object as InstancedMesh;
         const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
         if (meshMaterial !== material) return;
         const positions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
-        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
+        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as BufferAttribute | InterleavedBufferAttribute | undefined;
         for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
             if (positions) {
                 const position = positions[instanceId];
@@ -806,15 +806,15 @@ function getPlayerHeadPaintUsage(material: THREE.Material): { slots: Map<number,
     return { slots, imageTiles };
 }
 
-type PlayerHeadAtlasTargets = Iterable<string> | Map<THREE.InstancedMesh, Iterable<number>>;
+type PlayerHeadAtlasTargets = Iterable<string> | Map<InstancedMesh, Iterable<number>>;
 
-function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets, onInstance?: (mesh: THREE.InstancedMesh, instanceId: number, material: THREE.Material) => void): {
-    slots: Map<THREE.Material, Set<number>>;
-    imageTiles: Map<THREE.Material, Set<number>>;
+function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets, onInstance?: (mesh: InstancedMesh, instanceId: number, material: Material) => void): {
+    slots: Map<Material, Set<number>>;
+    imageTiles: Map<Material, Set<number>>;
 } {
-    const slots = new Map<THREE.Material, Set<number>>();
-    const imageTiles = new Map<THREE.Material, Set<number>>();
-    const collect = (mesh: THREE.InstancedMesh, instanceIds: Iterable<number>): void => {
+    const slots = new Map<Material, Set<number>>();
+    const imageTiles = new Map<Material, Set<number>>();
+    const collect = (mesh: InstancedMesh, instanceIds: Iterable<number>): void => {
         const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
         if (!playerHeadAtlases.has(material)) return;
         const tilePositions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
@@ -829,7 +829,7 @@ function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets, onInstanc
             imageTiles.set(material, used);
             return;
         }
-        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
+        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as BufferAttribute | InterleavedBufferAttribute | undefined;
         if (!offsets) return;
         const used = slots.get(material) ?? new Set<number>();
         for (const instanceId of instanceIds) {
@@ -840,8 +840,8 @@ function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets, onInstanc
     };
     if (targets instanceof Map) targets.forEach((ids, mesh) => collect(mesh, ids));
     else if (targets) {
-        const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
-        const byMesh = new Map<THREE.InstancedMesh, Set<number>>();
+        const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined;
+        const byMesh = new Map<InstancedMesh, Set<number>>();
         for (const uuid of targets) {
             const ref = refs?.get(uuid);
             if (!ref?.mesh?.isInstancedMesh) continue;
@@ -851,9 +851,9 @@ function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets, onInstanc
         }
         byMesh.forEach((ids, mesh) => collect(mesh, ids));
     } else loadedObjectGroup.traverse(object => {
-        if ((object as THREE.InstancedMesh).isInstancedMesh) collect(
-            object as THREE.InstancedMesh,
-            Array.from({ length: (object as THREE.InstancedMesh).count }, (_, instanceId) => instanceId)
+        if ((object as InstancedMesh).isInstancedMesh) collect(
+            object as InstancedMesh,
+            Array.from({ length: (object as InstancedMesh).count }, (_, instanceId) => instanceId)
         );
     });
     return { slots, imageTiles };
@@ -869,7 +869,7 @@ function isReservedImageHeadTile(atlas: PlayerHeadAtlas, tile: number): boolean 
 }
 
 export function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): PlayerHeadAtlasSnapshot[] {
-    const instances = new Map<THREE.Material, NonNullable<PlayerHeadAtlasSnapshot['instances']>>();
+    const instances = new Map<Material, NonNullable<PlayerHeadAtlasSnapshot['instances']>>();
     const usage = collectPlayerHeadAtlasUsage(targets, (mesh, instanceId, material) => {
         const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(`${mesh.uuid}_${instanceId}`);
         const offset = mesh.geometry.getAttribute('instancedUvOffset');
@@ -1087,14 +1087,14 @@ export function cleanupUnusedPlayerHeadAtlasSlots(): void {
 }
 
 export function getPlayerHeadPaintSurface(
-    mesh: THREE.InstancedMesh,
+    mesh: InstancedMesh,
     instanceId: number,
     exclusive = false,
-    paintUsage?: Map<THREE.Material, ReturnType<typeof getPlayerHeadPaintUsage>>
+    paintUsage?: Map<Material, ReturnType<typeof getPlayerHeadPaintUsage>>
 ): PlayerHeadPaintSurface | null {
-    const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.Material;
+    const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
-    const uvOffsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined;
+    const uvOffsets = mesh.geometry.getAttribute('instancedUvOffset') as BufferAttribute | InterleavedBufferAttribute | undefined;
     const objectUuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(`${mesh.uuid}_${instanceId}`);
     if (!atlas || !uvOffsets || !objectUuid || instanceId < 0 || instanceId >= mesh.count) return null;
     const usage = exclusive ? paintUsage?.get(material) ?? getPlayerHeadPaintUsage(material) : undefined;
@@ -1246,7 +1246,7 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = 
         context.putImageData(packed, dx - sourceX, dy - sourceY, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
     });
     const dataUrl = skin.toDataURL('image/png');
-    const material = (Array.isArray(surface.mesh.material) ? surface.mesh.material[0] : surface.mesh.material) as THREE.Material;
+    const material = (Array.isArray(surface.mesh.material) ? surface.mesh.material[0] : surface.mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
     const oldUrl = atlas?.slotUrls[surface.slot];
     if (atlas && surface.denseLayer !== undefined) {
@@ -1266,7 +1266,7 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = 
 export function getPlayerHeadTexture(objectUuid: string): string | undefined {
     const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
     const texture = textures?.get(objectUuid);
-    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) return texture;
     const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId);
     if (!surface) return texture;
@@ -1282,11 +1282,11 @@ export function getPlayerHeadTexture(objectUuid: string): string | undefined {
 export function replacePlayerHeadTextureReference(objectUuid: string, previous: string, next: string): boolean {
     const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
     if (textures?.get(objectUuid) !== previous) return false;
-    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) return false;
     const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId);
     if (!surface) return false;
-    const material = (Array.isArray(ref.mesh.material) ? ref.mesh.material[0] : ref.mesh.material) as THREE.Material;
+    const material = (Array.isArray(ref.mesh.material) ? ref.mesh.material[0] : ref.mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
     if (atlas && surface.denseLayer === undefined && atlas.slotUrls[surface.slot] === previous) {
         const skin = atlas.skins.get(previous);
@@ -1300,9 +1300,9 @@ export function replacePlayerHeadTextureReference(objectUuid: string, previous: 
 
 export function setPlayerHeadLayerVisible(visible: boolean): void {
     loadedObjectGroup.traverse(object => {
-        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
-        const mesh = object as THREE.InstancedMesh;
-        const attribute = mesh.geometry.getAttribute('headLayerVisible') as THREE.InstancedBufferAttribute | undefined;
+        if (!(object as InstancedMesh).isInstancedMesh) return;
+        const mesh = object as InstancedMesh;
+        const attribute = mesh.geometry.getAttribute('headLayerVisible') as InstancedBufferAttribute | undefined;
         if (!attribute) return;
         for (let instanceId = 0; instanceId < mesh.count; instanceId++) attribute.setX(instanceId, visible ? 1 : 0);
         attribute.needsUpdate = true;
@@ -1311,23 +1311,23 @@ export function setPlayerHeadLayerVisible(visible: boolean): void {
 
 function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: HTMLImageElement): void {
     const userData = loadedObjectGroup.userData;
-    const ref = (userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const ref = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) throw new Error('텍스처를 변경할 플레이어 헤드를 찾을 수 없습니다.');
 
-    const material = (Array.isArray(ref.mesh.material) ? ref.mesh.material[0] : ref.mesh.material) as THREE.Material;
+    const material = (Array.isArray(ref.mesh.material) ? ref.mesh.material[0] : ref.mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
-    const uvOffsets = ref.mesh.geometry.getAttribute('instancedUvOffset') as THREE.InstancedBufferAttribute | undefined;
+    const uvOffsets = ref.mesh.geometry.getAttribute('instancedUvOffset') as InstancedBufferAttribute | undefined;
     if (!atlas || !uvOffsets) throw new Error('플레이어 헤드 아틀라스를 찾을 수 없습니다.');
 
     const oldU = uvOffsets.getX(ref.instanceId);
     const oldV = uvOffsets.getY(ref.instanceId);
     let usageCount = 0;
     loadedObjectGroup.traverse(object => {
-        if (!(object as THREE.InstancedMesh).isInstancedMesh) return;
-        const mesh = object as THREE.InstancedMesh;
+        if (!(object as InstancedMesh).isInstancedMesh) return;
+        const mesh = object as InstancedMesh;
         const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
         if (meshMaterial !== material) return;
-        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as THREE.InstancedBufferAttribute | undefined;
+        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as InstancedBufferAttribute | undefined;
         if (!offsets) return;
         for (let index = 0; index < mesh.count; index++) {
             if (offsets.getX(index) === oldU && offsets.getY(index) === oldV) usageCount++;
@@ -1369,7 +1369,7 @@ export function updatePlayerHeadTexture(objectUuid: string, textureUrl: string):
     return trackProjectEdit(updateHeadTexture(objectUuid, textureUrl));
 }
 
-export function getImageHeadAtlasMaterial(atlas: PlayerHeadAtlas): THREE.Material[] {
+export function getImageHeadAtlasMaterial(atlas: PlayerHeadAtlas): Material[] {
     atlas.context.fillStyle = '#000000';
     atlas.context.fillRect(PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE, 0, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
     atlas.texture.needsUpdate = true;
@@ -1387,10 +1387,10 @@ export function flipPlayerHeadTextures(objectUuids: string[], axis: PlayerHeadMi
 
 async function flipHeadTextures(objectUuids: string[], axis: PlayerHeadMirrorAxis): Promise<void> {
     const userData = loadedObjectGroup.userData;
-    const refs = userData.objectUuidToInstance as Map<string, { mesh: THREE.InstancedMesh; instanceId: number }> | undefined;
+    const refs = userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined;
     const prepared = (await Promise.all(objectUuids.map(async objectUuid => {
         const ref = refs?.get(objectUuid);
-        const flips = ref?.mesh.geometry.getAttribute('instancedUvFlip') as THREE.InstancedBufferAttribute | undefined;
+        const flips = ref?.mesh.geometry.getAttribute('instancedUvFlip') as InstancedBufferAttribute | undefined;
         if (!ref || !flips) return null;
         const texture = getPlayerHeadTexture(objectUuid) ?? DEFAULT_PLAYER_HEAD_TEXTURE;
         const image = await loadPlayerHeadImage(texture);

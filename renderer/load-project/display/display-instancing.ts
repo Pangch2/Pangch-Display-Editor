@@ -1,14 +1,14 @@
-import * as THREE from 'three/webgpu';
+import { Box3, BufferGeometry, Color, DynamicDrawUsage, Group, InstancedBufferAttribute, InstancedMesh, InterleavedBufferAttribute, Material, MathUtils, Matrix4, MeshBasicNodeMaterial, Object3D, Sphere, SRGBColorSpace, StorageInstancedBufferAttribute } from 'three/webgpu';
 import { type GeometryInstanceMeta, type GeometryMeta, type OtherItem } from '../pbde/pbde-types';
 import { planUvTransforms } from '../batching/geometry-batching';
 import { setEntityStateAttributes } from '../../entity-material';
 import { createTextDisplayTemplates, getTextDisplayTemplateKey, textDisplayInstanceAttributeNames } from './text-display';
 
-export const loadedObjectGroup = new THREE.Group();
+export const loadedObjectGroup = new Group();
 
 export type GlobalBrightness = { enabled: boolean; sky: number; block: number };
 
-export type LoadedSelection = Map<THREE.Object3D, Set<number>>;
+export type LoadedSelection = Map<Object3D, Set<number>>;
 // 리로드 이후 늦게 도착한 비동기 결과를 무시하기 위한 세대 토큰
 export let currentLoadGen = 0;
 
@@ -32,9 +32,9 @@ export type SignatureGroup = {
     isAtlasBatch?: boolean;
 };
 export type MaterialUpdate = {
-    instancedMesh: THREE.InstancedMesh;
-    materials: THREE.Material[];
-    pendingMaterialSlots: Array<{ index: number; promise: Promise<THREE.Material> }>;
+    instancedMesh: InstancedMesh;
+    materials: Material[];
+    pendingMaterialSlots: Array<{ index: number; promise: Promise<Material> }>;
     signature: string;
 };
 const skyLightColors = [
@@ -50,11 +50,11 @@ const lightMapColors = Array.from({ length: 256 }, (_, index) => {
     // ponytail: fixed BlockFactor (1.4); animate the client's torch flicker only if world simulation is added.
     const blockBrightness = block / (4 - 3 * block) * 1.4;
     const whiteMix = 0.9 * (2 * block - 1) ** 2;
-    return new THREE.Color().setRGB(
+    return new Color().setRGB(
         Math.min(1, (skyColor >>> 16) / 255 + blockBrightness),
         Math.min(1, ((skyColor >>> 8) & 0xff) / 255 + (0xd8 / 255 * (1 - whiteMix) + whiteMix) * blockBrightness),
         Math.min(1, (skyColor & 0xff) / 255 + (0x8c / 255 * (1 - whiteMix) + whiteMix) * blockBrightness),
-        THREE.SRGBColorSpace
+        SRGBColorSpace
     );
 });
 
@@ -63,15 +63,15 @@ function effectiveBrightness(brightness?: Brightness): Brightness {
     return global?.enabled && (brightness?.sky ?? 15) === 15 && (brightness?.block ?? 0) === 0 ? global : brightness ?? {};
 }
 
-export function setInstanceSkyBrightness(mesh: THREE.InstancedMesh, instanceId: number, brightness?: Brightness): void {
+export function setInstanceSkyBrightness(mesh: InstancedMesh, instanceId: number, brightness?: Brightness): void {
     const effective = effectiveBrightness(brightness);
-    const level = Math.round(THREE.MathUtils.clamp(effective.sky ?? 15, 0, 15));
-    const block = Math.round(THREE.MathUtils.clamp(effective.block ?? 0, 0, 15));
+    const level = Math.round(MathUtils.clamp(effective.sky ?? 15, 0, 15));
+    const block = Math.round(MathUtils.clamp(effective.block ?? 0, 0, 15));
     mesh.setColorAt(instanceId, lightMapColors[level + block * 16]);
-    mesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
+    mesh.instanceColor!.setUsage(DynamicDrawUsage);
 }
 
-export function addLoadedInstance(selection: LoadedSelection, mesh: THREE.Object3D, instanceId: number): void {
+export function addLoadedInstance(selection: LoadedSelection, mesh: Object3D, instanceId: number): void {
     let ids = selection.get(mesh);
     if (!ids) selection.set(mesh, ids = new Set<number>());
     ids.add(instanceId);
@@ -79,7 +79,7 @@ export function addLoadedInstance(selection: LoadedSelection, mesh: THREE.Object
 
 export async function addTextDisplayItems(
     items: OtherItem[],
-    registerObject: (mesh: THREE.InstancedMesh, instanceId: number, uuid: string, groupId: string | null) => void,
+    registerObject: (mesh: InstancedMesh, instanceId: number, uuid: string, groupId: string | null) => void,
     selection?: LoadedSelection,
     loadGen = currentLoadGen
 ): Promise<void> {
@@ -88,24 +88,24 @@ export async function addTextDisplayItems(
         for (const template of templates.values()) template.geometry.dispose();
         return;
     }
-    const reusableByMaterial = new Map<THREE.Material, THREE.InstancedMesh>();
+    const reusableByMaterial = new Map<Material, InstancedMesh>();
     for (const child of loadedObjectGroup.children) {
-        const mesh = child as THREE.InstancedMesh;
+        const mesh = child as InstancedMesh;
         if (!mesh.isInstancedMesh || !mesh.userData.textDisplayTemplateKeys || mesh.count >= getInstancedCapacity(mesh)) continue;
-        reusableByMaterial.set(mesh.material as THREE.Material, mesh);
+        reusableByMaterial.set(mesh.material as Material, mesh);
     }
 
-    const groups = new Map<THREE.Material, Array<{ item: OtherItem; template: THREE.InstancedMesh; key: string }>>();
-    const reusedMeshes = new Set<THREE.InstancedMesh>();
-    const usedMaterials = new Set<THREE.Material>();
+    const groups = new Map<Material, Array<{ item: OtherItem; template: InstancedMesh; key: string }>>();
+    const reusedMeshes = new Set<InstancedMesh>();
+    const usedMaterials = new Set<Material>();
     for (const item of items) {
         const key = getTextDisplayTemplateKey(item);
         const template = templates.get(key)!;
-        const material = template.material as THREE.Material;
+        const material = template.material as Material;
         const mesh = reusableByMaterial.get(material);
         if (mesh && mesh.count < getInstancedCapacity(mesh)) {
             const instanceId = mesh.count++;
-            mesh.setMatrixAt(instanceId, new THREE.Matrix4().fromArray(item.transform).transpose());
+            mesh.setMatrixAt(instanceId, new Matrix4().fromArray(item.transform).transpose());
             for (const attributeName of textDisplayInstanceAttributeNames) {
                 const attribute = mesh.geometry.getAttribute(attributeName);
                 const source = template.geometry.getAttribute(attributeName);
@@ -127,7 +127,7 @@ export async function addTextDisplayItems(
         group.push({ item, template, key });
         groups.set(material, group);
     }
-    const usedGeometries = new Set<THREE.BufferGeometry>();
+    const usedGeometries = new Set<BufferGeometry>();
     for (const [material, group] of groups) {
         usedMaterials.add(material);
         const sourceGeometry = group[0].template.geometry;
@@ -145,16 +145,16 @@ export async function addTextDisplayItems(
                         values[instanceId * attribute.itemSize + component] = attribute.getComponent(0, component);
                     }
                 });
-                geometry.setAttribute(attributeName, new THREE.InstancedBufferAttribute(values, source.itemSize));
+                geometry.setAttribute(attributeName, new InstancedBufferAttribute(values, source.itemSize));
             }
             geometry.boundingBox = chunk.reduce(
                 (bounds, { template }) => bounds.union(template.geometry.boundingBox!),
-                new THREE.Box3()
+                new Box3()
             );
-            geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
+            geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new Sphere());
             setEntityStateAttributes(geometry, capacity);
-            const textMesh = new THREE.InstancedMesh(geometry, material, capacity);
-            textMesh.instanceMatrix = new THREE.StorageInstancedBufferAttribute(capacity, 16);
+            const textMesh = new InstancedMesh(geometry, material, capacity);
+            textMesh.instanceMatrix = new StorageInstancedBufferAttribute(capacity, 16);
             textMesh.count = chunk.length;
             textMesh.userData.displayType = 'text_display';
             textMesh.userData.textDisplayTemplateKeys = new Map<number, string>();
@@ -162,7 +162,7 @@ export async function addTextDisplayItems(
             textMesh.renderOrder = 1;
             textMesh.layers.enable(2);
             chunk.forEach(({ item, key }, instanceId) => {
-                textMesh.setMatrixAt(instanceId, new THREE.Matrix4().fromArray(item.transform).transpose());
+                textMesh.setMatrixAt(instanceId, new Matrix4().fromArray(item.transform).transpose());
                 setInstanceSkyBrightness(textMesh, instanceId, item.brightness as Brightness | undefined);
                 textMesh.userData.textDisplayTemplateKeys.set(instanceId, key);
                 registerObject(textMesh, instanceId, item.uuid, item.groupId);
@@ -182,17 +182,17 @@ export async function addTextDisplayItems(
     for (const template of templates.values()) {
         if (!usedGeometries.has(template.geometry)) template.geometry.dispose();
     }
-    for (const material of new Set(Array.from(templates.values(), template => template.material as THREE.Material))) {
+    for (const material of new Set(Array.from(templates.values(), template => template.material as Material))) {
         if (usedMaterials.has(material)) continue;
-        (material as THREE.MeshBasicNodeMaterial).map?.dispose();
+        (material as MeshBasicNodeMaterial).map?.dispose();
         material.dispose();
     }
 }
 
-type InstancedGeometryAttribute = THREE.InstancedBufferAttribute | THREE.InterleavedBufferAttribute;
+type InstancedGeometryAttribute = InstancedBufferAttribute | InterleavedBufferAttribute;
 
 export function isInstancedGeometryAttribute(attribute: unknown): attribute is InstancedGeometryAttribute {
-    const candidate = attribute as THREE.InstancedBufferAttribute & {
+    const candidate = attribute as InstancedBufferAttribute & {
         isInterleavedBufferAttribute?: boolean;
         data?: { isInstancedInterleavedBuffer?: boolean };
     };
@@ -200,7 +200,7 @@ export function isInstancedGeometryAttribute(attribute: unknown): attribute is I
         || (candidate?.isInterleavedBufferAttribute && candidate.data?.isInstancedInterleavedBuffer));
 }
 
-export function getInstancedCapacity(mesh: THREE.InstancedMesh): number {
+export function getInstancedCapacity(mesh: InstancedMesh): number {
     let capacity = mesh.instanceMatrix.count;
     if (mesh.instanceColor) capacity = Math.min(capacity, mesh.instanceColor.count);
     for (const attribute of Object.values(mesh.geometry.attributes)) {
