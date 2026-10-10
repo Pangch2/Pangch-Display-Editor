@@ -2472,7 +2472,9 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
             projectDetails: {
                 name: typeof project.name === 'string' ? project.name : '',
                 mainNBT: typeof project.mainNBT === 'string' ? project.mainNBT : '',
-                nbt: typeof project.nbt === 'string' ? project.nbt : ''
+                nbt: typeof project.nbt === 'string' ? project.nbt : '',
+                parentEntity: typeof project.parentEntity === 'string' ? project.parentEntity : 'item_display',
+                summonPosition: typeof project.summonPosition === 'string' ? project.summonPosition : '~ ~ ~'
             }
         };
         const packElapsedMs = performance.now() - packStartMs;

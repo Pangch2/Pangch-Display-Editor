@@ -124,7 +124,10 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
     state.groupMirrorPairs = state.groupMirrorPairs.filter(([a, b]) => seenGroups.has(a) && seenGroups.has(b));
     const project: PdeProject = {
         pdeFormatVersion: 1, name: data.projectDetails?.name ?? '', mainNBT: data.projectDetails?.mainNBT ?? '',
-        nbt: data.projectDetails?.nbt ?? '', children, editorState: state
+        nbt: data.projectDetails?.nbt ?? '',
+        parentEntity: data.projectDetails?.parentEntity ?? 'item_display',
+        summonPosition: data.projectDetails?.summonPosition ?? '~ ~ ~',
+        children, editorState: state
     };
     validatePdeProject(project);
     return project;

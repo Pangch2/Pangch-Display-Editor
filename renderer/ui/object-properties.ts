@@ -102,7 +102,8 @@ propertySectionContent.className = 'object-properties-content';
 objectProperties.replaceChildren(propertySectionSpacer, propertySectionContent);
 propertySectionResizeObserver.observe(propertyDetails);
 propertySectionResizeObserver.observe(multiSelectionPivot);
-const getPropertyScroller = (): HTMLElement => propertyDetails.closest<HTMLElement>('.panel-dock:not(.single-panel)') ?? propertyDetails;
+const getPropertyScroller = (): HTMLElement => propertyDetails.closest('.panel-group')
+    ? propertyDetails : propertyDetails.closest<HTMLElement>('.panel-dock:not(.single-panel)') ?? propertyDetails;
 const handlePropertyScroll = (event: Event): void => {
     if (event.currentTarget !== getPropertyScroller()) return;
     propertyDetailsScrolling = true;

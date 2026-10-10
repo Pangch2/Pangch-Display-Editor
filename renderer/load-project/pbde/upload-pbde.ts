@@ -103,8 +103,10 @@ function updateProjectDetails(): void {
     if (!panel) return;
 
     panel.hidden = false;
+    details.parentEntity ??= 'item_display';
+    details.summonPosition ??= '~ ~ ~';
     document.title = details?.name ? `PDE - ${details.name}` : 'PDE';
-    for (const key of ['name', 'mainNBT', 'nbt']) {
+    for (const key of ['name', 'mainNBT', 'nbt', 'parentEntity', 'summonPosition']) {
         const input = document.getElementById(`project-${key}`) as HTMLInputElement | null;
         if (!input) continue;
         input.value = details?.[key] || '';

@@ -11,7 +11,17 @@ type Compound = { [key: string]: SnbtValue };
 export type SummonExportMode = 'command' | 'datapack';
 // 26.3: AbstractCommandBlockEditScreen.setMaxLength / CommandFunction.checkCommandLineLength.
 export const summonCommandLimits = { command: 32_500, datapack: 2_000_000 } as const;
-const summonPrefix = 'summon item_display ~ ~ ~ ';
+function getSummonPrefix(project: Group): string {
+  const entity = project.userData.projectDetails?.parentEntity?.trim() || 'item_display';
+  const position = project.userData.projectDetails?.summonPosition?.trim() || '~ ~ ~';
+  if (!/^(?:[a-z0-9_.-]+:)?[a-z0-9_./-]+$/.test(entity)) throw new Error('부모 엔티티 ID가 올바르지 않습니다.');
+  const coordinates = position.split(/\s+/);
+  if (coordinates.length !== 3 || coordinates.some(value => !/^(?:[~^](?:[+-]?(?:\d+(?:\.\d*)?|\.\d+))?|[+-]?(?:\d+(?:\.\d*)?|\.\d+))$/.test(value))
+      || (coordinates.some(value => value.startsWith('^')) && !coordinates.every(value => value.startsWith('^')))) {
+    throw new Error('소환좌표는 유효한 X Y Z 좌표여야 합니다.');
+  }
+  return `summon ${entity} ${coordinates.join(' ')} `;
+}
 const resourceId = (value: string) => value.replace(/^minecraft:/, '');
 const byte = (value: number) => new SnbtLiteral(value + 'b');
 const alphaByte = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 255);
@@ -327,6 +337,7 @@ function* createSummonNbt(project: Group, limit: number): NbtChunks {
 }
 
 export function generateSummonCommand(project: Group): string {
+  const summonPrefix = getSummonPrefix(project);
   for (const nbt of createSummonNbt(project, Infinity)) if (nbt !== undefined) return summonPrefix + nbt;
   throw new Error('소환 명령을 생성할 수 없습니다.');
 }
@@ -363,6 +374,7 @@ function* splitPassengers(entity: Compound, passengers: (limit: number) => NbtCh
 function* summonCommands(project: Group, mode: SummonExportMode): NbtChunks {
   const limit = summonCommandLimits[mode];
   try {
+    const summonPrefix = getSummonPrefix(project);
     for (const nbt of createSummonNbt(project, limit - summonPrefix.length)) yield nbt === undefined ? undefined : summonPrefix + nbt;
   } catch (error) {
     throw new Error(`${mode === 'command' ? 'Command' : 'DataPack'} · 최대 ${limit.toLocaleString()}자: ${error instanceof Error ? error.message : String(error)}`);

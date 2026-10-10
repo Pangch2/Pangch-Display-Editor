@@ -57,8 +57,8 @@
   width: 280px;
 }
 
-.panel-dock.single-panel .panel-section,
-.panel-dock.single-panel #scene-objects {
+.panel-dock.single-panel > .panel-section,
+.panel-dock.single-panel > .panel-group {
   flex: 1 1 auto;
 }
 
@@ -83,6 +83,56 @@
   text-overflow: ellipsis;
 }
 
+.panel-group {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: visible;
+}
+
+.panel-group[hidden],
+.panel-section.panel-tab-inactive {
+  display: none !important;
+}
+
+.panel-tabs {
+  display: flex;
+  flex: none;
+  border-bottom: 1px solid #3a3a3e;
+}
+
+.panel-tabs[hidden],
+.panel-tabs > [hidden] {
+  display: none !important;
+}
+
+.panel-tabs > :is(#scene-panel-header, #player-head-atlas-header, #project-details-header, #head-painter-header) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 8px 6px;
+  border-bottom: 2px solid transparent;
+  font-size: 12px;
+  letter-spacing: 0;
+  cursor: grab;
+}
+
+.panel-tabs > :is(#scene-panel-header, #player-head-atlas-header, #project-details-header, #head-painter-header)[aria-selected="true"] {
+  border-bottom-color: #70c7ff;
+  background: #303034;
+  color: #eee;
+}
+
+.panel-tabs > [role="tab"]:focus-visible {
+  outline: 2px solid #70c7ff;
+  outline-offset: -2px;
+}
+
 #player-head-atlas {
   display: flex;
   min-height: 0;
@@ -93,6 +143,7 @@
 #player-head-atlas-list {
   flex: none;
   width: 100%;
+  margin-top: 6px;
   max-height: 144px;
   overflow-y: auto;
   border-top: 1px solid #3a3a3e;

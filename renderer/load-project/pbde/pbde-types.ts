@@ -102,6 +102,8 @@ export interface ProjectDetails {
     name: string;
     mainNBT: string;
     nbt: string;
+    parentEntity: string;
+    summonPosition: string;
 }
 
 export interface WorkerMetadata {

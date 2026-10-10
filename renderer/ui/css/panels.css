@@ -22,6 +22,26 @@
   text-overflow: ellipsis;
 }
 
+.panel-tabs #project-details-header {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 4px;
+}
+
+.panel-tabs #project-details-header > span {
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.panel-tabs #project-tabs {
+  flex: none;
+}
+
+.panel-tabs [aria-selected="false"] #project-tabs {
+  display: none;
+}
+
 #project-tabs {
   position: relative;
   display: flex;
@@ -191,29 +211,63 @@
   font-size: 12px;
 }
 
-.panel-dock:not(.single-panel) .panel-section:not(#scene-objects) {
+.panel-dock:not(.single-panel) > .panel-section:not(#scene-objects) {
   min-height: auto !important;
   overflow: visible;
 }
 
-.panel-dock:not(.single-panel) #player-head-atlas-scroll,
-.panel-dock:not(.single-panel) #project-details,
-.panel-dock:not(.single-panel) #head-painter {
+.panel-dock:not(.single-panel) > #player-head-atlas #player-head-atlas-scroll,
+.panel-dock:not(.single-panel) > #project-details,
+.panel-dock:not(.single-panel) > #head-painter {
   overflow: visible;
 }
 
-.panel-dock:not(.single-panel) #player-head-atlas-list {
+.panel-dock:not(.single-panel) > #player-head-atlas #player-head-atlas-list {
   max-height: none;
   overflow: visible;
 }
 
-.panel-section.collapsed {
+.panel-group > .panel-group-content,
+.panel-group > #scene-objects {
+  flex: 1 1 0;
+  min-height: 0 !important;
+}
+
+.panel-group-scrollbar {
+  position: absolute;
+  right: 0;
+  z-index: 2;
+  width: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.panel-group-scrollbar[hidden],
+.panel-group #scene-scrollbar {
+  display: none !important;
+}
+
+.panel-group :is(#project-details, #head-painter, #player-head-atlas-scroll, .player-head-atlas-box) {
+  scrollbar-width: none;
+}
+
+.panel-group #player-head-atlas-list {
+  max-height: none;
+  overflow: visible;
+}
+
+.panel-section.collapsed:not(.panel-tabbed),
+.panel-group.collapsed {
   flex: 0 0 auto !important;
   min-height: 0 !important;
   overflow: hidden !important;
 }
 
-.panel-section.collapsed > :not(:first-child) {
+.panel-section.collapsed:not(.panel-tabbed) > :not(:first-child) {
+  display: none !important;
+}
+
+.panel-group.collapsed > .panel-tabs:not([hidden]) ~ .panel-group-content {
   display: none !important;
 }
 

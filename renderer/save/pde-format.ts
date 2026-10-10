@@ -53,6 +53,8 @@ export type PdeProject = {
     name: string;
     mainNBT: string;
     nbt: string;
+    parentEntity?: string;
+    summonPosition?: string;
     children: PdeNode[];
     editorState: PdeEditorState;
 };
@@ -124,6 +126,9 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
     if (!record(project)) throw new Error('잘못된 프로젝트입니다.');
     if (project.pdeFormatVersion === undefined) return;
     if (project.pdeFormatVersion !== 1) throw new Error(`지원하지 않는 PDE 버전: ${project.pdeFormatVersion}`);
+    if ([project.parentEntity, project.summonPosition].some(value => value !== undefined && !string(value))) {
+        throw new Error('잘못된 PDE 소환 설정입니다.');
+    }
     const textures = project.refs?.paintTextures;
     if (project.refs !== undefined && (!record(project.refs) || !Array.isArray(textures) || !textures.every(paintTexture))) {
         throw new Error('잘못된 PDE 헤드 텍스처 목록입니다.');
