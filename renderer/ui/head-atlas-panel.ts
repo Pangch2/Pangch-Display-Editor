@@ -46,6 +46,8 @@ let refreshPainterGrid = () => {};
 let refreshPainterPreview: (canvas: HTMLCanvasElement | null, pixels: readonly { x: number; y: number }[]) => void = () => {};
 const isAtlasPainting = (): boolean => !!playerHeadAtlasScroll.dataset.headPainterTool && playerHeadAtlasScroll.dataset.headPainterTool !== 'select';
 const moveTools = playerHeadAtlasScroll.querySelector<HTMLElement>('.player-head-atlas-tools')!;
+const metrics = playerHeadAtlasScroll.querySelector<HTMLElement>('.player-head-uv-metrics')!;
+const [positionX, positionY, pixelSize] = metrics.querySelectorAll('span');
 const moveLabels = { uv: 'UV만 이동', texture: '텍스처만 이동', both: 'UV와 텍스처 함께 이동' };
 for (const button of moveTools.querySelectorAll<HTMLButtonElement>('[data-atlas-move-mode]')) {
     const mode = button.dataset.atlasMoveMode as typeof moveMode;
@@ -289,15 +291,14 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
     outlineRects.setAttribute('vector-effect', 'non-scaling-stroke');
     outlines.append(outlineRects);
     stage.append(outlines);
-    const caption = document.createElement('div');
-    caption.className = 'player-head-uv-caption';
-    caption.setAttribute('aria-live', 'polite');
-    moveTools.after(caption);
     const refresh = () => {
         refreshPainterGrid();
         updateActionButtons();
         const label = moveLabels[moveMode];
         const entries = getSelectedEntries();
+        positionX.textContent = 'X —';
+        positionY.textContent = 'Y —';
+        pixelSize.textContent = '— × — px';
         const canResize = moveMode === 'uv' && entries.length === 1;
         selection.dataset.selectedCount = String(entries.length);
         selection.ariaLabel = `${entries.length}개 영역 ${label}: 방향키로 이동${canResize ? ', Shift+방향키로 크기 조절' : ''}`;
@@ -305,19 +306,15 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
         selection.hidden = !selectedFace || isAtlasPainting();
         outlines.style.display = entries.length > 1 && !isAtlasPainting() ? '' : 'none';
         outlineRects.setAttribute('d', entries.map(({ rect }) => `M${rect.x} ${rect.y}h${rect.width}v${rect.height}h-${rect.width}Z`).join(''));
-        if (isAtlasPainting()) {
-            caption.textContent = '우클릭 드래그: 화면 이동 · Ctrl+드래그: 영역 선택 · Esc / 영역 밖 클릭: 선택 해제 · 선택 도구: 아틀라스 이동';
-            return;
-        }
-        const shortcuts = `${getShortcuts('selectAll').join(' / ')}: 전체 선택 · ${getShortcuts('duplicate').join(' / ')}: 복제 · ${getShortcuts('deleteSelection').join(' / ')}: 텍스처 삭제`;
-        caption.textContent = `Shift+클릭 / Ctrl+드래그: 다중 선택 · ${shortcuts} · 우클릭 드래그: 화면 이동`;
-        if (!selectedFace || !entries.length) return;
+        if (isAtlasPainting() || !selectedFace || !entries.length) return;
         const rect = selectionBounds(entries.map(entry => entry.rect));
+        positionX.textContent = `X ${rect.x}`;
+        positionY.textContent = `Y ${rect.y}`;
+        pixelSize.textContent = `${rect.width} × ${rect.height} px`;
         selection.style.left = `${rect.x / canvas.width * 100}%`;
         selection.style.top = `${rect.y / canvas.height * 100}%`;
         selection.style.width = `${rect.width / canvas.width * 100}%`;
         selection.style.height = `${rect.height / canvas.height * 100}%`;
-        caption.textContent = `${entries.length === 1 ? selectedFace.name : `${entries.length}개 영역 선택`} · X ${rect.x}, Y ${rect.y} · ${rect.width} × ${rect.height} px · ${label} · ${shortcuts}${canResize ? ' · 테두리: 크기 조절' : ''}`;
     };
     const startEdit = (entries: ReturnType<typeof getSelectedEntries>, operation: 'move' | 'duplicate' | 'delete' | 'flipX' | 'flipY' = 'move') => {
         const mode = moveMode;
@@ -494,7 +491,7 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
             for (let y = 0; !copy && y + bounds.height <= canvas.height; y += bounds.height) {
                 for (let x = 0; !copy && x + bounds.width <= canvas.width; x += bounds.width) copy = findDestination(x, y);
             }
-            if (!copy) { caption.textContent = '선택 영역을 복제할 빈 공간이 없습니다.'; return; }
+            if (!copy) { alert('선택 영역을 복제할 빈 공간이 없습니다.'); return; }
             destination = copy;
         }
         const edit = startEdit(entries, action === 'deleteSelection' ? 'delete' : action);
@@ -670,7 +667,10 @@ const renderPlayerHeadAtlases = (canvases: HTMLCanvasElement[]): void => {
         box.append(stage);
     }
     if (selectedCanvas !== canvas) selectedRegions.clear();
-    playerHeadAtlasScroll.replaceChildren(box, moveTools, playerHeadAtlasList);
+    positionX.textContent = 'X —';
+    positionY.textContent = 'Y —';
+    pixelSize.textContent = '— × — px';
+    playerHeadAtlasScroll.replaceChildren(box, moveTools, metrics, playerHeadAtlasList);
     if (canvas) attachUvEditor(canvas, stage);
     else {
         selectedFace = selectedCanvas = null;

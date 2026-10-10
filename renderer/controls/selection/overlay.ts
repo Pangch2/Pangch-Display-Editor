@@ -11,6 +11,8 @@ import {
     Color,
     Float32BufferAttribute,
     InstancedBufferAttribute,
+    InterleavedBuffer,
+    InterleavedBufferAttribute,
     StorageInstancedBufferAttribute,
     LineBasicMaterial,
     EdgesGeometry,
@@ -596,19 +598,20 @@ export function updateHeadPainterGridOverlay(
 }
 
 function createHeadPainterGridGeometry(capacity: number): BufferGeometry {
-    const positions: number[] = [], horizontal: number[] = [], vertical: number[] = [], lines: number[] = [];
+    const vertices: number[] = [];
     for (let face = 0; face < 6; face++) {
         const [origin, h, v] = getHeadPainterFaceAxes(face, 1);
         for (let axis = 0; axis < 2; axis++) for (let line = 0; line <= 8; line++) for (let end = 0; end < 2; end++) {
-            positions.push(...origin.toArray()); horizontal.push(...h.toArray()); vertical.push(...v.toArray());
-            lines.push(face, line, axis, end);
+            vertices.push(...origin.toArray(), ...h.toArray(), ...v.toArray(), face, line, axis, end);
         }
     }
     const geometry = new BufferGeometry();
-    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('headPainterGridHorizontal', new Float32BufferAttribute(horizontal, 3));
-    geometry.setAttribute('headPainterGridVertical', new Float32BufferAttribute(vertical, 3));
-    geometry.setAttribute('headPainterGridLine', new Float32BufferAttribute(lines, 4));
+    // Share static attributes to stay within WebGPU's eight vertex buffer limit.
+    const buffer = new InterleavedBuffer(new Float32Array(vertices), 13);
+    geometry.setAttribute('position', new InterleavedBufferAttribute(buffer, 3, 0));
+    geometry.setAttribute('headPainterGridHorizontal', new InterleavedBufferAttribute(buffer, 3, 3));
+    geometry.setAttribute('headPainterGridVertical', new InterleavedBufferAttribute(buffer, 3, 6));
+    geometry.setAttribute('headPainterGridLine', new InterleavedBufferAttribute(buffer, 4, 9));
     for (let pair = 0; pair < 3; pair++) geometry.setAttribute(`headPainterGrid${pair}`,
         new InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(DynamicDrawUsage));
     for (let pair = 0; pair < 3; pair++) geometry.setAttribute(`headPainterTexture${pair}`,

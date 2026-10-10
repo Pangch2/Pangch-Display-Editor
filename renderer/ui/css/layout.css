@@ -243,9 +243,28 @@
   pointer-events: none;
 }
 
-.player-head-uv-caption {
-  padding: 6px 0;
+.player-head-uv-metrics {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+  width: 100%;
+  flex: none;
+  gap: 4px;
+  padding-top: 6px;
   color: #bbb;
+}
+
+.player-head-uv-metrics > span {
+  box-sizing: border-box;
+  height: 28px;
+  padding: 4px 8px;
+  border: 1px solid #45454a;
+  border-radius: 3px;
+  background: #252528;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 
 .player-head-atlas-tools {
