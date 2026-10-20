@@ -24,6 +24,7 @@ import {
 } from 'three/webgpu';
 import { initAssets } from './asset-manager';
 import { stabilizeInstancedMatrixBindingNames } from './entity-material';
+import { initSceneColorCapture } from './ui/common/scene-color-capture';
 import { getItemIconAtlas } from './ui/toolbar/item-icon-atlas';
 import { initTransformToolbar } from './ui/toolbar/transform-toolbar';
 import { ensureSpriteAtlases } from './load-project/scene/sprite-atlas';
@@ -535,6 +536,7 @@ async function initScene(): Promise<void> {
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
     await renderer.init();
     stabilizeInstancedMatrixBindingNames(renderer);
+    initSceneColorCapture(renderer, scene, () => camera);
 
     // 4. 컨트롤(Controls)
     controls = new OrbitControls(camera, renderer.domElement);

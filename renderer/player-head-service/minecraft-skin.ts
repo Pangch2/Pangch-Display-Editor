@@ -19,8 +19,10 @@ export function decodePng(bytes: Uint8Array): { key: string; png: Uint8Array } {
   return { key: createHash('sha256').update(`${width}x${height}:`).update(image.toBitmap()).digest('hex'), png: image.toPNG() };
 }
 
-export async function downloadSkin(url: string): Promise<Uint8Array> {
-  const response = await fetch(textureUrl(url), { signal: AbortSignal.timeout(30000), redirect: 'error' });
+export async function downloadSkin(url: string, signal?: AbortSignal): Promise<Uint8Array> {
+  const response = await fetch(textureUrl(url), {
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000), redirect: 'error'
+  });
   if (!response.ok) throw Object.assign(new Error(`스킨 다운로드 실패 (HTTP ${response.status})`), { status: response.status });
   const chunks: Uint8Array[] = [];
   let length = 0;

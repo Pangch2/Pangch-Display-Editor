@@ -240,17 +240,6 @@
   color-scheme: dark;
 }
 
-.head-painter-panel input[type="number"]::-webkit-inner-spin-button,
-.head-painter-brush-editor input[type="number"]::-webkit-inner-spin-button {
-  opacity: 0;
-  cursor: ns-resize;
-}
-
-.head-painter-panel input[type="number"]::-webkit-inner-spin-button:hover,
-.head-painter-brush-editor input[type="number"]::-webkit-inner-spin-button:hover {
-  opacity: 1;
-}
-
 .head-painter-panel input[type="range"] {
   appearance: auto;
   padding: 0;
@@ -517,4 +506,8 @@
 
 .head-painter-brush-grid button.selected {
   outline: 2px solid #70c7ff;
+}
+
+canvas[data-head-painter-tool="picker"] {
+  cursor: crosshair;
 }

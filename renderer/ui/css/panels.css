@@ -853,13 +853,6 @@
   color-scheme: dark;
 }
 
-.object-property input[type="number"]::-webkit-inner-spin-button,
-.atlas-color-replace input[type="number"]::-webkit-inner-spin-button,
-.color-picker input[type="number"]::-webkit-inner-spin-button {
-  opacity: 1;
-  cursor: ns-resize;
-}
-
 .object-property input:disabled,
 .object-property textarea:disabled {
   background: #242427;

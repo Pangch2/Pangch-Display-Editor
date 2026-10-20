@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('ipcApi', {
   writeProjectClipboard: (data: Uint8Array) => ipcRenderer.invoke('write-project-clipboard', data),
   readProjectClipboard: () => ipcRenderer.invoke('read-project-clipboard'),
   readClipboardText: () => ipcRenderer.invoke('read-clipboard-text'),
+  captureColorPicker: () => ipcRenderer.invoke('capture-color-picker'),
   headTextures: {
     mineSkinKeys: () => ipcRenderer.invoke('head-mineskin-keys'),
     addMineSkinKey: () => ipcRenderer.invoke('head-mineskin-add'),
@@ -26,6 +27,7 @@ contextBridge.exposeInMainWorld('ipcApi', {
     removeMineSkinKey: (id: string) => ipcRenderer.invoke('head-mineskin-remove', id),
     account: () => ipcRenderer.invoke('head-account-state'),
     login: () => ipcRenderer.invoke('head-account-login'),
+    cancelLogin: () => ipcRenderer.invoke('head-account-login-cancel'),
     logout: (uuid: string) => ipcRenderer.invoke('head-account-logout', uuid),
     setEnabled: (uuid: string, enabled: boolean) => ipcRenderer.invoke('head-account-enabled', uuid, enabled),
     start: (sources: string[]) => ipcRenderer.invoke('head-texture-start', sources),

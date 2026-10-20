@@ -82,7 +82,7 @@ let activeProject = -1;
 let projectTabDropMarkerEl: HTMLElement | null = null;
 let projectTabDropMarkerClass: 'project-tab-drop-before' | 'project-tab-drop-after' | null = null;
 
-export { loadedObjectGroup };
+export { loadedObjectGroup, addProject, loadpbde as openProjects };
 
 export function getActiveProjectId(): string | undefined { return projects[activeProject]?.id; }
 export function hasProject(id: string): boolean { return projects.some(project => project.id === id); }
@@ -237,6 +237,19 @@ function addProject(): void {
     projects.push({ id: crypto.randomUUID(), autoSaveRevision: 0, children: [], data: {} });
     switchProject(projects.length - 1);
     registerProjectAutoSave(projects[activeProject]);
+}
+
+export function replaceProject(): void {
+    if (activeProject < 0) return addProject();
+    const index = activeProject;
+    const previousId = projects[index].id;
+    autoSave.forget(previousId);
+    window.ipcApi.forgetProjectSavePath?.(previousId);
+    projects[index] = { id: crypto.randomUUID(), autoSaveRevision: 0, children: [], data: {} };
+    activeProject = -1;
+    switchProject(index);
+    deleteHistoryContext(previousId);
+    registerProjectAutoSave(projects[index]);
 }
 
 function deleteProject(index: number): void {

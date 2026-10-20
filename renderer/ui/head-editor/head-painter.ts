@@ -165,9 +165,7 @@ let paintHeadUuid: string | null = null;
 let paintAtlasCanvas: HTMLCanvasElement | null = null;
 let deferredPaint: { pointerId: number; x: number; y: number } | null = null;
 let restoreCameraControls: (() => void) | null = null;
-let altPicking = false;
 let promotingImageHead = false;
-let pickerCursorBefore: string | null = null;
 let root: HTMLElement | null = null;
 let brushEditor: HTMLElement | null = null;
 let editingBrush: BrushAsset | null = null;
@@ -1113,19 +1111,6 @@ function pickColor(event: PointerEvent): void {
   setCurrentColor(readPixel(image, facePartIndexes[hit.face] + layer * 6, x, y), true);
 }
 
-function setAltPicking(enabled: boolean): void {
-  altPicking = enabled;
-  const canvas = painterContext?.renderer.domElement;
-  if (!canvas) return;
-  if (enabled && pickerCursorBefore === null) {
-    pickerCursorBefore = canvas.style.cursor;
-    canvas.style.cursor = 'crosshair';
-  } else if (!enabled && pickerCursorBefore !== null) {
-    canvas.style.cursor = pickerCursorBefore;
-    pickerCursorBefore = null;
-  }
-}
-
 function promoteImageHeadAndPaint(event: PointerEvent, hit: PaintHit): boolean {
   if (!hit.promote) return false;
   if (promotingImageHead) return true;
@@ -1177,7 +1162,6 @@ function onPointerDown(event: PointerEvent): void {
     return;
   }
   if (lastTool === 'picker') {
-    if (!altPicking) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     pickColor(event);
@@ -1197,15 +1181,7 @@ function onPointerDown(event: PointerEvent): void {
   paintAt(hit);
 }
 
-function onKeyDown(event: KeyboardEvent): void {
-  if (!active || lastTool !== 'picker' || !matchesShortcut(event, 'headPainterPickColor') || event.repeat) return;
-  setAltPicking(true);
-  event.preventDefault();
-  event.stopImmediatePropagation();
-}
-
 function onKeyUp(event: KeyboardEvent): void {
-  if (matchesShortcut(event, 'headPainterPickColor')) setAltPicking(false);
   if (matchesShortcut(event, 'headPainterCopyStamp')) removeHeadPainterStampPreview();
 }
 
@@ -1781,7 +1757,6 @@ function setTool(tool: Tool): void {
   lastTool = tool;
   if (active && painterContext) painterContext.renderer.domElement.dataset.headPainterTool = tool;
   syncAtlasPainterTool();
-  if (tool !== 'picker') setAltPicking(false);
   if (tool !== 'stamp') removeHeadPainterStampPreview();
   renderToolSettings();
 }
@@ -2316,6 +2291,7 @@ function openPainterColorPicker(): void {
   const target = root.querySelector<HTMLElement>('#head-painter-palette-color-picker')!;
   openColorPicker(target, currentColor.slice(0, 3) as [number, number, number], color => setCurrentColor([...color, currentColor[3]], true), {
     oklch: colorMode === 'oklch',
+    onConfirm: () => setCurrentColor(currentColor, true),
     onOklchChange: enabled => {
       colorMode = enabled ? 'oklch' : 'rgb';
       root!.querySelector<HTMLSelectElement>('#head-painter-color-mode')!.value = colorMode;
@@ -2615,7 +2591,7 @@ function createPanel(): void {
       <label>경도 <span class="head-painter-range"><input id="head-painter-eraser-hardness-range" type="range" min="0" max="100" value="100"><input id="head-painter-eraser-hardness" type="number" min="0" max="100" value="100"></span></label>
       <label>강도 <span class="head-painter-range"><input id="head-painter-eraser-strength-range" type="range" min="0" max="100" value="100"><input id="head-painter-eraser-strength" type="number" min="0" max="100" value="100"></span></label>
     </fieldset>
-    <fieldset data-tool-settings="picker" hidden><legend>색상선택</legend><small>Alt로 화면색을 선택합니다.</small></fieldset>
+    <fieldset data-tool-settings="picker" hidden><legend>색상선택</legend><small>클릭으로 색상을 선택합니다.</small></fieldset>
     <fieldset data-tool-settings="stamp" hidden>
       <legend>스탬프</legend>
       <div class="head-painter-inline"><label>가로 <input id="head-painter-stamp-width" type="number" min="1" value="8"></label><label>세로 <input id="head-painter-stamp-height" type="number" min="1" value="8"></label></div>
@@ -2750,6 +2726,12 @@ function createPanel(): void {
     setCurrentColor(parsed, writePalette);
   };
   colorInput.onchange = () => updateColor(true);
+  colorInput.onkeydown = event => {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateColor(true);
+  };
   colorPicker.onclick = openPainterColorPicker;
   const updateAlpha = (source: HTMLInputElement) => {
     const alpha = clampByte(Number(source.value));
@@ -2808,7 +2790,6 @@ export function setHeadPainterEnabled(enabled: boolean): void {
     updateHeadPainter();
   } else {
     endPaintPointer();
-    setAltPicking(false);
     setPlayerHeadLayerVisible(true);
     removeHeadPainterGridOverlay();
     removeHeadPainterStampPreview();
@@ -2824,7 +2805,6 @@ export function toggleHeadPainter(): void {
 export function initHeadPainter(context: PainterContext): void {
   painterContext = context;
   if (!root) createPanel();
-  window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('pointerdown', onPointerDown, true);
   window.addEventListener('pointermove', onPointerMove, true);

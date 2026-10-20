@@ -1,3 +1,66 @@
+.screen-color-picker {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  cursor: none;
+  overflow: hidden;
+  user-select: none;
+}
+
+.screen-color-picker::backdrop {
+  background: transparent;
+}
+
+.screen-color-picker [hidden] {
+  display: none;
+}
+
+.screen-color-picker-snapshot {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.screen-color-picker-cursor {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.screen-color-picker-lens {
+  position: relative;
+  box-sizing: content-box;
+  width: 110px;
+  height: 110px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px #000;
+}
+
+.screen-color-picker-lens canvas {
+  display: block;
+}
+
+.screen-color-picker-lens span {
+  position: absolute;
+  left: 50px;
+  top: 50px;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 1px solid #fff;
+  box-shadow: 0 0 0 1px #000;
+}
+
 .color-picker {
   --hue: 0;
   position: fixed;
@@ -169,14 +232,6 @@
 .color-picker-eyedropper:hover {
   background: #3b3b40;
   color: #f0f0f0;
-}
-
-.color-picker input[type="number"]::-webkit-inner-spin-button {
-  opacity: 0;
-}
-
-.color-picker input[type="number"]::-webkit-inner-spin-button:hover {
-  opacity: 1;
 }
 
 .color-picker-resize {

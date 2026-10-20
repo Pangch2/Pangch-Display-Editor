@@ -36,6 +36,7 @@ export interface HeadTextureApi {
   removeMineSkinKey(id: string): Promise<MineSkinKey[]>;
   account(): Promise<HeadAccountState>;
   login(): Promise<HeadAccountState>;
+  cancelLogin(): Promise<void>;
   logout(uuid: string): Promise<HeadAccountState>;
   setEnabled(uuid: string, enabled: boolean): Promise<HeadAccountState>;
   start(sources: string[]): Promise<{ success: boolean; error?: string }>;

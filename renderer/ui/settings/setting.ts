@@ -41,9 +41,9 @@ overlay.innerHTML = `
             <legend>조작</legend>
             <label class="settings-row"><span>스케일 조작 모드</span><span class="settings-select"><select id="scale-mode"><option value="default">기본</option><option value="blockbench">블록벤치 스케일 모드</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>오브젝트 교체 모드</span><span class="settings-select"><select id="object-replace-mode"><option value="default">기본</option><option value="preserve-visible-size">보이는 크기 유지</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
-            <label class="settings-row"><span>위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdePositionDragValue"><button type="button" aria-label="위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+            <label class="settings-row"><span>위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdePositionDragValue"><button type="button" aria-label="위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>각도 드래그값</span><span class="settings-drag-value" data-values="0,180,90,45,30,15,10,5,2,1,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeRotationDragValue"><button type="button" aria-label="각도 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
-            <label class="settings-row"><span>스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeScaleDragValue"><button type="button" aria-label="스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+            <label class="settings-row"><span>스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeScaleDragValue"><button type="button" aria-label="스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
           </fieldset>
           <fieldset>
             <legend>자동저장</legend>
@@ -87,6 +87,7 @@ overlay.innerHTML = `
             <legend>현재 프로젝트</legend>
             <div class="settings-row"><span>프로젝트 이름</span><output id="scene-project-name">-</output></div>
             <div class="settings-row"><span>메쉬</span><output id="scene-mesh-count">0</output></div>
+            <div class="settings-row"><span>총 오브젝트 수</span><output id="scene-object-count">0</output></div>
             <div class="settings-row"><span>그룹</span><output id="scene-group-count">0</output></div>
             <div class="settings-row"><span>블록</span><output id="scene-block-count">0</output></div>
             <div class="settings-row"><span>아이템</span><output id="scene-item-count">0</output></div>
@@ -425,6 +426,7 @@ async function refreshSceneStatus(): Promise<void> {
 
   overlay.querySelector<HTMLOutputElement>('#scene-project-name')!.value = data.projectDetails?.name || '새 프로젝트';
   overlay.querySelector<HTMLOutputElement>('#scene-mesh-count')!.value = String(meshCount);
+  overlay.querySelector<HTMLOutputElement>('#scene-object-count')!.value = String(objects?.size ?? 0);
   overlay.querySelector<HTMLOutputElement>('#scene-group-count')!.value = String(data.groups?.size ?? 0);
   overlay.querySelector<HTMLOutputElement>('#scene-item-count')!.value = String(items?.size ?? 0);
   overlay.querySelector<HTMLOutputElement>('#scene-text-count')!.value = String(textIds.size);

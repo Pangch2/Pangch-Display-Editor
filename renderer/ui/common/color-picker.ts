@@ -1,6 +1,15 @@
+import { pickScreenColor } from './screen-color-picker';
+
+export { pickScreenColor };
 export type RgbColor = [number, number, number];
 export type OklchColor = [number, number, number];
-type ColorPickerOptions = { oklch?: boolean; onOklchChange?: (enabled: boolean) => void; onClose?: () => void };
+type ColorPickerOptions = {
+  oklch?: boolean;
+  onOklchChange?: (enabled: boolean) => void;
+  onEyeDropperChange?: (active: boolean) => void;
+  onConfirm?: () => void;
+  onClose?: () => void;
+};
 
 let picker: HTMLElement | null = null;
 let anchor: HTMLElement | null = null;
@@ -18,17 +27,6 @@ const srgbChannel = (value: number): number => {
 };
 
 const linearChannel = (value: number): number => clampByte((value <= 0.0031308 ? 12.92 * value : 1.055 * value ** (1 / 2.4) - 0.055) * 255);
-
-export async function pickScreenColor(): Promise<RgbColor | null> {
-  const EyeDropper = (window as unknown as { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
-  if (!EyeDropper) return null;
-  try {
-    const { sRGBHex } = await new EyeDropper().open();
-    return [1, 3, 5].map(index => parseInt(sRGBHex.slice(index, index + 2), 16)) as RgbColor;
-  } catch {
-    return null;
-  }
-}
 
 export function rgbToOklch([red, green, blue]: RgbColor): OklchColor {
   const r = srgbChannel(red);
@@ -223,8 +221,20 @@ function createPicker(): HTMLElement {
     options.onOklchChange?.(!!options.oklch);
     syncPicker(false);
   };
-  element.querySelector<HTMLButtonElement>('.color-picker-eyedropper')!.onclick = async () => {
-    const rgb = await pickScreenColor();
+  const eyedropper = element.querySelector<HTMLButtonElement>('.color-picker-eyedropper')!;
+  eyedropper.onclick = async event => {
+    const pickerOptions = options;
+    const update = onInput;
+    const bounds = eyedropper.getBoundingClientRect();
+    const clientX = event.detail ? event.clientX : bounds.left + bounds.width / 2;
+    const clientY = event.detail ? event.clientY : bounds.top + bounds.height / 2;
+    element.hidden = true;
+    pickerOptions.onEyeDropperChange?.(true);
+    const rgb = await pickScreenColor(clientX, clientY);
+    pickerOptions.onEyeDropperChange?.(false);
+    if (onInput !== update) return;
+    element.hidden = false;
+    eyedropper.focus({ preventScroll: true });
     if (!rgb) return;
     [hue, saturation, value] = rgbToHsv(rgb);
     syncPicker();
@@ -263,6 +273,18 @@ function createPicker(): HTMLElement {
     localStorage.setItem('pdeColorPickerWidth', String(element.offsetWidth));
     localStorage.setItem('pdeColorPickerHeight', String(element.offsetHeight));
   }).observe(element);
+  document.addEventListener('keydown', event => {
+    if (element.hidden || event.key !== 'Enter' || event.isComposing || !options.onConfirm) return;
+    const target = event.target as HTMLElement;
+    if (!element.contains(target) && !anchor?.contains(target)) return;
+    if (element.contains(target) && target.closest('button')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    target.blur();
+    options.onConfirm();
+    anchor?.focus({ preventScroll: true });
+    closeColorPicker();
+  });
   document.addEventListener('pointerdown', event => {
     if (!element.hidden && !element.contains(event.target as Node) && !anchor?.contains(event.target as Node)) closeColorPicker();
   }, true);

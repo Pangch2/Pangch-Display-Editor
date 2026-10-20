@@ -15,7 +15,7 @@ dialog.innerHTML = `
     <div class="summon-command-modes" role="group" aria-label="내보내기 형식">
       <button type="button" data-mode="command" aria-pressed="true" title="커맨드 블록 · 최대 32,500자">Command</button>
       <button type="button" data-mode="datapack" aria-pressed="false" title="mcfunction 한 줄 · 최대 2,000,000자">DataPack</button>
-      <button type="button" data-mode="separate" aria-pressed="false" title="오브젝트 하나당 summon 명령어 하나 · 최대 32,500자">Separate</button>
+      <button type="button" data-mode="separate" aria-pressed="false" title="엔티티 하나당 summon 명령어 하나 · 최대 32,500자">Separate</button>
     </div>
     <button type="button" id="summon-command-save" aria-label="mcfunction 저장" title="mcfunction 저장" hidden disabled><span class="lucide-icon" aria-hidden="true">&#xE14D;</span></button>
     </div>

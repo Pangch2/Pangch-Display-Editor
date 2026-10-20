@@ -5,7 +5,7 @@ export function initHeadAccountSettings(root: HTMLElement): void {
   const login = root.querySelector<HTMLButtonElement>('.settings-login')!;
   const list = root.querySelector<HTMLElement>('.settings-account-list')!;
   const status = root.querySelector<HTMLElement>('.settings-account-status')!;
-  if (!api) {
+  if (!api?.cancelLogin) {
     login.disabled = true;
     status.textContent = '새 계정 기능을 연결하려면 PDE 데스크톱 앱을 다시 시작해 주세요.';
     return;
@@ -14,9 +14,12 @@ export function initHeadAccountSettings(root: HTMLElement): void {
   let running = false;
   let changing = false;
   let loggingIn = false;
+  let cancellingLogin = false;
   const lockControls = () => {
     list.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button').forEach(control => { control.disabled = running || changing; });
-    login.disabled = loggingIn;
+    login.disabled = cancellingLogin;
+    login.textContent = loggingIn ? '로그인 취소' : '로그인하기';
+    login.ariaLabel = loggingIn ? 'Minecraft 로그인 취소' : 'Minecraft 계정 로그인 및 추가';
   };
   const render = (state: HeadAccountState) => {
     accounts = state;
@@ -67,8 +70,16 @@ export function initHeadAccountSettings(root: HTMLElement): void {
     finally { changing = false; lockControls(); }
   };
   login.onclick = async () => {
+    if (loggingIn) {
+      if (cancellingLogin) return;
+      cancellingLogin = true; lockControls();
+      try { await api.cancelLogin(); }
+      catch (error) { status.textContent = error instanceof Error ? error.message : String(error); }
+      finally { cancellingLogin = false; lockControls(); }
+      return;
+    }
     loggingIn = true; lockControls();
-    status.textContent = '브라우저에서 Microsoft 로그인을 완료해 주세요.';
+    status.textContent = '브라우저에서 Microsoft 로그인을 완료해 주세요. 3분이 지나면 자동으로 취소됩니다.';
     try { render(await api.login()); }
     catch (error) { status.textContent = error instanceof Error ? error.message : String(error); }
     finally { loggingIn = false; lockControls(); }

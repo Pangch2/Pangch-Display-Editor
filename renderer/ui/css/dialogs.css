@@ -1,3 +1,224 @@
+.settings-window.user-guide-window {
+  box-sizing: border-box;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.user-guide-window::backdrop {
+  background: #0009;
+}
+
+.user-guide-window > header h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+}
+
+.user-guide-window h2 .menu-bar-logo {
+  width: 20px;
+  height: 20px;
+}
+
+.user-guide-window h2 .menu-bar-title {
+  width: 44px;
+  height: 16px;
+}
+
+.user-guide-content {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 24px;
+  height: calc(100% - 49px);
+  padding: 24px;
+}
+
+.user-guide-content h1 {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.4;
+}
+
+.user-guide-layout {
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  gap: 32px;
+  min-height: 0;
+}
+
+.user-guide-toc {
+  box-sizing: border-box;
+  align-self: start;
+  max-height: 100%;
+  padding: 16px 12px;
+  overflow: auto;
+  border: 1px solid #45454a;
+  border-radius: 10px;
+  background: #1e1e21;
+}
+
+.user-guide-toc h2 {
+  padding: 0 10px 12px;
+  font-size: 15px;
+}
+
+.user-guide-toc h3 {
+  margin: 0 10px 6px;
+  color: #a9ddff;
+  font-size: 13px;
+}
+
+.user-guide-toc section + section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #45454a;
+}
+
+.user-guide-toc ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.user-guide-toc button {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.user-guide-toc button:hover {
+  background: #303035;
+}
+
+.user-guide-toc button[aria-current="page"] {
+  background: #263e50;
+  color: #a9ddff;
+}
+
+.user-guide-number {
+  min-width: 18px;
+  opacity: 0.65;
+}
+
+.user-guide-toc p {
+  margin: 12px 10px 0;
+  color: #a5a5ad;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.user-guide-page {
+  min-width: 0;
+  padding: 0 16px 24px 0;
+  overflow: auto;
+  font-size: 14px;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.user-guide-page h2 {
+  font-size: 26px;
+  line-height: 1.5;
+}
+
+.user-guide-page h3 {
+  padding-top: 24px;
+  font-size: 17px;
+}
+
+.user-guide-page .user-guide-icon {
+  display: inline-block;
+  width: 1.15em;
+  height: 1.15em;
+  margin-right: 5px;
+  vertical-align: -0.2em;
+  font-size: 1.15em;
+  font-weight: normal;
+  line-height: 1;
+  text-align: center;
+  user-select: none;
+}
+
+.user-guide-head-icon {
+  background: url('../../../resources/player_head.svg') center / contain no-repeat;
+}
+
+.user-guide-menu-icon {
+  font-family: sans-serif;
+}
+
+.user-guide-page p {
+  margin: 10px 0;
+}
+
+.user-guide-page ul,
+.user-guide-page ol {
+  padding-left: 24px;
+}
+
+.user-guide-page li + li {
+  margin-top: 8px;
+}
+
+.user-guide-page table {
+  width: 100%;
+  margin: 16px 0;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.user-guide-page th,
+.user-guide-page td {
+  padding: 10px;
+  border-bottom: 1px solid #45454a;
+}
+
+.user-guide-page kbd,
+.user-guide-page code {
+  padding: 2px 5px;
+  border: 1px solid #45454a;
+  border-radius: 4px;
+  background: #1e1e21;
+  font-size: 0.9em;
+}
+
+@media (max-width: 680px) {
+  .user-guide-content {
+    gap: 16px;
+    padding: 16px;
+  }
+
+  .user-guide-content h1 {
+    font-size: 24px;
+  }
+
+  .user-guide-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 180px) minmax(0, 1fr);
+    gap: 20px;
+  }
+}
+
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -37,6 +258,9 @@
 
 .atlas-color-input button {
   width: 28px;
+  height: 28px;
+  padding: 0;
+  flex-shrink: 0;
 }
 
 .atlas-color-input input {
@@ -219,6 +443,42 @@
 
 .settings-overlay[hidden] {
   display: none;
+}
+
+.settings-window.new-project-window {
+  box-sizing: border-box;
+  width: min(580px, calc(100vw - 32px));
+  height: fit-content;
+  max-height: calc(100vh - 32px);
+  padding: 32px;
+  overflow: auto;
+  text-align: center;
+}
+
+.new-project-window::backdrop {
+  background: #0009;
+}
+
+.new-project-window h2 {
+  font-size: 26px;
+  line-height: 1.5;
+}
+
+.new-project-window footer {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.new-project-window button {
+  min-width: 120px;
+  padding: 10px 16px;
+}
+
+.new-project-window button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .settings-window {

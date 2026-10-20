@@ -51,9 +51,10 @@ interface PivotResetFlags {
 
 type GizmoMode = 'translate' | 'rotate' | 'scale' | 'shear';
 export type TransformToolbarAction = GizmoMode | 'undo' | 'redo' | 'toggleScaleMode' | 'toggleSmartScale'
-    | 'toggleSpace' | 'togglePivot' | 'group' | 'duplicate' | 'deleteSelection';
+    | 'toggleVertex' | 'toggleSpace' | 'togglePivot' | 'group' | 'duplicate' | 'deleteSelection';
 export interface TransformToolbarState {
     mode: GizmoMode;
+    vertexMode: boolean;
     blockbenchScale: boolean;
     smartScale: boolean;
     space: 'world' | 'local';
@@ -698,6 +699,7 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
         executeTransformAction: action => executeAction(action, true),
         getTransformToolbarState: () => ({
             mode: p.state.isShearMode ? 'shear' : p.getTransformControls().mode as GizmoMode,
+            vertexMode: p.state.isVertexMode,
             blockbenchScale: blockbenchScaleMode,
             smartScale: isSmartScaleEnabled(),
             space: p.state.currentSpace,

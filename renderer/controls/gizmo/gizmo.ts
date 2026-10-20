@@ -1852,7 +1852,7 @@ export function initGizmo({
 
     const dragControls: DragInterface = initDrag({
         renderer,
-        camera,
+        getCamera: () => camera,
         getControls: () => controls,
         transformControls: transformControls!,
         loadedObjectGroup,

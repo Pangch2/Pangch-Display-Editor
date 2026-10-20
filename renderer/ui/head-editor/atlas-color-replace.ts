@@ -88,7 +88,7 @@ let cancelReplace: (() => void) | null = null;
 let source: RgbColor = [0, 0, 0];
 let target: RgbColor = [0, 0, 0];
 window.addEventListener('keydown', event => {
-    if (!overlay) return;
+    if (!overlay || overlay.hidden) return;
     event.stopImmediatePropagation();
     if (event.key === 'Escape') { event.preventDefault(); cancelReplace?.(); }
     if (event.key === 'Enter' && !event.isComposing && event.target instanceof HTMLElement
@@ -158,8 +158,9 @@ export function openAtlasColorReplace(canvas: HTMLCanvasElement, selection: read
         };
         input.onchange = input.onblur = sync;
     }
-    sourceButton.onclick = () => openColorPicker(sourceButton, source, color => { source = color; sync(); }, { oklch: true });
-    targetButton.onclick = () => openColorPicker(targetButton, target, color => { target = color; sync(); }, { oklch: true });
+    const pickerOptions = { onEyeDropperChange: (active: boolean) => { root.hidden = active; } };
+    sourceButton.onclick = () => openColorPicker(sourceButton, source, color => { source = color; sync(); }, pickerOptions);
+    targetButton.onclick = () => openColorPicker(targetButton, target, color => { target = color; sync(); }, pickerOptions);
     root.querySelector('[data-scope]')!.textContent = `아틀라스 ${atlasIndex + 1}${selection.length ? ` · 선택 영역 ${rects.length}개 (합집합)` : ''}`;
     root.querySelector<HTMLButtonElement>('.settings-close')!.onclick = close;
     root.querySelector('form')!.onsubmit = event => {

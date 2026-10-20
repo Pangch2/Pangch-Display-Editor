@@ -18,7 +18,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import type { InstanceIdRange } from './instance-ranges';
 
 // Helper aliases
-const { isInstanceValid, getInstanceWorldMatrixForOrigin, isItemDisplayHatEnabled, getInstanceLocalBox } = Overlay;
+const { isInstanceValid, getInstanceWorldMatrix, getInstanceLocalBox } = Overlay;
 const { getGroupKey, getGroupChain, getObjectToGroup } = GroupUtils;
 
 interface OrbitControlsLike {
@@ -91,7 +91,7 @@ export function projectedBoxIntersectsMarquee(
 
 export interface DragInitOptions {
     renderer: Renderer;
-    camera: Camera;
+    getCamera: () => Camera;
     getControls: () => OrbitControlsLike;
     transformControls: TransformControls;
     loadedObjectGroup: Group;
@@ -193,7 +193,7 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
  */
 export function initDrag({
     renderer,
-    camera,
+    getCamera,
     getControls,
     transformControls,
     loadedObjectGroup,
@@ -343,6 +343,7 @@ export function initDrag({
                 const groupIds = ignoreGroups ? null : new Set<string>();
                 const meshToIds = new Map<Mesh | InstancedMesh, Set<number>>();
                 const tmpMat = _TMP_MAT4_A;
+                const camera = getCamera();
 
                 const objectToGroup = ignoreGroups ? null : getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
@@ -357,18 +358,17 @@ export function initDrag({
                         const bbox = getInstanceLocalBox(obj as InstancedMesh, instanceId);
                         if (!bbox) continue;
 
-                        getInstanceWorldMatrixForOrigin(obj as InstancedMesh, instanceId, tmpMat);
-                        const localYOffset = isItemDisplayHatEnabled(obj as InstancedMesh, instanceId) ? 0.03125 : 0;
+                        getInstanceWorldMatrix(obj as InstancedMesh, instanceId, tmpMat);
 
                         // 투영된 바운딩 박스 계산을 위한 코너 좌표
-                        _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y + localYOffset, bbox.min.z);
-                        _TMP_CORNERS[1].set(bbox.max.x, bbox.min.y + localYOffset, bbox.min.z);
-                        _TMP_CORNERS[2].set(bbox.min.x, bbox.max.y + localYOffset, bbox.min.z);
-                        _TMP_CORNERS[3].set(bbox.min.x, bbox.min.y + localYOffset, bbox.max.z);
-                        _TMP_CORNERS[4].set(bbox.max.x, bbox.max.y + localYOffset, bbox.min.z);
-                        _TMP_CORNERS[5].set(bbox.max.x, bbox.min.y + localYOffset, bbox.max.z);
-                        _TMP_CORNERS[6].set(bbox.min.x, bbox.max.y + localYOffset, bbox.max.z);
-                        _TMP_CORNERS[7].set(bbox.max.x, bbox.max.y + localYOffset, bbox.max.z);
+                        _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y, bbox.min.z);
+                        _TMP_CORNERS[1].set(bbox.max.x, bbox.min.y, bbox.min.z);
+                        _TMP_CORNERS[2].set(bbox.min.x, bbox.max.y, bbox.min.z);
+                        _TMP_CORNERS[3].set(bbox.min.x, bbox.min.y, bbox.max.z);
+                        _TMP_CORNERS[4].set(bbox.max.x, bbox.max.y, bbox.min.z);
+                        _TMP_CORNERS[5].set(bbox.max.x, bbox.min.y, bbox.max.z);
+                        _TMP_CORNERS[6].set(bbox.min.x, bbox.max.y, bbox.max.z);
+                        _TMP_CORNERS[7].set(bbox.max.x, bbox.max.y, bbox.max.z);
 
                         let minSx = Infinity, maxSx = -Infinity;
                         let minSy = Infinity, maxSy = -Infinity;

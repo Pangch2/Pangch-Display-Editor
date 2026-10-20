@@ -41,6 +41,7 @@ declare interface IpcApi {
   writeProjectClipboard(data: Uint8Array): Promise<void>;
   readProjectClipboard(): Promise<Uint8Array<ArrayBuffer> | undefined>;
   readClipboardText(): Promise<string>;
+  captureColorPicker(): Promise<string>;
   headTextures: import('./player-head-service/head-texture-types').HeadTextureApi;
   getAssetContent(path: string): Promise<AssetContentResult>;
   saveIconAtlas(name: 'block-atlas.png' | 'item-atlas.png', data: Uint8Array): Promise<{ success: boolean; error?: string }>;

@@ -13,20 +13,22 @@ window.addEventListener('pde:active-project-changed', (event: CustomEvent<string
     window.ipcApi.setActiveProject?.(activeProjectId);
 });
 
-export async function saveProject(): Promise<void> {
-    if (saving || !activeProjectId) return;
+export async function saveProject(): Promise<boolean> {
+    if (saving || !activeProjectId) return false;
     saving = true;
     const id = activeProjectId;
     const revision = projectRevision;
     try {
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
         await flushProjectEdits();
-        if (revision !== projectRevision) return;
+        if (revision !== projectRevision) return false;
         const project = serializeProject(loadedObjectGroup);
         const result = await window.ipcApi.saveProject(id, project.name, encodePdeProject(project));
         if (!result.success && !result.canceled) throw new Error(result.error ?? '파일을 저장할 수 없습니다.');
+        return result.success && revision === projectRevision;
     } catch (error) {
         window.alert(`프로젝트 저장 실패: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
     } finally { saving = false; }
 }
 

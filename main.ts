@@ -496,6 +496,12 @@ function createWindow() {
     return autoSaveFiles.save(id, name, data, maximum);
   });
   registerProjectClipboard(win.webContents);
+  ipcMain.handle('capture-color-picker', async event => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Invalid color picker sender');
+    const image = await win.webContents.capturePage();
+    if (image.isEmpty()) throw new Error('Color picker capture is empty');
+    return image.toDataURL({ scaleFactor: Math.max(...image.getScaleFactors()) });
+  });
   ipcMain.handle('decompress-pde-project', (event, data: Uint8Array) => {
     if (event.sender !== win.webContents) throw new Error('Invalid project decompress sender');
     if (!(data instanceof Uint8Array) || data.length < 5

@@ -13,6 +13,7 @@ export const transformToolbarTools: { action: TransformToolbarAction; label: str
     { action: 'toggleScaleMode', label: '블록벤치 스케일', mask: 'blockbench-scale' },
     { action: 'toggleSmartScale', label: '스마트 스케일', icon: '\ue357' },
     { action: 'shear', label: '기울이기 (shear)', mask: 'shear' },
+    { action: 'toggleVertex', label: '버텍스 모드', icon: '\ue121' },
     { action: 'toggleSpace', label: '좌표계', icon: '\ue0e8' },
     { action: 'togglePivot', label: '피벗', icon: '\ue0ac' },
     { action: 'undo', label: '실행 취소', icon: '\ue19b', edit: true },
@@ -37,6 +38,8 @@ export function setSceneToolbarPosition(position: string): void {
 export function initTransformToolbar(getControls: () => TransformToolbarControls | undefined): () => void {
     const mainContent = document.getElementById('main-content')!;
     const sceneToolbar = document.getElementById('scene-toolbar')!;
+    const editMenu = document.getElementById('edit-menu');
+    const editButtons = new Map<TransformToolbarAction, HTMLButtonElement>();
     const separateToolbar = document.createElement('div');
     separateToolbar.id = 'sidebar-toolbar';
     separateToolbar.className = 'horizontal-toolbar';
@@ -59,12 +62,25 @@ export function initTransformToolbar(getControls: () => TransformToolbarControls
         const icon = document.createElement('span');
         icon.setAttribute('aria-hidden', 'true');
         icon.className = tool.mask ? `transform-icon ${tool.mask}` : 'lucide-icon';
+        icon.classList.toggle('vertex-icon', tool.action === 'toggleVertex');
         icon.textContent = tool.icon ?? '';
         button.append(icon);
-        button.addEventListener('click', () => {
+        const execute = () => {
             getControls()?.executeTransformAction(tool.action);
             update();
-        });
+        };
+        button.addEventListener('click', execute);
+        if (tool.edit && editMenu) {
+            const menuButton = document.createElement('button');
+            menuButton.type = 'button';
+            menuButton.dataset.editAction = tool.action;
+            menuButton.setAttribute('role', 'menuitem');
+            menuButton.disabled = true;
+            menuButton.append(icon.cloneNode(true), document.createElement('span'));
+            menuButton.addEventListener('click', execute);
+            editMenu.append(menuButton);
+            editButtons.set(tool.action, menuButton);
+        }
         toolbars[tool.edit ? 1 : 0].append(button);
         return button;
     });
@@ -100,8 +116,16 @@ export function initTransformToolbar(getControls: () => TransformToolbarControls
                 : tool.action === 'togglePivot' ? `: ${state?.pivot === 'center' ? '중심' : '원점'}` : '';
             const label = tool.label + value;
             const shortcut = getShortcuts(tool.action).join(' / ');
+            const glyph = tool.action === 'toggleSpace' ? (state?.space === 'local' ? '\ue2fe' : tool.icon)
+                : tool.action === 'togglePivot' ? (state?.pivot === 'center' ? '\ue29e' : tool.icon) : undefined;
+            if (glyph) buttons[index].firstElementChild!.textContent = glyph;
             buttons[index].setAttribute('aria-label', label);
             buttons[index].title = label + (shortcut ? ` (${shortcut})` : '');
+            const menuButton = editButtons.get(tool.action);
+            if (menuButton) {
+                menuButton.lastElementChild!.textContent = label;
+                menuButton.title = buttons[index].title;
+            }
         });
     };
     let previousSpace: string;
@@ -114,12 +138,17 @@ export function initTransformToolbar(getControls: () => TransformToolbarControls
                 || (tool.action === 'redo' && !state.canRedo)
                 || (tool.edit === true && tool.action !== 'undo' && tool.action !== 'redo' && !state.hasSelection);
             if (button.disabled !== disabled) button.disabled = disabled;
-            if (tool.edit) return;
+            const menuButton = editButtons.get(tool.action);
+            if (menuButton && menuButton.disabled !== disabled) menuButton.disabled = disabled;
+            if (tool.edit || tool.action === 'toggleSpace' || tool.action === 'togglePivot') return;
             const pressed = !!state && (tool.action === 'toggleScaleMode' ? state.blockbenchScale
                 : tool.action === 'toggleSmartScale' ? state.smartScale
-                : tool.action === 'toggleSpace' ? state.space === 'local'
-                : tool.action === 'togglePivot' ? state.pivot === 'center' : state.mode === tool.action);
+                : tool.action === 'toggleVertex' ? state.vertexMode : state.mode === tool.action);
             if (button.getAttribute('aria-pressed') !== String(pressed)) button.setAttribute('aria-pressed', String(pressed));
+            if (tool.action === 'toggleVertex') {
+                const glyph = transformToolbarTools.find(tool => tool.action === (state?.mode === 'shear' ? 'rotate' : state?.mode))?.icon ?? tool.icon;
+                if (button.firstElementChild!.textContent !== glyph) button.firstElementChild!.textContent = glyph;
+            }
         });
         if (state?.space !== previousSpace || state?.pivot !== previousPivot) {
             previousSpace = state?.space;

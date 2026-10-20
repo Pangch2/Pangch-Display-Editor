@@ -6,12 +6,13 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { constants, zstdCompress, zstdDecompress } from 'node:zlib';
 import type { HeadAccountState } from './head-texture-types.js';
-import { downloadSkin, skinFaceImage } from './minecraft-skin.js';
+import { downloadSkin, skinFaceImage, textureUrl } from './minecraft-skin.js';
 
 const services = 'https://api.minecraftservices.com';
 const authority = 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
 const scope = 'XboxLive.signin offline_access';
-type Session = { refreshToken: string; uuid: string; username: string; enabled: boolean; face?: string };
+type Session = { refreshToken: string; uuid: string; username: string; enabled: boolean; face?: string;
+  authentication?: { accessToken: string; expiresAt: number } };
 const accountsFile = 'pde-minecraft-accounts.json';
 export const accountUuid = (value: unknown): string => {
   if (typeof value !== 'string' || !/^(?:[a-f\d]{32}|[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})$/i.test(value)) {
@@ -84,19 +85,20 @@ async function responseJson<T>(response: Response, method = 'GET'): Promise<T> {
   return response.status === 204 ? undefined as T : await response.json() as T;
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
   return responseJson<T>(await fetch(url, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(30000)
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000)
   }), 'POST');
 }
 
 export class MinecraftAccount {
   lastLoginUuid?: string;
   private sessions = new Map<string, Session>();
-  private authentication = new Map<string, { accessToken: string; expiresAt: number }>();
   private clientId = 'dd0f5c23-a76b-4600-9c75-774150a780dc';
   private ready?: Promise<void>;
   private loggingIn?: Promise<HeadAccountState>;
+  private loginController?: AbortController;
   private refreshing = new Map<string, Promise<void>>();
   private saving = Promise.resolve();
 
@@ -120,6 +122,9 @@ export class MinecraftAccount {
           const uuid = accountUuid(session.uuid);
           if (typeof session.refreshToken !== 'string' || !session.refreshToken || typeof session.username !== 'string' ||
               typeof session.enabled !== 'boolean' || this.sessions.has(uuid)) throw new Error('저장된 Minecraft 계정이 올바르지 않습니다.');
+          const authentication = session.authentication;
+          if (!authentication || typeof authentication.accessToken !== 'string' || !authentication.accessToken ||
+              !Number.isFinite(authentication.expiresAt) || authentication.expiresAt <= Date.now()) delete session.authentication;
           this.sessions.set(uuid, { ...session, uuid });
         }
         if (legacy) await this.saveSessions(this.sessions);
@@ -131,6 +136,30 @@ export class MinecraftAccount {
   async state(): Promise<HeadAccountState> {
     await this.initialize();
     return { configured: !!this.clientId, accounts: [...this.sessions.values()].map(({ uuid, username, face, enabled }) => ({ uuid, username, face, enabled })) };
+  }
+
+  async publicProfile(uuid: string): Promise<MinecraftProfile> {
+    uuid = accountUuid(uuid);
+    // shortcut: public profiles can lag server-side changes; use authenticated reads when immediate consistency is required.
+    const profile = await responseJson<{ id: string; name: string; properties?: Array<{ name: string; value: string }> }>(await fetch(
+      `https://sessionserver.mojang.com/session/minecraft/profile/${uuid}`,
+      { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(30000) }
+    ));
+    if (accountUuid(profile.id) !== uuid || typeof profile.name !== 'string') throw new Error('Minecraft 공개 프로필 응답이 올바르지 않습니다.');
+    const encoded = profile.properties?.find(property => property.name === 'textures')?.value;
+    if (typeof encoded !== 'string') throw new Error('Minecraft 스킨 정보를 찾을 수 없습니다.');
+    const texture = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as {
+      profileId: string; textures?: { SKIN?: { url: string; metadata?: { model?: string } } };
+    };
+    if (accountUuid(texture.profileId) !== uuid || !texture.textures || typeof texture.textures !== 'object' || Array.isArray(texture.textures)) {
+      throw new Error('Minecraft 스킨 응답이 올바르지 않습니다.');
+    }
+    const skin = texture.textures.SKIN;
+    if (skin !== undefined && (!skin || (skin.metadata?.model !== undefined && !['slim', 'default'].includes(skin.metadata.model)))) {
+      throw new Error('Minecraft 스킨 모델 응답이 올바르지 않습니다.');
+    }
+    return { id: uuid, name: profile.name, skins: skin ? [{ state: 'ACTIVE', url: textureUrl(skin.url),
+      variant: skin.metadata?.model === 'slim' ? 'SLIM' : 'CLASSIC' }] : [] };
   }
 
   private async saveSessions(sessions: Map<string, Session>): Promise<void> {
@@ -159,33 +188,48 @@ export class MinecraftAccount {
     return session;
   }
 
-  private async tokens(parameters: Record<string, string>): Promise<{ access_token: string; refresh_token: string }> {
+  private async tokens(parameters: Record<string, string>, signal?: AbortSignal): Promise<{ access_token: string; refresh_token: string }> {
     return responseJson(await fetch(`${authority}/token`, {
       method: 'POST', body: new URLSearchParams({ client_id: this.clientId, scope, ...parameters }),
-      signal: AbortSignal.timeout(30000)
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000)
     }), 'POST');
   }
 
-  private async exchange(accessToken: string): Promise<{ accessToken: string; expiresAt: number }> {
+  private async exchange(accessToken: string, signal?: AbortSignal): Promise<{ accessToken: string; expiresAt: number }> {
     const xbox = await postJson<{ Token: string }>('https://user.auth.xboxlive.com/user/authenticate', {
       Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${accessToken}` },
       RelyingParty: 'http://auth.xboxlive.com', TokenType: 'JWT'
-    });
+    }, signal);
     const xsts = await postJson<{ Token: string; DisplayClaims: { xui: Array<{ uhs: string }> } }>('https://xsts.auth.xboxlive.com/xsts/authorize', {
       Properties: { SandboxId: 'RETAIL', UserTokens: [xbox.Token] }, RelyingParty: 'rp://api.minecraftservices.com/', TokenType: 'JWT'
-    });
+    }, signal);
     const minecraft = await postJson<{ access_token: string; expires_in: number }>(`${services}/authentication/login_with_xbox`, {
       identityToken: `XBL3.0 x=${xsts.DisplayClaims.xui[0].uhs};${xsts.Token}`
-    });
+    }, signal);
+    if (typeof minecraft.access_token !== 'string' || !minecraft.access_token || !Number.isFinite(minecraft.expires_in) || minecraft.expires_in <= 0) {
+      throw new Error('Minecraft 인증 응답이 올바르지 않습니다.');
+    }
     return { accessToken: minecraft.access_token, expiresAt: Date.now() + minecraft.expires_in * 1000 - 60000 };
   }
 
   login(): Promise<HeadAccountState> {
-    return this.loggingIn ??= this.performLogin().finally(() => { this.loggingIn = undefined; });
+    if (!this.loggingIn) {
+      const controller = this.loginController = new AbortController();
+      const timeout = setTimeout(() => controller.abort(new Error('로그인 시간이 초과되었습니다. 다시 시도해 주세요.')), 180000);
+      this.loggingIn = this.performLogin(controller.signal).finally(() => {
+        clearTimeout(timeout); this.loginController = undefined; this.loggingIn = undefined;
+      });
+    }
+    return this.loggingIn;
   }
 
-  private async performLogin(): Promise<HeadAccountState> {
+  cancelLogin(): void {
+    this.loginController?.abort(new Error('로그인이 취소되었습니다.'));
+  }
+
+  private async performLogin(signal: AbortSignal): Promise<HeadAccountState> {
     await this.initialize();
+    signal.throwIfAborted();
     if (!this.clientId) throw new Error('PDE Microsoft 앱 등록 설정이 아직 없습니다. README의 로그인 설정을 확인해 주세요.');
     const verifier = randomBytes(32).toString('base64url');
     const state = randomBytes(32).toString('hex');
@@ -196,12 +240,22 @@ export class MinecraftAccount {
         server.once('error', reject);
         server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolve(); });
       });
+      signal.throwIfAborted();
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('로그인 콜백을 열지 못했습니다.');
       const redirectUri = `http://localhost:${address.port}/callback`;
+      const parameters = new URLSearchParams({ client_id: this.clientId, response_type: 'code', redirect_uri: redirectUri,
+        scope, state, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account' });
       const code = await new Promise<string>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('로그인 시간이 초과되었습니다. 다시 시도해 주세요.')), 180000);
-        const finish = (error?: Error, value?: string) => { clearTimeout(timeout); error ? reject(error) : resolve(value!); };
+        let finished = false;
+        const onAbort = () => finish(signal.reason);
+        const finish = (error?: Error, value?: string) => {
+          if (finished) return;
+          finished = true;
+          signal.removeEventListener('abort', onAbort);
+          error ? reject(error) : resolve(value!);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
         server.on('request', (request, response) => {
           const url = new URL(request.url || '/', redirectUri);
           if (request.method !== 'GET' || url.pathname !== '/callback' || url.searchParams.get('state') !== state) {
@@ -212,28 +266,28 @@ export class MinecraftAccount {
           const value = url.searchParams.get('code');
           finish(value ? undefined : new Error('로그인이 취소되었거나 거부되었습니다.'), value || undefined);
         });
-        const parameters = new URLSearchParams({ client_id: this.clientId, response_type: 'code', redirect_uri: redirectUri,
-          scope, state, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account' });
         void shell.openExternal(`${authority}/authorize?${parameters}`).catch(error => finish(error));
       });
-      const tokens = await this.tokens({ grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: redirectUri });
-      const authentication = await this.exchange(tokens.access_token);
+      const tokens = await this.tokens({ grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: redirectUri }, signal);
+      const authentication = await this.exchange(tokens.access_token, signal);
       const profile = await responseJson<MinecraftProfile>(await fetch(`${services}/minecraft/profile`, {
-        headers: { Authorization: `Bearer ${authentication.accessToken}` }, signal: AbortSignal.timeout(30000)
+        headers: { Authorization: `Bearer ${authentication.accessToken}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(30000)])
       }));
       const uuid = accountUuid(profile.id);
       let face: string | undefined;
       const skin = profile.skins.find(skin => skin.state === 'ACTIVE');
-      if (skin) { try { face = skinFaceImage(await downloadSkin(skin.url)); } catch { /* The account remains usable with the default face icon. */ } }
+      if (skin) { try { face = skinFaceImage(await downloadSkin(skin.url, signal)); } catch { /* The account remains usable with the default face icon. */ } }
       if (typeof profile.name !== 'string' || typeof tokens.refresh_token !== 'string' || !tokens.refresh_token) throw new Error('Minecraft 계정 응답이 올바르지 않습니다.');
       await this.updateSessions(sessions => {
-        sessions.set(uuid, { refreshToken: tokens.refresh_token, uuid, username: profile.name, face,
+        signal.throwIfAborted();
+        sessions.set(uuid, { refreshToken: tokens.refresh_token, uuid, username: profile.name, face, authentication,
           enabled: sessions.get(uuid)?.enabled ?? true });
       });
-      this.authentication.set(uuid, authentication);
       this.lastLoginUuid = uuid;
       return this.state();
-    } finally { server.closeAllConnections(); server.close(); }
+    } finally {
+      server.closeAllConnections(); server.close();
+    }
   }
 
   private refresh(uuid: string): Promise<void> {
@@ -251,13 +305,16 @@ export class MinecraftAccount {
       await this.updateSessions(sessions => {
         const current = sessions.get(uuid);
         if (current?.refreshToken === session.refreshToken) {
-          updated = { ...current, refreshToken: tokens.refresh_token || current.refreshToken };
+          updated = { ...current, refreshToken: tokens.refresh_token || current.refreshToken, authentication: undefined };
           sessions.set(uuid, updated);
         }
       });
       if (!updated) return;
       const authentication = await this.exchange(tokens.access_token);
-      if (this.sessions.get(uuid)?.refreshToken === updated.refreshToken) this.authentication.set(uuid, authentication);
+      await this.updateSessions(sessions => {
+        const current = sessions.get(uuid);
+        if (current?.refreshToken === updated.refreshToken) sessions.set(uuid, { ...current, authentication });
+      });
     })().finally(() => { this.refreshing.delete(uuid); });
     this.refreshing.set(uuid, task);
     return task;
@@ -265,11 +322,10 @@ export class MinecraftAccount {
 
   async request<T>(uuid: string, route: string, init: RequestInit = {}): Promise<T> {
     await this.initialize();
-    this.session(uuid);
-    const authentication = this.authentication.get(uuid);
+    const authentication = this.session(uuid).authentication;
     if (!authentication || Date.now() >= authentication.expiresAt) await this.refresh(uuid);
     const send = () => fetch(`${services}${route}`, { ...init,
-      headers: { ...init.headers, Authorization: `Bearer ${this.authentication.get(uuid)!.accessToken}` }, signal: AbortSignal.timeout(30000) });
+      headers: { ...init.headers, Authorization: `Bearer ${this.session(uuid).authentication!.accessToken}` }, signal: AbortSignal.timeout(30000) });
     let response = await send();
     if (response.status === 401) {
       await this.refresh(uuid);
@@ -284,7 +340,6 @@ export class MinecraftAccount {
     await this.initialize();
     this.session(uuid);
     await this.updateSessions(sessions => { sessions.delete(uuid); });
-    this.authentication.delete(uuid);
     return this.state();
   }
 

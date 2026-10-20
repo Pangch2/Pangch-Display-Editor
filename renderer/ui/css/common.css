@@ -30,6 +30,16 @@ textarea {
   user-select: text;
 }
 
+input[type="number"]::-webkit-inner-spin-button {
+  display: none;
+  cursor: ns-resize;
+}
+
+input[type="number"]:hover::-webkit-inner-spin-button {
+  display: block;
+  opacity: 1;
+}
+
 .pde-input {
   box-sizing: border-box;
   border: 1px solid #45454a;

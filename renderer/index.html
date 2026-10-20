@@ -4,21 +4,40 @@
   <meta charset="UTF-8">
   <title>PDE</title>
   <link rel="stylesheet" href="./ui/main.css">
+  <script type="module" src="./ui/dialogs/user-guide.ts"></script>
   <script type="module" src="./ui/head-editor/head-texture-loading.ts"></script>
   <script type="module" src="./ui/dialogs/welcome.ts"></script>
   <script type="module" src="./ui/toolbar/tool-bar.ts"></script>
   <script type="module" src="./ui/settings/setting.ts"></script>
   <script type="module" src="./ui/dialogs/summon-command.ts"></script>
+  <script type="module" src="./ui/toolbar/menu-bar.ts"></script>
 </head>
 <body>
   <header id="menu-bar">
     <span class="menu-bar-logo" aria-hidden="true"></span>
     <span class="menu-bar-title">PDE</span>
     <div class="menu-bar-items">
-      <span>파일</span>
-      <span>편집</span>
-      <span>소환</span>
-      <span>도움!</span>
+      <div class="menu-bar-dropdown">
+        <button id="file-menu-button" class="menu-bar-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="file-menu">파일</button>
+        <div id="file-menu" class="menu-bar-popup" role="menu" aria-labelledby="file-menu-button" hidden>
+          <button type="button" role="menuitem" data-file-action="new"><span class="lucide-icon" aria-hidden="true">&#xE0C9;</span>새 프로젝트</button>
+          <button type="button" role="menuitem" data-file-action="newTab"><span class="lucide-icon" aria-hidden="true">&#xE426;</span>새 프로젝트 탭</button>
+          <button type="button" role="menuitem" data-file-action="open"><span class="lucide-icon" aria-hidden="true">&#xE247;</span>프로젝트 열기</button>
+          <button type="button" role="menuitem" data-file-action="save"><span class="lucide-icon" aria-hidden="true">&#xE14D;</span>저장</button>
+          <button type="button" role="menuitem" data-file-action="export"><span class="lucide-icon" aria-hidden="true">&#xE0B2;</span>내보내기</button>
+        </div>
+      </div>
+      <div class="menu-bar-dropdown">
+        <button id="edit-menu-button" class="menu-bar-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="edit-menu">편집</button>
+        <div id="edit-menu" class="menu-bar-popup" role="menu" aria-labelledby="edit-menu-button" hidden></div>
+      </div>
+      <button id="summon-menu-button" class="menu-bar-button" type="button">소환</button>
+      <div class="menu-bar-dropdown">
+        <button id="help-menu-button" class="menu-bar-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu">도움!</button>
+        <div id="help-menu" class="menu-bar-popup" role="menu" aria-labelledby="help-menu-button" hidden>
+          <button id="user-guide-button" type="button" role="menuitem"><span class="menu-bar-logo" aria-hidden="true"></span>PDE 사용설명서</button>
+        </div>
+      </div>
     </div>
   </header>
 

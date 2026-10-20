@@ -11,7 +11,7 @@ export function initTransformToolbarSettings(root: HTMLElement): void {
             </select><span class="lucide-icon">&#xE06D;</span></span>
             <div class="settings-sidebar-tools" role="group" aria-label="${label} 버튼 표시">
                 ${transformToolbarTools.filter(tool => Boolean(tool.edit) === edit).map(tool => `
-                    <label title="${tool.label}"><span class="${tool.mask ? `transform-icon ${tool.mask}` : 'lucide-icon'}" aria-hidden="true">${tool.icon ?? ''}</span>
+                    <label title="${tool.label}"><span class="${tool.mask ? `transform-icon ${tool.mask}` : 'lucide-icon'}${tool.action === 'toggleVertex' ? ' vertex-icon' : ''}" aria-hidden="true">${tool.icon ?? ''}</span>
                         <input type="checkbox" data-toolbar-action="${tool.action}" aria-label="${tool.label} 버튼 표시">
                     </label>`).join('')}
             </div></div>`;

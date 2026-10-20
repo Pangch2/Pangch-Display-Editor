@@ -150,6 +150,12 @@ export function toggleShading(): boolean {
   return shadingEnabled.value === 1;
 }
 
+export function suspendShading(): () => void {
+  const previous = shadingEnabled.value;
+  shadingEnabled.value = 0;
+  return () => { shadingEnabled.value = previous; };
+}
+
 export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false, headUvTexture?: Texture, instancedTintIndex = -1, useVertexTint = false) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);

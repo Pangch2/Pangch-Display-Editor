@@ -117,7 +117,7 @@ export function initHeadTextureService(win: BrowserWindow): () => Promise<() => 
     };
     const provider: TextureProvider = {
       name: usernames.get(uuid) ?? uuid,
-      nextJobAt: () => schedule.readyAt(uuid, backups.has(uuid) ? 1 : 2),
+      nextJobAt: () => schedule.readyAt(uuid),
       needsRestore: () => {
         const original = backups.get(uuid);
         if (!original?.dirty) return false;
@@ -129,7 +129,8 @@ export function initHeadTextureService(win: BrowserWindow): () => Promise<() => 
       },
       backup: async () => {
         if (backups.has(uuid)) return;
-        const skin = activeSkin(confirmedProfile ?? await profile());
+        // Public profiles are only used before mutation; reconciliation needs the authenticated state.
+        const skin = activeSkin(confirmedProfile ??= await account.publicProfile(uuid));
         schedule.observeBackup(uuid, !!skin);
         const original: SkinBackup = { uuid, variant: skin?.variant.toLowerCase() === 'slim' ? 'slim' : 'classic', dirty: false };
         if (skin) {
@@ -230,7 +231,7 @@ export function initHeadTextureService(win: BrowserWindow): () => Promise<() => 
   win.webContents.prependListener('before-input-event', (event, input) => {
     if (inputLocked && (input.control || input.meta || input.alt || !['Tab', 'Enter', ' ', 'Space'].includes(input.key))) event.preventDefault();
   });
-  win.webContents.on('did-start-loading', () => { inputLocked = false; });
+  win.webContents.on('did-start-loading', () => { inputLocked = false; account.cancelLogin(); });
   handle('head-texture-input-lock', locked => {
     if (typeof locked !== 'boolean') throw new Error('입력 잠금 상태는 boolean이어야 합니다.');
     inputLocked = locked;
@@ -238,6 +239,7 @@ export function initHeadTextureService(win: BrowserWindow): () => Promise<() => 
   handle('head-account-state', async () => {
     try { return await accountState(); } catch (error) { return { configured: false, accounts: [], error: String(error) }; }
   });
+  handle('head-account-login-cancel', () => account.cancelLogin());
   handle('head-account-login', async () => {
     try {
       const result = await account.login();
@@ -344,6 +346,7 @@ export function initHeadTextureService(win: BrowserWindow): () => Promise<() => 
   void recover().catch(error => { state = { ...state, phase: 'failed', error: String(error) }; emit({ state }); });
   let closing = false;
   win.on('close', event => {
+    account.cancelLogin();
     if (closing || !state.running) return;
     event.preventDefault(); closing = true; cancel();
     // Persisted backups allow recovery after an offline or forced shutdown.
