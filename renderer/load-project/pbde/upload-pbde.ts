@@ -10,10 +10,11 @@ import '../../save/save-project';
 import { importMcfunctionFiles, openMcfunctionFile } from '../../controls/input/selection-clipboard';
 import { prepareMcfunctionFiles } from '../mcfunction/mcfunction-import';
 import { currentLoadGen } from '../display/display-instancing';
-import { trackProjectEdit } from '../../save/pending-edits';
+import { trackProjectEdit, deferProjectChange, commitFocusedProjectEdit, settleCurrentProjectEdits } from '../../save/pending-edits';
 import { autoSave } from '../../save/auto/auto-save';
 import { encodePdeProject } from '../../save/pde-format';
 import { serializeProject } from '../../save/project-state';
+import { disposeProjectResources } from '../display/project-resources';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 type ScenePrecompileTrace = {
@@ -211,6 +212,8 @@ function saveActiveProject(): void {
 
 function switchProject(index: number): void {
     if (index < 0 || index >= projects.length || index === activeProject) return;
+    const targetId = projects[index].id;
+    if (deferProjectChange(() => switchProject(projects.findIndex(project => project.id === targetId)))) return;
     beginPbdeLoadGeneration();
     loadedObjectGroup.userData.resetSelection?.();
     saveActiveProject();
@@ -233,6 +236,7 @@ function switchProject(index: number): void {
 }
 
 function addProject(): void {
+    if (deferProjectChange(addProject)) return;
     saveActiveProject();
     projects.push({ id: crypto.randomUUID(), autoSaveRevision: 0, children: [], data: {} });
     switchProject(projects.length - 1);
@@ -240,21 +244,29 @@ function addProject(): void {
 }
 
 export function replaceProject(): void {
+    const targetId = projects[activeProject]?.id;
+    if (deferProjectChange(() => { if (projects[activeProject]?.id === targetId) replaceProject(); })) return;
     if (activeProject < 0) return addProject();
+    saveActiveProject();
     const index = activeProject;
-    const previousId = projects[index].id;
+    const previous = projects[index];
+    const previousId = previous.id;
     autoSave.forget(previousId);
     window.ipcApi.forgetProjectSavePath?.(previousId);
     projects[index] = { id: crypto.randomUUID(), autoSaveRevision: 0, children: [], data: {} };
     activeProject = -1;
     switchProject(index);
     deleteHistoryContext(previousId);
+    disposeProjectResources(previous, projects);
     registerProjectAutoSave(projects[index]);
 }
 
 function deleteProject(index: number): void {
     if (index < 0 || index >= projects.length || projects.length === 1) return;
     const deletedId = projects[index].id;
+    if (index === activeProject && deferProjectChange(() => deleteProject(projects.findIndex(project => project.id === deletedId)))) return;
+    saveActiveProject();
+    const deleted = projects[index];
     autoSave.forget(deletedId);
     window.ipcApi.forgetProjectSavePath?.(deletedId);
     if (index !== activeProject) {
@@ -262,6 +274,7 @@ function deleteProject(index: number): void {
         projects.splice(index, 1);
         activeProject = projects.findIndex(project => project.id === activeId);
         deleteHistoryContext(deletedId);
+        disposeProjectResources(deleted, projects);
         renderProjectTabs();
         return;
     }
@@ -274,6 +287,7 @@ function deleteProject(index: number): void {
     const nextIndex = Math.min(index, projects.length - 2);
     projects.splice(index, 1);
     deleteHistoryContext(deletedId);
+    disposeProjectResources(deleted, projects);
     activeProject = -1;
     if (projects.length) switchProject(nextIndex);
     else {
@@ -351,7 +365,7 @@ function renderProjectTabs(): void {
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = '+ 추가 프로젝트 창';
-        button.onclick = addProject;
+        button.onclick = () => addProject();
         return button;
     })());
 }
@@ -463,9 +477,12 @@ async function precompileLoadedScene(mode: 'open' | 'merge', fileCount: number):
 async function loadpbde(files: File | File[], reuseCurrentProject = false): Promise<void> {
     const fileList = Array.isArray(files) ? files : [files];
     if (fileList.length === 0) return;
+    const initialGeneration = currentLoadGen;
+    commitFocusedProjectEdit();
+    await settleCurrentProjectEdits();
+    if (initialGeneration !== currentLoadGen) return;
 
     const perceivedLoadStartMs = performance.now();
-    const initialGeneration = currentLoadGen;
 
     try {
         const imports = await prepareMcfunctionFiles(fileList);
@@ -494,6 +511,7 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
     } catch (e) {
         console.error("Error loading project files:", e);
         window.alert(e instanceof Error ? e.message : String(e));
+        window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     }
     await precompileLoadedScene('open', fileList.length);
     await logFinalPbdeLoadTime(perceivedLoadStartMs, 'open', fileList.length);
@@ -502,6 +520,10 @@ async function loadpbde(files: File | File[], reuseCurrentProject = false): Prom
 async function mergepbde(files: File | File[]): Promise<void> {
     const fileList = Array.isArray(files) ? files : [files];
     if (fileList.length === 0) return;
+    const initialGeneration = currentLoadGen;
+    commitFocusedProjectEdit();
+    await settleCurrentProjectEdits();
+    if (initialGeneration !== currentLoadGen) return;
 
     if (fileList.some(file => /\.mcfunction$/i.test(file.name))) {
         try { await importMcfunctionFiles(fileList); }
@@ -514,7 +536,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
     const existingGroupIds = new Set((loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys());
     let merged = false;
 
-    const batchGen = beginPbdeLoadGeneration();
+    const batchGen = beginPbdeLoadGeneration(true);
     const allNewMeshes: LoadedSelection = new Map();
 
     try {

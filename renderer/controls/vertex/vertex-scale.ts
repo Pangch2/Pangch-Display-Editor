@@ -274,9 +274,9 @@ export function processVertexScale(
 
     const addGroup = (groupId: string) => {
         targets.groups.add(groupId);
+        for (const id of GroupUtils.getAllDescendantGroups(loadedObjectGroup, groupId)) targets.groups.add(id);
         GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId).forEach(c => {
-            if (c.type === 'object') addInstance(c.mesh, c.instanceId);
-            else if (c.type === 'group') addGroup((c as unknown as GroupUtils.GroupChildGroup).id);
+            addInstance(c.mesh, c.instanceId);
         });
     };
 

@@ -32,14 +32,14 @@ export class ProjectFileStore {
         }
     }
 
-    async save(id: string, name: string, data: Uint8Array, choosePath: (name: string) => Promise<string | undefined>): Promise<ProjectSaveResult> {
+    async save(id: string, name: string, data: Uint8Array, choosePath: (name: string) => Promise<string | undefined>, saveAs = false): Promise<ProjectSaveResult> {
         if (this.saving || id !== this.activeProjectId) return { success: false, canceled: true };
         if (typeof name !== 'string' || !(data instanceof Uint8Array) || data.length === 0) return { success: false, error: 'Invalid project save data' };
         this.saving = true;
         const revision = this.revision;
         let temporaryPath: string | undefined;
         try {
-            const selected = this.paths.get(id) ?? await choosePath(name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'project');
+            const selected = (saveAs ? undefined : this.paths.get(id)) ?? await choosePath(name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'project');
             if (!selected || revision !== this.revision) return { success: false, canceled: true };
             const target = path.extname(selected).toLowerCase() === '.pde' ? selected : selected + '.pde';
             const compressed = compressPdeProject(data);

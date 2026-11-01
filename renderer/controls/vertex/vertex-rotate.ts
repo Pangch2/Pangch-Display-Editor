@@ -230,10 +230,10 @@ export function processVertexRotate(
 
         const addGroup = (groupId: string) => {
             targets.groups.add(groupId);
+            for (const id of GroupUtils.getAllDescendantGroups(loadedObjectGroup, groupId)) targets.groups.add(id);
             const children = GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId);
             for (const child of children) {
-                if (child.type === 'object') addInstance(child.mesh, child.instanceId);
-                else if (child.type === 'group') addGroup((child as unknown as GroupUtils.GroupChildGroup).id);
+                addInstance(child.mesh, child.instanceId);
             }
         };
 

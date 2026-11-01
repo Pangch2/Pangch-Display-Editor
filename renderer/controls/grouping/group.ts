@@ -9,6 +9,8 @@ import {
 } from 'three/webgpu';
 
 // Types
+import { assertAnimationParentsInvertible, cloneAnimationTarget } from '../../animation/animation-state';
+
 export interface GroupChildObject {
     type: 'object';
     mesh: Mesh | InstancedMesh;
@@ -526,6 +528,7 @@ export function createGroupStructure(
         }
     }
 
+    assertAnimationParentsInvertible(loadedObjectGroup, [newGroup.parent]);
     const affectedGroupIds = new Set<string>();
     const removedGroupIdsByParent = new Map<string, Set<string>>();
     const removedObjectKeysByParent = new Map<string, Set<string>>();
@@ -655,6 +658,7 @@ export function ungroupGroupStructure(
     if (!group) return null;
 
     const parentId = group.parent || null;
+    assertAnimationParentsInvertible(loadedObjectGroup, [parentId]);
     const parentGroup = parentId ? groups.get(parentId) : null;
 
     const children = Array.isArray(group.children) ? group.children.slice() : [];
@@ -738,6 +742,7 @@ export function cloneGroupStructure(
     groups.set(newGroupId, newGroup);
 
     if (parentId) {
+        cloneAnimationTarget(loadedObjectGroup, groupId, newGroupId, parentId);
         const parentGroup = groups.get(parentId);
         if (parentGroup) {
             if (!Array.isArray(parentGroup.children)) parentGroup.children = [];
@@ -753,6 +758,7 @@ export function cloneGroupStructure(
             }
         }
     } else {
+        cloneAnimationTarget(loadedObjectGroup, groupId, newGroupId, null);
         const sceneOrder = loadedObjectGroup.userData?.sceneOrder as SceneOrderEntry[] | undefined;
         if (Array.isArray(sceneOrder) && sourceGroup.parent === null) {
             const sourceIndex = sceneOrder.findIndex((entry) => entry.type === 'group' && entry.id === groupId);

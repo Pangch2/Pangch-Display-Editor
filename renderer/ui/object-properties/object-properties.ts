@@ -6,10 +6,10 @@ import type { DisplayReplacementResult } from '../../load-project/display/mesh-b
 import { DEFAULT_PLAYER_HEAD_TEXTURE } from '../../load-project/display/player-head-atlas';
 import type { TextDisplayContentType, TextDisplayOptions } from '../../load-project/display/text-display';
 import { defaultTextDisplayOptions } from '../../load-project/display/text-display';
-import { queueProjectEdit, startProjectEdit, trackProjectEdit } from '../../save/pending-edits';
+import { queueProjectEdit, startProjectEdit, trackProjectEdit, trackProjectInputEdit } from '../../save/pending-edits';
 import { getBlockPropertyOptions } from '../../load-project/pbde/pbde-assets';
 import type { GroupData } from '../scene-panel/scene-panel-types';
-import { cleanLabel } from '../scene-panel/scene-panel-model';
+import { cleanLabel, getObjectLabel } from '../scene-panel/scene-panel-model';
 import * as GroupUtils from '../../controls/grouping/group';
 import * as Overlay from '../../controls/selection/overlay';
 import { applyDeltaToSelection } from '../../controls/selection/drag';
@@ -35,6 +35,9 @@ import {
 import { getHeadGridValue, setHeadGridOverride } from '../head-editor/head-painter';
 import { hexToRgb, openColorPicker, rgbToHex } from '../common/color-picker';
 import { isValidSpriteReference, openSpriteAtlasPicker, openSpritePicker, resolveSpriteReference } from '../common/sprite-atlas-picker';
+import { evaluateMathExpression } from '../../math-expression';
+import { normalizeTransformInput } from './transform-input-value';
+import { renderModelTransform } from '../../animation/animation-state';
 
 const title = document.getElementById('details-title')!;
 const tabs = document.getElementById('project-tabs')!;
@@ -88,11 +91,13 @@ const sectionInputs = new WeakMap<Element, {
     matrix: HTMLInputElement[];
     matrixText: HTMLInputElement | null;
 }>();
+const groupMatrices = new WeakMap<Element, Matrix4>();
 let multiSelectionInputs: {
     transform: HTMLInputElement[];
     pivot: HTMLInputElement[];
     matrix: HTMLInputElement[];
     matrixText: HTMLInputElement | null;
+    pivotLocal: Vector3;
 } | null = null;
 let currentPivotWorld: Vector3 | undefined;
 let currentPivotMode = 'origin';
@@ -127,6 +132,16 @@ function format(value: number): string {
     return Number(value.toFixed(6)).toString();
 }
 
+function propertyAnimation(control: HTMLElement) {
+    if (control.dataset.renameKey) return undefined;
+    const id = control.closest<HTMLElement>('[data-animation-id]')?.dataset.animationId;
+    if (!id) return undefined;
+    const partner = isMirrorModelingEnabled()
+        ? getMirrorPairs(loadedObjectGroup, loadedObjectGroup.userData.groups?.has(id) ? 'groupMirrorPairs' : 'objectMirrorPairs').get(id)
+        : undefined;
+    return { root: loadedObjectGroup, targets: partner ? [id, partner] : [id] };
+}
+
 function trackHistoryInput(
     input: HTMLInputElement | HTMLTextAreaElement,
     settle?: () => Promise<void>,
@@ -156,11 +171,13 @@ function trackHistoryInput(
         if (input.type === 'checkbox' && (event.key === ' ' || event.key === 'Enter')) captureBeforeChange();
     });
     input.addEventListener('blur', () => {
+        if (!editing && read() === initialValue) return;
         const changeBefore = before;
         const changeInitialValue = initialValue;
+        const animation = propertyAnimation(input);
         before = null;
         editing = false;
-        void (settle?.() ?? Promise.resolve()).then(() => {
+        void trackProjectInputEdit((settle?.() ?? Promise.resolve()).then(() => {
             const after = read();
             if (after === changeInitialValue) return;
             if (changeBefore) {
@@ -170,6 +187,7 @@ function trackHistoryInput(
             recordStateChange({
                 before: changeInitialValue,
                 after,
+                animation,
                 apply: async value => {
                     if (input instanceof HTMLInputElement && input.type === 'checkbox') input.checked = value === 'true';
                     else input.value = value;
@@ -178,7 +196,7 @@ function trackHistoryInput(
                 },
                 refresh: () => refreshHistory(loadedObjectGroup)
             });
-        });
+        }));
     });
 }
 
@@ -188,15 +206,47 @@ function updateInputValue(input: HTMLInputElement, value: number, activeElement:
     if (input.value !== next) input.value = next;
 }
 
-function numberInput(value: number, onChange: (value: number) => void, capture?: () => TransformHistoryState): HTMLInputElement {
+function numberInput(value: number, onChange: (value: number) => void, capture?: () => TransformHistoryState, kind: 'transform' | 'rotation' | 'matrix' = 'transform'): HTMLInputElement {
+    const expressions = kind !== 'matrix';
+    const normalize = (next: number) => expressions ? normalizeTransformInput(next, kind === 'rotation') : next;
     const input = document.createElement('input');
-    input.type = 'number';
+    input.type = expressions ? 'text' : 'number';
     input.step = 'any';
-    input.value = format(value);
+    let current = normalize(value);
+    input.value = format(current);
     input.oninput = () => {
-        const next = input.valueAsNumber;
-        if (Number.isFinite(next)) onChange(next);
+        const next = expressions ? Number(input.value) : input.valueAsNumber;
+        if (!Number.isFinite(next) || (expressions && evaluateMathExpression(input.value) === null)) return;
+        current = normalize(next);
+        onChange(current);
     };
+    if (expressions) {
+        input.maxLength = 1024;
+        input.title = '수식 입력 가능: +, -, *, /, 괄호, pi, sin/cos/tan(라디안) (Enter로 적용)';
+        input.addEventListener('focus', () => { current = normalize(Number(input.value)); });
+        input.onchange = input.onblur = () => {
+            const result = evaluateMathExpression(input.value);
+            const next = result === null ? null : normalize(result);
+            if (next !== null && next !== current) {
+                current = next;
+                onChange(next);
+            }
+            input.value = format(current);
+        };
+        input.onkeydown = event => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                input.blur();
+            } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                event.preventDefault();
+                const next = evaluateMathExpression(input.value);
+                if (next === null) return;
+                input.dispatchEvent(new InputEvent('beforeinput'));
+                input.value = format(normalize(next + (event.key === 'ArrowUp' ? 1 : -1)));
+                input.oninput?.call(input, new InputEvent('input'));
+            }
+        };
+    }
     trackHistoryInput(input, undefined, capture);
     return input;
 }
@@ -234,7 +284,7 @@ function matrixInput(value: Matrix4, onChange: (value: Matrix4) => Matrix4, capt
                     nextMatrix.elements[(index % 4) * 4 + Math.floor(index / 4)] = gridInput.valueAsNumber;
                 });
                 current = onChange(nextMatrix);
-            }, capture);
+            }, capture, 'matrix');
             input.disabled = rowIndex === 3;
             gridInputs.push(input);
             row.append(input);
@@ -318,6 +368,8 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
         const beforeUi = captureHistoryUiState();
         const before = value;
         const after = select.value;
+        if (before === after) return;
+        const animation = propertyAnimation(select);
         select.disabled = true;
         try {
             const result = await onChange(after);
@@ -327,9 +379,11 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
             else recordStateChange({
                 before,
                 after,
+                animation,
                 apply: async state => { await onChange(state); },
                 refresh: () => refreshHistory(loadedObjectGroup)
             });
+            value = after;
         } catch (error) {
             console.error(error);
             select.value = value;
@@ -398,6 +452,8 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
     control.onchange = () => trackProjectEdit((async () => {
         const before = committed;
         const next = read();
+        if (before === next) return;
+        const animation = propertyAnimation(control);
         control.disabled = true;
         try {
             await onChange(next);
@@ -405,6 +461,7 @@ function propertyValueControl<T extends HTMLInputElement | HTMLTextAreaElement>(
             if (before !== next) recordStateChange({
                 before,
                 after: next,
+                animation,
                 apply: onChange,
                 refresh: () => refreshHistory(loadedObjectGroup)
             });
@@ -683,12 +740,13 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
     ).flat();
     const captureTransformHistory = () => capturePropertyTransformState(directItems, new Set(selection.groups));
     if (multiSelectionKey === key && multiSelectionPivot.contains(document.activeElement)) return;
-    if (multiSelectionKey !== key) {
-        multiSelectionKey = key;
-        multiSelectionMatrix.identity().setPosition(pivot);
-    } else {
-        multiSelectionMatrix.setPosition(pivot);
+    if (multiSelectionKey === key) {
+        multiSelectionInputs!.pivotLocal.copy(pivotLocal);
+        updateMultiSelectionValues(pivot, pivotLocal);
+        return;
     }
+    multiSelectionKey = key;
+    multiSelectionMatrix.identity().setPosition(pivot);
     const selectionMatrix = multiSelectionMatrix;
     const applyMatrix = (next: Matrix4): Matrix4 => {
         const delta = next.clone().multiply(selectionMatrix.clone().invert());
@@ -709,12 +767,15 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
             const value = rowIndex === 1 ? values[rowIndex][axis] * 180 / Math.PI : values[rowIndex][axis];
             row.append((rowIndex === 2 ? scaleNumberInput : numberInput)(value, next => {
                 selectionMatrix.decompose(position, quaternion, scale);
+                const previousScale = scale[axis];
                 rotation.setFromQuaternion(quaternion);
                 if (rowIndex === 0) position[axis] = next;
                 else if (rowIndex === 1) rotation[axis] = next * Math.PI / 180;
                 else scale[axis] = next;
-                applyMatrix(new Matrix4().compose(position, quaternion.setFromEuler(rotation), scale));
-            }, captureTransformHistory));
+                applyMatrix(rowIndex === 2 && previousScale !== 0
+                    ? selectionMatrix.clone().scale(new Vector3(1, 1, 1).setComponent('xyz'.indexOf(axis), next / previousScale))
+                    : new Matrix4().compose(position, quaternion.setFromEuler(rotation), scale));
+            }, captureTransformHistory, rowIndex === 1 ? 'rotation' : 'transform'));
         });
         transformSection.append(row);
     });
@@ -753,10 +814,11 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
     multiSelectionPivot.replaceChildren(pivotSection, transformSection, propertySection('matrix', matrixParts[0], ...matrixParts.slice(1)));
     sortPropertySections(multiSelectionPivot);
     multiSelectionInputs = {
-        transform: [...transformSection.querySelectorAll<HTMLInputElement>('input[type="number"]')],
-        pivot: [...pivotSection.querySelectorAll<HTMLInputElement>('input[type="number"]')],
+        transform: [...transformSection.querySelectorAll<HTMLInputElement>('input')],
+        pivot: [...pivotSection.querySelectorAll<HTMLInputElement>('input')],
         matrix: [...multiSelectionPivot.querySelectorAll<HTMLInputElement>('[data-property-section="matrix"] input[type="number"]')],
-        matrixText: multiSelectionPivot.querySelector<HTMLInputElement>('.object-matrix-text input')
+        matrixText: multiSelectionPivot.querySelector<HTMLInputElement>('.object-matrix-text input'),
+        pivotLocal
     };
 }
 
@@ -838,8 +900,17 @@ function applySelectionDelta(deltaMatrix: Matrix4, target: PropertySelection): v
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
+function getObjectPropertyMatrix(mesh: InstancedMesh, instanceId: number, modelTransform: Matrix4, out: Matrix4): Matrix4 {
+    return Overlay.getInstanceWorldMatrix(mesh, instanceId, out)
+        .multiply(modelTransform.clone().invert())
+        .premultiply(loadedObjectGroup.matrixWorld.clone().invert());
+}
+
 function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pivotWorld?: Vector3): HTMLElement {
-    mesh.getMatrixAt(instanceId, matrix);
+    const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
+        ?.get(`${mesh.uuid}_${instanceId}`) ?? `${mesh.name || '오브젝트'} ${instanceId}`;
+    const modelTransform = renderModelTransform(loadedObjectGroup, uuid, mesh, instanceId);
+    getObjectPropertyMatrix(mesh, instanceId, modelTransform, matrix);
     matrix.decompose(position, quaternion, scale);
     rotation.setFromQuaternion(quaternion);
     const captureTransformHistory = () => capturePropertyTransformState(
@@ -847,14 +918,13 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         new Set()
     );
 
-    const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
-        ?.get(`${mesh.uuid}_${instanceId}`) ?? `${mesh.name || '오브젝트'} ${instanceId}`;
     const names = loadedObjectGroup.userData.objectNames as Map<string, string> | undefined;
     const name = names?.get(uuid) ?? uuid;
     const labels = (loadedObjectGroup.userData.objectLabels ??= new Map<string, string>()) as Map<string, string>;
     const section = document.createElement('section');
     section.className = 'object-property';
-    section.append(nameHeading(index, labels.get(uuid) ?? cleanLabel(name), `object:${uuid}`, value => {
+    section.dataset.animationId = uuid;
+    section.append(nameHeading(index, getObjectLabel(loadedObjectGroup.userData, uuid) ?? cleanLabel(name), `object:${uuid}`, value => {
         labels.set(uuid, value);
         const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
         if (partnerUuid) {
@@ -870,9 +940,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     else if (displayType === 'item_display' && mesh.userData.hasHat) pivotBase.y = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
     else if (displayType === 'item_display') Overlay.getInstanceLocalBox(mesh, instanceId)?.getCenter(pivotBase);
     const storedPivot = (mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(instanceId);
-    const localPivot = storedPivot?.clone() ?? pivotBase.clone();
+    const localPivot = (storedPivot?.clone() ?? pivotBase.clone()).applyMatrix4(modelTransform);
     if (pivotWorld) {
-        localPivot.copy(pivotWorld).applyMatrix4(mesh.matrixWorld.clone().invert()).applyMatrix4(matrix.clone().invert());
+        localPivot.copy(pivotWorld).applyMatrix4(loadedObjectGroup.matrixWorld.clone().invert()).applyMatrix4(matrix.clone().invert());
     }
 
     const transformSection = propertySection('transform', '변환');
@@ -886,26 +956,30 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         (['x', 'y', 'z'] as const).forEach(axis => {
             const value = rowIndex === 1 ? values[rowIndex][axis] * 180 / Math.PI : values[rowIndex][axis];
             const change = (next: number, direction: '+' | '-' = '+') => {
-                mesh.getMatrixAt(instanceId, matrix);
+                const modelTransform = renderModelTransform(loadedObjectGroup, uuid, mesh, instanceId);
+                getObjectPropertyMatrix(mesh, instanceId, modelTransform, matrix);
                 const currentMatrix = matrix.clone();
                 matrix.decompose(position, quaternion, scale);
+                const previousScale = scale[axis];
                 rotation.setFromQuaternion(quaternion);
                 if (rowIndex === 0) position[axis] = next;
                 else if (rowIndex === 1) rotation[axis] = next * Math.PI / 180;
                 else scale[axis] = next;
-                matrix.compose(position, quaternion.setFromEuler(rotation), scale);
+                if (rowIndex === 2 && previousScale !== 0) {
+                    matrix.scale(new Vector3(1, 1, 1).setComponent('xyz'.indexOf(axis), next / previousScale));
+                } else matrix.compose(position, quaternion.setFromEuler(rotation), scale);
                 let transformPivot = currentPivotWorld
-                    ?.clone().applyMatrix4(mesh.matrixWorld.clone().invert()).applyMatrix4(currentMatrix.clone().invert())
+                    ?.clone().applyMatrix4(loadedObjectGroup.matrixWorld.clone().invert()).applyMatrix4(currentMatrix.clone().invert())
                     ?? localPivot;
-                if (rowIndex === 2) transformPivot = getScalePivot(transformPivot, Overlay.getInstanceLocalBox(mesh, instanceId), axis, direction);
+                if (rowIndex === 2) transformPivot = getScalePivot(transformPivot, Overlay.getInstanceLocalBox(mesh, instanceId)?.applyMatrix4(modelTransform), axis, direction);
                 const nextMatrix = rowIndex === 0 ? matrix : keepPivotFixed(currentMatrix, matrix, transformPivot);
-                const currentWorld = currentMatrix.clone().premultiply(mesh.matrixWorld);
-                const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
+                const currentWorld = currentMatrix.clone().premultiply(loadedObjectGroup.matrixWorld);
+                const nextWorld = nextMatrix.clone().premultiply(loadedObjectGroup.matrixWorld);
                 applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
             };
             row.append(rowIndex === 2
                 ? scaleInput(value, change, captureTransformHistory)
-                : numberInput(value, change, captureTransformHistory));
+                : numberInput(value, change, captureTransformHistory, rowIndex === 1 ? 'rotation' : 'transform'));
         });
         transformSection.append(row);
     });
@@ -920,22 +994,23 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
         pivot[axis] = next;
         localPivot.copy(pivot);
-        (mesh.userData.customPivots as Map<number, Vector3>).set(instanceId, localPivot.clone());
-        syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
+        const renderPivot = localPivot.clone().applyMatrix4(renderModelTransform(loadedObjectGroup, uuid, mesh, instanceId).invert());
+        (mesh.userData.customPivots as Map<number, Vector3>).set(instanceId, renderPivot);
+        syncLinkedMirrorPivot(loadedObjectGroup, uuid, renderPivot);
         window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
     }, captureTransformHistory)));
     transformSection.append(pivotRow);
     section.append(transformSection);
 
     const matrixParts = matrixInput(matrix, nextMatrix => {
-        mesh.getMatrixAt(instanceId, matrix);
+        getObjectPropertyMatrix(mesh, instanceId, renderModelTransform(loadedObjectGroup, uuid, mesh, instanceId), matrix);
         const currentMatrix = matrix.clone();
         const transformPivot = currentPivotWorld
-            ?.clone().applyMatrix4(mesh.matrixWorld.clone().invert()).applyMatrix4(currentMatrix.clone().invert())
+            ?.clone().applyMatrix4(loadedObjectGroup.matrixWorld.clone().invert()).applyMatrix4(currentMatrix.clone().invert())
             ?? localPivot;
         keepPivotFixed(currentMatrix, nextMatrix, transformPivot, true);
-        const currentWorld = currentMatrix.clone().premultiply(mesh.matrixWorld);
-        const nextWorld = nextMatrix.clone().premultiply(mesh.matrixWorld);
+        const currentWorld = currentMatrix.clone().premultiply(loadedObjectGroup.matrixWorld);
+        const nextWorld = nextMatrix.clone().premultiply(loadedObjectGroup.matrixWorld);
         applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
         return nextMatrix;
     }, captureTransformHistory);
@@ -956,6 +1031,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const brightness = brightnessMap.get(uuid) ?? {};
     const updateBrightness = async (value: { sky: number; block: number }) => {
         updateObjectBrightness(uuid, value);
+        Object.assign(brightness, value);
         const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
         if (partnerUuid) updateObjectBrightness(partnerUuid, value);
     };
@@ -1060,6 +1136,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
             recordStateChange({
                 before,
                 after,
+                animation: propertyAnimation(section),
                 apply: applyTextEditorState,
                 refresh: () => refreshHistory(loadedObjectGroup)
             });
@@ -1506,12 +1583,14 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         const texture = name.startsWith('player_head') ? getPlayerHeadTexture(uuid) : textures?.get(uuid);
         if (name.startsWith('player_head')) {
             const input = document.createElement('input');
+            input.dataset.headTextureId = uuid;
             input.value = texture ?? '';
             input.onkeydown = event => { if (event.key === 'Enter') input.blur(); };
             input.onchange = async () => {
-                const previous = texture ?? '';
+                const previous = getPlayerHeadTexture(uuid) ?? '';
                 input.value = textureUrl(input.value.trim());
                 const next = input.value;
+                if (previous === next) return;
                 await updatePlayerHeadTexture(uuid, next);
                 const partnerUuid = isMirrorModelingEnabled() ? getLinkedMirrorUuid(loadedObjectGroup, uuid) : undefined;
                 const partnerPrevious = partnerUuid ? getPlayerHeadTexture(partnerUuid) ?? '' : '';
@@ -1523,6 +1602,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 recordStateChange({
                     before: [previous, partnerPrevious] as const,
                     after: [next, next] as const,
+                    animation: propertyAnimation(section),
                     apply: ([value, partnerValue]) => apply(value, partnerValue),
                     refresh: () => refreshHistory(loadedObjectGroup)
                 });
@@ -1603,6 +1683,8 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     };
     const section = document.createElement('section');
     section.className = 'object-property';
+    section.dataset.animationId = groupId;
+    groupMatrices.set(section, groupMatrix);
     section.append(nameHeading(index, group.name, `group:${groupId}`, value => {
         group.name = value;
         const partnerId = isMirrorModelingEnabled() ? getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').get(groupId) : undefined;
@@ -1624,18 +1706,21 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
             const value = rowIndex === 1 ? values[rowIndex][axis] * 180 / Math.PI : values[rowIndex][axis];
             const change = (next: number, direction: '+' | '-' = '+') => {
                 groupMatrix.decompose(groupPosition, groupQuaternion, groupScale);
+                const previousScale = groupScale[axis];
                 groupRotation.setFromQuaternion(groupQuaternion);
                 if (rowIndex === 0) groupPosition[axis] = next;
                 else if (rowIndex === 1) groupRotation[axis] = next * Math.PI / 180;
                 else groupScale[axis] = next;
-                const nextMatrix = new Matrix4().compose(groupPosition, groupQuaternion.setFromEuler(groupRotation), groupScale);
+                const nextMatrix = rowIndex === 2 && previousScale !== 0
+                    ? groupMatrix.clone().scale(new Vector3(1, 1, 1).setComponent('xyz'.indexOf(axis), next / previousScale))
+                    : new Matrix4().compose(groupPosition, groupQuaternion.setFromEuler(groupRotation), groupScale);
                 let transformPivot = currentPivotWorld?.clone().applyMatrix4(groupMatrix.clone().invert()) ?? localPivot;
                 if (rowIndex === 2) transformPivot = getScalePivot(transformPivot, Overlay.getGroupLocalBoundingBox(groupId), axis, direction);
                 commitMatrix(rowIndex === 0 ? nextMatrix : keepPivotFixed(groupMatrix, nextMatrix, transformPivot));
             };
             row.append(rowIndex === 2
                 ? scaleInput(value, change, captureTransformHistory)
-                : numberInput(value, change, captureTransformHistory));
+                : numberInput(value, change, captureTransformHistory, rowIndex === 1 ? 'rotation' : 'transform'));
         });
         transformSection.append(row);
     });
@@ -1649,6 +1734,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     (['x', 'y', 'z'] as const).forEach(axis => pivotRow.append(numberInput(pivot[axis], next => {
         pivot[axis] = next;
         group.pivot = [pivot.x, pivot.y, pivot.z];
+        group.isCustomPivot = true;
         localPivot.copy(pivot).applyMatrix4(groupMatrix.clone().invert());
         syncLinkedMirrorGroupPivot(loadedObjectGroup, groupId, pivot);
         window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
@@ -1691,14 +1777,17 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
         nextScale.set(group.scale.x, group.scale.y, group.scale.z);
         nextMatrix.copy(group.matrix ?? new Matrix4().compose(nextPosition, nextQuaternion, nextScale));
         if (previewDelta) nextMatrix.premultiply(previewDelta);
+        groupMatrices.get(section)?.copy(nextMatrix);
         nextMatrix.decompose(nextPosition, nextQuaternion, nextScale);
         if (!previewDelta) pivot = pivotWorld?.clone() ?? GroupUtils.normalizePivotToVector3(group.pivot) ?? new Vector3();
     } else {
-        item.mesh.getMatrixAt(item.instanceId, nextMatrix);
+        const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(`${item.mesh.uuid}_${item.instanceId}`) ?? '';
+        const modelTransform = renderModelTransform(loadedObjectGroup, uuid, item.mesh, item.instanceId);
+        getObjectPropertyMatrix(item.mesh, item.instanceId, modelTransform, nextMatrix);
         if (previewDelta) {
-            nextMatrix.premultiply(item.mesh.matrixWorld);
+            nextMatrix.premultiply(loadedObjectGroup.matrixWorld);
             nextMatrix.premultiply(previewDelta);
-            nextMatrix.premultiply(item.mesh.matrixWorld.clone().invert());
+            nextMatrix.premultiply(loadedObjectGroup.matrixWorld.clone().invert());
         }
         nextMatrix.decompose(nextPosition, nextQuaternion, nextScale);
         if (!previewDelta) {
@@ -1709,9 +1798,8 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
             else if (displayType === 'item_display') Overlay.getInstanceLocalBox(item.mesh, item.instanceId)?.getCenter(pivotBase);
             const storedPivot = (item.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(item.instanceId);
             pivot = pivotWorld
-                ?.clone().applyMatrix4(item.mesh.matrixWorld.clone().invert()).applyMatrix4(nextMatrix.clone().invert())
-                ?? storedPivot?.clone()
-                ?? pivotBase;
+                ?.clone().applyMatrix4(loadedObjectGroup.matrixWorld.clone().invert()).applyMatrix4(nextMatrix.clone().invert())
+                ?? (storedPivot?.clone() ?? pivotBase).applyMatrix4(modelTransform);
         }
     }
 
@@ -1725,7 +1813,7 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
     let inputs = sectionInputs.get(section);
     if (!inputs) {
         inputs = {
-            transform: [...section.querySelectorAll<HTMLInputElement>('[data-property-section="transform"] input[type="number"]')],
+            transform: [...section.querySelectorAll<HTMLInputElement>('[data-property-section="transform"] input')],
             matrix: [...section.querySelectorAll<HTMLInputElement>('[data-property-section="matrix"] input[type="number"]')],
             matrixText: section.querySelector<HTMLInputElement>('.object-matrix-text input')
         };
@@ -1984,11 +2072,13 @@ window.addEventListener('pde:replace-object-selection', event => {
             if (!section.isConnected || !current || !('mesh' in current)) return;
             const replacement = renderObject(current.mesh, current.instanceId, index, index === 0 && selectionOrder.length === 1 ? currentPivotWorld : undefined);
             section.replaceChildren(...replacement.childNodes);
+            section.dataset.animationId = replacement.dataset.animationId;
             section.dataset.key = current.key;
             sectionInputs.delete(section);
         };
         const activeElement = document.activeElement;
-        if (activeElement && section.contains(activeElement)) activeElement.addEventListener('blur', rerender, { once: true });
+        // Select handlers must use the replacement UUID before the next change.
+        if (activeElement && section.contains(activeElement) && !(activeElement instanceof HTMLSelectElement)) activeElement.addEventListener('blur', rerender, { once: true });
         else rerender();
     });
     propertySectionHeights.clear();
@@ -1999,6 +2089,18 @@ window.addEventListener('pde:replace-object-selection', event => {
 });
 window.addEventListener('pde:selection-changed', event => renderSelection((event as CustomEvent<SelectionState>).detail));
 window.addEventListener('pde:history-restored', () => {
+    clearRenderedPropertySections();
+    schedulePropertySectionRender();
+});
+window.addEventListener('pde:animation-preview', () => {
+    updateRenderedPropertySections(currentPivotWorld);
+});
+window.addEventListener('pde:animation-textures-updated', () => {
+    objectProperties.querySelectorAll<HTMLInputElement>('[data-head-texture-id]').forEach(input => {
+        if (input !== document.activeElement) input.value = getPlayerHeadTexture(input.dataset.headTextureId!) ?? '';
+    });
+});
+window.addEventListener('pde:animation-properties-updated', () => {
     clearRenderedPropertySections();
     schedulePropertySectionRender();
 });

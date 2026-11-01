@@ -93,7 +93,7 @@ export async function downloadMinecraftFiles(
       if (previous && start - previous.end <= 64 * 1024) previous.end = end;
       else ranges.push({ start, end });
     });
-    const limit = pLimit(4);
+    const limit = pLimit(64);
     for (const range of ranges) {
       // Bound each request while using four connections for larger spans.
       for (let start = range.start; start < Math.min(range.end, directoryStart, tailStart); start += 4 * 1024 * 1024) {

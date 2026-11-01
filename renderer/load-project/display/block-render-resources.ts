@@ -452,3 +452,9 @@ export function clearBlockRenderResources(): void {
 export function clearBlockMaterialPromises(): void {
     blockMaterialPromiseCache.clear();
 }
+
+export function forgetBlockRenderResources(resources: ReadonlySet<object>): void {
+    for (const [key, material] of blockMaterialCache) if (resources.has(material)) blockMaterialCache.delete(key);
+    for (const [key, texture] of blockTextureCache) if (resources.has(texture)) blockTextureCache.delete(key);
+    if (sharedPlaceholderMaterial && resources.has(sharedPlaceholderMaterial)) sharedPlaceholderMaterial = null;
+}

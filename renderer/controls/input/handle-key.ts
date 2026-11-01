@@ -17,14 +17,14 @@ import { focusCameraOnSelection } from './camera';
 import { blockbenchScaleMode, toggleBlockbenchScaleMode } from '../gizmo/blockbench-scale';
 import { isSmartScaleEnabled } from '../gizmo/smart-scale';
 import { toggleShading } from '../../entity-material';
-import { isInstanceRendered, type SelectionState, type SelectedItem } from '../selection/select';
+import { getSelectAllSceneSelection, type SelectionState, type SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 import * as GroupUtils from '../grouping/group';
 import { getLinkedMirrorSelection } from '../transform/mirroring';
 import { canRedo, canUndo, isApplying, redo, undo } from '../undo-redo/undo-redo';
 import { captureSelectionTransformState, recordTransformChange } from '../undo-redo/scene-history';
-import { matchesShortcut, type ShortcutId } from './shortcuts';
+import { isShortcutPressed, matchesShortcut, type ShortcutId } from './shortcuts';
 import { copySelection, pasteSelection, isSelectionPastePending } from './selection-clipboard';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
@@ -427,6 +427,7 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
         }
 
         const target = event.target as HTMLElement;
+        if (event.defaultPrevented) return;
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
         if (matchesShortcut(event, 'copySelection') || matchesShortcut(event, 'pasteSelection')) {
             event.preventDefault();
@@ -476,48 +477,8 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
 
         if (matchesShortcut(event, 'selectAll')) {
             event.preventDefault();
-            const groupIds = new Set<string>();
-            const meshToIds = new Map<PdeMesh, Set<number>>();
-
-            if (p.loadedObjectGroup) {
-                const objectToGroup = p.getObjectToGroup();
-                p.loadedObjectGroup.traverse((obj: Object3D) => {
-                    if (!obj || !(obj as InstancedMesh).isInstancedMesh) return;
-                    if (obj.visible === false) return;
-
-                    const instanceCount = p.getInstanceCount(obj as PdeMesh);
-                    if (instanceCount <= 0) return;
-
-                    for (let instanceId = 0; instanceId < instanceCount; instanceId++) {
-                        if (!p.isInstanceValid(obj as PdeMesh, instanceId)) continue;
-                        if (!isInstanceRendered(obj as PdeMesh, instanceId)) continue;
-
-                        const key = p.getGroupKey(obj, instanceId);
-                        const immediateGroupId = objectToGroup.get(key);
-                        if (immediateGroupId) {
-                            const chain = p.getGroupChain(immediateGroupId);
-                            const root = chain && chain.length > 0 ? chain[0] : immediateGroupId;
-                            if (root) groupIds.add(root);
-                            continue;
-                        }
-
-                        let set = meshToIds.get(obj as PdeMesh);
-                        if (!set) {
-                            set = new Set();
-                            meshToIds.set(obj as PdeMesh, set);
-                        }
-                        set.add(instanceId);
-                    }
-                });
-            }
-
-            let objectCount = 0;
-            for (const [, ids] of meshToIds) objectCount += ids.size;
-
-            const totalCount = groupIds.size + objectCount;
-            const mode = (totalCount > 1) ? 'center' : 'default';
-
-            p.replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, { anchorMode: mode });
+            const selection = getSelectAllSceneSelection(p.loadedObjectGroup);
+            p.replaceSelectionWithGroupsAndObjects(selection.groups, selection.objects, { anchorMode: selection.anchorMode });
             return;
         }
 
@@ -620,8 +581,8 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
 
     // ── keyup ────────────────────────────────────────────────────────────────
 
-    window.addEventListener('keyup', (event: KeyboardEvent) => {
-        if (matchesShortcut(event, 'editPivot')) {
+    window.addEventListener('keyup', () => {
+        if (!isShortcutPressed('editPivot')) {
             if (p.state.isPivotEditMode) {
                 if (p.getTransformControls().dragging) {
                     p.getSelectionHelper().updateMatrixWorld();

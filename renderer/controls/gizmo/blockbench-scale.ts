@@ -27,9 +27,8 @@ interface PivotFrameMatrices {
     mat3: Matrix3;
 }
 
-export function computeBlockbenchPivotFrame(selectionHelper: Object3D, currentSpace: 'world' | 'local'): PivotFrameMatrices {
-    // Default: use the current selectionHelper world matrix
-    _BB_PIVOT_FRAME_MAT4.copy(selectionHelper.matrixWorld);
+export function computeBlockbenchPivotFrame(selectionHelper: Object3D, currentSpace: 'world' | 'local', scaleFrame = selectionHelper.matrixWorld): PivotFrameMatrices {
+    _BB_PIVOT_FRAME_MAT4.copy(scaleFrame);
 
     // In world space mode, Blockbench anchor should behave like world axes.
     if (currentSpace === 'world') {

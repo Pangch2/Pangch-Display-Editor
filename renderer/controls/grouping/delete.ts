@@ -14,6 +14,8 @@ import {
 import * as GroupUtils from './group';
 import type { GroupData, GroupChild, GroupChildObject } from './group';
 
+import { removeAnimationTargets } from '../../animation/animation-state';
+
 interface SceneOrderEntry {
     type: 'group' | 'object';
     id: string;
@@ -57,6 +59,7 @@ interface MeshDeleteState {
     mesh: Mesh | InstancedMesh;
     parent: Group | null;
     childIndex: number;
+    visible: boolean;
     count?: number;
     detachedWhole: boolean;
     slots: InstanceSlotState[];
@@ -182,6 +185,8 @@ function _deleteInstancedMeshInstances(loadedObjectGroup: Group, mesh: Instanced
 
 export interface DeleteSelectionCallbacks {
     resetSelectionAndDeselect: () => void;
+    preserveAnimation?: boolean;
+    undoable?: boolean;
 }
 
 /**
@@ -190,7 +195,7 @@ export interface DeleteSelectionCallbacks {
 export function deleteSelectedItems(
     loadedObjectGroup: Group, 
     currentSelection: { groups: Set<string>; objects: Map<Mesh, Set<number>> }, 
-    { resetSelectionAndDeselect }: DeleteSelectionCallbacks
+    { resetSelectionAndDeselect, preserveAnimation = false, undoable = true }: DeleteSelectionCallbacks
 ): DeletedSceneDelta | null {
     const itemsToDelete = new Map<string, { mesh: Mesh; instanceId: number }>();
 
@@ -258,7 +263,7 @@ export function deleteSelectedItems(
         const childIndex = parent?.children.indexOf(mesh) ?? -1;
         if (!(mesh as InstancedMesh).isInstancedMesh) {
             affectedKeys.add(GroupUtils.getGroupKey(mesh, 0));
-            meshStates.push({ mesh, parent, childIndex, detachedWhole: true, slots: [] });
+            meshStates.push({ mesh, parent, childIndex, visible: mesh.visible, detachedWhole: true, slots: [] });
             continue;
         }
         const instanced = mesh as InstancedMesh;
@@ -272,7 +277,7 @@ export function deleteSelectedItems(
             instanced.instanceColor,
             ...Object.values(instanced.geometry.attributes).filter(isInstancedGeometryAttribute)
         ].filter((attribute, index, values): attribute is InstancedGeometryAttribute => !!attribute && values.indexOf(attribute) === index);
-        const slots = detachedWhole ? [] : [...ids].map(instanceId => ({
+        const slots = !undoable ? [] : [...touchedIds].map(instanceId => ({
             instanceId,
             attributes: attributes.map(attribute => ({
                 attribute,
@@ -293,7 +298,7 @@ export function deleteSelectedItems(
                 return map ? [{ map, entry: mapEntry(map, instanceId) }] : [];
             })
         }));
-        meshStates.push({ mesh, parent, childIndex, count: instanced.count, detachedWhole, slots });
+        meshStates.push({ mesh, parent, childIndex, visible: mesh.visible, count: instanced.count, detachedWhole, slots });
     }
     const keyEntries = [...affectedKeys].map(key => mapEntry(userData.instanceKeyToObjectUuid, key));
     const selectedUuids = new Set([...itemsToDelete.values()].flatMap(({ mesh, instanceId }) => {
@@ -339,6 +344,7 @@ export function deleteSelectedItems(
     const groupMirrorPairs = userData.groupMirrorPairs as Map<string, string> | undefined;
     const objectMirrorEntries = capturePairEntries(objectMirrorPairs, selectedUuids);
     const groupMirrorEntries = capturePairEntries(groupMirrorPairs, allGroupsToDelete);
+    const restoreAnimation = preserveAnimation ? () => {} : removeAnimationTargets(loadedObjectGroup, new Set([...selectedUuids, ...allGroupsToDelete]));
 
     // 3. 그룹 구조 정리
     for (const gid of affectedGroupIds) {
@@ -412,14 +418,23 @@ export function deleteSelectedItems(
         userData.cleanupUnusedPlayerHeadAtlasSlots?.();
     }
 
-    console.log('선택된 항목 제거됨 (Real Delete)');
-
     let deleted = true;
     return {
         deletedUuids: deletedObjectUuids,
         undo: () => {
-            if (!deleted) return;
+            if (!undoable || !deleted) return;
+            // Animation previews can move surviving logical objects into different physical batches.
+            const moved = new Map<Mesh, Set<number>>();
+            for (const [map, entries] of uuidMapEntries) if (map === userData.objectUuidToInstance) for (const entry of entries) {
+                const saved = entry.value as { mesh: Mesh; instanceId: number } | undefined;
+                const current = userData.objectUuidToInstance?.get(entry.key);
+                if (!saved || !current || saved.mesh === current.mesh) continue;
+                const ids = moved.get(current.mesh) ?? new Set<number>(); ids.add(current.instanceId); moved.set(current.mesh, ids);
+            }
+            if (moved.size) deleteSelectedItems(loadedObjectGroup, { groups: new Set(), objects: moved },
+                { resetSelectionAndDeselect: () => {}, preserveAnimation: true, undoable: false })?.dispose();
             for (const state of meshStates) {
+                state.mesh.visible = state.visible;
                 if (state.parent && !state.mesh.parent) {
                     state.parent.add(state.mesh);
                     if (state.childIndex >= 0) state.parent.children.splice(state.childIndex, 0, state.parent.children.pop()!);
@@ -448,20 +463,32 @@ export function deleteSelectedItems(
             uuidMapEntries.forEach(([map, entries]) => restoreEntries(map, entries));
             itemDisplayEntries.forEach(entry => entry.has ? userData.objectIsItemDisplay?.add(entry.key) : userData.objectIsItemDisplay?.delete(entry.key));
             restoreEntries(groups, groupEntries);
-            groupChildren.forEach(([group, children]) => { group.children = children.map(child => ({ ...child })); });
+            groupChildren.forEach(([group, children]) => { group.children = children.map(child => {
+                const ref = child.type === 'object' && child.id ? userData.objectUuidToInstance?.get(child.id) : undefined;
+                return ref ? { ...child, ...ref } : { ...child };
+            }); });
             if (sceneOrder) userData.sceneOrder = sceneOrder.slice();
             restoreEntries(objectMirrorPairs, objectMirrorEntries);
             restoreEntries(groupMirrorPairs, groupMirrorEntries);
             if (playerHeadAtlasState !== undefined) userData.restorePlayerHeadAtlasState?.(playerHeadAtlasState);
             loadedObjectGroup.updateMatrixWorld(true);
+            restoreAnimation();
             deleted = false;
         },
         redo: () => {
-            if (deleted) return;
+            if (!undoable || deleted) return;
+            const objects = new Map<Mesh, Set<number>>();
+            for (const uuid of selectedUuids) {
+                const ref = userData.objectUuidToInstance?.get(uuid);
+                if (!ref) continue;
+                let ids = objects.get(ref.mesh);
+                if (!ids) objects.set(ref.mesh, ids = new Set());
+                ids.add(ref.instanceId);
+            }
             deleteSelectedItems(loadedObjectGroup, {
                 groups: selectedGroupIds,
-                objects: new Map(Array.from(byMesh, ([mesh, ids]) => [mesh, new Set(ids)]))
-            }, { resetSelectionAndDeselect: () => {} });
+                objects: selectedUuids.size ? objects : new Map(Array.from(byMesh, ([mesh, ids]) => [mesh, new Set(ids)]))
+            }, { resetSelectionAndDeselect: () => {}, preserveAnimation });
             deleted = true;
         },
         dispose: () => {

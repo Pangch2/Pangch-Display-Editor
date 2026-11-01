@@ -30,18 +30,27 @@ export function record(command: UndoRedoCommand): void {
     redoStack.splice(0).forEach(entry => entry.dispose?.());
 }
 
+async function settleHistoryChange(type: string): Promise<void> {
+    if (typeof window === 'undefined') return;
+    const pending: Promise<unknown>[] = [];
+    window.dispatchEvent(new CustomEvent(type, { detail: { waitUntil: (promise: Promise<unknown>) => pending.push(promise) } }));
+    await Promise.all(pending);
+}
+
 export async function undo(): Promise<boolean> {
     if (applying) return false;
-    if (typeof window !== 'undefined') window.dispatchEvent(new Event('pde:before-history-change'));
-    const { undoStack, redoStack } = getHistory();
-    const command = undoStack[undoStack.length - 1];
-    if (!command) return false;
-
+    const historyContext = context;
     applying = true;
     try {
+        await settleHistoryChange('pde:before-history-change');
+        if (context !== historyContext) return false;
+        const { undoStack, redoStack } = getHistory();
+        const command = undoStack[undoStack.length - 1];
+        if (!command) return false;
         await command.undo();
         undoStack.pop();
         redoStack.push(command);
+        await settleHistoryChange('pde:after-history-change');
         return true;
     } finally {
         applying = false;
@@ -50,16 +59,18 @@ export async function undo(): Promise<boolean> {
 
 export async function redo(): Promise<boolean> {
     if (applying) return false;
-    if (typeof window !== 'undefined') window.dispatchEvent(new Event('pde:before-history-change'));
-    const { undoStack, redoStack } = getHistory();
-    const command = redoStack[redoStack.length - 1];
-    if (!command) return false;
-
+    const historyContext = context;
     applying = true;
     try {
+        await settleHistoryChange('pde:before-history-change');
+        if (context !== historyContext) return false;
+        const { undoStack, redoStack } = getHistory();
+        const command = redoStack[redoStack.length - 1];
+        if (!command) return false;
         await command.redo();
         redoStack.pop();
         undoStack.push(command);
+        await settleHistoryChange('pde:after-history-change');
         return true;
     } finally {
         applying = false;

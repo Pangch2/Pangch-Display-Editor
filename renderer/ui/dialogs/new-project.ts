@@ -9,12 +9,14 @@ export function openNewProjectDialog(): void {
     dialog.id = 'new-project-dialog';
     dialog.className = 'settings-window new-project-window';
     dialog.setAttribute('aria-labelledby', 'new-project-title');
+    dialog.setAttribute('aria-describedby', 'new-project-warning');
     dialog.innerHTML = `
         <h2 id="new-project-title">정말 새 프로젝트를 생성하시겠습니까?</h2>
         <footer>
             <button type="button" class="project-ui-button" data-save autofocus>저장</button>
             <button type="button" class="project-ui-button" data-discard>저장하지 않기</button>
-        </footer>`;
+        </footer>
+        <p id="new-project-warning">주의: 저장하지 않으면 현재 작업을 되돌릴 수 없습니다.</p>`;
     const buttons = [...dialog.querySelectorAll<HTMLButtonElement>('button')];
     let busy = false;
     const close = async () => {
@@ -43,6 +45,10 @@ export function openNewProjectDialog(): void {
         if (!busy) void close();
     };
     dialog.addEventListener('cancel', cancel);
+    dialog.addEventListener('click', event => {
+        const rect = dialog.getBoundingClientRect();
+        if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) cancel(event);
+    });
     dialog.addEventListener('keydown', event => {
         if (event.key === 'Escape') cancel(event);
         event.stopPropagation();

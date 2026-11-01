@@ -78,6 +78,28 @@ textDisplayPickGeometry.setAttribute('uv', new Float32BufferAttribute([
 textDisplayPickGeometry.setIndex([0, 1, 2, 1, 3, 2]);
 textDisplayPickGeometry.computeBoundingBox();
 textDisplayPickGeometry.computeBoundingSphere();
+const textDisplayGlyphPickGeometries = new WeakMap<BufferGeometry, BufferGeometry>();
+function getTextDisplayPickGeometry(geometry: BufferGeometry): BufferGeometry {
+    if (!geometry.userData.textDisplayGeometryKey) return textDisplayPickGeometry;
+    let pickGeometry = textDisplayGlyphPickGeometries.get(geometry);
+    if (!pickGeometry) {
+        const bounds = new Box3().setFromBufferAttribute(geometry.getAttribute('position'));
+        const { min, max } = bounds;
+        pickGeometry = new BufferGeometry();
+        pickGeometry.setAttribute('position', new Float32BufferAttribute([
+            min.x, max.y, 0, min.x, min.y, 0, max.x, max.y, 0, max.x, min.y, 0
+        ], 3));
+        pickGeometry.setAttribute('uv', new Float32BufferAttribute([
+            min.x, max.y, min.x, min.y, max.x, max.y, max.x, min.y
+        ], 2));
+        pickGeometry.setIndex([0, 1, 2, 1, 3, 2]);
+        pickGeometry.computeBoundingSphere();
+        textDisplayGlyphPickGeometries.set(geometry, pickGeometry);
+        const ownedGeometry = pickGeometry;
+        geometry.addEventListener('dispose', () => ownedGeometry.dispose());
+    }
+    return pickGeometry;
+}
 const intersections: Intersection[] = [];
 const candidates: number[] = [];
 const objectCandidates: number[] = [];
@@ -122,7 +144,7 @@ function getBoundsTree(mesh: InstancedMesh): BoundsTree | null {
     const bounds = new Float32Array(mesh.count * 6);
     for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
         mesh.getMatrixAt(instanceId, localMatrix);
-        if (textLayout && instanceId < textLayout.count) {
+        if (textLayout && instanceId < textLayout.count && !mesh.geometry.userData.textDisplayGeometryKey) {
             localBox.min.set(textLayout.getX(instanceId), 0, mesh.geometry.boundingBox.min.z);
             localBox.max.set(textLayout.getY(instanceId), textLayout.getZ(instanceId), mesh.geometry.boundingBox.max.z);
         } else {
@@ -186,7 +208,25 @@ function isTextDisplayPixelVisible(mesh: InstancedMesh, instanceId: number, hit:
     ).data[3] / 255;
     const cutoff = material.alphaTest;
     const uvBounds = mesh.geometry.getAttribute('textDisplayUvBounds');
-    if (uvBounds && alphaAt(
+    if (uvBounds && mesh.geometry.userData.textDisplayGeometryKey) {
+        const positions = mesh.geometry.getAttribute('position');
+        const coordinates = mesh.geometry.getAttribute('uv');
+        const indices = mesh.geometry.index!;
+        trianglePoint.set(uv.x, uv.y, 0);
+        const a = new Vector3(), b = new Vector3(), c = new Vector3();
+        for (let i = 6; i < indices.count; i += 3) {
+            const ia = indices.getX(i), ib = indices.getX(i + 1), ic = indices.getX(i + 2);
+            a.fromBufferAttribute(positions, ia).z = 0;
+            b.fromBufferAttribute(positions, ib).z = 0;
+            c.fromBufferAttribute(positions, ic).z = 0;
+            Triangle.getBarycoord(trianglePoint, a, b, c, barycoord);
+            if (barycoord.x < 0 || barycoord.y < 0 || barycoord.z < 0) continue;
+            const u = coordinates.getX(ia) * barycoord.x + coordinates.getX(ib) * barycoord.y + coordinates.getX(ic) * barycoord.z;
+            const v = coordinates.getY(ia) * barycoord.x + coordinates.getY(ib) * barycoord.y + coordinates.getY(ic) * barycoord.z;
+            if (alphaAt(uvBounds.getX(instanceId) + (uvBounds.getY(instanceId) - uvBounds.getX(instanceId)) * u,
+                uvBounds.getZ(instanceId) + (uvBounds.getW(instanceId) - uvBounds.getZ(instanceId)) * v) > cutoff) return true;
+        }
+    } else if (uvBounds && alphaAt(
         uvBounds.getX(instanceId) + (uvBounds.getY(instanceId) - uvBounds.getX(instanceId)) * uv.x,
         uvBounds.getZ(instanceId) + (uvBounds.getW(instanceId) - uvBounds.getZ(instanceId)) * uv.y
     ) > cutoff) return true;
@@ -196,7 +236,7 @@ function isTextDisplayPixelVisible(mesh: InstancedMesh, instanceId: number, hit:
     if (!layout || !backgroundUv) return false;
     const x = layout.getX(instanceId) + (layout.getY(instanceId) - layout.getX(instanceId)) * uv.x;
     const center = (layout.getX(instanceId) + layout.getY(instanceId)) * 0.5;
-    return Math.abs(x - center) <= layout.getW(instanceId) * 0.5
+    return uv.y >= 0 && uv.y <= 1 && Math.abs(x - center) <= layout.getW(instanceId) * 0.5
         && alphaAt(backgroundUv.getX(instanceId), backgroundUv.getY(instanceId)) > cutoff;
 }
 
@@ -279,7 +319,7 @@ export function intersectSceneInstances(
             : Infinity;
         candidates.length = 0;
         collectCandidates(tree.root, tree.bounds, localRay, candidates, maxDistance);
-        pickMesh.geometry = textLayout ? textDisplayPickGeometry : mesh.geometry;
+        pickMesh.geometry = textLayout ? getTextDisplayPickGeometry(mesh.geometry) : mesh.geometry;
         pickMesh.material = mesh.material;
         for (const instanceId of candidates) {
             if (acceptInstance && !acceptInstance(mesh, instanceId)) continue;
@@ -462,7 +502,7 @@ export function getSceneRaycastObjects(root: Group, region?: Box3, grid?: { axis
                 shapeMatrix.setPosition(layout.getX(id), 0, 0);
                 matrix.multiply(shapeMatrix);
             }
-            addFaces(mesh, layout ? textDisplayPickGeometry : mesh.geometry, matrix, id);
+            addFaces(mesh, layout ? getTextDisplayPickGeometry(mesh.geometry) : mesh.geometry, matrix, id);
         }
     });
     // Prepare world-space instances/faces once; cell rays skip repeated transforms and full-head tests.

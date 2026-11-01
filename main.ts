@@ -517,15 +517,15 @@ function createWindow() {
   ipcMain.on('forget-project-save-path', (event, id: string) => {
     if (event.sender === win.webContents && typeof id === 'string') projectFiles.forgetProject(id);
   });
-  ipcMain.handle('save-project', (event, id: string, name: string, data: Uint8Array) => {
+  ipcMain.handle('save-project', (event, id: string, name: string, data: Uint8Array, saveAs = false) => {
     if (event.sender !== win.webContents) return { success: false, error: 'Invalid project save sender' };
     return projectFiles.save(id, name, data, async defaultName => {
       const result = await dialog.showSaveDialog(win, {
-        title: 'PDE 프로젝트 저장', defaultPath: `${defaultName}.pde`,
+        title: saveAs ? 'PDE 프로젝트 다른 이름으로 저장' : 'PDE 프로젝트 저장', defaultPath: `${defaultName}.pde`,
         filters: [{ name: 'PDE 프로젝트', extensions: ['pde'] }]
       });
       return result.canceled ? undefined : result.filePath;
-    });
+    }, saveAs);
   });
 
   ipcMain.handle('save-mcfunction', (event, name: string, commands: string[]) => {

@@ -33,9 +33,12 @@ import {
 import { attribute } from 'three/tsl';
 import { createHeadPainterGridMaterial, createHeadPainterPreviewMaterial } from './head-painter-gpu-preview';
 import * as GroupUtils from '../grouping/group';
+import { decomposeDisplayMatrix } from '../../animation/display-transformation';
+import type { AnimationMeshPreview } from '../../animation/animation-mesh-preview';
+import { getInstanceModelTransform } from '../../load-project/batching/instance-model-transform';
 import type { GroupChildObject } from '../grouping/group';
 import { dragDeltaMatrix, dragPreviewPositionNode, dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
-import { ConvexHull } from 'three/examples/jsm/math/ConvexHull.js';
+import { transformInstanceRange } from './instance-ranges';
 
 // --- Types & Interfaces ---
 
@@ -89,7 +92,7 @@ const _TMP_VEC3_B = new Vector3();
 
 let loadedObjectGroup: Group | null = null;
 const _dragInitialOverlayMatrix = new Matrix4();
-let _dragBoundsHullPoints: Vector3[] = [];
+const animationGroupBounds = new WeakMap<AnimationMeshPreview, Map<string, { box: Box3; matrices: Matrix4[] }>>();
 
 export function setLoadedObjectGroup(group: Group | null): void {
     loadedObjectGroup = group;
@@ -235,6 +238,9 @@ export function isItemDisplayHatEnabled(mesh: PdeMesh, instanceId: number): bool
 
 export function getInstanceLocalOriginOffset(mesh: PdeMesh, instanceId: number, out = new Vector3()): Vector3 {
     out.set(0, isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0, 0);
+    if (getDisplayType(mesh, instanceId) === 'block_display' && (mesh as InstancedMesh).isInstancedMesh) {
+        out.applyMatrix4(getInstanceModelTransform(mesh as InstancedMesh, instanceId).invert());
+    }
     if (getDisplayType(mesh, instanceId) === 'text_display') {
         const box = getInstanceLocalBox(mesh, instanceId);
         if (box) out.x = (box.min.x + box.max.x) * 0.5;
@@ -245,6 +251,12 @@ export function getInstanceLocalOriginOffset(mesh: PdeMesh, instanceId: number, 
 export function getInstanceLocalBoxMin(mesh: PdeMesh, instanceId: number, out = new Vector3()): Vector3 | null {
     const box = getInstanceLocalBox(mesh, instanceId);
     if (!box) return null;
+    if ((mesh as InstancedMesh).isInstancedMesh) {
+        const modelTransform = getInstanceModelTransform(mesh as InstancedMesh, instanceId);
+        // Find the display-space corner before converting back to batch coordinates.
+        out.copy(box.applyMatrix4(modelTransform).min);
+        return out.applyMatrix4(modelTransform.invert());
+    }
     return out.copy(box.min);
 }
 
@@ -314,7 +326,7 @@ export function getInstanceLocalBox(mesh: PdeMesh, instanceId: number): Box3 | n
 
     const textLayout = mesh.geometry.getAttribute('textDisplayLayout');
     let box = mesh.geometry.boundingBox.clone();
-    if (textLayout && instanceId < textLayout.count) {
+    if (textLayout && instanceId < textLayout.count && !mesh.geometry.userData.textDisplayGeometryKey) {
         const centerX = (textLayout.getX(instanceId) + textLayout.getY(instanceId)) * 0.5;
         const halfWidth = textLayout.getW(instanceId) * 0.5;
         box.min.set(centerX - halfWidth, 0, mesh.geometry.boundingBox.min.z);
@@ -372,6 +384,23 @@ export function getGroupLocalBoundingBox(groupId: string): Box3 {
         groupInverse.premultiply(tempInv); 
     }
 
+    const preview = loadedObjectGroup?.userData.animationSession?.meshPreview as AnimationMeshPreview | undefined;
+    let cache: Map<string, { box: Box3; matrices: Matrix4[] }> | undefined;
+    const matrices: Matrix4[] = [];
+    if (preview?.valid) {
+        cache = animationGroupBounds.get(preview);
+        if (!cache) animationGroupBounds.set(preview, cache = new Map());
+        for (const state of preview.meshes.values()) {
+            let parent = state.parent;
+            while (parent && parent !== groupId) parent = preview.local.get(parent)?.parent;
+            if (parent === groupId) matrices.push(new Matrix4().multiplyMatrices(groupInverse, state.mesh.matrixWorld));
+        }
+        const cached = cache.get(groupId);
+        if (cached && matrices.length === cached.matrices.length && matrices.every((matrix, index) =>
+            matrix.elements.every((value, axis) => Math.abs(value - cached.matrices[index].elements[axis]) <= 1e-10 * Math.max(1, Math.abs(value))))) {
+            return cached.box.clone();
+        }
+    }
     const children = getAllGroupChildren(groupId);
     const box = new Box3();
     const tempMat = new Matrix4();
@@ -392,6 +421,7 @@ export function getGroupLocalBoundingBox(groupId: string): Box3 {
         tempBox.copy(localBox).applyMatrix4(tempMat);
         box.union(tempBox);
     });
+    if (cache) cache.set(groupId, { box: box.clone(), matrices });
     return box;
 }
 
@@ -415,19 +445,10 @@ export function getGroupOriginWorld(groupId: string, out = new Vector3()): Vecto
 }
 
 export function getRotationFromMatrix(matrix: Matrix4): Quaternion {
-    const R = new Matrix4();
-    const x = _TMP_VEC3_A.setFromMatrixColumn(matrix, 0).normalize();
-    const y = _TMP_VEC3_B.setFromMatrixColumn(matrix, 1);
-    const z = new Vector3().setFromMatrixColumn(matrix, 2);
-
-    const yDotX = y.dot(x);
-    y.sub(x.clone().multiplyScalar(yDotX)).normalize();
-    z.crossVectors(x, y).normalize();
-    R.makeBasis(x, y, z);
-    
-    const quaternion = new Quaternion();
-    quaternion.setFromRotationMatrix(R);
-    return quaternion;
+    // Both SVD rotations contribute to the local frame when the matrix contains shear.
+    const parts = decomposeDisplayMatrix(matrix.clone().transpose().elements);
+    return new Quaternion().fromArray(parts.left_rotation)
+        .multiply(new Quaternion().fromArray(parts.right_rotation)).normalize();
 }
 
 export function getSelectionBoundingBox(currentSelection: SelectionState, previewMatrix?: Matrix4): Box3 {
@@ -475,31 +496,33 @@ function _getSelectedObjectCount(currentSelection: SelectionState): number {
 export function prepareMultiSelectionDrag(_currentSelection: SelectionState): void {
     const activeBoxLine = multiSelectionOverlay?.children[0] as LineSegments | undefined;
     if (activeBoxLine) _dragInitialOverlayMatrix.copy(activeBoxLine.matrix);
+}
 
-    _dragBoundsHullPoints = [];
-    if (!selectionOverlay) return;
+function getSelectionOverlayBoundingBox(previewMatrix?: Matrix4): Box3 {
+    const box = new Box3();
+    if (!selectionOverlay) return box;
     const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
-    const points: Vector3[] = [];
-    for (let i = 0; i < selectedCount; i++) {
-        selectionOverlay.getMatrixAt(i, _TMP_MAT4_A);
-        for (const corner of _unitCubeCorners) points.push(corner.clone().applyMatrix4(_TMP_MAT4_A));
-    }
-    if (points.length < 4) { _dragBoundsHullPoints = points; return; }
-
-    try {
-        const hull = new ConvexHull().setFromPoints(points);
-        const hullPoints = new Set<Vector3>();
-        for (const face of hull.faces) {
-            let edge = face.edge;
-            do {
-                hullPoints.add(edge.head().point);
-                edge = edge.next;
-            } while (edge !== face.edge);
+    const matrices = selectionOverlay.instanceMatrix.array;
+    const e = previewMatrix?.elements;
+    for (let axis = 0; axis < 3; axis++) {
+        const x = e ? e[axis] : Number(axis === 0);
+        const y = e ? e[axis + 4] : Number(axis === 1);
+        const z = e ? e[axis + 8] : Number(axis === 2);
+        const w = e ? e[axis + 12] : 0;
+        let min = Infinity, max = -Infinity;
+        for (let i = 0; i < selectedCount * 16; i += 16) {
+            const center = x * matrices[i + 12] + y * matrices[i + 13] + z * matrices[i + 14] + w * matrices[i + 15];
+            // Unit cube half extents are the absolute sums of the transformed basis vectors.
+            const radius = (Math.abs(x * matrices[i] + y * matrices[i + 1] + z * matrices[i + 2] + w * matrices[i + 3])
+                + Math.abs(x * matrices[i + 4] + y * matrices[i + 5] + z * matrices[i + 6] + w * matrices[i + 7])
+                + Math.abs(x * matrices[i + 8] + y * matrices[i + 9] + z * matrices[i + 10] + w * matrices[i + 11])) * 0.5;
+            min = Math.min(min, center - radius);
+            max = Math.max(max, center + radius);
         }
-        _dragBoundsHullPoints = hullPoints.size > 0 ? [...hullPoints] : points;
-    } catch {
-        _dragBoundsHullPoints = points;
+        box.min.setComponent(axis, min);
+        box.max.setComponent(axis, max);
     }
+    return box;
 }
 
 // --- Overlay State ---
@@ -801,9 +824,10 @@ export function updateSelectionOverlay(
     vertexQueue: QueueItem[], 
     isVertexMode: boolean, 
     selectionHelper: Mesh,
-    selectedVertexKeys: Set<string>
+    selectedVertexKeys: Set<string>,
+    reuse = false
 ): void {
-    if (selectionOverlay) {
+    if (selectionOverlay && !reuse) {
         scene.remove(selectionOverlay);
         selectionOverlay.dispose();
         selectionOverlay = null;
@@ -824,7 +848,14 @@ export function updateSelectionOverlay(
     }
 
     const hasAnySelection = (currentSelection.groups && currentSelection.groups.size > 0) || (currentSelection.objects && currentSelection.objects.size > 0);
-    if (!hasAnySelection && vertexQueue.length === 0) return;
+    if (!hasAnySelection && vertexQueue.length === 0) {
+        if (selectionOverlay) {
+            scene.remove(selectionOverlay);
+            selectionOverlay.dispose();
+            selectionOverlay = null;
+        }
+        return;
+    }
 
     const itemsToRender: OverlayItem[] = [];
     const tempCenter = _TMP_VEC3_A;
@@ -903,15 +934,25 @@ export function updateSelectionOverlay(
 
     const allOverlayItems = [...itemsToRender, ...queueItemsToRender];
 
+    if (selectionOverlay && selectionOverlay.count !== allOverlayItems.length) {
+        scene.remove(selectionOverlay);
+        selectionOverlay.dispose();
+        selectionOverlay = null;
+    }
     if (allOverlayItems.length > 0) {
-        const dragSelected = new InstancedBufferAttribute(new Float32Array(allOverlayItems.length), 1);
+        if (!selectionOverlay) {
+            _overlayUnitGeo.setAttribute(dragSelectedAttributeName, new InstancedBufferAttribute(new Float32Array(allOverlayItems.length), 1));
+            selectionOverlay = new InstancedMesh(_overlayUnitGeo, _selectionOverlayMat, allOverlayItems.length);
+            selectionOverlay.instanceMatrix = new StorageInstancedBufferAttribute(allOverlayItems.length, 16);
+            selectionOverlay.renderOrder = 1;
+            selectionOverlay.matrixAutoUpdate = false;
+            selectionOverlay.frustumCulled = false;
+            scene.add(selectionOverlay);
+        }
+        const dragSelected = _overlayUnitGeo.getAttribute(dragSelectedAttributeName);
+        dragSelected.array.fill(0);
         dragSelected.array.fill(1, 0, itemsToRender.length);
-        _overlayUnitGeo.setAttribute(dragSelectedAttributeName, dragSelected);
-        selectionOverlay = new InstancedMesh(_overlayUnitGeo, _selectionOverlayMat, allOverlayItems.length);
-        selectionOverlay.instanceMatrix = new StorageInstancedBufferAttribute(allOverlayItems.length, 16);
-        selectionOverlay.renderOrder = 1;
-        selectionOverlay.matrixAutoUpdate = false;
-        selectionOverlay.frustumCulled = false;
+        dragSelected.needsUpdate = true;
         selectionOverlay.userData['items'] = allOverlayItems;
         selectionOverlay.userData['selectedCount'] = itemsToRender.length;
         selectionOverlay.userData['objectIndexes'] = new Map(allOverlayItems.flatMap((item, index) =>
@@ -925,7 +966,8 @@ export function updateSelectionOverlay(
             colorObj.setHex(item.color);
             selectionOverlay!.setColorAt(index, colorObj);
         });
-        scene.add(selectionOverlay);
+        selectionOverlay.instanceMatrix.needsUpdate = true;
+        if (selectionOverlay.instanceColor) selectionOverlay.instanceColor.needsUpdate = true;
     }
 
     if (allOverlayItems.length > 0 && isVertexMode) {
@@ -1058,12 +1100,7 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection: Selectio
             return;
         }
 
-        const worldBox = _TMP_BOX3_A.makeEmpty();
-        if (_dragBoundsHullPoints.length > 0) {
-            for (const point of _dragBoundsHullPoints) worldBox.expandByPoint(_TMP_VEC3_A.copy(point).applyMatrix4(tMat));
-        } else {
-            worldBox.copy(getSelectionBoundingBox(currentSelection, tMat));
-        }
+        const worldBox = selectionOverlay ? getSelectionOverlayBoundingBox(tMat) : getSelectionBoundingBox(currentSelection, tMat);
         if (!worldBox.isEmpty()) setBoxLineTransform(activeBoxLine, worldBox);
         return;
     }
@@ -1084,19 +1121,15 @@ export function syncSelectionOverlay(deltaMatrix: Matrix4): void {
 export function commitSelectionOverlay(deltaMatrix: Matrix4, currentSelection: SelectionState): void {
     if (selectionOverlay) {
         const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
-        for (let i = 0; i < selectedCount; i++) {
-            selectionOverlay.getMatrixAt(i, _TMP_MAT4_A);
-            selectionOverlay.setMatrixAt(i, _TMP_MAT4_A.premultiply(deltaMatrix));
-        }
+        transformInstanceRange(selectionOverlay.instanceMatrix.array, deltaMatrix, 0, selectedCount);
         selectionOverlay.instanceMatrix.needsUpdate = true;
     }
 
     const activeBoxLine = multiSelectionOverlay?.children[0] as LineSegments | undefined;
     if (activeBoxLine) {
-        const finalBox = getSelectionBoundingBox(currentSelection);
+        const finalBox = selectionOverlay ? getSelectionOverlayBoundingBox() : getSelectionBoundingBox(currentSelection);
         if (!finalBox.isEmpty()) setBoxLineTransform(activeBoxLine, finalBox);
     }
-    _dragBoundsHullPoints = [];
 }
 
 export function findClosestVertexForSnapping(gizmoWorldPos: Vector3, camera: Camera, renderer: Renderer, snapThreshold = 15): Vector3 | null {

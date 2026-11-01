@@ -3,6 +3,9 @@ import { attribute, mix, positionGeometry, positionLocal, texture, uv, vec2, vec
 import { strFromU8 } from 'fflate';
 import { getAssetBytes } from '../../asset-manager';
 import { entityVisiblePosition, setEntityStateAttributes } from '../../entity-material';
+import { findUnihexGlyph } from './unihex-font';
+import { loadedObjectGroup } from './display-instancing';
+import { appendTextGlyphQuads, type BitmapGlyph, type TextGlyphDraw, type TextGlyphQuad } from './text-glyph-geometry';
 
 export type TextDisplayOptions = {
     color?: string;
@@ -63,19 +66,6 @@ export function getTextDisplayTemplateKey(item: TextDisplayItem): string {
     return JSON.stringify([item.name ?? '', item.options ?? {}]);
 }
 
-type BitmapGlyph = {
-    image: CanvasImageSource;
-    sourceX: number;
-    sourceY: number;
-    sourceWidth: number;
-    sourceHeight: number;
-    scale: number;
-    advance: number;
-    ascent: number;
-    boldOffset: number;
-    shadowOffset: number;
-};
-
 type BitmapProvider = {
     file: string;
     height?: number;
@@ -88,7 +78,7 @@ type AtlasSpriteSource = { image: ImageBitmap; sprites: Map<string, Omit<AtlasSp
 type AtlasSpriteReference = { characterIndex: number; atlas: string; sprite: string };
 type PlayerSpriteReference = { characterIndex: number; username: string; hat: boolean };
 type SpriteColorSegment = { x: number; y: number; color: string; alpha: number };
-type UnihexFontSource = Map<number, string>;
+type UnihexFontSource = string;
 type UnihexSizeOverride = [from: number, to: number, left: number, right: number];
 
 const textPixelSize = 0.025;
@@ -98,7 +88,7 @@ const textureScale = 2;
 const fontSize = 8;
 const horizontalGlyphOverflow = 1;
 const topGlyphOverflow = 2;
-const textDisplayAtlasSize = 2048;
+const textDisplayAtlasSize = 512;
 const maxTextCharacters = 16384;
 const objectReplacementCharacter = '\ufffc';
 export const textDisplayLayoutAttributeName = 'textDisplayLayout';
@@ -278,12 +268,7 @@ function loadBitmapFont(): Promise<Map<string, BitmapGlyph>> {
 function loadUnihexFont(): Promise<UnihexFontSource> {
     return unihexFontPromise ??= fetch(new URL('../../../resources/unifont-17.0.01.hex', import.meta.url)).then(async response => {
         if (!response.ok) throw new Error(`Unifont HEX failed to load: ${response.status}`);
-        const glyphs = new Map<number, string>();
-        for (const line of (await response.text()).split(/\r?\n/u)) {
-            const separator = line.indexOf(':');
-            if (separator > 0) glyphs.set(Number.parseInt(line.slice(0, separator), 16), line.slice(separator + 1));
-        }
-        return glyphs;
+        return response.text();
     });
 }
 
@@ -310,7 +295,7 @@ function createUnihexFont(text: string, source: UnihexFontSource): Map<string, B
     const entries: Array<{ character: string; hex: string; left: number; right: number }> = [];
     for (const character of new Set(Array.from(text))) {
         const codepoint = character.codePointAt(0)!;
-        const hex = source.get(codepoint);
+        const hex = findUnihexGlyph(source, codepoint);
         if (hex) entries.push({ character, hex, ...unihexBounds(codepoint, hex) });
     }
     const glyphs = new Map<string, BitmapGlyph>();
@@ -462,7 +447,8 @@ function drawText(
         alpha: (index: number) => number;
         offsets: Map<number, number>;
     },
-    obfuscatedGlyphs?: Map<number, string[]>
+    obfuscatedGlyphs?: Map<number, string[]>,
+    emitGlyph?: (draw: TextGlyphDraw) => void
 ): void {
     Array.from(text).forEach((sourceCharacter, offset) => {
         const characterIndex = start + offset;
@@ -478,14 +464,18 @@ function drawText(
             : undefined;
         const character = glyphs?.[Math.floor(Math.random() * glyphs.length)] ?? sourceCharacter;
         const glyph = bitmapFont.get(character);
+        if (glyph && emitGlyph) {
+            emitGlyph({ glyph, characterIndex, x, baseline, bold, italic });
+            shadow?.offsets.set(characterIndex, glyph.shadowOffset);
+            x += glyphAdvance(character, context, bitmapFont, bold);
+            return;
+        }
         const drawGlyph = (target: CanvasRenderingContext2D, targetX: number, targetBaseline: number) => {
             target.save();
+            target.translate(targetX, targetBaseline);
             if (italic) {
-                target.translate(targetX, targetBaseline);
-                target.transform(1, 0, -0.25, 1, 0, 0);
+                target.transform(1, 0, -0.25, 1, minecraftItalicOffset(fontSize), 0);
             }
-            const drawX = italic ? 0 : targetX;
-            const drawBaseline = italic ? 0 : targetBaseline;
             if (glyph) {
                 const draw = (offset: number) => target.drawImage(
                     glyph.image,
@@ -493,16 +483,16 @@ function drawText(
                     glyph.sourceY,
                     glyph.sourceWidth,
                     glyph.sourceHeight,
-                    drawX + offset,
-                    drawBaseline - glyph.ascent,
+                    offset,
+                    -glyph.ascent,
                     glyph.sourceWidth * glyph.scale,
                     glyph.sourceHeight * glyph.scale
                 );
                 draw(0);
                 if (bold) draw(glyph.boldOffset);
             } else {
-                target.fillText(character, drawX, drawBaseline);
-                if (bold) target.fillText(character, drawX + 1, drawBaseline);
+                target.fillText(character, 0, 0);
+                if (bold) target.fillText(character, 1, 0);
             }
             target.restore();
         };
@@ -592,17 +582,17 @@ class TextDisplayMaterial extends MeshBasicNodeMaterial {
         positionLocal.assign(vec3(
             mix(textX, backgroundX, background),
             positionGeometry.y.mul(layout.z),
-            background.mul(textBackgroundOffset)
+            positionGeometry.z.add(background.mul(textBackgroundOffset))
         ));
         return super.setupPosition(builder);
     }
 }
 
-function createTextDisplayMaterial(textTexture: Texture, opaqueBackground: boolean): MeshBasicNodeMaterial {
+function createTextDisplayMaterial(textTexture: Texture): MeshBasicNodeMaterial {
     const material = new TextDisplayMaterial({
         map: textTexture,
         transparent: true,
-        depthWrite: opaqueBackground,
+        depthWrite: true,
         alphaTest: 0.1,
         side: FrontSide,
         toneMapped: false,
@@ -717,13 +707,20 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<Inst
         alpha: (characterIndex: number) => pageAlpha(characterIndex) * pageShadowAlpha(characterIndex),
         offsets: shadowOffsets
     } : undefined;
+    const glyphQuads: TextGlyphQuad[] = [];
+    const emitGlyph = options.bold || options.italic || options.pageEffects?.some(effect => effect.bold || effect.italic)
+        ? (draw: TextGlyphDraw) => glyphQuads.push({ ...draw,
+            color: pageColor(draw.characterIndex), alpha: pageAlpha(draw.characterIndex),
+            shadowColor: pageShadowColor(draw.characterIndex),
+            shadowAlpha: pageAlpha(draw.characterIndex) * pageShadowAlpha(draw.characterIndex)
+        }) : undefined;
 
     lines.forEach((line, index) => {
         const align = options.pageAligns?.[pageIndexForCharacter(line.start)] ?? options.align ?? 'center';
         const width = widths[index];
         const x = Math.round((horizontalGlyphOverflow + 1 + (align === 'left' ? 0 : align === 'right' ? contentWidth - width : (contentWidth - width) / 2)) * renderScale) / renderScale;
         const baseline = topGlyphOverflow + index * lineHeight + 8;
-        drawText(context, line.text, x, baseline, activeBitmapFont, line.start, pageEffect, spriteCharacterIndices, shadow, obfuscatedGlyphs);
+        drawText(context, line.text, x, baseline, activeBitmapFont, line.start, pageEffect, spriteCharacterIndices, shadow, obfuscatedGlyphs, emitGlyph);
         Array.from(line.text).forEach((character, offset) => {
             const characterIndex = line.start + offset;
             const characterX = x + measureRange(Array.from(line.text).slice(0, offset).join(''), line.start);
@@ -807,12 +804,6 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<Inst
     context.fillRect(1 / renderScale, 0, 1 / renderScale, 1 / renderScale);
     context.globalCompositeOperation = 'source-over';
 
-    const texture = new CanvasTexture(canvas);
-    texture.colorSpace = SRGBColorSpace;
-    texture.magFilter = NearestFilter;
-    texture.minFilter = NearestFilter;
-    texture.generateMipmaps = false;
-
     const positions: number[] = [];
     const uvs: number[] = [];
     const indices: number[] = [];
@@ -824,19 +815,25 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<Inst
     };
     const left = (0.5 - renderWidth / 2) * textPixelSize;
     const right = left + renderWidth * textPixelSize;
-    const swatchV = 1 - 0.5 / canvas.height;
-    const backgroundSwatchU = 1.5 / canvas.width;
-
     addQuad();
     addQuad();
+    const textureCanvas = glyphQuads.length ? appendTextGlyphQuads(canvas, glyphQuads,
+        { width: renderWidth, height: logicalHeight, top: topGlyphOverflow, scale: renderScale, pixelSize: textPixelSize },
+        positions, uvs, indices) : canvas;
+    const texture = new CanvasTexture(textureCanvas);
+    texture.colorSpace = SRGBColorSpace;
+    texture.magFilter = NearestFilter;
+    texture.minFilter = NearestFilter;
+    texture.generateMipmaps = false;
+    const swatchV = 1 - 0.5 / textureCanvas.height;
+    const backgroundSwatchU = 1.5 / textureCanvas.width;
 
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
-    geometry.setAttribute(textDisplayBackgroundAttributeName, new Float32BufferAttribute([
-        1, 1, 1, 1,
-        0, 0, 0, 0
-    ], 1));
+    geometry.setAttribute(textDisplayBackgroundAttributeName,
+        new Float32BufferAttribute(new Float32Array(positions.length / 3).fill(1, 0, 4), 1));
+    if (glyphQuads.length) geometry.userData.textDisplayGeometryKey = `${renderWidth},${logicalHeight}|${positions}|${uvs}`;
     geometry.setAttribute(textDisplayLayoutAttributeName, new InstancedBufferAttribute(new Float32Array([
         left,
         right,
@@ -847,7 +844,7 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<Inst
         0,
         1,
         0,
-        1 - topGlyphOverflow / renderHeight
+        glyphQuads.length ? 1 : 1 - topGlyphOverflow / renderHeight
     ]), 4));
     geometry.setAttribute(textDisplayBackgroundUvAttributeName, new InstancedBufferAttribute(new Float32Array([
         backgroundSwatchU,
@@ -858,13 +855,19 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<Inst
         new Vector3((0.5 - logicalWidth / 2) * textPixelSize, 0, textBackgroundOffset),
         new Vector3((0.5 + logicalWidth / 2) * textPixelSize, logicalHeight * textPixelSize, 0)
     );
+    if (glyphQuads.length) {
+        const point = new Vector3();
+        for (let i = 24; i < positions.length; i += 3) geometry.boundingBox.expandByPoint(point.set(
+            left + positions[i] * (right - left), positions[i + 1] * logicalHeight * textPixelSize, positions[i + 2]
+        ));
+    }
     geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new Sphere());
     if (import.meta.env.DEV) {
         console.assert(geometry.getAttribute(textDisplayBackgroundAttributeName).getX(0) === 1 && geometry.getAttribute(textDisplayBackgroundAttributeName).getX(4) === 0, 'Text display layers must stay separated.');
     }
     setEntityStateAttributes(geometry, 1);
 
-    const material = createTextDisplayMaterial(texture, backgroundAlpha === 1);
+    const material = createTextDisplayMaterial(texture);
     material.visible = text.length > 0;
 
     // ponytail: live edits stay standalone; static project text is packed by createTextDisplayTemplates.
@@ -889,12 +892,12 @@ type TextDisplayAtlasRegion = {
     height: number;
 };
 
-const textDisplayAtlasPages: TextDisplayAtlasPage[] = [];
-const textDisplayAtlasRegions = new Map<string, TextDisplayAtlasRegion>();
+function getTextDisplayAtlases(): { pages: TextDisplayAtlasPage[]; regions: Map<string, TextDisplayAtlasRegion> } {
+    return loadedObjectGroup.userData.textDisplayAtlases ??= { pages: [], regions: new Map() };
+}
 
 export function resetTextDisplayAtlases(): void {
-    textDisplayAtlasPages.length = 0;
-    textDisplayAtlasRegions.clear();
+    delete loadedObjectGroup.userData.textDisplayAtlases;
 }
 
 function createTextDisplayAtlasPage(): TextDisplayAtlasPage {
@@ -908,12 +911,13 @@ function createTextDisplayAtlasPage(): TextDisplayAtlasPage {
     texture.minFilter = NearestFilter;
     texture.generateMipmaps = false;
     const page = { canvas, context, texture, materials: new Map(), nextX: 0, nextY: 0, rowHeight: 0 };
-    textDisplayAtlasPages.push(page);
+    getTextDisplayAtlases().pages.push(page);
     return page;
 }
 
 function placeTextDisplayAtlasRegion(key: string, source: HTMLCanvasElement, replace: boolean): TextDisplayAtlasRegion | null {
-    const cached = textDisplayAtlasRegions.get(key);
+    const { pages, regions } = getTextDisplayAtlases();
+    const cached = regions.get(key);
     if (cached && source.width <= cached.width && source.height <= cached.height) {
         if (replace) {
             cached.page.context.clearRect(cached.x, cached.y, cached.width, cached.height);
@@ -929,7 +933,7 @@ function placeTextDisplayAtlasRegion(key: string, source: HTMLCanvasElement, rep
     let page: TextDisplayAtlasPage | undefined;
     let x = 0;
     let y = 0;
-    for (const candidate of textDisplayAtlasPages) {
+    for (const candidate of pages) {
         x = candidate.nextX;
         y = candidate.nextY;
         if (x + width > textDisplayAtlasSize) {
@@ -952,7 +956,7 @@ function placeTextDisplayAtlasRegion(key: string, source: HTMLCanvasElement, rep
     page.nextY = y;
     page.rowHeight = Math.max(page.rowHeight, height);
     const region = { page, x, y, width, height };
-    textDisplayAtlasRegions.set(key, region);
+    regions.set(key, region);
     if (import.meta.env.DEV) console.assert(x + width <= textDisplayAtlasSize && y + height <= textDisplayAtlasSize, 'Text display atlas region overflowed.');
     return region;
 }
@@ -961,7 +965,7 @@ function getTextDisplayAtlasMaterial(region: TextDisplayAtlasRegion, source: Mes
     const materialKey = `${source.depthWrite}:${source.visible}`;
     let material = region.page.materials.get(materialKey);
     if (!material) {
-        material = createTextDisplayMaterial(region.page.texture, source.depthWrite);
+        material = createTextDisplayMaterial(region.page.texture);
         material.visible = source.visible;
         material.userData.textDisplayAtlas = true;
         region.page.materials.set(materialKey, material);

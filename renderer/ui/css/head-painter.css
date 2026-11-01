@@ -1,4 +1,5 @@
-#scene-toolbar i.head-painter-active {
+#scene-toolbar i.head-painter-active,
+#animation-button[aria-pressed="true"] {
   color: #2e87ec;
 }
 

@@ -15,11 +15,8 @@ import * as Overlay from './overlay';
 import * as GroupUtils from '../grouping/group';
 import { getVisibleInstanceIds } from '../scene-visibility';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import type { InstanceIdRange } from './instance-ranges';
-
-// Helper aliases
-const { isInstanceValid, getInstanceWorldMatrix, getInstanceLocalBox } = Overlay;
-const { getGroupKey, getGroupChain, getObjectToGroup } = GroupUtils;
+import { transformInstanceRange, type InstanceIdRange } from './instance-ranges';
+import { matchesPointerShortcut } from '../input/shortcuts';
 
 interface OrbitControlsLike {
     enabled: boolean;
@@ -132,11 +129,16 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
         tmpLocalDelta.multiplyMatrices(tmpMeshWorldInverse, deltaMatrix);
         tmpLocalDelta.multiply((mesh as Object3D).matrixWorld);
 
+        const matrices = (mesh as InstancedMesh).isInstancedMesh ? (mesh as InstancedMesh).instanceMatrix.array : null;
         for (const { start, count } of ranges) {
-            for (let instanceId = start; instanceId < start + count; instanceId++) {
-                (mesh as InstancedMesh).getMatrixAt(instanceId, tmpInstanceMatrix);
-                tmpInstanceMatrix.premultiply(tmpLocalDelta);
-                (mesh as InstancedMesh).setMatrixAt(instanceId, tmpInstanceMatrix);
+            if (matrices) {
+                transformInstanceRange(matrices, tmpLocalDelta, start, count);
+            } else {
+                for (let instanceId = start; instanceId < start + count; instanceId++) {
+                    (mesh as InstancedMesh).getMatrixAt(instanceId, tmpInstanceMatrix);
+                    tmpInstanceMatrix.premultiply(tmpLocalDelta);
+                    (mesh as InstancedMesh).setMatrixAt(instanceId, tmpInstanceMatrix);
+                }
             }
         }
 
@@ -267,10 +269,10 @@ export function initDrag({
         isMarqueeActiveOrCandidate: () => marqueeActive || marqueeCandidate,
 
         onPointerDown: (event: PointerEvent | MouseEvent) => {
-            // Ctrl+Drag: 영역 선택 시작 (실제 드래그 발생 전까지는 후보 상태)
-            if ((event.ctrlKey || event.metaKey) && !transformControls.dragging) {
+            // 영역 선택 시작 (실제 드래그 발생 전까지는 후보 상태)
+            if (matchesPointerShortcut(event, 'boxSelect') && !transformControls.dragging) {
                 marqueeCandidate = true;
-                marqueeIgnoreGroups = !!event.shiftKey;
+                marqueeIgnoreGroups = matchesPointerShortcut(event, 'multiSelect');
                 marqueeStart = { x: event.clientX, y: event.clientY };
                 marqueePrevControlsEnabled = getControls().enabled;
                 // OrbitControls가 드래그를 시작하지 못하도록 비활성화
@@ -345,7 +347,7 @@ export function initDrag({
                 const tmpMat = _TMP_MAT4_A;
                 const camera = getCamera();
 
-                const objectToGroup = ignoreGroups ? null : getObjectToGroup(loadedObjectGroup) as Map<string, string>;
+                const objectToGroup = ignoreGroups ? null : GroupUtils.getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
                 loadedObjectGroup.traverse((obj: Object3D) => {
                     if (!obj || !(obj as InstancedMesh).isInstancedMesh) return;
@@ -353,12 +355,12 @@ export function initDrag({
 
                     const mesh = obj as InstancedMesh;
                     for (const instanceId of getVisibleInstanceIds(mesh)) {
-                        if (!isInstanceValid(obj as InstancedMesh, instanceId)) continue;
+                        if (!Overlay.isInstanceValid(obj as InstancedMesh, instanceId)) continue;
 
-                        const bbox = getInstanceLocalBox(obj as InstancedMesh, instanceId);
+                        const bbox = Overlay.getInstanceLocalBox(obj as InstancedMesh, instanceId);
                         if (!bbox) continue;
 
-                        getInstanceWorldMatrix(obj as InstancedMesh, instanceId, tmpMat);
+                        Overlay.getInstanceWorldMatrix(obj as InstancedMesh, instanceId, tmpMat);
 
                         // 투영된 바운딩 박스 계산을 위한 코너 좌표
                         _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y, bbox.min.z);
@@ -397,10 +399,10 @@ export function initDrag({
                         if (!projectedBoxIntersectsMarquee(_TMP_CORNERS, validCornerCount, minX, maxX, minY, maxY)) continue;
 
                         if (!ignoreGroups && objectToGroup) {
-                            const key = getGroupKey(obj as InstancedMesh, instanceId);
+                            const key = GroupUtils.getGroupKey(obj as InstancedMesh, instanceId);
                             const immediateGroupId = objectToGroup.get(key);
                             if (immediateGroupId) {
-                                const chain = getGroupChain(loadedObjectGroup, immediateGroupId);
+                                const chain = GroupUtils.getGroupChain(loadedObjectGroup, immediateGroupId);
                                 if (groupIds) groupIds.add(chain[0] ?? immediateGroupId);
                                 continue;
                             }

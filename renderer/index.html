@@ -24,6 +24,7 @@
           <button type="button" role="menuitem" data-file-action="newTab"><span class="lucide-icon" aria-hidden="true">&#xE426;</span>새 프로젝트 탭</button>
           <button type="button" role="menuitem" data-file-action="open"><span class="lucide-icon" aria-hidden="true">&#xE247;</span>프로젝트 열기</button>
           <button type="button" role="menuitem" data-file-action="save"><span class="lucide-icon" aria-hidden="true">&#xE14D;</span>저장</button>
+          <button type="button" role="menuitem" data-file-action="saveAs" aria-keyshortcuts="Control+Shift+S" title="Ctrl + Shift + S"><span class="lucide-icon" aria-hidden="true">&#xE14D;</span>다른 이름으로 저장</button>
           <button type="button" role="menuitem" data-file-action="export"><span class="lucide-icon" aria-hidden="true">&#xE0B2;</span>내보내기</button>
         </div>
       </div>
@@ -49,8 +50,11 @@
   <div id="main-content">
     <canvas id="renderCanvas"></canvas>
     <div id="scene-toolbar" class="horizontal-toolbar">
+      <i>&#xE061;</i><i>&#xE5C6;</i><i class="player-head-icon"></i><i>&#xE198;</i>
       <div class="toolbar-dimensions"><button type="button" class="toolbar-dimensions-toggle lucide-icon" aria-label="크기 설정" aria-expanded="false">&#xE2F0;</button><div class="toolbar-dimensions-menu" hidden><label>X <input class="pde-input" name="x" inputmode="numeric" pattern="[0-9]*"></label><label>Y <input class="pde-input" name="y" inputmode="numeric" pattern="[0-9]*"></label><label>Z <input class="pde-input" name="z" inputmode="numeric" pattern="[0-9]*"></label></div></div>
-      <i>&#xE061;</i><i>&#xE5C6;</i><i class="player-head-icon"></i><i>&#xE198;</i><i>&#xE1D3;</i><button id="settings-button" class="menu-icon" type="button" aria-label="설정">≡</button>
+      <i>&#xE1D3;</i>
+      <button id="animation-button" class="lucide-icon" type="button" title="애니메이션" aria-label="애니메이션">&#xE29B;</button>
+      <button id="settings-button" class="menu-icon" type="button" aria-label="설정">≡</button>
     </div>
   </div>
 

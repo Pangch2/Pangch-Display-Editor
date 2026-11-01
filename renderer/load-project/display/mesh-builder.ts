@@ -12,9 +12,11 @@ import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-h
 import { entityVisibleAttributeName, setEntityStateAttributes, dragSelectedAttributeName } from '../../entity-material';
 import { type GroupData, type OtherItem } from '../pbde/pbde-types';
 import { textDisplayInstanceAttributeNames, createTextDisplayTemplates, getTextDisplayTemplateKey, type TextDisplayOptions } from './text-display';
-import { loadAndRenderPbde, performSelection } from './project-renderer';
+import { appendDisplayObjects, loadAndRenderPbde, performSelection } from './project-renderer';
 import { compressSync, strToU8 } from 'fflate';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../../controls/transform/mirroring';
+import { cloneAnimationTarget } from '../../animation/animation-state';
+export { previewObjectModels as previewDisplayObjects } from './object-model-preview';
 
 export { loadedObjectGroup, beginPbdeLoadGeneration, type GlobalBrightness, type LoadedSelection } from './display-instancing';
 export { deferredPlayerHeadTexture } from './player-head-atlas';
@@ -41,13 +43,13 @@ export { updatePlayerHeadTexture } from './player-head-atlas';
 export { flipPlayerHeadTextures } from './player-head-atlas';
 
 export type DisplayReplacementResult = string[] & {
-    history?: { removed: DeletedSceneDelta; created: Map<InstancedMesh, Set<number>> };
+    history?: { removed: DeletedSceneDelta; created: Map<InstancedMesh, Set<number>>; objectIds?: Map<string, string> };
 };
-export function updateDisplayObjectMatrix(objectUuid: string, name: string): Promise<void> {
-    return trackProjectEdit(updateObjectMatrix(objectUuid, name));
+export function updateDisplayObjectMatrix(objectUuid: string, name: string, preview = false): Promise<void> {
+    return trackProjectEdit(updateObjectMatrix(objectUuid, name, preview));
 }
 
-async function updateObjectMatrix(objectUuid: string, name: string): Promise<void> {
+async function updateObjectMatrix(objectUuid: string, name: string, preview: boolean): Promise<void> {
     const userData = loadedObjectGroup.userData;
     const ref = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) throw new Error('변경할 디스플레이 오브젝트를 찾을 수 없습니다.');
@@ -59,6 +61,8 @@ async function updateObjectMatrix(objectUuid: string, name: string): Promise<voi
     const newDisplayType = /\bdisplay=([^,\]]+)/.exec(name)?.[1];
     const matrix = new Matrix4();
     ref.mesh.getMatrixAt(ref.instanceId, matrix);
+    const customPivots = ref.mesh.userData.customPivots as Map<number, Vector3> | undefined;
+    const pivotParent = customPivots?.get(ref.instanceId)?.clone().applyMatrix4(matrix);
 
     if (name.startsWith('player_head')) {
         matrix.multiply(getPlayerHeadRenderMatrix(oldDisplayType).invert()).multiply(getPlayerHeadRenderMatrix(newDisplayType));
@@ -71,27 +75,21 @@ async function updateObjectMatrix(objectUuid: string, name: string): Promise<voi
         changeInstanceModelTransform(ref.mesh, ref.instanceId, matrix, oldModelMatrix, newModelMatrix);
     }
 
-    const pivot = (ref.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(ref.instanceId)?.clone()
-        ?? Overlay.getInstanceLocalBox(ref.mesh, ref.instanceId)?.getCenter(new Vector3());
-    if (ref.mesh.userData.hasHat) pivot?.setY(Overlay.isItemDisplayHatEnabled(ref.mesh, ref.instanceId) ? 0.03125 : 0);
-    if (pivot) {
-        const oldMatrix = new Matrix4();
-        ref.mesh.getMatrixAt(ref.instanceId, oldMatrix);
-        const target = pivot.clone().applyMatrix4(oldMatrix);
-        const offset = target.sub(pivot.clone().applyMatrix4(matrix));
-        matrix.elements[12] += offset.x;
-        matrix.elements[13] += offset.y;
-        matrix.elements[14] += offset.z;
-    }
+    if (pivotParent) customPivots!.set(ref.instanceId, pivotParent.applyMatrix4(matrix.clone().invert()));
 
     ref.mesh.setMatrixAt(ref.instanceId, matrix);
     ref.mesh.instanceMatrix.needsUpdate = true;
-    ref.mesh.computeBoundingBox();
-    ref.mesh.computeBoundingSphere();
+    if (preview) {
+        ref.mesh.boundingBox = null;
+        ref.mesh.boundingSphere = null;
+    } else {
+        ref.mesh.computeBoundingBox();
+        ref.mesh.computeBoundingSphere();
+    }
     names.set(objectUuid, name);
     if (newDisplayType) displayTypes.set(objectUuid, newDisplayType);
     else displayTypes.delete(objectUuid);
-    if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
+    if (!isApplying() && !preview) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
 function disposeUnusedTextDisplayResources(geometry: BufferGeometry, material: Material): void {
@@ -243,7 +241,12 @@ async function updateTextObject(objectUuid: string, name: string, options: TextD
     const templateKey = getTextDisplayTemplateKey({ name, options });
     const replacement = (await createTextDisplayTemplates([{ name, options, atlasKey: objectUuid }])).get(templateKey)!;
     const replacementMaterial = replacement.material as MeshBasicNodeMaterial;
-    if (ref.mesh.material === replacementMaterial) {
+    if (userData.objectUuidToInstance !== refs) {
+        disposeUnusedTextDisplayResources(replacement.geometry, replacementMaterial);
+        return;
+    }
+    const sameGeometry = ref.mesh.geometry.userData.textDisplayGeometryKey === replacement.geometry.userData.textDisplayGeometryKey;
+    if (ref.mesh.material === replacementMaterial && sameGeometry) {
         for (const attributeName of textDisplayInstanceAttributeNames) {
             const target = ref.mesh.geometry.getAttribute(attributeName);
             const source = replacement.geometry.getAttribute(attributeName);
@@ -277,6 +280,7 @@ async function updateTextObject(objectUuid: string, name: string, options: TextD
     const boundsUnchanged = !!oldBounds?.equals(replacement.geometry.boundingBox!);
     if (
         boundsUnchanged
+        && sameGeometry
         && ref.mesh.userData.textDisplayMaterialOwned
         && !replacementMaterial.userData.textDisplayAtlas
         && currentMaterial.map
@@ -341,6 +345,7 @@ export function replaceDisplayObjects(requests: Array<{
     isItemDisplay?: boolean;
     isTextDisplay?: boolean;
     options?: TextDisplayOptions;
+    paintTexture?: string;
 }>, syncMirror = true): Promise<DisplayReplacementResult> {
     return trackProjectEdit(replaceObjects(requests, syncMirror));
 }
@@ -377,7 +382,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
     const previousSceneOrder = (ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined)?.slice();
     const sceneIndexes = new Map(previousSceneOrder?.map((entry, index) => [entry.type === 'object' ? entry.id : '', index]) ?? []);
     const previousGroupChildren = new Map<string, GroupData['children']>();
-    const replacements = requests.map(({ objectUuid, name, transformContext, isItemDisplay: requestedItemDisplay, isTextDisplay = false, options }) => {
+    const replacements = requests.map(({ objectUuid, name, transformContext, isItemDisplay: requestedItemDisplay, isTextDisplay = false, options, paintTexture }) => {
         const oldRef = refs?.get(objectUuid);
         if (!oldRef?.mesh?.isInstancedMesh) throw new Error('교체할 오브젝트를 찾을 수 없습니다.');
 
@@ -399,6 +404,9 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         const wasItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
         const isItemDisplay = !isTextDisplay && (requestedItemDisplay ?? wasItemDisplay);
         const displayTypeChanged = oldGeometryDisplayType !== (isTextDisplay ? 'text_display' : isItemDisplay ? 'item_display' : 'block_display');
+        // Property changes replace the model without moving or resizing the object.
+        const preservesObjectTransform = !displayTypeChanged
+            && oldName.split('[', 1)[0] === name.split('[', 1)[0];
         const customPivot = (oldRef.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(oldRef.instanceId)?.clone();
         const pivot = transformContext?.pivotMode === 'center' || displayTypeChanged
             ? Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new Vector3())
@@ -410,7 +418,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             ?? pivotParent?.clone().applyMatrix4(oldRef.mesh.matrixWorld);
         const replacementUuid = MathUtils.generateUUID();
         const label = (ud.objectLabels as Map<string, string> | undefined)?.get(objectUuid);
-        const texture = getPlayerHeadTexture(objectUuid);
+        const texture = paintTexture ?? getPlayerHeadTexture(objectUuid);
         return {
             objectUuid, replacementUuid, label, groupId, oldMesh: oldRef.mesh, oldInstanceId: oldRef.instanceId,
             sceneIndex: sceneIndexes.get(objectUuid) ?? -1,
@@ -422,14 +430,15 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             oldOverlaySize,
             oldPlayerHeadScale,
             displayTypeChanged,
+            preservesObjectTransform,
             transformContext,
             node: {
                 uuid: replacementUuid,
                 name,
                 nbt: (ud.objectNbt as Map<string, string> | undefined)?.get(objectUuid) ?? '',
                 transforms: oldMatrix.clone().transpose().toArray(),
-                brightness: (ud.objectBrightness as Map<string, unknown> | undefined)?.get(objectUuid),
-                tagHead: texture ? { Value: btoa(JSON.stringify({ textures: { SKIN: { url: texture } } })) } : undefined,
+                brightness: (ud.objectBrightness as Map<string, Brightness> | undefined)?.get(objectUuid),
+                paintTexture: texture,
                 isBlockDisplay: !isTextDisplay && !isItemDisplay,
                 isItemDisplay,
                 isTextDisplay,
@@ -476,13 +485,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             'Direct text display replacement did not register every object.'
         );
     } else {
-        const json = strToU8(JSON.stringify([{ children: replacements.map(({ node }) => node) }]));
-        const raw = new Uint8Array(18 + json.length);
-        raw.set([80, 82, 74, 50], 0);
-        raw.set(strToU8('scene.json'), 4);
-        new DataView(raw.buffer).setUint32(14, json.length, true);
-        raw.set(json, 18);
-        const added = await loadAndRenderPbde(new File([compressSync(raw)], 'object-update.pbde'), true);
+        const added = await appendDisplayObjects(replacements.map(({ node }) => node));
         if (replacements.some(state => !refs.has(state.replacementUuid))) {
             deleteSelectedItems(loadedObjectGroup, {
                 groups: new Set(),
@@ -515,6 +518,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         return states.sort((a, b) => b.oldInstanceId - a.oldInstanceId)
             .map(state => ({ state, oldLastInstanceId: oldLastInstanceId-- }));
     }).flat();
+    for (const state of replacements) cloneAnimationTarget(loadedObjectGroup, state.objectUuid, state.replacementUuid, state.groupId ?? null);
     const removed = deleteSelectedItems(loadedObjectGroup, {
         groups: new Set(),
         objects: new Map(Array.from(deletionStates, ([mesh, states]) => [mesh, new Set(states.map(state => state.oldInstanceId))]))
@@ -528,7 +532,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             return replacementUuid ? { type: 'object' as const, id: replacementUuid } : entry;
         });
         for (const state of replacements) {
-            if (state.sceneIndex < 0) nextSceneOrder.push({ type: 'object', id: state.replacementUuid });
+            if (state.sceneIndex < 0 && !state.groupId) nextSceneOrder.push({ type: 'object', id: state.replacementUuid });
         }
         ud.sceneOrder = nextSceneOrder;
         if (import.meta.env.DEV) console.assert(previousSceneOrder.every((entry, index) => (
@@ -589,7 +593,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
             replacement.mesh.instanceMatrix.needsUpdate = true;
             boundsDirtyMeshes.add(replacement.mesh);
-        } else if (state.pivotWorld && (!state.customPivot || state.transformContext?.pivotMode === 'center')) {
+        } else if (!state.preservesObjectTransform && state.pivotWorld && (!state.customPivot || state.transformContext?.pivotMode === 'center')) {
             const replacementMatrix = new Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
             scaleReplacementMatrix(replacementMatrix);
@@ -609,7 +613,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
                 replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
                 replacement.mesh.instanceMatrix.needsUpdate = true;
             }
-        } else if (playerHeadLayerScale !== 1 || state.oldOverlaySize) {
+        } else if (!state.preservesObjectTransform && (playerHeadLayerScale !== 1 || state.oldOverlaySize)) {
             const replacementMatrix = new Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
             scaleReplacementMatrix(replacementMatrix);
@@ -650,7 +654,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         ids.add(replacement.instanceId);
         created.set(replacement.mesh, ids);
     }
-    result.history = { removed, created };
+    result.history = { removed, created, objectIds: replacementUuids };
     return result;
 }
 

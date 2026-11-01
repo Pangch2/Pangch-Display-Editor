@@ -466,14 +466,33 @@
 
 .new-project-window footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
   margin-top: 28px;
 }
 
 .new-project-window button {
-  min-width: 120px;
-  padding: 10px 16px;
+  min-width: 150px;
+  padding: 12px 20px;
+  border-radius: 6px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.new-project-window button[data-discard] {
+  color: #ff8585;
+}
+
+.new-project-window #new-project-warning {
+  margin: 20px 0 0;
+  color: #ff8585;
+  font-size: 14px;
+}
+
+.new-project-window button:focus-visible {
+  outline: 2px solid #70c7ff;
+  outline-offset: 2px;
 }
 
 .new-project-window button:disabled {

@@ -38,7 +38,7 @@ import {
   updateHeadPainterStampPreview,
   updateHeadPainterGridOverlay
 } from '../../controls/selection/overlay';
-import { record } from '../../controls/undo-redo/undo-redo';
+import { commitFocusedProjectEdit, settleCurrentProjectEdits } from '../../save/pending-edits';
 import { isShortcutPressed, matchesShortcut } from '../../controls/input/shortcuts';
 import { dragDeltaMatrix, dragSelectedAttributeName } from '../../entity-material';
 import { oklchToRgb, openColorPicker, rgbToOklch } from '../common/color-picker';
@@ -60,6 +60,8 @@ import {
   updateHeadAtlasPainterGrid, updateHeadAtlasPaintPreview, type HeadAtlasPaintTarget
 } from './head-atlas-panel';
 import { getHeadAtlasUvRect, hasHeadAtlasUvs } from './head-atlas-uv';
+import { previewPlayerHeadTextures } from '../../load-project/display/player-head-atlas';
+import { recordStateChange } from '../../controls/undo-redo/scene-history';
 
 const generatorPlayerHeadIcon = playerHeadIcon.replace(/stroke="[^"]+"/, 'stroke="currentColor"');
 
@@ -478,6 +480,7 @@ function getHit(event: PointerEvent, deselectOnMiss = false, images?: Map<string
 
 function getWork(hit: PaintHit): WorkSurface {
   if (!stroke) stroke = new Map();
+    if (!stroke.size) previewPlayerHeadTextures(loadedObjectGroup, new Map());
   if (hit.atlas) {
     const key = `atlas:${hit.surface.texture.uuid}`;
     let work = stroke.get(key);
@@ -647,7 +650,11 @@ function finishStroke(): void {
   const after = capturePlayerHeadAtlasState(works.flatMap(work => (work.atlas?.surfaces ?? [work.surface]).map(surface => surface.objectUuid)));
   if (layerChanged) invalidateHeadPainterGrid();
   window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { texturesOnly: true, skipGizmoRefresh: true } }));
-  record({ undo: () => apply(before, true), redo: () => apply(after) });
+  recordStateChange({
+    before: { atlas: before, original: true }, after: { atlas: after, original: false },
+    apply: state => apply(state.atlas, state.original),
+    animation: { root: loadedObjectGroup, targets: [] }
+  });
 }
 
 function endPaintPointer(): void {
@@ -2769,6 +2776,7 @@ function createPanel(): void {
 
 export function setHeadPainterEnabled(enabled: boolean): void {
   if (active === enabled) return;
+  if (enabled) window.dispatchEvent(new Event('pde:head-painter-enabling'));
   active = enabled;
   if (!root) createPanel();
   document.getElementById('head-painter')!.hidden = !enabled;
@@ -2799,7 +2807,9 @@ export function setHeadPainterEnabled(enabled: boolean): void {
 }
 
 export function toggleHeadPainter(): void {
-  setHeadPainterEnabled(!active);
+  commitFocusedProjectEdit();
+  void settleCurrentProjectEdits().then(() => setHeadPainterEnabled(!active))
+    .catch(error => window.alert(error instanceof Error ? error.message : String(error)));
 }
 
 export function initHeadPainter(context: PainterContext): void {
@@ -2828,6 +2838,10 @@ window.addEventListener('pde:scene-updated', event => {
 });
 window.addEventListener('pde:object-transform-changed', invalidateHeadPainterGridOverlay);
 window.addEventListener('pde:before-history-change', endPaintPointer);
+window.addEventListener('pde:finish-transform', endPaintPointer);
+window.addEventListener('pde:before-animation-preview', endPaintPointer);
+window.addEventListener('pde:animation-preview', invalidateHeadPainterGridOverlay);
+window.addEventListener('pde:animation-textures-updated', invalidateHeadPainterGridOverlay);
 window.addEventListener('pde:scene-visibility-changed', invalidateHeadPainterGridOverlay);
 window.addEventListener('pde:history-restored', invalidateHeadPainterGridOverlay);
 document.addEventListener('pointerdown', event => {

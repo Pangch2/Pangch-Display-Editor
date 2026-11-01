@@ -2,6 +2,7 @@ import type { Object3D } from 'three/webgpu';
 import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
 import type { ScenePanelRow, ScenePanelSelectionState, LoadedObjectUserData } from './scene-panel-types';
 import { scenePanelState } from './scene-panel-state';
+import { matchesPointerShortcut } from '../../controls/input/shortcuts';
 
 function getRowFromElement(el: HTMLElement): ScenePanelRow | null {
     const visibleIndex = Number(el.dataset.visibleIndex);
@@ -9,14 +10,15 @@ function getRowFromElement(el: HTMLElement): ScenePanelRow | null {
     return scenePanelState.visibleRows[visibleIndex] ?? null;
 }
 
-function expandGroupAncestors(groupId: string, ud: LoadedObjectUserData, includeSelf = false): boolean {
+function expandGroupAncestors(groupId: string, ud: LoadedObjectUserData, visited: Set<string>, includeSelf = false): boolean {
     const groups = ud.groups;
     if (!groups) return false;
 
     let changed = false;
     let current: string | null = includeSelf ? groupId : (groups.get(groupId)?.parent ?? null);
 
-    while (current) {
+    while (current && !visited.has(current)) {
+        visited.add(current);
         if (!scenePanelState.expandedGroupIds.has(current)) {
             scenePanelState.expandedGroupIds.add(current);
             changed = true;
@@ -50,10 +52,11 @@ function findObjectParentGroupId(uuid: string, ud: LoadedObjectUserData): string
 
 function expandSelectionAncestors(sel: ScenePanelSelectionState, ud: LoadedObjectUserData): boolean {
     let changed = false;
+    const visited = new Set<string>();
 
     if (sel.groups) {
         for (const groupId of sel.groups) {
-            changed = expandGroupAncestors(groupId, ud) || changed;
+            changed = expandGroupAncestors(groupId, ud, visited) || changed;
         }
     }
 
@@ -62,11 +65,15 @@ function expandSelectionAncestors(sel: ScenePanelSelectionState, ud: LoadedObjec
         if (keyToUuid) {
             for (const [mesh, ids] of sel.objects) {
                 for (const instanceId of ids) {
-                    const uuid = keyToUuid.get(`${mesh.uuid}_${instanceId}`);
-                    if (!uuid) continue;
-                    const parentGroupId = findObjectParentGroupId(uuid, ud);
+                    const key = `${mesh.uuid}_${instanceId}`;
+                    let parentGroupId: string | null | undefined;
+                    if (ud.objectToGroup) parentGroupId = ud.objectToGroup.get(key);
+                    else {
+                        const uuid = keyToUuid.get(key);
+                        parentGroupId = uuid ? findObjectParentGroupId(uuid, ud) : null;
+                    }
                     if (parentGroupId) {
-                        changed = expandGroupAncestors(parentGroupId, ud, true) || changed;
+                        changed = expandGroupAncestors(parentGroupId, ud, visited, true) || changed;
                     }
                 }
             }
@@ -74,13 +81,13 @@ function expandSelectionAncestors(sel: ScenePanelSelectionState, ud: LoadedObjec
     }
 
     if (sel.primary?.type === 'group') {
-        changed = expandGroupAncestors(sel.primary.id, ud) || changed;
+        changed = expandGroupAncestors(sel.primary.id, ud, visited) || changed;
     } else if (sel.primary?.type === 'object') {
         const uuid = ud.instanceKeyToObjectUuid?.get(`${sel.primary.mesh.uuid}_${sel.primary.instanceId}`);
         if (uuid) {
             const parentGroupId = findObjectParentGroupId(uuid, ud);
             if (parentGroupId) {
-                changed = expandGroupAncestors(parentGroupId, ud, true) || changed;
+                changed = expandGroupAncestors(parentGroupId, ud, visited, true) || changed;
             }
         }
     }
@@ -100,8 +107,10 @@ export function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
 
     const clickedRow = getRowFromElement(el);
     if (!clickedRow) return;
+    const additive = matchesPointerShortcut(e, 'multiSelect');
+    const boxSelect = matchesPointerShortcut(e, 'boxSelect');
 
-    if (e.ctrlKey && e.shiftKey && scenePanelState.lastClickedItem && scenePanelState.lastClickedItem !== clickedRow) {
+    if (boxSelect && additive && scenePanelState.lastClickedItem && scenePanelState.lastClickedItem !== clickedRow) {
         const idx1 = scenePanelState.lastClickedItem.visibleIndex;
         const idx2 = clickedRow.visibleIndex;
 
@@ -199,7 +208,7 @@ export function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
         }
     }
 
-    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+    if (additive || boxSelect) {
         ud.addOrToggleInSelection?.(groupIds, meshToIds);
     } else {
         ud.replaceSelectionWithGroupsAndObjects?.(groupIds || new Set(), meshToIds || new Map(), {
@@ -209,7 +218,7 @@ export function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
     }
 }
 
-export function syncScenePanelSelection(sel: ScenePanelSelectionState | null): void {
+export function syncScenePanelSelection(sel: ScenePanelSelectionState | null, expandAncestors = true): void {
     if (!scenePanelState.scenePanelList) return;
 
     scenePanelState.scenePanelList.querySelectorAll('.selected').forEach(el => el.classList.remove('selected'));
@@ -219,46 +228,24 @@ export function syncScenePanelSelection(sel: ScenePanelSelectionState | null): v
     let newPrimaryEl: HTMLElement | null = null;
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
 
-    if (expandSelectionAncestors(sel, ud)) {
+    if (expandAncestors && expandSelectionAncestors(sel, ud)) {
         requestAnimationFrame(() => {
             window.dispatchEvent(new CustomEvent('pde:scene-updated'));
         });
         return;
     }
 
-    if (sel.groups && sel.groups.size > 0) {
-        for (const groupId of sel.groups) {
-            const el = scenePanelState.scenePanelList.querySelector(`.scene-tree-group[data-group-id="${groupId}"]`) as HTMLElement | null;
-            if (el) {
-                el.classList.add('selected');
-            }
-        }
-    }
-
-    if (sel.objects && sel.objects.size > 0) {
-        const keyToUuid = ud.instanceKeyToObjectUuid;
-        if (keyToUuid) {
-            for (const [mesh, ids] of sel.objects) {
-                for (const instanceId of ids) {
-                    const uuid = keyToUuid.get(`${mesh.uuid}_${instanceId}`);
-                    if (!uuid) continue;
-                    const el = scenePanelState.scenePanelList.querySelector(`.scene-object-item[data-uuid="${uuid}"]`) as HTMLElement | null;
-                    if (el) {
-                        el.classList.add('selected');
-                    }
-                }
-            }
-        }
-    }
-
-    if (sel.primary) {
-        if (sel.primary.type === 'group') {
-            newPrimaryEl = scenePanelState.scenePanelList.querySelector(`.scene-tree-group[data-group-id="${sel.primary.id}"]`) as HTMLElement | null;
-        } else if (sel.primary.type === 'object') {
-            const uuid = ud.instanceKeyToObjectUuid?.get(`${sel.primary.mesh.uuid}_${sel.primary.instanceId}`);
-            if (uuid) {
-                newPrimaryEl = scenePanelState.scenePanelList.querySelector(`.scene-object-item[data-uuid="${uuid}"]`) as HTMLElement | null;
-            }
+    for (const [index, el] of scenePanelState.renderedRowEls) {
+        const row = scenePanelState.visibleRows[index];
+        if (!row) continue;
+        if (row.type === 'group') {
+            if (sel.groups?.has(row.id)) el.classList.add('selected');
+            if (sel.primary?.type === 'group' && sel.primary.id === row.id) newPrimaryEl = el;
+        } else {
+            const instance = ud.objectUuidToInstance?.get(row.id);
+            if (!instance) continue;
+            if (sel.objects?.get(instance.mesh)?.has(instance.instanceId)) el.classList.add('selected');
+            if (sel.primary?.type === 'object' && sel.primary.mesh === instance.mesh && sel.primary.instanceId === instance.instanceId) newPrimaryEl = el;
         }
     }
 

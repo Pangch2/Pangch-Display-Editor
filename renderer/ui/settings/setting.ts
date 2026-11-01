@@ -1,5 +1,6 @@
 import { blockbenchScaleMode, toggleBlockbenchScaleMode } from '../../controls/gizmo/blockbench-scale';
 import { closeWithAnimation, openWithAnimation } from '../common/ui-open-close.js';
+import { handleExpandCollapseShortcut } from '../common/expand-collapse';
 import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
 import { cleanLabel } from '../scene-panel/scene-panel-model';
 import { getShortcutConflictDetails, getShortcutMapping, getShortcuts, matchesShortcut, normalizeShortcutKey, resetShortcutMapping, resetShortcuts, setShortcutMapping, setShortcuts, shortcutDefinitions, shortcutFromKeys } from '../../controls/input/shortcuts';
@@ -661,6 +662,7 @@ overlay.addEventListener('click', event => {
   if (event.target === overlay) closeSettings();
 });
 overlay.addEventListener('keydown', event => {
+  if (handleExpandCollapseShortcut(event, () => false)) return;
   if (event.key === 'Escape') {
     event.preventDefault();
     closeSettings();

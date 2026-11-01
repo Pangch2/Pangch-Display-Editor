@@ -1,4 +1,5 @@
 import { setupGizmo } from './gizmo-setup';
+import { assertAnimationParentsInvertible } from '../../animation/animation-state';
 import type { GizmoLines, GizmoMaterial, GizmoPlaneDirection, GizmoPlaneName, GizmoPlanes } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
@@ -11,6 +12,7 @@ import {
     Group,
     Object3D,
     Matrix4,
+    type Plane,
     Quaternion,
     Box3,
     Vector2,
@@ -34,7 +36,8 @@ import * as CustomPivot from '../pivot/custom-pivot';
 import { initDrag, applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import { initHandleKey, type HandleKeyState, type TransformToolbarControls } from '../input/handle-key';
-import { getShearDragDelta, maxShearAngle } from './shear-drag';
+import { getShearDragDelta, getShearFixedFace } from './shear-drag';
+import { getScaleFrame } from './scale-frame';
 import { isShortcutPressed } from '../input/shortcuts';
 import {
     captureGroupStructureState,
@@ -74,10 +77,10 @@ import {
     getLinkedMirrorSelection,
     getMirrorPairs,
     isMirrorModelingEnabled,
+    linkMirrorGroupPair,
     linkMirrorPair,
     mirrorModelingPivot,
-    setMirrorModeling,
-    syncLinkedMirrorGroupPivot
+    setMirrorModeling
 } from '../transform/mirroring';
 import {
     createGroupCommand,
@@ -474,6 +477,8 @@ let gizmoPlanes: GizmoPlanes = {
 };
 
 const dragInitialMatrix = new Matrix4();
+const dragInitialSelectionMatrix = new Matrix4();
+const dragScaleFrame = new Matrix4();
 const dragInitialQuaternion = new Quaternion();
 const dragInitialScale = new Vector3();
 const dragInitialPosition = new Vector3();
@@ -482,6 +487,7 @@ const dragStartPivotBaseWorld = new Vector3();
 let draggingMode: string | null = null;
 let isShearMode = false;
 let isShearDrag = false;
+let dragShearFace: Plane | null = null;
 let isGizmoBusy = false;
 let dragAnchorDirections: { x: boolean; y: boolean; z: boolean } = { x: true, y: true, z: true };
 let previousGizmoMode = 'translate';
@@ -502,6 +508,12 @@ let dragHistoryBefore: TransformHistoryState | GeometryHistoryState | null = nul
 let smartScaleCreationBefore: { objectUuids: Set<string>; groupIds: Set<string> } | null = null;
 let _dragPreviewActive = false;
 let _dragSelectedIdsByMesh = new Map<InstancedMesh, Set<number>>();
+
+function getShearPreviewRotation(): Quaternion {
+    const matrix = _TMP_MAT4_A.copy(dragInitialMatrix).invert()
+        .premultiply(_pendingHelperMatrix).multiply(dragInitialSelectionMatrix);
+    return Overlay.getRotationFromMatrix(matrix);
+}
 
 function getSmartScaleCreatedSelection(): { groups: Set<string>; objects: Map<PdeMesh, Set<number>> } {
     const before = smartScaleCreationBefore;
@@ -524,13 +536,16 @@ function captureDragHistoryBefore(): void {
     const objects = new Map<Mesh | InstancedMesh, Set<number>>(
         Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)])
     );
-    const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
-    linked.objects.forEach((ids, mesh) => {
-        const affectedIds = objects.get(mesh) ?? new Set<number>();
-        ids.forEach(id => affectedIds.add(id));
-        objects.set(mesh, affectedIds);
-    });
-    const groups = new Set([...currentSelection.groups, ...linked.groups]);
+    const groups = new Set(currentSelection.groups);
+    if (isMirrorModelingEnabled()) {
+        const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
+        linked.objects.forEach((ids, mesh) => {
+            const affectedIds = objects.get(mesh) ?? new Set<number>();
+            ids.forEach(id => affectedIds.add(id));
+            objects.set(mesh, affectedIds);
+        });
+        linked.groups.forEach(id => groups.add(id));
+    }
     const smartScale = transformControls!.mode === 'scale' && isSmartScaleEnabled();
     if (smartScale && !smartScaleCreationBefore) {
         const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, unknown> | undefined;
@@ -559,11 +574,30 @@ function applyRelativeDragSnap(): void {
         if (currentSpace === 'local') delta.applyQuaternion(dragInitialQuaternion);
         selectionHelper.position.copy(dragInitialPosition).add(delta);
     } else if (transformControls.mode === 'scale' && scaleDragValue !== null) {
-        selectionHelper.scale.set(
-            snapFromStart(selectionHelper.scale.x, dragInitialScale.x, scaleDragValue) || scaleDragValue,
-            snapFromStart(selectionHelper.scale.y, dragInitialScale.y, scaleDragValue) || scaleDragValue,
-            snapFromStart(selectionHelper.scale.z, dragInitialScale.z, scaleDragValue) || scaleDragValue
-        );
+        // The helper stores ratios; the drag setting is an increment of the actual selection scale.
+        const sourceScale = _TMP_VEC3_A.setFromMatrixScale(dragInitialSelectionMatrix);
+        const uniformScale = Math.max(sourceScale.x, sourceScale.y, sourceScale.z);
+        for (const axis of ['x', 'y', 'z'] as const) {
+            if (!transformControls.axis?.includes(axis.toUpperCase())) continue;
+            const referenceScale = transformControls.axis === 'XYZ' ? uniformScale : sourceScale[axis];
+            const step = scaleDragValue * dragInitialScale[axis] / (referenceScale || 1);
+            let current = selectionHelper.scale[axis];
+            if (referenceScale > 0 && referenceScale < 1) {
+                // Read the pointer ratio so repeated change events cannot amplify the corrected scale.
+                let ratio: number;
+                if (transformControls.axis === 'XYZ') {
+                    ratio = transformControls.pointEnd.length() / transformControls.pointStart.length();
+                    if (transformControls.pointEnd.dot(transformControls.pointStart) < 0) ratio *= -1;
+                } else {
+                    const direction = _TMP_VEC3_B.set(0, 0, 0);
+                    direction[axis] = 1;
+                    direction.applyQuaternion(transformControls.worldQuaternionStart);
+                    ratio = transformControls.pointEnd.dot(direction) / transformControls.pointStart.dot(direction);
+                }
+                if (Number.isFinite(ratio)) current = dragInitialScale[axis] * (1 + (ratio - 1) / referenceScale);
+            }
+            selectionHelper.scale[axis] = snapFromStart(current, dragInitialScale[axis], step) || step;
+        }
     }
 }
 
@@ -631,9 +665,16 @@ function syncDragSelectionMask(): void {
     _dragSelectedIdsByMesh = nextIdsByMesh;
 }
 
-function updateSelectionOverlay(): void {
-    syncDragSelectionMask();
-    Overlay.updateSelectionOverlay(scene, renderer, camera, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys);
+function updateSelectionOverlay(notifySelection = true): void {
+    if (notifySelection) syncDragSelectionMask();
+    Overlay.updateSelectionOverlay(scene, renderer, camera, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys, !notifySelection);
+    if (!notifySelection) {
+        window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
+            detail: { selection: currentSelection, pivotWorld: selectionHelper?.position.clone(), pivotMode,
+                multiCustomPivotLocal: _getMultiSelectionPivotLocal(), dragging: true }
+        }));
+        return;
+    }
     window.dispatchEvent(new CustomEvent('pde:selection-changed', { detail: currentSelection }));
     window.dispatchEvent(new CustomEvent('pde:selection-transform-context', {
         detail: {
@@ -662,7 +703,9 @@ function flushSelectionTransform(): void {
     _dragTotalDeltaMatrix.multiplyMatrices(_pendingHelperMatrix, _tmpPrevInvMatrix);
     dragDeltaMatrix.copy(_dragTotalDeltaMatrix);
     _dragPreviewActive = true;
-    applyLinkedMirrorDelta(loadedObjectGroup, _tmpDeltaMatrix, getDirectSelectedItems(), currentSelection.groups);
+    if (isMirrorModelingEnabled()) {
+        applyLinkedMirrorDelta(loadedObjectGroup, _tmpDeltaMatrix, getDirectSelectedItems(), currentSelection.groups);
+    }
     Overlay.syncSelectionOverlay(_tmpDeltaMatrix);
     _updateMultiSelectionOverlayDuringDrag();
     window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
@@ -729,6 +772,32 @@ function getPlaneDirection(planeName: GizmoPlaneName, direction: Vector3): Gizmo
     if (planeName === 'XY') return `${direction.x > 0 ? '+' : '-'}${direction.y > 0 ? '+' : '-'}` as GizmoPlaneDirection;
     if (planeName === 'YZ') return `${direction.y > 0 ? '+' : '-'}${direction.z > 0 ? '+' : '-'}` as GizmoPlaneDirection;
     return `${direction.x > 0 ? '+' : '-'}${direction.z > 0 ? '+' : '-'}` as GizmoPlaneDirection;
+}
+
+function refreshAnimationPivotState(): void {
+    CustomPivot.clearEphemeralPivotUndo();
+    if (_isMultiSelection() && _multiSelectionExplicitPivot) return;
+    if (_isMultiSelection()) {
+        const primary = currentSelection.primary;
+        let pivot: Vector3 | null = null;
+        if (primary?.type === 'group') {
+            const group = getGroups().get(primary.id);
+            if (shouldUseGroupPivot(group)) pivot = normalizePivotToVector3(group.pivot);
+        } else if (primary?.type === 'object') {
+            const local = (primary.mesh as InstancedMesh).isInstancedMesh
+                ? primary.mesh.userData.customPivots?.get(primary.instanceId) : primary.mesh.userData.customPivot;
+            if (local) pivot = local.clone().applyMatrix4(Overlay.getInstanceWorldMatrix(primary.mesh, primary.instanceId, _TMP_MAT4_A));
+        }
+        isCustomPivot = !!pivot;
+        _multiSelectionOriginAnchorValid = !!pivot;
+        _multiSelectionOriginAnchorInitialValid = false;
+        _multiSelectionOriginAnchorInitialLocalValid = false;
+        if (pivot) {
+            _multiSelectionOriginAnchorPosition.copy(pivot);
+            _setMultiAnchorInitial(pivot);
+        }
+    }
+    _recomputePivotStateForSelection();
 }
 
 function updateHelperPosition(): void {
@@ -1024,6 +1093,12 @@ function ungroupGroup(groupIds: string | readonly string[], deselect = false): v
     const groups = getGroups();
     const requestedIds = [...new Set(typeof groupIds === 'string' ? [groupIds] : groupIds)].filter(id => groups.has(id));
     if (requestedIds.length === 0) return;
+    try {
+        const pairs = getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs');
+        assertAnimationParentsInvertible(loadedObjectGroup, requestedIds.flatMap(id => [
+            groups.get(id)?.parent, isMirrorModelingEnabled() ? groups.get(pairs.get(id))?.parent : null
+        ]));
+    } catch (error) { window.alert(error instanceof Error ? error.message : String(error)); return; }
     const before = captureGroupStructureState(loadedObjectGroup, requestedIds);
     let changed = false;
     _runWithoutVertexQueue(() => {
@@ -1132,14 +1207,7 @@ function duplicateSelected(): void {
         });
         reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot, mirrorModelingPivot.clone().setX(0));
         const flipPromise = flipObjectUuids(loadedObjectGroup, mirroredUuids, 'x', mirrorModelingPivot, mirroredGroupIds.length > 0 ? 'center' : pivotMode, undefined, mirrorModelingPivot.clone().setX(0));
-        sourceGroupIds.forEach((id, index) => {
-            linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), id, mirroredGroupIds[index]);
-            const group = GroupUtils.getGroups(loadedObjectGroup).get(id);
-            const customPivot = group && GroupUtils.shouldUseGroupPivot(group)
-                ? GroupUtils.normalizePivotToVector3(group.pivot)
-                : null;
-            if (customPivot) syncLinkedMirrorGroupPivot(loadedObjectGroup, id, customPivot);
-        });
+        sourceGroupIds.forEach((id, index) => linkMirrorGroupPair(loadedObjectGroup, id, mirroredGroupIds[index]));
         updateHelperPosition();
         updateSelectionOverlay();
         _emitSceneUpdated();
@@ -1292,7 +1360,7 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
             ids.add(ref.instanceId);
             afterObjects.set(ref.mesh, ids);
         }
-        recordReplacementTransformChange(
+        await recordReplacementTransformChange(
             loadedObjectGroup,
             before,
             captureTransformState(loadedObjectGroup, afterObjects, selectedGroupIds),
@@ -1389,6 +1457,7 @@ export function initGizmo({
     transformControls.addEventListener('dragging-changed', (event: { value: boolean }) => {
         controls.enabled = !event.value;
         if (event.value) {
+            window.dispatchEvent(new Event('pde:transform-start'));
             dragHistoryBefore = null;
             smartScaleCreationBefore = null;
             const items = getSelectedItems();
@@ -1409,6 +1478,7 @@ export function initGizmo({
             Overlay.prepareMultiSelectionDrag(currentSelection);
             draggingMode = transformControls!.mode;
             isShearDrag = isShearMode && draggingMode === 'rotate' && !isPivotEditMode;
+            dragShearFace = null;
             selectionTransformDirty = false;
             _dragPreviewActive = false;
             _dragTotalDeltaMatrix.identity();
@@ -1422,7 +1492,15 @@ export function initGizmo({
             _pendingHelperMatrix.copy(dragInitialMatrix);
             dragInitialQuaternion.copy(selectionHelper!.quaternion);
             dragInitialScale.copy(selectionHelper!.scale);
+            transformControls!.pointEnd.copy(transformControls!.pointStart);
             dragInitialPosition.copy(selectionHelper!.position);
+            const primaryMatrix = _getPrimaryWorldMatrix(_TMP_MAT4_A);
+            dragInitialSelectionMatrix.copy(primaryMatrix ?? dragInitialMatrix);
+            if (!primaryMatrix && currentSpace === 'world') {
+                dragInitialSelectionMatrix.makeRotationFromQuaternion(_multiSelectionAccumulatedRotation).setPosition(dragInitialPosition);
+            }
+            const scaleSourceMatrix = currentSpace === 'local' ? dragInitialSelectionMatrix : null;
+            dragScaleFrame.copy(getScaleFrame(dragInitialMatrix, scaleSourceMatrix));
             if (isShearDrag) transformControls!.rotationAngle = 0;
 
             if (isPivotEditMode) {
@@ -1445,14 +1523,15 @@ export function initGizmo({
                 dragInitialMatrix,
                 dragInitialScale,
                 dragInitialPosition,
-                currentSpace === 'local' ? _getPrimaryWorldMatrix(new Matrix4()) : null
+                scaleSourceMatrix
             );
 
-            if ((blockbenchScaleMode || isSmartScaleEnabled()) && draggingMode === 'scale' && !isUniformScale) {
+            if (isShearDrag || ((blockbenchScaleMode || isSmartScaleEnabled()) && draggingMode === 'scale' && !isUniformScale)) {
                 dragInitialBoundingBox.makeEmpty();
 
                 selectionHelper!.updateMatrixWorld();
-                computeBlockbenchPivotFrame(selectionHelper!, currentSpace);
+                computeBlockbenchPivotFrame(selectionHelper!, isShearDrag ? 'local' : currentSpace,
+                    isShearDrag ? dragInitialSelectionMatrix : dragScaleFrame);
 
                 const singleGroupId = _getSingleSelectedGroupId();
                 if (singleGroupId) {
@@ -1474,6 +1553,9 @@ export function initGizmo({
                         });
                     }
                 }
+                dragShearFace = isShearDrag
+                    ? getShearFixedFace(dragInitialPosition, dragInitialBoundingBox, dragInitialSelectionMatrix, transformControls!.pointStart)
+                    : null;
             }
 
         } else {
@@ -1482,8 +1564,8 @@ export function initGizmo({
             const smartScaleExtruded = endSmartScaleDrag();
             commitSelectionTransform();
 
-            if (draggingMode === 'rotate' && !isShearDrag && _isMultiSelection() && !currentSelection.primary) {
-                _multiSelectionAccumulatedRotation.copy(selectionHelper!.quaternion);
+            if (draggingMode === 'rotate' && _isMultiSelection() && !currentSelection.primary) {
+                _multiSelectionAccumulatedRotation.copy(isShearDrag ? getShearPreviewRotation() : selectionHelper!.quaternion);
             }
 
             draggingMode = null;
@@ -1564,6 +1646,24 @@ export function initGizmo({
         }
     });
 
+    window.addEventListener('pde:finish-transform', () => {
+        if (transformControls?.dragging) {
+            transformControls.dragging = false;
+        }
+    });
+    let lastAnimationPreviewRevision: number | undefined;
+    for (const event of ['pde:selection-changed', 'pde:scene-updated', 'pde:history-restored', 'pde:camera-changed']) {
+        window.addEventListener(event, () => { lastAnimationPreviewRevision = undefined; });
+    }
+    window.addEventListener('pde:animation-preview', () => {
+        const revision = loadedObjectGroup.userData.animationPreviewRevision;
+        if (revision !== undefined && revision === lastAnimationPreviewRevision) return;
+        lastAnimationPreviewRevision = revision;
+        refreshAnimationPivotState();
+        updateHelperPosition();
+        updateSelectionOverlay(false);
+    });
+
     const smartScaleCallbacks = {
         cancelPreview: () => {
             if (_dragPreviewActive) {
@@ -1601,7 +1701,7 @@ export function initGizmo({
                 { preserveAnchors: true, explicitPrimary: sourcePrimary, detachTransform: false }
             );
             reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot, mirrorModelingPivot.clone().setX(0));
-            sourceGroupIds.forEach((id, index) => linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), id, mirroredGroupIds[index]));
+            sourceGroupIds.forEach((id, index) => linkMirrorGroupPair(loadedObjectGroup, id, mirroredGroupIds[index]));
             void flipObjectUuids(
                 loadedObjectGroup,
                 mirroredUuids,
@@ -1716,12 +1816,20 @@ export function initGizmo({
                     axis,
                     transformControls!.pointStart,
                     transformControls!.rotationAngle,
-                    _pendingHelperMatrix
-                ).multiply(dragInitialMatrix);
+                    _pendingHelperMatrix,
+                    dragShearFace
+                );
+                if (currentSpace === 'local' && !dragShearFace && !_pendingHelperMatrix.equals(_identityMatrix)) {
+                    // Use the original sheared basis, as the scale gizmo does.
+                    const basis = _TMP_MAT4_A.copy(dragScaleFrame).multiply(_TMP_MAT4_B.copy(dragInitialMatrix).invert());
+                    _pendingHelperMatrix.premultiply(basis).multiply(basis.invert());
+                }
+                _pendingHelperMatrix.multiply(dragInitialMatrix);
+                selectionHelper!.position.setFromMatrixPosition(_pendingHelperMatrix);
                 selectionHelper!.quaternion.copy(dragInitialQuaternion);
-                if (currentSpace === 'local' && Number.isFinite(transformControls!.rotationAngle)) {
-                    const angle = Math.max(-maxShearAngle, Math.min(maxShearAngle, transformControls!.rotationAngle));
-                    selectionHelper!.quaternion.premultiply(new Quaternion().setFromAxisAngle(axis.normalize(), angle));
+                if (currentSpace === 'local') {
+                    // Rebuilds after space/pivot changes must use this same selection-matrix rotation.
+                    selectionHelper!.quaternion.copy(getShearPreviewRotation());
                 }
                 selectionHelper!.updateMatrixWorld();
                 selectionTransformDirty = true;
@@ -1736,6 +1844,14 @@ export function initGizmo({
                 return;
             }
             _pendingHelperMatrix.copy(selectionHelper!.matrixWorld);
+            if (transformControls!.mode === 'scale' && currentSpace === 'local') {
+                // Scaling in the original basis preserves the other faces of a sheared object.
+                _pendingHelperMatrix.copy(dragScaleFrame)
+                    .scale(_TMP_VEC3_A.copy(selectionHelper!.scale).divide(dragInitialScale))
+                    .multiply(_TMP_MAT4_A.copy(dragScaleFrame).invert())
+                    .multiply(dragInitialMatrix)
+                    .setPosition(selectionHelper!.position);
+            }
             selectionTransformDirty = true;
         }
     });
@@ -1857,6 +1973,16 @@ export function initGizmo({
         transformControls: transformControls!,
         loadedObjectGroup,
         getSelectionCallbacks: () => getSelectionCallbacks()
+    });
+
+    transformControls.addEventListener('mouseDown', () => {
+        dragControls.abortMarquee();
+    });
+
+    transformControls.addEventListener('objectChange', () => {
+        if (!(isShearDrag ? _pendingHelperMatrix : selectionHelper!.matrixWorld).equals(dragInitialMatrix)) {
+            mouseDownPos = null;
+        }
     });
 
     renderer.domElement.addEventListener('pointermove', (event: PointerEvent) => {
@@ -2139,7 +2265,7 @@ export function initGizmo({
             oldLastInstanceId: number;
             mesh: PdeMesh;
             instanceId: number;
-        }>>).detail;
+        }> & { preview?: boolean }>).detail;
         const preservedAnchor = _isMultiSelection() && _multiSelectionOriginAnchorValid
             ? _multiSelectionOriginAnchorPosition.clone()
             : null;
@@ -2153,8 +2279,28 @@ export function initGizmo({
         let primary = currentSelection.primary;
         let primaryReplacement: { mesh: PdeMesh; instanceId: number } | null = null;
         const replacedSelections: Array<{ mesh: PdeMesh; instanceId: number }> = [];
+        const dirtyMasks = new Set<InstancedMesh>();
         let changed = false;
         for (const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } of replacements) {
+            if (replacements.preview) {
+                const oldSelected = _dragSelectedIdsByMesh.get(oldMesh as InstancedMesh);
+                const selected = oldSelected?.delete(oldInstanceId) ?? false;
+                const movedSelected = oldInstanceId < oldLastInstanceId && (oldSelected?.delete(oldLastInstanceId) ?? false);
+                if (movedSelected) oldSelected!.add(oldInstanceId);
+                if (!oldSelected?.size) _dragSelectedIdsByMesh.delete(oldMesh as InstancedMesh);
+                const oldMask = oldMesh.geometry.getAttribute(dragSelectedAttributeName);
+                if (oldMask) {
+                    oldMask.setX(oldInstanceId, movedSelected ? 1 : 0);
+                    if (oldInstanceId < oldLastInstanceId) oldMask.setX(oldLastInstanceId, 0);
+                    dirtyMasks.add(oldMesh as InstancedMesh);
+                }
+                if (selected) {
+                    const ids = _dragSelectedIdsByMesh.get(mesh as InstancedMesh) ?? new Set<number>();
+                    ids.add(instanceId); _dragSelectedIdsByMesh.set(mesh as InstancedMesh, ids);
+                    const mask = mesh.geometry.getAttribute(dragSelectedAttributeName);
+                    if (mask) { mask.setX(instanceId, 1); dirtyMasks.add(mesh as InstancedMesh); }
+                }
+            }
             const oldIds = objects.get(oldMesh);
             const replaced = oldIds?.delete(oldInstanceId) ?? false;
             const moved = oldInstanceId < oldLastInstanceId && (oldIds?.delete(oldLastInstanceId) ?? false);
@@ -2171,7 +2317,13 @@ export function initGizmo({
                 else if (moved && primary.instanceId === oldLastInstanceId) primary = { type: 'object', mesh: oldMesh, instanceId: oldInstanceId };
             }
         }
-        if (!changed) return;
+        for (const mesh of dirtyMasks) mesh.geometry.getAttribute(dragSelectedAttributeName)!.needsUpdate = true;
+        if (!changed) {
+            if (replacements.preview) {
+                invalidateSelectionCaches();
+            }
+            return;
+        }
         for (const { mesh, instanceId } of replacedSelections) {
             const ids = objects.get(mesh) ?? new Set<number>();
             ids.add(instanceId);
@@ -2179,6 +2331,13 @@ export function initGizmo({
         }
         if (primaryReplacement) primary = { type: 'object', ...primaryReplacement };
         if (preservedAnchor) _multiSelectionOriginAnchorInitialLocalValid = false;
+        if (replacements.preview) {
+            // Logical selection is unchanged; update instance references without rebuilding the selection UI.
+            currentSelection.objects = objects;
+            currentSelection.primary = primary;
+            invalidateSelectionCaches();
+            return;
+        }
         _replaceSelectionWithGroupsAndObjects(new Set(currentSelection.groups), objects, {
             preserveAnchors: true,
             explicitPrimary: primary

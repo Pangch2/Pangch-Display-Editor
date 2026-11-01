@@ -8,7 +8,8 @@ import {
 } from 'three/webgpu';
 // @ts-ignore
 import * as GroupUtils from '../grouping/group';
-import { syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../transform/mirroring';
+import { animationSession } from '../../animation/animation-state';
+import { getLinkedMirrorSelection, syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../transform/mirroring';
 // @ts-ignore
 import * as Overlay from '../selection/overlay';
 
@@ -376,6 +377,12 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
     const newPivotOffset = new Vector3();
     let newIsCustomPivot = false;
     let setMultiExplicitPivot = false;
+    const animated = animationSession(loadedObjectGroup).enabled;
+
+    if (animated && isMultiPivotEdit) {
+        clearEphemeralPivotUndo();
+        return { newPivotOffset, newIsCustomPivot: true, setMultiExplicitPivot: true };
+    }
 
     // @ts-ignore
     const groups = GroupUtils.getGroups(loadedObjectGroup);
@@ -399,7 +406,8 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
                 if (!mesh || !ids || ids.size === 0) continue;
 
                 const firstId = Array.from(ids)[0];
-                (mesh as InstancedMesh).getMatrixAt(firstId, instanceMatrix);
+                if (mesh.isInstancedMesh) mesh.getMatrixAt(firstId, instanceMatrix);
+                else instanceMatrix.identity();
                 const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                 const invWorldMatrix = worldMatrix.clone().invert();
                 const localPivot = pivotWorldPos.clone().applyMatrix4(invWorldMatrix);
@@ -414,6 +422,8 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
                     }
                 } else {
                     mesh.userData.customPivot = localPivot.clone();
+                    const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(GroupUtils.getGroupKey(mesh, firstId));
+                    if (uuid) syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
                 }
                 mesh.userData.isCustomPivot = true;
             }
@@ -423,18 +433,19 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
             const prim = currentSelection.primary;
 
             if (!_ephemeralPivotUndo && !_pivotEditUndoCapture && prim.type === 'group' && prim.id) {
-                const group = groups.get(prim.id);
-                if (group) {
-                    const prevPivot = group.pivot
-                        ? (group.pivot.clone ? group.pivot.clone() : new Vector3().copy(group.pivot as Vector3))
-                        : undefined;
-                    const prevIsCustom = group.isCustomPivot;
-                    _pivotEditUndoCapture = () => {
-                        group.pivot = prevPivot;
-                        if (prevIsCustom) group.isCustomPivot = true;
+                const linked = getLinkedMirrorSelection(loadedObjectGroup, [], new Set([prim.id]));
+                const snapshots = [...new Set([prim.id, ...linked.groups])].flatMap(id => {
+                    const group = groups.get(id);
+                    return group ? [{ group, pivot: GroupUtils.normalizePivotToVector3(group.pivot) ?? undefined,
+                        isCustomPivot: group.isCustomPivot }] : [];
+                });
+                _pivotEditUndoCapture = () => {
+                    for (const { group, pivot, isCustomPivot } of snapshots) {
+                        group.pivot = pivot;
+                        if (isCustomPivot) group.isCustomPivot = true;
                         else delete group.isCustomPivot;
-                    };
-                }
+                    }
+                };
             }
 
             if (prim.type === 'group' && prim.id) {
@@ -450,7 +461,8 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
         }
     }
 
-    if (_pivotEditUndoCapture) {
+    if (animated) clearEphemeralPivotUndo();
+    else if (_pivotEditUndoCapture) {
         _ephemeralPivotUndo = _pivotEditUndoCapture;
     }
     _pivotEditUndoCapture = null;

@@ -7,6 +7,7 @@ import { loadedObjectGroup } from './display-instancing';
 import { MAX_INSTANCES_PER_INSTANCED_MESH } from './display-instancing';
 import { isApplying } from '../../controls/undo-redo/undo-redo';
 import { trackProjectEdit } from '../../save/pending-edits';
+import { animationClips, type AnimationData } from '../../animation/animation-data';
 
 export const PLAYER_HEAD_ATLAS_SIZE = 2048;
 const PLAYER_HEAD_PART_SIZE = 8;
@@ -59,6 +60,10 @@ type PlayerHeadAtlasSnapshot = {
     regions: PlayerHeadAtlasRegionSnapshot[];
 };
 const playerHeadAtlases = new WeakMap<Material, PlayerHeadAtlas>();
+const texturePreviews = new WeakMap<object, {
+    desired: Map<string, string>;
+    images: Map<string, HTMLImageElement | Promise<HTMLImageElement>>;
+}>();
 let imageHeadBlackMaterial: Material | null = null;
 export const deferredPlayerHeadTexture = 'pde:deferred-player-head-texture';
 
@@ -307,18 +312,20 @@ function getImageHeadBlackMaterial(texture: Texture): Material {
 }
 
 
+let playerHeadLayerCanvas: HTMLCanvasElement | undefined;
+
 /**
  * 텍스처의 특정 UV 영역이 완전히 투명한지 확인합니다.
  * @param texture - 검사할 텍스처
  * @param uvRegions - 검사할 UV 좌표 배열 [x, y, width, height]
  * @returns 모든 픽셀이 투명하면 true
  */
-function isLayerTransparent(img: HTMLImageElement, uvRegions: number[][]): boolean {
+function isLayerTransparent(img: HTMLImageElement | ImageBitmap, uvRegions: number[][]): boolean {
     try {
         if (!img || !img.width || !img.height) return false;
 
         // Canvas를 사용하여 픽셀 데이터 추출
-        const canvas = document.createElement('canvas');
+        const canvas = playerHeadLayerCanvas ??= document.createElement('canvas');
         canvas.width = img.width;
         canvas.height = img.height;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -348,6 +355,7 @@ function isLayerTransparent(img: HTMLImageElement, uvRegions: number[][]): boole
 }
 
 export const DEFAULT_PLAYER_HEAD_TEXTURE = 'https://textures.minecraft.net/texture/d94e1686adb67823c7e5148c2c06e2d95c1b66374409e96b32dc1310397e1711';
+const playerHeadTextureBlobs = new Map<string, Promise<Blob>>();
 
 export function loadPlayerHeadImage(url: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
@@ -365,7 +373,39 @@ export function loadPlayerHeadImage(url: string): Promise<HTMLImageElement> {
     });
 }
 
-export function drawPlayerHeadSlot(context: CanvasRenderingContext2D, image: HTMLImageElement, slot: number): boolean {
+export async function loadPlayerHeadBitmap(url: string): Promise<ImageBitmap> {
+    url = url.replace('http://', 'https://');
+    const load = async (source: string): Promise<ImageBitmap> => {
+        let blob = playerHeadTextureBlobs.get(source);
+        if (!blob) {
+            blob = fetch(source).then(response => {
+                if (!response.ok) throw new Error(`Failed to load image: ${source}`);
+                return response.blob();
+            });
+            // Minecraft texture hashes are immutable; retain compressed PNGs for at most one atlas.
+            if (/^https:\/\/textures\.minecraft\.net\/texture\/[a-f0-9]+$/i.test(source)) {
+                playerHeadTextureBlobs.set(source, blob);
+                if (playerHeadTextureBlobs.size > MAX_PLAYER_HEAD_SLOTS_PER_ATLAS) {
+                    playerHeadTextureBlobs.delete(playerHeadTextureBlobs.keys().next().value!);
+                }
+            }
+        }
+        try {
+            return await createImageBitmap(await blob);
+        } catch (error) {
+            if (playerHeadTextureBlobs.get(source) === blob) playerHeadTextureBlobs.delete(source);
+            throw error;
+        }
+    };
+    try {
+        return await load(url);
+    } catch (error) {
+        if (url === DEFAULT_PLAYER_HEAD_TEXTURE) throw error;
+        return load(DEFAULT_PLAYER_HEAD_TEXTURE);
+    }
+}
+
+export function drawPlayerHeadSlot(context: CanvasRenderingContext2D, image: HTMLImageElement | ImageBitmap, slot: number): boolean {
     const blockX = (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
     const blockY = Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
     resetHeadAtlasUvs(context.canvas, { x: blockX, y: blockY, width: PLAYER_HEAD_BLOCK_WIDTH, height: PLAYER_HEAD_BLOCK_HEIGHT });
@@ -1032,6 +1072,8 @@ export function restorePlayerHeadAtlasState(value: unknown): void {
 }
 
 export function cleanupUnusedPlayerHeadAtlasSlots(): void {
+    // Inactive animation frames still reuse these atlas slots and tiles.
+    if (loadedObjectGroup.userData.animationSession?.enabled) return;
     let changed = false;
     const usage = collectPlayerHeadAtlasUsage();
     for (const atlas of getProjectPlayerHeadAtlases()) {
@@ -1270,7 +1312,8 @@ export function getPlayerHeadTexture(objectUuid: string, projectData = loadedObj
     const ref = (projectData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) return texture;
     const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId, false, undefined, projectData);
-    if (!surface) return texture;
+    if (!surface) return projectData.animationSession?.enabled
+        ? texturePreviews.get(textures)?.desired.get(objectUuid) ?? texture : texture;
     if (texture !== deferredPlayerHeadTexture && !captureHeadAtlasUvs(surface.context.canvas, {
         x: surface.x, y: surface.y, width: surface.denseLayer === undefined ? PLAYER_HEAD_BLOCK_WIDTH : PLAYER_HEAD_PART_SIZE,
         height: surface.denseLayer === undefined ? PLAYER_HEAD_BLOCK_HEIGHT : PLAYER_HEAD_PART_SIZE
@@ -1282,11 +1325,35 @@ export function getPlayerHeadTexture(objectUuid: string, projectData = loadedObj
 // A hosted copy changes the reference only; keep dense image tiles, knife UVs and mirrored UVs intact.
 export function replacePlayerHeadTextureReference(objectUuid: string, previous: string, next: string): boolean {
     const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
-    if (textures?.get(objectUuid) !== previous) return false;
     const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) return false;
+    let changed = false;
+    const data = loadedObjectGroup.userData;
+    for (const clip of data.animation ? animationClips(data.animation as AnimationData) : []) for (const track of clip.tracks) {
+        if (track.id !== objectUuid) continue;
+        for (const key of track.keys) if (key.texture === previous) { key.texture = next; changed = true; }
+    }
+    for (const pose of [data.animationSession?.base, data.animationSession?.local]) {
+        const node = pose?.get(objectUuid);
+        if (node?.texture === previous) { node.texture = next; changed = true; }
+    }
+    if (!changed && textures?.get(objectUuid) !== previous) return false;
+    const preview = textures && texturePreviews.get(textures);
+    if (preview) {
+        let image = preview.images.get(previous);
+        if (!image) {
+            image = loadPlayerHeadImage(previous);
+            preview.images.set(previous, image);
+            void image.catch(error => {
+                preview.images.delete(previous); preview.images.delete(next);
+                console.error('생성된 텍스처 미리보기를 준비하지 못했습니다.', error);
+            });
+        }
+        preview.images.set(next, image);
+    }
+    if (textures?.get(objectUuid) !== previous) return changed;
     const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId);
-    if (!surface) return false;
+    if (!surface) return changed;
     const material = (Array.isArray(ref.mesh.material) ? ref.mesh.material[0] : ref.mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
     if (atlas && surface.denseLayer === undefined && atlas.slotUrls[surface.slot] === previous) {
@@ -1310,8 +1377,8 @@ export function setPlayerHeadLayerVisible(visible: boolean): void {
     });
 }
 
-function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: HTMLImageElement): void {
-    const userData = loadedObjectGroup.userData;
+function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: HTMLImageElement, root = loadedObjectGroup): void {
+    const userData = root.userData;
     const ref = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) throw new Error('텍스처를 변경할 플레이어 헤드를 찾을 수 없습니다.');
 
@@ -1323,10 +1390,10 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
         if (!context) throw new Error('텍스처 캔버스를 만들 수 없습니다.');
         context.imageSmoothingEnabled = false;
         drawPlayerHeadSlot(context, image, 0);
-        const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId, true);
+        const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId, true, undefined, userData);
         if (!surface) throw new Error('플레이어 헤드 아틀라스를 찾을 수 없습니다.');
         writePlayerHeadPaint(surface, context.getImageData(0, 0, canvas.width, canvas.height), true, null);
-        commitPlayerHeadPaint(surface);
+        commitPlayerHeadPaint(surface, undefined, userData);
         (userData.objectTextures as Map<string, string> | undefined)?.set(objectUuid,
             image.src === DEFAULT_PLAYER_HEAD_TEXTURE ? DEFAULT_PLAYER_HEAD_TEXTURE : textureUrl);
         return;
@@ -1340,7 +1407,7 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
     const oldU = uvOffsets.getX(ref.instanceId);
     const oldV = uvOffsets.getY(ref.instanceId);
     let usageCount = 0;
-    loadedObjectGroup.traverse(object => {
+    root.traverse(object => {
         if (!(object as InstancedMesh).isInstancedMesh) return;
         const mesh = object as InstancedMesh;
         const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
@@ -1381,6 +1448,43 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
     uvOffsets.needsUpdate = true;
     atlas.texture.needsUpdate = true;
     (userData.objectTextures as Map<string, string> | undefined)?.set(objectUuid, storedUrl);
+}
+
+export function previewPlayerHeadTextures(root: typeof loadedObjectGroup, desired: Map<string, string>): void {
+    const data = root.userData;
+    const textures = data.objectTextures as Map<string, string> | undefined;
+    if (!textures) return;
+    let preview = texturePreviews.get(textures);
+    if (!preview) texturePreviews.set(textures, preview = { desired, images: new Map() });
+    preview.desired = desired;
+    for (const [uuid, texture] of desired) {
+        const previous = textures.get(uuid);
+        if (previous === texture) continue;
+        const ref = data.objectUuidToInstance?.get(uuid);
+        if (!ref || !getPlayerHeadPaintSurface(ref.mesh, ref.instanceId, false, undefined, data)) continue;
+        const apply = (image: HTMLImageElement) => {
+            if (root.userData !== data || data.objectTextures !== textures || preview.desired.get(uuid) !== texture
+                || textures.get(uuid) !== previous || !ref || data.objectUuidToInstance?.get(uuid) !== ref) return;
+            applyPlayerHeadTexture(uuid, texture, image, root);
+            window.dispatchEvent(new Event('pde:animation-textures-updated'));
+        };
+        let image = preview.images.get(texture);
+        if (image instanceof HTMLImageElement) apply(image);
+        else {
+            if (!image) {
+                image = loadPlayerHeadImage(texture);
+                preview.images.set(texture, image);
+            }
+            const state = preview;
+            void trackProjectEdit(image.then(loaded => {
+                state.images.set(texture, loaded);
+                apply(loaded);
+            }).catch(error => {
+                state.images.delete(texture);
+                console.error('애니메이션 텍스처를 불러오지 못했습니다.', error);
+            }));
+        }
+    }
 }
 
 export function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
@@ -1424,6 +1528,6 @@ async function flipHeadTextures(objectUuids: string[], axis: PlayerHeadMirrorAxi
 }
 
 
-export function clearImageHeadBlackMaterial(): void {
-    imageHeadBlackMaterial = null;
+export function clearImageHeadBlackMaterial(disposedResources?: ReadonlySet<object>): void {
+    if (!disposedResources || (imageHeadBlackMaterial && disposedResources.has(imageHeadBlackMaterial))) imageHeadBlackMaterial = null;
 }

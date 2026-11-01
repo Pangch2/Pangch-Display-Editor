@@ -12,8 +12,8 @@ export type LoadedSelection = Map<Object3D, Set<number>>;
 // 리로드 이후 늦게 도착한 비동기 결과를 무시하기 위한 세대 토큰
 export let currentLoadGen = 0;
 
-export function beginPbdeLoadGeneration(): number {
-    window.dispatchEvent(new Event('pde:before-project-load'));
+export function beginPbdeLoadGeneration(isMerge = false): number {
+    window.dispatchEvent(new CustomEvent('pde:before-project-load', { detail: { isMerge } }));
     return ++currentLoadGen;
 }
 
@@ -88,21 +88,22 @@ export async function addTextDisplayItems(
         for (const template of templates.values()) template.geometry.dispose();
         return;
     }
-    const reusableByMaterial = new Map<Material, InstancedMesh>();
+    const reusable = new Map<string, InstancedMesh>();
     for (const child of loadedObjectGroup.children) {
         const mesh = child as InstancedMesh;
         if (!mesh.isInstancedMesh || !mesh.userData.textDisplayTemplateKeys || mesh.count >= getInstancedCapacity(mesh)) continue;
-        reusableByMaterial.set(mesh.material as Material, mesh);
+        reusable.set(`${(mesh.material as Material).uuid}:${mesh.geometry.userData.textDisplayGeometryKey ?? ''}`, mesh);
     }
 
-    const groups = new Map<Material, Array<{ item: OtherItem; template: InstancedMesh; key: string }>>();
+    const groups = new Map<string, Array<{ item: OtherItem; template: InstancedMesh; key: string }>>();
     const reusedMeshes = new Set<InstancedMesh>();
     const usedMaterials = new Set<Material>();
     for (const item of items) {
         const key = getTextDisplayTemplateKey(item);
         const template = templates.get(key)!;
         const material = template.material as Material;
-        const mesh = reusableByMaterial.get(material);
+        const batchKey = `${material.uuid}:${template.geometry.userData.textDisplayGeometryKey ?? ''}`;
+        const mesh = reusable.get(batchKey);
         if (mesh && mesh.count < getInstancedCapacity(mesh)) {
             const instanceId = mesh.count++;
             mesh.setMatrixAt(instanceId, new Matrix4().fromArray(item.transform).transpose());
@@ -115,6 +116,7 @@ export async function addTextDisplayItems(
                 attribute.needsUpdate = true;
             }
             setInstanceSkyBrightness(mesh, instanceId, item.brightness as Brightness | undefined);
+            mesh.geometry.boundingBox?.union(template.geometry.boundingBox!);
             (mesh.userData.textDisplayTemplateKeys as Map<number, string>).set(instanceId, key);
             registerObject(mesh, instanceId, item.uuid, item.groupId);
             if (selection) addLoadedInstance(selection, mesh, instanceId);
@@ -123,12 +125,13 @@ export async function addTextDisplayItems(
             continue;
         }
 
-        const group = groups.get(material) ?? [];
+        const group = groups.get(batchKey) ?? [];
         group.push({ item, template, key });
-        groups.set(material, group);
+        groups.set(batchKey, group);
     }
     const usedGeometries = new Set<BufferGeometry>();
-    for (const [material, group] of groups) {
+    for (const group of groups.values()) {
+        const material = group[0].template.material as Material;
         usedMaterials.add(material);
         const sourceGeometry = group[0].template.geometry;
         for (let start = 0; start < group.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
@@ -177,6 +180,7 @@ export async function addTextDisplayItems(
     for (const mesh of reusedMeshes) {
         mesh.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        if (mesh.geometry.boundingBox) mesh.geometry.boundingSphere = mesh.geometry.boundingBox.getBoundingSphere(new Sphere());
         mesh.computeBoundingSphere();
     }
     for (const template of templates.values()) {

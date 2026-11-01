@@ -1,9 +1,10 @@
-import { Box3, Group, Matrix4, Object3D, Quaternion, Vector3 } from 'three/webgpu';
+import { Box3, Group, Matrix4, Object3D, Vector3 } from 'three/webgpu';
 import type { Mesh } from 'three/webgpu';
 import { applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds, type InstanceIdRange } from '../selection/instance-ranges';
 import * as Overlay from '../selection/overlay';
 import type { SelectedItem, SelectionState } from '../selection/select';
+import { getScaleFrame } from './scale-frame';
 
 type Axis = 'x' | 'y' | 'z';
 
@@ -99,21 +100,6 @@ function canContinueSmartScaleSession(
 ): boolean {
     return !!currentDrag
         && currentDrag.selectionKey === selectionKey;
-}
-
-function getScaleFrame(initialMatrix: Matrix4, sourceMatrix?: Matrix4 | null): Matrix4 {
-    const framePosition = new Vector3();
-    const frameRotation = new Quaternion();
-    initialMatrix.decompose(framePosition, frameRotation, new Vector3());
-    const frame = new Matrix4().compose(framePosition, frameRotation, new Vector3(1, 1, 1));
-    if (!sourceMatrix) return frame;
-
-    const x = new Vector3().setFromMatrixColumn(sourceMatrix, 0).normalize();
-    const y = new Vector3().setFromMatrixColumn(sourceMatrix, 1).normalize();
-    const z = new Vector3().setFromMatrixColumn(sourceMatrix, 2).normalize();
-    if (Math.max(Math.abs(x.dot(y)), Math.abs(x.dot(z)), Math.abs(y.dot(z))) <= 1e-6) return frame;
-
-    return new Matrix4().makeBasis(x, y, z).setPosition(framePosition);
 }
 
 function getInstanceRanges(items: SelectedItem[]): Map<Object3D, InstanceIdRange[]> {

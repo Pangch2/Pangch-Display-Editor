@@ -25,6 +25,7 @@ import {
 import { initAssets } from './asset-manager';
 import { stabilizeInstancedMatrixBindingNames } from './entity-material';
 import { initSceneColorCapture } from './ui/common/scene-color-capture';
+import { precompileDisplayModels } from './load-project/display/display-model-precompile';
 import { getItemIconAtlas } from './ui/toolbar/item-icon-atlas';
 import { initTransformToolbar } from './ui/toolbar/transform-toolbar';
 import { ensureSpriteAtlases } from './load-project/scene/sprite-atlas';
@@ -34,6 +35,7 @@ import { initContextMenu } from './ui/dialogs/context-menu';
 import './ui/scene-panel/scene-panel';
 import './ui/layout/panel-layout';
 import './ui/object-properties/object-properties';
+import './ui/animation-panel';
 import { initHeadPainter, updateHeadPainter } from './ui/head-editor/head-painter';
 import { waitForWelcome } from './ui/dialogs/welcome';
 
@@ -42,6 +44,7 @@ let scene: Scene;
 let camera: Camera;
 let renderer: WebGPURenderer;
 let controls: OrbitControls;
+const notifyCameraChanged = () => window.dispatchEvent(new Event('pde:camera-changed'));
 let viewHelper: ViewHelper;
 let floorGrid: Group;
 let coordinateAxes: Group;
@@ -536,11 +539,13 @@ async function initScene(): Promise<void> {
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
     await renderer.init();
     stabilizeInstancedMatrixBindingNames(renderer);
+    loadedObjectGroup.userData.precompileDisplayModels = (meshes, current) => precompileDisplayModels(renderer, scene, camera, meshes, current);
     initSceneColorCapture(renderer, scene, () => camera);
 
     // 4. 컨트롤(Controls)
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
+    controls.addEventListener('change', notifyCameraChanged);
     initHeadPainter({
         renderer,
         scene,
@@ -598,16 +603,26 @@ async function initScene(): Promise<void> {
         if (event.button !== 0) return;
         viewHelperWasAnimating = viewHelper.handleClick(event);
         if (viewHelperWasAnimating) {
+            notifyCameraChanged();
             cameraTypeBeforeViewHelper ??= camera.isPerspectiveCamera ? 'perspective' : 'orthographic';
             setCameraType('orthographic');
             zSymbol.visible = false;
         }
     });
     let leftPointerDownPosition = { x: 0, y: 0 };
+    let leftPointerDownOnCanvas = false;
     renderer.domElement.addEventListener('pointerdown', event => {
-        if (event.button === 0) leftPointerDownPosition = { x: event.clientX, y: event.clientY };
+        if (event.button !== 0) return;
+        leftPointerDownOnCanvas = true;
+        leftPointerDownPosition = { x: event.clientX, y: event.clientY };
     });
+    window.addEventListener('pointerup', event => {
+        if (event.button === 0) leftPointerDownOnCanvas = false;
+    });
+    window.addEventListener('pointercancel', () => { leftPointerDownOnCanvas = false; });
+    window.addEventListener('blur', () => { leftPointerDownOnCanvas = false; });
     renderer.domElement.addEventListener('pointermove', event => {
+        if (!controls.enabled || !leftPointerDownOnCanvas) return;
         if ((event.buttons & 1) && Math.hypot(event.clientX - leftPointerDownPosition.x, event.clientY - leftPointerDownPosition.y) > 5) {
             if (cameraTypeBeforeViewHelper) {
                 setCameraType(cameraTypeBeforeViewHelper);
@@ -625,7 +640,10 @@ async function initScene(): Promise<void> {
         renderer: renderer as unknown as Renderer, 
         controls: controls as unknown as OrbitControlsLike, 
         loadedObjectGroup, 
-        setControls: (c: OrbitControlsLike) => { controls = c as unknown as OrbitControls; } 
+        setControls: (c: OrbitControlsLike) => {
+            controls = c as unknown as OrbitControls;
+            controls.addEventListener('change', notifyCameraChanged);
+        } 
     });
 
     // 8. 헬퍼(Helper)

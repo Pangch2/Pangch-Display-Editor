@@ -1,8 +1,9 @@
 import { currentSelection } from '../../controls/selection/select';
 import { matchesShortcut } from '../../controls/input/shortcuts';
+import { handleExpandCollapseShortcut } from '../common/expand-collapse';
 import { scenePanelState } from './scene-panel-state';
 import type { ScenePanelSelectionState } from './scene-panel-types';
-import { beginScenePanelRename, refreshScenePanel, scheduleSceneExtraFit, scheduleScenePanelRender } from './scene-panel-render';
+import { beginScenePanelRename, refreshScenePanel, scheduleSceneExtraFit, scheduleScenePanelRender, setSceneGroupsExpanded } from './scene-panel-render';
 import { syncScenePanelSelection } from './scene-panel-selection';
 
 if (scenePanelState.scenePanelList) {
@@ -76,10 +77,17 @@ window.addEventListener('pde:scene-updated', event => {
     if ((event as CustomEvent).detail?.texturesOnly) scheduleScenePanelRender(true);
     else refreshScenePanel();
 });
+window.addEventListener('pde:animation-properties-updated', () => {
+    for (const el of scenePanelState.renderedRowEls.values()) el.remove();
+    scenePanelState.renderedRowEls.clear();
+    scheduleScenePanelRender();
+    scheduleSceneExtraFit();
+});
 window.addEventListener('pde:object-renamed', () => {
     if (!(document.activeElement as HTMLElement | null)?.classList.contains('scene-name-input')) refreshScenePanel();
 });
 window.addEventListener('keydown', event => {
+    if (handleExpandCollapseShortcut(event, expanded => setSceneGroupsExpanded(currentSelection.groups, expanded))) return;
     const target = event.target as HTMLElement;
     if (!matchesShortcut(event, 'renameSceneItem') || target.matches('input, textarea') || target.isContentEditable) return;
     event.preventDefault();

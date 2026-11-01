@@ -72,6 +72,7 @@ const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPaylo
 };
 
 const blockstateCache = new Map<string, Promise<any>>();
+const multipartPropertyValues = new WeakMap<object, Record<string, Set<string>>>();
 
 function readBlockstate(name: string): Promise<any> {
     const baseName = name.replace(/\[[^\]]*\]$/, '');
@@ -111,6 +112,11 @@ async function getBlockPropertyOptions(name: string, current: Record<string, str
             }
         }
     } else if (blockstate.multipart) {
+        // Multipart assets omit neutral values such as "none" and level 0.
+        const known: Record<string, Set<string>> = multipartPropertyValues.get(blockstate) ?? Object.create(null);
+        for (const [key, value] of Object.entries(current)) (known[key] ??= new Set()).add(String(value));
+        multipartPropertyValues.set(blockstate, known);
+        for (const [key, values] of Object.entries(known)) values.forEach(value => addOption(key, value));
         const collect = (condition: unknown): void => {
             if (!condition || typeof condition !== 'object') return;
             for (const [key, value] of Object.entries(condition)) {

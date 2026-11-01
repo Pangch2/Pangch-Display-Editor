@@ -14,6 +14,7 @@ import type {
 } from './scene-panel-types';
 import {
     cleanLabel,
+    getObjectLabel,
     hasRenderableObject,
     isObjectUuidGrouped,
     resolveChildObjectUuid
@@ -63,7 +64,7 @@ function setRowPosition(el: HTMLElement, row: ScenePanelRow): void {
 
 function updateObjectIcon(icon: HTMLElement, uuid: string): void {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const rawName = ud.objectLabels?.get(uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
+    const rawName = getObjectLabel(ud, uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
     const isItemDisplay = ud.objectIsItemDisplay?.has(uuid) ?? false;
     const isTextDisplay = ud.objectUuidToInstance?.get(uuid)?.mesh.userData.displayType === 'text_display';
     const texture = ud.objectTextures?.get(uuid);
@@ -78,7 +79,7 @@ function updateObjectIcon(icon: HTMLElement, uuid: string): void {
 function makeObjectRow(row: ScenePanelRow): HTMLElement {
     const uuid = row.id;
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
-    const rawName = ud.objectLabels?.get(uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
+    const rawName = getObjectLabel(ud, uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
     const isItemDisplay = ud.objectIsItemDisplay?.has(uuid) ?? false;
     const isTextDisplay = ud.objectUuidToInstance?.get(uuid)?.mesh.userData.displayType === 'text_display';
 
@@ -184,16 +185,7 @@ function makeGroupRow(row: ScenePanelRow): HTMLElement {
 
     toggleEl.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (scenePanelState.expandedGroupIds.has(row.id)) {
-            scenePanelState.expandedGroupIds.delete(row.id);
-        } else {
-            scenePanelState.expandedGroupIds.add(row.id);
-        }
-        rebuildSceneRows();
-        syncScenePanelSpacerHeight();
-        renderVisibleSceneRows();
-        syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
-        scheduleSceneExtraFit();
+        setSceneGroupsExpanded([row.id], !scenePanelState.expandedGroupIds.has(row.id));
     });
 
     header.addEventListener('click', (e) => handleSceneItemClick(e, header));
@@ -204,6 +196,28 @@ function makeGroupRow(row: ScenePanelRow): HTMLElement {
 
 function makeRowElement(row: ScenePanelRow): HTMLElement {
     return row.type === 'group' ? makeGroupRow(row) : makeObjectRow(row);
+}
+
+export function setSceneGroupsExpanded(groupIds: Iterable<string>, expanded: boolean): boolean {
+    const groups = (loadedObjectGroup.userData as LoadedObjectUserData).groups;
+    let handled = false;
+    let changed = false;
+    for (const id of groupIds) {
+        if (!groups?.has(id)) continue;
+        handled = true;
+        if (scenePanelState.expandedGroupIds.has(id) === expanded) continue;
+        if (expanded) scenePanelState.expandedGroupIds.add(id);
+        else scenePanelState.expandedGroupIds.delete(id);
+        changed = true;
+    }
+    if (changed) {
+        rebuildSceneRows();
+        syncScenePanelSpacerHeight();
+        renderVisibleSceneRows();
+        syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState, false);
+        scheduleSceneExtraFit();
+    }
+    return handled;
 }
 
 export function beginScenePanelRename(): void {
@@ -219,7 +233,7 @@ export function beginScenePanelRename(): void {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const current = row.type === 'group'
         ? ud.groups?.get(row.id)?.name ?? ''
-        : ud.objectLabels?.get(row.id) ?? cleanLabel(ud.objectNames?.get(row.id) ?? row.id.slice(0, 8));
+        : getObjectLabel(ud, row.id) ?? cleanLabel(ud.objectNames?.get(row.id) ?? row.id.slice(0, 8));
     const input = document.createElement('input');
     const partnerId = isMirrorModelingEnabled()
         ? row.type === 'group'
@@ -228,7 +242,7 @@ export function beginScenePanelRename(): void {
         : undefined;
     const readName = (id: string) => row.type === 'group'
         ? ud.groups?.get(id)?.name ?? ''
-        : ud.objectLabels?.get(id) ?? cleanLabel(ud.objectNames?.get(id) ?? id.slice(0, 8));
+        : getObjectLabel(ud, id) ?? cleanLabel(ud.objectNames?.get(id) ?? id.slice(0, 8));
     const before = new Map([row.id, partnerId].filter((id): id is string => !!id).map(id => [id, readName(id)]));
     input.type = 'text';
     input.className = 'scene-name-input';
@@ -296,15 +310,31 @@ function appendGroupRows(rows: ScenePanelRow[], groupId: string, depth: number, 
     rows.push({ type: 'group', id: groupId, depth, parentGroupId, visibleIndex: rows.length });
     if (!scenePanelState.expandedGroupIds.has(groupId)) return;
 
-    for (const child of (group.children || [])) {
+    const stack = [{ group, depth, index: 0 }];
+    const path = new Set([groupId]);
+    while (stack.length) {
+        const frame = stack[stack.length - 1];
+        if (frame.index >= (frame.group.children?.length ?? 0)) {
+            path.delete(frame.group.id);
+            stack.pop();
+            continue;
+        }
+        const child = frame.group.children[frame.index++];
+        const childDepth = frame.depth + 1;
         if (child.type === 'group') {
-            appendGroupRows(rows, child.id, depth + 1, groupId);
+            const childGroup = ud.groups?.get(child.id);
+            if (!childGroup || path.has(child.id)) continue;
+            rows.push({ type: 'group', id: child.id, depth: childDepth, parentGroupId: frame.group.id, visibleIndex: rows.length });
+            if (scenePanelState.expandedGroupIds.has(child.id)) {
+                path.add(child.id);
+                stack.push({ group: childGroup, depth: childDepth, index: 0 });
+            }
             continue;
         }
 
         const objectUuid = resolveChildObjectUuid(child, ud);
         if (objectUuid && hasRenderableObject(objectUuid, ud)) {
-            rows.push({ type: 'object', id: objectUuid, depth: depth + 1, parentGroupId: groupId, visibleIndex: rows.length });
+            rows.push({ type: 'object', id: objectUuid, depth: childDepth, parentGroupId: frame.group.id, visibleIndex: rows.length });
         }
     }
 }
@@ -344,7 +374,9 @@ function rebuildSceneRows(): void {
         }
     }
 
-    if (ud.objectNames) {
+    // Group membership and rendered roots already account for every live object on normal loads.
+    const accountedObjects = (ud.objectToGroup?.size ?? 0) + renderedRootObjects.size;
+    if (ud.objectNames && accountedObjects !== ud.objectUuidToInstance?.size) {
         for (const [uuid] of ud.objectNames) appendRootObject(uuid);
     }
 
@@ -529,7 +561,8 @@ export function renderVisibleSceneRows(): void {
     }
 
     content.appendChild(fragment);
-    syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
+    // Scrolling must not revisit every selected object's ancestors.
+    syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState, false);
 
     const elapsed = performance.now() - renderStartMs;
     if (elapsed > 8 && isPbdeLogEnabled('Scene panel viewport render')) {
@@ -573,6 +606,7 @@ export function refreshScenePanel(): void {
 
     const domStartMs = performance.now();
     renderVisibleSceneRows();
+    syncScenePanelSelection(currentSelection as unknown as ScenePanelSelectionState);
     scheduleSceneExtraFit();
     const domElapsedMs = performance.now() - domStartMs;
     const totalElapsedMs = performance.now() - totalStartMs;

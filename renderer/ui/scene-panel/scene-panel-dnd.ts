@@ -2,6 +2,7 @@ import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
 import { currentSelection } from '../../controls/selection/select';
 import { getMirrorPairs, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
 import { captureGroupStructureState, recordGroupStructureChange, type GroupStructureHistoryState } from '../../controls/undo-redo/scene-history';
+import { assertAnimationParentsInvertible } from '../../animation/animation-state';
 import { scheduleSceneExtraFit } from './scene-panel-render';
 import { scenePanelState } from './scene-panel-state';
 import type {
@@ -464,6 +465,14 @@ function dropSceneItems(clientX: number, clientY: number): void {
             : [];
         const mirrorTargetId = hint.targetType === 'root' ? null : mirrorId(hint.targetType, hint.targetId);
         const mirrorParentId = hint.parentGroupId ? groupPairs.get(hint.parentGroupId) : null;
+        try {
+            assertAnimationParentsInvertible(loadedObjectGroup, [hint.mode === 'inside' ? hint.targetId : hint.parentGroupId,
+                mirrorItems.length ? hint.mode === 'inside' ? mirrorTargetId : mirrorParentId : null]);
+        } catch (error) {
+            handleSceneItemDragEnd();
+            window.alert(error instanceof Error ? error.message : String(error));
+            return;
+        }
         const affectedItems = [...bundle.items, ...mirrorItems];
         const groupIds = new Set(affectedItems.flatMap(item => item.type === 'group' ? [item.id] : []));
         for (const id of [hint.parentGroupId, hint.targetType === 'group' ? hint.targetId : null, mirrorParentId, mirrorTargetId]) {

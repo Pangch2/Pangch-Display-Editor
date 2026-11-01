@@ -11,6 +11,7 @@ import * as Overlay from './overlay';
 import { entityVisibleAttributeName } from '../../entity-material';
 import { getVisibleInstanceIds } from '../scene-visibility';
 import { intersectSceneInstances } from './instance-raycast';
+import { matchesPointerShortcut } from '../input/shortcuts';
 
 // --- Types ---
 
@@ -332,6 +333,34 @@ export function replaceSelectionWithGroupsAndObjects(
     if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
 }
 
+export function getSelectAllSceneSelection(loadedObjectGroup: Group): {
+    groups: Set<string>; objects: Map<Mesh | InstancedMesh, Set<number>>; anchorMode: 'default' | 'center';
+} {
+    const groups = new Set<string>(), objects = new Map<Mesh | InstancedMesh, Set<number>>();
+    if (loadedObjectGroup) {
+        const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
+        loadedObjectGroup.traverse(obj => {
+            const mesh = obj as InstancedMesh;
+            if (!mesh.isInstancedMesh || mesh.visible === false) return;
+            const count = Overlay.getInstanceCount(mesh);
+            for (let id = 0; id < count; id++) {
+                if (!Overlay.isInstanceValid(mesh, id) || !isInstanceRendered(mesh, id)) continue;
+                const groupId = objectToGroup.get(GroupUtils.getGroupKey(mesh, id));
+                if (groupId) {
+                    const chain = GroupUtils.getGroupChain(loadedObjectGroup, groupId);
+                    groups.add(chain[0] ?? groupId);
+                } else {
+                    if (!objects.has(mesh)) objects.set(mesh, new Set());
+                    objects.get(mesh)!.add(id);
+                }
+            }
+        });
+    }
+    let count = groups.size;
+    for (const ids of objects.values()) count += ids.size;
+    return { groups, objects, anchorMode: count > 1 ? 'center' : 'default' };
+}
+
 export function selectAllObjectsVisibleInScene(loadedObjectGroup: Group): Map<Mesh | InstancedMesh, Set<number>> {
     const meshToIds = new Map<Mesh | InstancedMesh, Set<number>>();
     if (!loadedObjectGroup) return meshToIds;
@@ -383,14 +412,15 @@ export function commitSelectionChange(callbacks: SelectionCallbacks): void {
 
 export function handleSelectionClick(
     raycaster: Raycaster,
-    event: MouseEvent | { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+    event: MouseEvent | { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey?: boolean },
     loadedObjectGroup: Group,
     callbacks: SelectionCallbacks
 ): void {
     const picked = pickInstance(raycaster, loadedObjectGroup);
+    const additive = matchesPointerShortcut(event, 'multiSelect');
     
     if (!picked) {
-        if (!event.shiftKey) {
+        if (!additive) {
             if (callbacks.onDeselect) {
                 callbacks.onDeselect();
             } else {
@@ -408,7 +438,7 @@ export function handleSelectionClick(
     const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
     const immediateGroupId = objectToGroup ? objectToGroup.get(key) : null;
 
-    const bypassGroupSelection = !!(event.ctrlKey || event.metaKey);
+    const bypassGroupSelection = matchesPointerShortcut(event, 'boxSelect');
 
     let target: { type: 'object'; mesh: Mesh | InstancedMesh; ids: number[] } | { type: 'group'; id: string } = { 
         type: 'object', mesh: object, ids: idsToSelect 
@@ -429,7 +459,7 @@ export function handleSelectionClick(
             }
 
             if (deepestSelectedIndex !== -1) {
-                if (event.shiftKey || callbacks.isVertexMode) {
+                if (additive || callbacks.isVertexMode) {
                     groupToDeselect = groupChain[deepestSelectedIndex];
                 }
 
@@ -446,7 +476,7 @@ export function handleSelectionClick(
         }
     }
 
-    if (event.shiftKey) {
+    if (additive) {
         if (groupToDeselect) {
             if (currentSelection.groups.has(groupToDeselect)) {
                 currentSelection.groups.delete(groupToDeselect);

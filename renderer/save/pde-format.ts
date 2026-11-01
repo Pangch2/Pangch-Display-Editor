@@ -1,5 +1,6 @@
 import { strFromU8, strToU8 } from 'fflate';
 import { MathUtils } from 'three/webgpu';
+import { animationClips, validateAnimation, type AnimationClip, type AnimationData } from '../animation/animation-data';
 import { defaultTextDisplayOptions, type TextDisplayOptions } from '../load-project/display/text-display';
 
 export type ObjectEditorState = {
@@ -33,6 +34,7 @@ export type PdeEditorState = {
     objectMirrorPairs: [string, string][];
     groupMirrorPairs: [string, string][];
     globalBrightness?: { enabled: boolean; sky: number; block: number };
+    animation?: AnimationData;
 };
 export type PdeNode = {
     uuid: string;
@@ -95,7 +97,7 @@ const groupDefaults = { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1
 const stateDefaults = { objects: [], groups: [], hiddenObjectIds: [], hiddenGroupIds: [], objectMirrorPairs: [], groupMirrorPairs: [] };
 const objectEditorKeys = ['label', 'pivot', 'customPivot', 'isCustomPivot', ...Object.keys(objectDefaults), 'hasHat', 'imageHeadLayer'];
 const groupEditorKeys = [...Object.keys(groupDefaults), 'matrix', 'pivot'];
-// Versions 3/4 share fixed defaults even if the editor's new-object defaults change.
+// Versions 3/4/5 share fixed defaults even if the editor's new-object defaults change.
 const textDefaults: Required<TextDisplayOptions> = {
     color: '#FFFFFF', shadowColor: '#3F3F3F', shadowAlpha: 0, alpha: 1, backgroundColor: '#000000', backgroundAlpha: 0.25,
     bold: false, italic: false, underline: false, strikeThrough: false, obfuscated: false,
@@ -136,7 +138,7 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
     const objectIds = new Set<string>();
     const groupIds = new Set<string>();
     const state = project.editorState;
-    const inline = state?.version === 4;
+    const inline = state?.version === 4 || state?.version === 5;
     const compact = inline || state?.version === 3;
     const indexed = compact || project.editorState?.version === 2;
     if (inline) {
@@ -189,7 +191,7 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
         for (const key of Object.keys(stateDefaults)) if (state[key] === undefined) state[key] = [];
         if (record(state.globalBrightness)) state.globalBrightness = { ...globalBrightnessDefaults, ...state.globalBrightness };
     }
-    if (!record(state) || ![1, 2, 3, 4].includes(state.version) || !Array.isArray(state.objects) || !Array.isArray(state.groups)) throw new Error('잘못된 PDE 편집 상태 버전입니다.');
+    if (!record(state) || ![1, 2, 3, 4, 5].includes(state.version) || !Array.isArray(state.objects) || !Array.isArray(state.groups)) throw new Error('잘못된 PDE 편집 상태 버전입니다.');
     if (indexed) {
         const resolve = (id: unknown): string => {
             if (!Number.isSafeInteger(id) || !nodeIds.has(id as number)) throw new Error('잘못된 PDE 노드 참조입니다.');
@@ -216,8 +218,29 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
             state[key] = state[key].map(pair => pair.map(resolve));
         }
         state.version = 1;
+        if (state.animation !== undefined) {
+            if (!record(state.animation) || !Array.isArray(state.animation.tracks)
+                || state.animation.clips !== undefined && !Array.isArray(state.animation.clips)) throw new Error('잘못된 애니메이션 트랙입니다.');
+            for (const clip of animationClips(state.animation as AnimationData)) {
+                if (!record(clip) || !Array.isArray(clip.tracks)) throw new Error('잘못된 애니메이션 클립입니다.');
+                for (const track of clip.tracks) {
+                    if (!record(track)) throw new Error('잘못된 애니메이션 대상입니다.');
+                    track.id = resolve(track.id);
+                }
+                if (clip.excludedNodes !== undefined) {
+                    if (!Array.isArray(clip.excludedNodes)) throw new Error('잘못된 애니메이션 제외 대상입니다.');
+                    clip.excludedNodes = clip.excludedNodes.map(resolve);
+                }
+            }
+        }
     }
     const seenObjects = new Set<string>();
+    if (state.animation !== undefined) {
+        validateAnimation(state.animation, objectIds, groupIds);
+        for (const clip of animationClips(state.animation)) for (const track of clip.tracks) for (const key of track.keys) {
+            if (key.properties?.options !== undefined) validateTextDisplayOptions(key.properties.options, key.properties.name!);
+        }
+    }
     for (const object of state.objects) {
         if (!record(object) || !objectIds.has(object.uuid) || seenObjects.has(object.uuid)) throw new Error('잘못된 PDE 오브젝트 참조입니다.');
         seenObjects.add(object.uuid);
@@ -291,9 +314,14 @@ export function encodePdeProject(project: PdeProject): Uint8Array {
     for (const id of editors.keys()) reference(id);
     for (const id of hidden) reference(id);
     for (const [id, partner] of mirrors) { reference(id); reference(partner); }
-    // Only mirror links need preorder indices; UUIDs exist only while editing.
+    const animation = project.editorState?.animation;
+    const saveClip = (clip: AnimationClip) => ({ ...clip, tracks: clip.tracks.map(track => ({ ...track, id: reference(track.id) })),
+        excludedNodes: clip.excludedNodes?.map(reference) });
+    const savedAnimation = animation && indexed ? { ...animation, ...saveClip(animation), clips: animation.clips?.map(saveClip) } : animation;
+    // Editor links use preorder indices; UUIDs exist only while editing.
     const saved = indexed ? omitDefaults({ ...project, children, editorState: omitDefaults({
-        version: 4,
+        version: animation ? 5 : 4,
+        animation: savedAnimation,
         globalBrightness: project.editorState.globalBrightness ? nonempty(omitDefaults(project.editorState.globalBrightness, globalBrightnessDefaults)) : undefined
     }, {}), ...(textures.length ? { refs: { paintTextures: textures } } : {}) }, { name: '', mainNBT: '', nbt: '' }) : project;
     const json = strToU8(JSON.stringify([saved], (key, value) =>

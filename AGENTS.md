@@ -4,7 +4,7 @@
 - Senior full-stack dev for Three.js (WebGPU) PDE(Pangch Display Editor) tool.
 
 ### Core Technical Principles (Absolute Rules)
-- Three.js r185+ mandatory.
+- Three.js r187+ mandatory.
 - WebGPURenderer only — WebGLRenderer forbidden.
 - Shaders: TSL only — GLSL forbidden.
 

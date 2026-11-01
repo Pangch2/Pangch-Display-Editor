@@ -3,6 +3,7 @@ import { getActiveProjectId, hasProject, loadedObjectGroup } from '../../load-pr
 import { record, isApplying } from '../../controls/undo-redo/undo-redo';
 import type { HeadTextureState } from '../../player-head-service/head-texture-types';
 import { createHeadTextureLoading } from './head-texture-loading';
+import { animationClips, type AnimationData } from '../../animation/animation-data';
 
 type Target = { uuid: string; source: string };
 let batch: { projectId: string; targets: Target[]; results: Map<string, string> } | undefined;
@@ -137,10 +138,19 @@ export function initHeadTextureGenerator(section: HTMLElement, finishStroke: () 
       const refs = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
       const names = loadedObjectGroup.userData.objectNames as Map<string, string> | undefined;
       const targets: Target[] = [];
+      const addTarget = (uuid: string, source?: string) => {
+        if (names?.get(uuid)?.split('[')[0].replace(/^minecraft:/, '') === 'player_head'
+            && source?.startsWith('data:image/png;base64,')) targets.push({ uuid, source });
+      };
       for (const uuid of refs?.keys() ?? []) {
-        if (!names?.get(uuid)?.startsWith('player_head')) continue;
-        const source = getPlayerHeadTexture(uuid);
-        if (source?.startsWith('data:image/png;base64,')) targets.push({ uuid, source });
+        addTarget(uuid, getPlayerHeadTexture(uuid));
+      }
+      const data = loadedObjectGroup.userData;
+      if (data.animation) {
+        for (const clip of data.animation ? animationClips(data.animation as AnimationData) : []) for (const track of clip.tracks) {
+          for (const key of track.keys) addTarget(track.id, key.texture);
+        }
+        for (const [uuid, node] of data.animationSession?.base ?? []) addTarget(uuid, node.texture);
       }
       if (!targets.length) { status.textContent = '변환할 PNG 헤드 텍스처가 없습니다.'; return; }
       batch = { projectId, targets, results: new Map() };

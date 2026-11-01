@@ -66,7 +66,8 @@ fileInput.addEventListener('change', () => {
     if (files.length) void openProjects(files);
 });
 const fileActions = {
-    new: openNewProjectDialog, newTab: addProject, open: () => fileInput.click(), save: saveProject, export: openSummonCommand
+    new: openNewProjectDialog, newTab: addProject, open: () => fileInput.click(), save: saveProject,
+    saveAs: () => saveProject(true), export: openSummonCommand
 };
 for (const button of menuBar.querySelectorAll<HTMLButtonElement>('[data-file-action]')) {
     button.addEventListener('click', () => { void fileActions[button.dataset.fileAction as keyof typeof fileActions](); });

@@ -5,19 +5,17 @@ import {
     Mesh,
     Object3D,
     Group,
-    Sprite,
-    Quaternion
+    Sprite
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
 import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
-import { applyLinkedMirrorDelta } from '../transform/mirroring';
+import { applyLinkedMirrorDelta, syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../transform/mirroring';
+import { applyDeltaToSelection } from '../selection/drag';
 
 const _TMP_MAT4_A = new Matrix4();
-const _TMP_MAT4_B = new Matrix4();
-const _TMP_INSTANCE_MATRIX = new Matrix4();
 const _ZERO_VEC3 = new Vector3(0, 0, 0);
 
 type MeshType = InstancedMesh | Mesh;
@@ -155,7 +153,7 @@ export function processVertexSnap(
                 if ((mesh as InstancedMesh).isInstancedMesh) {
                     (mesh as InstancedMesh).getMatrixAt(instanceId, instanceMatrix);
                 } else {
-                    instanceMatrix.copy(mesh.matrix);
+                    instanceMatrix.identity();
                 }
                 const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                 const inv = worldMatrix.clone().invert();
@@ -168,6 +166,8 @@ export function processVertexSnap(
                     mesh.userData.customPivot = localPivot;
                 }
                 mesh.userData.isCustomPivot = true;
+                const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(GroupUtils.getGroupKey(mesh, instanceId));
+                if (uuid) syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
                 updateQueueItemPivot(src, localPivot);
                 console.log(`Cloned Gizmo: Custom pivot updated for object ${mesh.uuid} instance ${instanceId}`);
             } else if (src.type === 'group') {
@@ -177,6 +177,7 @@ export function processVertexSnap(
                     const groupMatrix = getGroupWorldMatrixWithFallback(src.id, _TMP_MAT4_A);
                     group.pivot = targetPos.clone();
                     group.isCustomPivot = true;
+                    syncLinkedMirrorGroupPivot(loadedObjectGroup, src.id, targetPos);
                     updateQueueItemPivot(src, targetPos.clone().applyMatrix4(groupMatrix.clone().invert()));
                     console.log(`Cloned Gizmo: Custom pivot updated for group ${src.id}`);
                 }
@@ -250,6 +251,7 @@ export function processVertexSnap(
                             const groupMatrix = getGroupWorldMatrixWithFallback(groupId, _TMP_MAT4_A);
                             group.pivot = targetPos.clone();
                             group.isCustomPivot = true;
+                            syncLinkedMirrorGroupPivot(loadedObjectGroup, groupId, targetPos);
                             updateQueueItemPivot({ type: 'group', id: groupId }, targetPos.clone().applyMatrix4(groupMatrix.clone().invert()));
                         }
                     }
@@ -261,7 +263,8 @@ export function processVertexSnap(
 
                         for (const id of ids) {
                             const instanceMatrix = _TMP_MAT4_A;
-                            (mesh as MeshType).getMatrixAt(id, instanceMatrix);
+                            if ((mesh as InstancedMesh).isInstancedMesh) (mesh as InstancedMesh).getMatrixAt(id, instanceMatrix);
+                            else instanceMatrix.identity();
                             const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                             const inv = worldMatrix.clone().invert();
                             const localPivot = targetPos.clone().applyMatrix4(inv);
@@ -273,6 +276,8 @@ export function processVertexSnap(
                                 mesh.userData.customPivot = localPivot;
                             }
                             mesh.userData.isCustomPivot = true;
+                            const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(GroupUtils.getGroupKey(mesh as MeshType, id));
+                            if (uuid) syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
                             updateQueueItemPivot({ type: 'object', mesh: mesh as MeshType, instanceId: id }, localPivot);
                         }
                     }
@@ -335,8 +340,7 @@ export function processVertexSnap(
             targets.groups.add(groupId);
             const children = GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId);
             for (const child of children) {
-                if (child.type === 'object') addInstance(child.mesh, child.instanceId);
-                else if (child.type === 'group') addGroup((child as unknown as GroupUtils.GroupChildGroup).id);
+                addInstance(child.mesh, child.instanceId);
             }
         };
 
@@ -409,47 +413,14 @@ export function processVertexSnap(
             }
         }
 
-        // 3. Execute Moves
-
-        // A. Update Instances (Visuals)
-        for (const [mesh, ids] of targets.instances) {
-            const meshWorldInv = _TMP_MAT4_B.copy(mesh.matrixWorld).invert();
-            const localDelta = new Matrix4().multiplyMatrices(meshWorldInv, tMat);
-            localDelta.multiply(mesh.matrixWorld);
-
-            for (const id of ids) {
-                (mesh as InstancedMesh).getMatrixAt(id, _TMP_INSTANCE_MATRIX);
-                _TMP_INSTANCE_MATRIX.premultiply(localDelta);
-                (mesh as InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
-            }
-            if ((mesh as InstancedMesh).isInstancedMesh) {
-                const instanceMatrix = (mesh as InstancedMesh).instanceMatrix;
-                ids.forEach(id => instanceMatrix.addUpdateRange(id * instanceMatrix.itemSize, instanceMatrix.itemSize));
-                instanceMatrix.needsUpdate = true;
-            }
-        }
-
-        // B. Update Group Metadata (Logic)
-        for (const groupId of targets.groups) {
-            const groups = getGroups();
-            const group = groups.get(groupId);
-            if (group) {
-                if (GroupUtils.shouldUseGroupPivot(group)) {
-                    group.pivot = GroupUtils.normalizePivotToVector3(group.pivot)?.applyMatrix4(tMat);
-                }
-                if (!group.matrix) {
-                    const gPos = group.position || new Vector3();
-                    const gQuat = group.quaternion || new Quaternion();
-                    const gScale = group.scale || new Vector3(1, 1, 1);
-                    group.matrix = new Matrix4().compose(gPos, gQuat, gScale);
-                }
-                group.matrix.premultiply(tMat);
-                if (!group.position) group.position = new Vector3();
-                if (!group.quaternion) group.quaternion = new Quaternion();
-                if (!group.scale) group.scale = new Vector3(1, 1, 1);
-                group.matrix.decompose(group.position, group.quaternion, group.scale);
-            }
-        }
+        applyDeltaToSelection({
+            deltaMatrix: tMat,
+            meshToInstanceRanges: new Map(Array.from(targets.instances, ([mesh, ids]) => [
+                mesh, Array.from(ids, start => ({ start, count: 1 }))
+            ])),
+            selectedGroupIds: targets.groups,
+            loadedObjectGroup
+        });
 
         applyLinkedMirrorDelta(
             loadedObjectGroup,

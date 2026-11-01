@@ -846,6 +846,7 @@
   cursor: pointer;
 }
 
+.animation-controls input[type="number"],
 .object-property input[type="number"],
 .atlas-color-replace input[type="number"],
 .color-picker input[type="number"] {

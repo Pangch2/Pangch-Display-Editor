@@ -17,6 +17,7 @@ export interface GroupData {
     quaternion: Quaternion | { x: number; y: number; z: number; w: number };
     scale: Vector3 | { x: number; y: number; z: number };
     pivot?: [number, number, number];
+    isCustomPivot?: boolean;
     nbt?: string;
     matrix?: Matrix4;
 }

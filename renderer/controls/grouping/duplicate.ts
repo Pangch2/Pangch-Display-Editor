@@ -19,6 +19,8 @@ import { restoreAtlasPartMaterials } from '../../load-project/batching/atlas-par
 
 const getDisplayType = Overlay.getDisplayType;
 
+import { cloneAnimationTarget } from '../../animation/animation-state';
+
 interface SceneOrderEntry {
     type: 'group' | 'object';
     id: string;
@@ -124,7 +126,8 @@ function registerClone(
     sourceMesh: Mesh | InstancedMesh,
     sourceInstanceId: number,
     targetMesh: Mesh | InstancedMesh,
-    targetInstanceId: number
+    targetInstanceId: number,
+    targetGroupId: string | null
 ): string {
     const stores = ensureStores(loadedObjectGroup);
     const sourceKey = GroupUtils.getGroupKey(sourceMesh, sourceInstanceId);
@@ -162,6 +165,8 @@ function registerClone(
         stores.objectBrightness.set(targetUuid, cloneData(stores.objectBrightness.get(sourceUuid)));
     }
     if (stores.objectTextures?.has(sourceUuid)) stores.objectTextures.set(targetUuid, stores.objectTextures.get(sourceUuid)!);
+
+    cloneAnimationTarget(loadedObjectGroup, sourceUuid, targetUuid, targetGroupId);
 
     return targetUuid;
 }
@@ -390,7 +395,7 @@ function clonePlainMesh(
     clone.userData = cloneData(sourceMesh.userData);
     loadedObjectGroup.add(clone);
 
-    const objectUuid = registerClone(loadedObjectGroup, sourceMesh, sourceInstanceId, clone, 0);
+    const objectUuid = registerClone(loadedObjectGroup, sourceMesh, sourceInstanceId, clone, 0, targetGroupId ?? null);
     insertCloneEntry(loadedObjectGroup, sourceMesh, sourceInstanceId, targetGroupId, clone, 0, objectUuid, coveredByGroup, insertionPlan);
     return { mesh: clone, instanceId: 0, objectUuid, coveredByGroup };
 }
@@ -472,7 +477,7 @@ function cloneInstancedBatch(
         const metadataStart = timings ? performance.now() : 0;
         copyUserDataForInstance(sourceMesh, job.instanceId, targetMesh, targetId);
 
-        const objectUuid = registerClone(loadedObjectGroup, sourceMesh, job.instanceId, targetMesh, targetId);
+        const objectUuid = registerClone(loadedObjectGroup, sourceMesh, job.instanceId, targetMesh, targetId, job.targetGroupId ?? null);
         insertCloneEntry(
             loadedObjectGroup,
             sourceMesh,

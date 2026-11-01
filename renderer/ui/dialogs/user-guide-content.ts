@@ -106,6 +106,7 @@ export const userGuideSections = [
                     <h3>새 프로젝트와 프로젝트 탭</h3>
                     <p>파일 → <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE0C9;</span>새 프로젝트 또는 <kbd>Ctrl + N</kbd>으로 현재 프로젝트를 새로 시작합니다. 저장 여부를 확인한 뒤 진행하세요. 현재 작업을 열어 둔 채 새 탭을 만들려면 파일 → <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE426;</span>새 프로젝트 탭 또는 <kbd>N</kbd>을 사용합니다. 프로젝트 세부 정보의 탭 메뉴와 이전·다음 버튼으로 전환합니다.</p>
                     <h3>저장과 자동저장</h3>
+                    <p>파일 → 다른 이름으로 저장 또는 <kbd>Ctrl + Shift + S</kbd>로 새 파일 이름이나 위치를 선택합니다. 저장한 뒤에는 <kbd>Ctrl + S</kbd>도 새 파일에 저장합니다.</p>
                     <p>파일 → <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE14D;</span>저장 또는 <kbd>Ctrl + S</kbd>로 프로젝트를 저장합니다. 설정에서 자동저장을 켜고 시간 간격과 보관할 파일 수를 지정할 수 있습니다. 보관 수를 넘긴 자동저장 파일은 제거됩니다.</p>
                     <p>자동저장으로 복구하려면 설정 → 자동저장 → 파일위치 열기로 폴더를 확인하고 필요한 파일을 프로젝트로 엽니다.</p>
                     <h3>소환 설정</h3>
@@ -292,6 +293,7 @@ export const userGuideSections = [
                         <tr><td><span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE09E;</span>복제 / <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE18E;</span>삭제</td><td><kbd>D</kbd> / <kbd>Delete</kbd></td></tr>
                         <tr><td><span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE19B;</span>실행 취소 / <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE143;</span>다시 실행</td><td><kbd>Ctrl + Z</kbd> / <kbd>Ctrl + Shift + Z</kbd></td></tr>
                         <tr><td><span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE247;</span>프로젝트 열기 / <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE14D;</span>저장</td><td><kbd>Ctrl + O</kbd> / <kbd>Ctrl + S</kbd></td></tr>
+                        <tr><td>다른 이름으로 저장</td><td><kbd>Ctrl + Shift + S</kbd></td></tr>
                         <tr><td>소환 명령어 / 설정</td><td><kbd>E</kbd> / <kbd>Tab</kbd></td></tr>
                         <tr><td>씬 항목 이름 변경 / 셰이딩 전환</td><td><kbd>F2</kbd> / <kbd>L</kbd></td></tr>
                     </tbody></table>

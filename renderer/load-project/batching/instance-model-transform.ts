@@ -17,9 +17,9 @@ export function setInstanceModelTransform(mesh: InstancedMesh, instanceId: numbe
     attribute.needsUpdate = true;
 }
 
-export function getInstanceModelTransform(mesh: InstancedMesh, instanceId: number): Matrix4 {
+export function getInstanceModelTransform(mesh: InstancedMesh, instanceId: number, out = new Matrix4()): Matrix4 {
     const attribute = mesh.geometry.getAttribute(attributeName);
-    return attribute ? new Matrix4().fromArray(attribute.array, instanceId * 16) : new Matrix4();
+    return attribute ? out.fromArray(attribute.array, instanceId * 16) : out.identity();
 }
 
 export function removeInstanceModelTransform(mesh: InstancedMesh, instanceId: number, matrix: Matrix4): Matrix4 {

@@ -22,9 +22,13 @@ export const shortcutDefinitions = [
   { id: 'redo', category: '기록', label: '다시 실행', defaults: ['Ctrl+Shift+Z', 'Ctrl+Y'] },
   { id: 'previousGizmo', category: '기록', label: '이전 조작 도구', defaults: ['Ctrl+T', 'Ctrl+R'] },
   { id: 'focusSelection', category: '선택', label: '선택 항목에 초점', defaults: ['F'] },
+  { id: 'multiSelect', category: '선택', label: '추가 선택 (클릭)', defaults: ['Shift'] },
+  { id: 'boxSelect', category: '선택', label: '영역 선택 (드래그)', defaults: ['Ctrl'] },
   { id: 'selectAll', category: '선택', label: '전체 선택', defaults: ['Ctrl+A'] },
   { id: 'selectAllObjects', category: '선택', label: '모든 오브젝트 선택', defaults: ['Ctrl+Shift+A'] },
   { id: 'renameSceneItem', category: '선택', label: '씬 항목 이름 변경', defaults: ['F2'] },
+  { id: 'expand', category: '보기', label: '펼치기', defaults: ['ArrowDown'] },
+  { id: 'collapse', category: '보기', label: '접기', defaults: ['ArrowUp'] },
   { id: 'deleteSelection', category: '오브젝트', label: '선택 삭제', defaults: ['Delete', 'Backspace'] },
   { id: 'duplicate', category: '오브젝트', label: '선택 복제', defaults: ['D'] },
   { id: 'copySelection', category: '오브젝트', label: '선택 복사', defaults: ['Ctrl+C'] },
@@ -40,6 +44,11 @@ export const shortcutDefinitions = [
   { id: 'openBlockSearch', category: '열기', label: '블록 창 열기', defaults: [] },
   { id: 'openItemSearch', category: '열기', label: '아이템 창 열기', defaults: [] },
   { id: 'toggleShading', category: '보기', label: '셰이딩 전환', defaults: ['L'] },
+  { id: 'animationPlay', category: '애니메이션', label: '애니메이션 재생/일시정지', defaults: ['Space'] },
+  { id: 'animationPreviousTick', category: '애니메이션', label: '1틱 뒤로 이동', defaults: ['ArrowLeft'] },
+  { id: 'animationNextTick', category: '애니메이션', label: '1틱 앞으로 이동', defaults: ['ArrowRight'] },
+  { id: 'animationPreviousKey', category: '애니메이션', label: '이전 키프레임', defaults: ['Ctrl+ArrowLeft'] },
+  { id: 'animationNextKey', category: '애니메이션', label: '다음 키프레임', defaults: ['Ctrl+ArrowRight'] },
 ] as const;
 
 export type ShortcutId = typeof shortcutDefinitions[number]['id'];
@@ -59,7 +68,14 @@ export function shortcutFromKeys(keys: Iterable<string>): string {
   return [...modifiers, ...[...values].sort()].join('+');
 }
 
-window.addEventListener('keydown', event => pressedKeys.add(normalizeShortcutKey(event.key)), true);
+window.addEventListener('keydown', event => {
+  const target = event.target as HTMLElement;
+  if (event.isComposing || target?.closest?.('input, textarea, select, [contenteditable]')) {
+    pressedKeys.clear();
+    return;
+  }
+  pressedKeys.add(normalizeShortcutKey(event.key));
+}, true);
 window.addEventListener('keyup', event => pressedKeys.delete(normalizeShortcutKey(event.key)), true);
 window.addEventListener('blur', () => pressedKeys.clear());
 
@@ -112,16 +128,38 @@ export function shortcutFromEvent(event: KeyboardEvent): string {
   return shortcutFromKeys(keys);
 }
 
+function matchesShortcutKeys(keys: Set<string>, id: ShortcutId): boolean {
+  if (getShortcuts(id).includes(shortcutFromKeys(keys))) return true;
+  const combinedId = id === 'editPivot' ? 'fineAdjust' : id === 'fineAdjust' ? 'editPivot' : null;
+  return combinedId !== null && getShortcuts(id).some(shortcut => {
+    const requiredKeys = shortcut.split('+');
+    if (!requiredKeys.every(key => keys.has(key))) return false;
+    return getShortcuts(combinedId).some(combined => {
+      const allowedKeys = new Set([...requiredKeys, ...combined.split('+')]);
+      return [...keys].every(key => allowedKeys.has(key));
+    });
+  });
+}
+
 export function matchesShortcut(event: KeyboardEvent, id: ShortcutId): boolean {
   const keys = new Set(pressedKeys);
+  if (event.ctrlKey || event.metaKey) keys.add('Ctrl');
+  if (event.altKey) keys.add('Alt');
+  if (event.shiftKey) keys.add('Shift');
   keys.add(normalizeShortcutKey(event.key));
-  const key = shortcutFromKeys(keys);
-  return getShortcuts(id).includes(key);
+  return matchesShortcutKeys(keys, id);
+}
+
+export function matchesPointerShortcut(event: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean }, id: ShortcutId): boolean {
+  const keys = new Set([...pressedKeys].filter(key => key !== 'Ctrl' && key !== 'Alt' && key !== 'Shift'));
+  if (event.ctrlKey || event.metaKey) keys.add('Ctrl');
+  if (event.altKey) keys.add('Alt');
+  if (event.shiftKey) keys.add('Shift');
+  return getShortcuts(id).some(shortcut => shortcut.split('+').every(key => keys.has(key)));
 }
 
 export function isShortcutPressed(id: ShortcutId): boolean {
-  const key = shortcutFromKeys(pressedKeys);
-  return getShortcuts(id).includes(key);
+  return matchesShortcutKeys(pressedKeys, id);
 }
 
 if (import.meta.env.DEV) {

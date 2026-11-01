@@ -38,6 +38,8 @@ let layout = restorePanelLayout(localStorage.getItem('panel-layout'), fallbackLa
 function applyLayout(): void {
     mainContent.style.left = docks.left.classList.contains('empty') ? '0' : `${docks.left.offsetWidth}px`;
     mainContent.style.right = docks.right.classList.contains('empty') ? '0' : `${docks.right.offsetWidth}px`;
+    document.body.style.setProperty('--panel-dock-left-width', mainContent.style.left);
+    document.body.style.setProperty('--panel-dock-right-width', mainContent.style.right);
     Object.values(docks).forEach(syncDockResizer);
     if (!resizeFrame) resizeFrame = requestAnimationFrame(() => {
         resizeFrame = 0;

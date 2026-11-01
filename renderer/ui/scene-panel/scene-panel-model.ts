@@ -19,6 +19,12 @@ export function cleanLabel(rawName: string): string {
         .trim();
 }
 
+export function getObjectLabel(ud: LoadedObjectUserData, uuid: string): string | undefined {
+    const label = ud.objectLabels?.get(uuid);
+    // Older projects store the automatic text name as a label shared by every animation frame.
+    return label === 'text_display' && !ud.objectTextDisplayOptions?.has(uuid) ? undefined : label;
+}
+
 export function resolveChildObjectUuid(child: GroupChild, ud: LoadedObjectUserData): string | null {
     if (child.type !== 'object') return null;
     if (child.id) return child.id;

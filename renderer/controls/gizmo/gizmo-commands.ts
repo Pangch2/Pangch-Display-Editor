@@ -84,7 +84,9 @@ export function createGroupCommand(
         }
     }
 
-    const newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition, primaryId);
+    let newGroupId: string;
+    try { newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition, primaryId); }
+    catch (error) { window.alert(error instanceof Error ? error.message : String(error)); return undefined; }
 
     callbacks.invalidateSelectionCaches();
     callbacks.applySelection(null, [], newGroupId);

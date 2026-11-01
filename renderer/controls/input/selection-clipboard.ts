@@ -9,6 +9,7 @@ import { getGroups, getObjectToGroup, type SceneOrderEntry } from '../grouping/g
 import type { SelectionState } from '../selection/select';
 import { captureHistoryUiState, restoreHistoryUiState, recordCreationChange, refreshHistory } from '../undo-redo/scene-history';
 import { prepareMcfunctionFiles, type PreparedSceneFile } from '../../load-project/mcfunction/mcfunction-import';
+import { assertAnimationParentsInvertible, captureAnimationSnapshot, rebaseAnimationStructure } from '../../animation/animation-state';
 
 let projectRevision = 0;
 let commands = Promise.resolve();
@@ -110,6 +111,7 @@ function mergeSelectionFiles(targets: string[], readFiles: () => Promise<Prepare
         try {
             const files = await readFiles();
             if (canceled || !files.length) return;
+            assertAnimationParentsInvertible(loadedObjectGroup, targets);
             for (const targetId of targets.length ? targets : [null]) {
               for (const { file, expectedObjects } of files) {
                 if (targetId && !groups.has(targetId)) throw new Error('붙여넣을 그룹이 사라졌습니다.');
@@ -126,6 +128,7 @@ function mergeSelectionFiles(targets: string[], readFiles: () => Promise<Prepare
                 const target = targetId ? groups.get(targetId) : undefined;
                 if (targetId && !target) throw new Error('붙여넣을 그룹이 사라졌습니다.');
                 const objectToGroup = getObjectToGroup(loadedObjectGroup);
+                const animationBefore = target ? captureAnimationSnapshot(loadedObjectGroup) : undefined;
                 for (const entry of entries) {
                     if (entry.type === 'group') {
                         if (target) {
@@ -147,6 +150,7 @@ function mergeSelectionFiles(targets: string[], readFiles: () => Promise<Prepare
                 if (target) {
                     const attachedIds = new Set(entries.map(entry => entry.id));
                     data.sceneOrder = data.sceneOrder.filter((entry: SceneOrderEntry) => !attachedIds.has(entry.id));
+                    rebaseAnimationStructure(loadedObjectGroup, animationBefore);
                 }
               }
             }

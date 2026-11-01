@@ -8,6 +8,10 @@ import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-h
 type UvPlan = ReturnType<typeof planUvTransforms>;
 const originalPartMaterials = new WeakMap<object, { materials: Material[]; groups: BufferGeometry['groups'] }>();
 
+export function getAtlasPartMaterials(geometry: BufferGeometry): Material[] {
+    return originalPartMaterials.get(geometry.userData.atlasPartFallback)?.materials ?? [];
+}
+
 export async function getAtlasPartMaterial(parts: GeometryMeta[], uvPlan: UvPlan, tintParts: number[], gen: number, instanceCount: number): Promise<Material | undefined> {
     // Multiple instances must retain part-major drawing: coincident surfaces
     // can otherwise change color. Blended and special materials also stay put.

@@ -83,11 +83,13 @@ export function reflectGroups(loadedObjectGroup: Group, groupIds: Set<string>, a
     const groups = GroupUtils.getGroups(loadedObjectGroup);
     const reflectedIds = new Set(groupIds);
     groupIds.forEach(id => GroupUtils.getAllDescendantGroups(loadedObjectGroup, id).forEach(childId => reflectedIds.add(childId)));
-    const defaultPivots = new Map([...reflectedIds].flatMap(id => {
+    const pivots = new Map([...reflectedIds].flatMap(id => {
         const group = groups.get(id);
-        return group && !GroupUtils.shouldUseGroupPivot(group)
-            ? [[id, group.children.length > 0 ? Overlay.getGroupOriginWorld(id) : group.position.clone()] as const]
-            : [];
+        if (!group) return [];
+        const pivot = GroupUtils.shouldUseGroupPivot(group)
+            ? GroupUtils.normalizePivotToVector3(group.pivot)
+            : group.children.length > 0 ? Overlay.getGroupOriginWorld(id) : group.position.clone();
+        return pivot ? [[id, pivot] as const] : [];
     }));
     const worldReflection = getWorldReflection(axis, pivotWorld);
     const originReflection = getWorldReflection(axis, originPivotWorld);
@@ -101,7 +103,7 @@ export function reflectGroups(loadedObjectGroup: Group, groupIds: Set<string>, a
     for (const id of reflectedIds) {
         const group = groups.get(id);
         if (!group?.matrix) continue;
-        group.pivot = defaultPivots.get(id)?.applyMatrix4(originReflection) ?? group.pivot;
+        group.pivot = pivots.get(id)?.applyMatrix4(originReflection) ?? group.pivot;
         group.matrix.multiply(localReflection).decompose(group.position, group.quaternion, group.scale);
     }
 }
@@ -175,7 +177,7 @@ export async function flipObjectUuids(
             const inverseWorld = inverseWorldMatrices.get(ref.mesh) ?? ref.mesh.matrixWorld.clone().invert();
             inverseWorldMatrices.set(ref.mesh, inverseWorld);
             reflectDisplayMatrix(matrix, ref.mesh, ref.instanceId, axis, objectPivotWorld, activePivotMode === 'center', inverseWorld);
-            reflectCustomPivot(ref.mesh, ref.instanceId, axis, objectPivotWorld, previousMatrix, matrix);
+            reflectCustomPivot(ref.mesh, ref.instanceId, axis, centeredPivotWorld ?? objectPivotWorld, previousMatrix, matrix);
             ref.mesh.setMatrixAt(ref.instanceId, matrix);
             dirtyMeshes.add(ref.mesh);
 

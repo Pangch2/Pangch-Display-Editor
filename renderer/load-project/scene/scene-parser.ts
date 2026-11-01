@@ -1,4 +1,4 @@
-import { decodeProject, type PdeEditorState } from '../../save/pde-format';
+import type { PdeEditorState, PdeProject } from '../../save/pde-format';
 import { Euler, MathUtils, Matrix3, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import { buildTextureAtlasForRenderList } from './texture-atlas-builder';
 import type { TexturePixelData } from './texture-atlas-builder';
@@ -8,6 +8,7 @@ import type { GroupData as ParserGroupData } from '../pbde/pbde-types';
 import { applyModelTransform, relativeModelTransform } from '../batching/geometry-batching';
 import { resolveItemModelParts, type ItemModelPart } from './item-model-definition';
 import { parseSnbt } from '../../export/snbt';
+import pLimit from 'p-limit';
 
 interface ResolvedModel {
     id: string;
@@ -202,7 +203,7 @@ export interface ParsedPbdeProject {
         geometryBatches?: any[];
         otherItems: any[];
         useUint32Indices: boolean;
-        atlas: { key: string; width: number; height: number; data: Uint8ClampedArray } | null;
+        atlas: { key: string; width: number; height: number; data: Uint8ClampedArray<ArrayBuffer> } | null;
         groups: Map<string, ParserGroupData>;
         sceneOrder: { type: 'group' | 'object'; id: string }[];
         editorState?: PdeEditorState;
@@ -1877,18 +1878,16 @@ function resetWorkerCaches(options: { clearCanvas?: boolean } = {}) {
 
 // --- 원본 워커 흐름 제어 로직 ---
 
-function generateUUID() {
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-        return crypto.randomUUID();
-    }
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-    });
-}
-
 let groups = new Map<string, ParserGroupData>();
 let sceneOrder: { rootIndex: number, type: 'group' | 'object', id: string }[] = [];
+
+type SceneNodeFrame = {
+    nodes: any[];
+    index: number;
+    transform: Float32Array | number[];
+    groupId: string | null;
+    refs: any;
+};
 
 // 두 개의 4x4 행렬을 곱해 누적 변환을 계산한다.
 function apply_transforms(parent: Float32Array | number[], child: Float32Array | number[]) {
@@ -1912,15 +1911,16 @@ function split_children(children: any): any[] {
 }
 
 function collectTemplateNames(nodes: any[], itemNames: Set<string>, blockNames: Map<string, { name: string; nbt?: string }>): void {
-    for (const node of nodes) {
-        if (node?.isBlockDisplay) {
-            blockNames.set(blockTemplateKey(node), { name: String(node.name || ''), nbt: node.nbt });
-        } else if (node?.isItemDisplay && typeof node.name === 'string' && !node.name.startsWith('player_head')) {
-            itemNames.add(node.name);
-        }
+    const stack = [nodes];
+    while (stack.length) {
+        for (const node of stack.pop()!) {
+            if (node?.isBlockDisplay) {
+                blockNames.set(blockTemplateKey(node), { name: String(node.name || ''), nbt: node.nbt });
+            } else if (node?.isItemDisplay && typeof node.name === 'string' && !node.name.startsWith('player_head')) {
+                itemNames.add(node.name);
+            }
 
-        if (Array.isArray(node?.children)) {
-            collectTemplateNames(node.children, itemNames, blockNames);
+            if (Array.isArray(node?.children) && node.children.length) stack.push(node.children);
         }
     }
 }
@@ -1930,14 +1930,14 @@ async function prepareSceneTemplates(nodes: any[]): Promise<void> {
     const blockNames = new Map<string, { name: string; nbt?: string }>();
     collectTemplateNames(nodes, itemNames, blockNames);
 
+    const prepare = pLimit(512);
     await Promise.all([
-        ...Array.from(blockNames.values(), item => prepareBlockDisplayTemplate(item)),
-        ...Array.from(itemNames, name => prepareItemModelTemplate(name))
+        ...Array.from(blockNames.values(), item => prepare(() => prepareBlockDisplayTemplate(item))),
+        ...Array.from(itemNames, name => prepare(() => prepareItemModelTemplate(name)))
     ]);
 }
 
-// 씬 그래프 노드를 재귀적으로 순회하며 렌더 항목을 만든다.
-function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null, renderItems: RenderItem[], inheritedRefs?: any, pdeFormatVersion?: number): void {
+function processNode(node: any, parentTransform: Float32Array | number[], parentGroupId: string | null, renderItems: RenderItem[], stack: SceneNodeFrame[], inheritedRefs?: any, pdeFormatVersion?: number): void {
     const refs = node.refs ?? inheritedRefs;
     const localTransform = (Array.isArray(node.transforms) || ArrayBuffer.isView(node.transforms))
         ? node.transforms
@@ -1947,7 +1947,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
     let currentGroupId = parentGroupId;
 
     if (node.isCollection) {
-        const newGroupId = pdeFormatVersion === 1 ? node.uuid : generateUUID();
+        const newGroupId = pdeFormatVersion === 1 ? node.uuid : MathUtils.generateUUID();
 
         const m = new Matrix4().fromArray(worldTransform).transpose();
         const position = new Vector3();
@@ -1995,7 +1995,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             modelData.nbt = node.nbt;
             modelData.brightness = node.brightness;
             
-            const uuid = typeof node.uuid === 'string' ? node.uuid : generateUUID();
+            const uuid = typeof node.uuid === 'string' ? node.uuid : MathUtils.generateUUID();
             (modelData as any).uuid = uuid;
             (modelData as any).groupId = currentGroupId;
             
@@ -2068,7 +2068,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             }
             itemData.textureUrl = textureUrl || defaultTextureValue;
 
-            const uuid = typeof node.uuid === 'string' ? node.uuid : generateUUID();
+            const uuid = typeof node.uuid === 'string' ? node.uuid : MathUtils.generateUUID();
             itemData.uuid = uuid;
             itemData.groupId = currentGroupId;
             if (currentGroupId) {
@@ -2090,7 +2090,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
                 modelDisplay.nbt = node.nbt;
                 modelDisplay.brightness = node.brightness;
 
-                const uuid = typeof node.uuid === 'string' ? node.uuid : generateUUID();
+                const uuid = typeof node.uuid === 'string' ? node.uuid : MathUtils.generateUUID();
                 (modelDisplay as any).uuid = uuid;
                 (modelDisplay as any).groupId = currentGroupId;
                 if (currentGroupId) {
@@ -2111,7 +2111,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
                     brightness: node.brightness
                 };
 
-                const uuid = typeof node.uuid === 'string' ? node.uuid : generateUUID();
+                const uuid = typeof node.uuid === 'string' ? node.uuid : MathUtils.generateUUID();
                 itemData.uuid = uuid;
                 itemData.groupId = currentGroupId;
                 if (currentGroupId) {
@@ -2132,7 +2132,7 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
             nbt: node.nbt,
             options: node.options,
             brightness: node.brightness,
-            uuid: typeof node.uuid === 'string' ? node.uuid : generateUUID(),
+            uuid: typeof node.uuid === 'string' ? node.uuid : MathUtils.generateUUID(),
             groupId: currentGroupId
         };
         if (currentGroupId) {
@@ -2144,13 +2144,12 @@ function processNode(node: any, parentTransform: Float32Array | number[], parent
     }
 
     if (node.children) {
-        for (const child of node.children) {
-            processNode(child, worldTransform, currentGroupId, renderItems, refs, pdeFormatVersion);
-        }
+        if (!Array.isArray(node.children)) throw new Error('Invalid scene children.');
+        if (node.children.length) stack.push({ nodes: node.children, index: 0, transform: worldTransform, groupId: currentGroupId, refs });
     }
 }
 
-export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, provider: PbdeAssetProvider): Promise<ParsedPbdeProject> {
+export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array | Pick<PdeProject, 'children'>, provider: PbdeAssetProvider): Promise<ParsedPbdeProject> {
     resetWorkerCaches({ clearCanvas: true });
     initializeAssetProvider(provider);
     groups = new Map();
@@ -2159,7 +2158,8 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
 
     try {
         const archiveStartMs = performance.now();
-        const project = decodeProject(fileContent);
+        const project = fileContent instanceof ArrayBuffer || fileContent instanceof Uint8Array
+            ? (await import('../../save/pde-format')).decodeProject(fileContent) : fileContent;
         const archiveElapsedMs = performance.now() - archiveStartMs;
 
         // 렌더링에 필요한 필드만 남기도록 씬 트리를 단순화한다.
@@ -2167,8 +2167,6 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
         const processedChildren = split_children(project.children);
 
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-        // 루트 자식 노드를 병렬로 처리해 렌더 항목을 구성한다.
-        // 루트 노드에 순서 인덱스를 태깅한 뒤 병렬 처리한다.
         processedChildren.forEach((node: any, i: number) => { node._rootIndex = i; });
         const scenePrepStartMs = performance.now();
         await prepareSceneTemplates(processedChildren);
@@ -2176,8 +2174,14 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array, pr
 
         const sceneTraverseStartMs = performance.now();
         const renderList: RenderItem[] = [];
-        for (const node of processedChildren) {
-            processNode(node, identityMatrix, null, renderList, project.refs, project.pdeFormatVersion);
+        const stack: SceneNodeFrame[] = [{ nodes: processedChildren, index: 0, transform: identityMatrix, groupId: null, refs: project.refs }];
+        while (stack.length) {
+            const frame = stack[stack.length - 1];
+            if (frame.index === frame.nodes.length) {
+                stack.pop();
+                continue;
+            }
+            processNode(frame.nodes[frame.index++], frame.transform, frame.groupId, renderList, stack, frame.refs, project.pdeFormatVersion);
         }
         const sceneTraverseElapsedMs = performance.now() - sceneTraverseStartMs;
 

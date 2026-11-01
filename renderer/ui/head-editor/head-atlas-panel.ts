@@ -1,5 +1,6 @@
-import { capturePlayerHeadAtlasState, commitPlayerHeadPaint, getPlayerHeadAtlasFaces, restorePlayerHeadAtlasState, type PlayerHeadAtlasFace } from '../../load-project/display/mesh-builder';
-import { isApplying, record, redo, undo } from '../../controls/undo-redo/undo-redo';
+import { capturePlayerHeadAtlasState, commitPlayerHeadPaint, getPlayerHeadAtlasFaces, loadedObjectGroup, restorePlayerHeadAtlasState, type PlayerHeadAtlasFace } from '../../load-project/display/mesh-builder';
+import { recordStateChange } from '../../controls/undo-redo/scene-history';
+import { isApplying, redo, undo } from '../../controls/undo-redo/undo-redo';
 import { getShortcuts, matchesShortcut } from '../../controls/input/shortcuts';
 import { getHeadAtlasUvRect, setHeadAtlasUvRect, transformHeadUvRect, type HeadUvRect } from './head-atlas-uv';
 import { openAtlasColorReplace } from './atlas-color-replace';
@@ -429,7 +430,12 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
                 entries[0].face.surfaces[0].texture.needsUpdate = true;
                 window.dispatchEvent(new Event('pde:scene-updated'));
             };
-            record({ undo: () => apply(before, pixelsBefore, originals, registryBefore, nextKeys, originalKeys), redo: () => apply(after, pixelsAfter, destination, registryAfter, originalKeys, nextKeys) });
+            recordStateChange({
+                before: false, after: true,
+                apply: changed => changed ? apply(after, pixelsAfter, destination, registryAfter, originalKeys, nextKeys)
+                    : apply(before, pixelsBefore, originals, registryBefore, nextKeys, originalKeys),
+                animation: { root: loadedObjectGroup, targets: [] }
+            });
             window.dispatchEvent(new Event('pde:scene-updated'));
         };
         return { move, finish };
@@ -796,6 +802,10 @@ playerHeadAtlasScroll.addEventListener('wheel', event => {
 }, { passive: false });
 
 window.addEventListener('pde:scene-updated', () => {
+    if (!cancelUvDrag) refreshUvEditor();
+    refreshPlayerHeadAtlasThumbnails();
+});
+window.addEventListener('pde:animation-textures-updated', () => {
     if (!cancelUvDrag) refreshUvEditor();
     refreshPlayerHeadAtlasThumbnails();
 });

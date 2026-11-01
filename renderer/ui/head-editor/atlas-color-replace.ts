@@ -1,6 +1,6 @@
 import { closeColorPicker, hexToRgb, openColorPicker, oklchToRgb, rgbToHex, rgbToOklch, type RgbColor } from '../common/color-picker';
-import { capturePlayerHeadAtlasState, commitPlayerHeadPaint, getPlayerHeadAtlasFaces, restorePlayerHeadAtlasState } from '../../load-project/display/mesh-builder';
-import { record } from '../../controls/undo-redo/undo-redo';
+import { capturePlayerHeadAtlasState, commitPlayerHeadPaint, getPlayerHeadAtlasFaces, loadedObjectGroup, restorePlayerHeadAtlasState } from '../../load-project/display/mesh-builder';
+import { recordStateChange } from '../../controls/undo-redo/scene-history';
 import { getHeadAtlasUvRect, type HeadUvRect } from './head-atlas-uv';
 import { openWithAnimation, closeWithAnimation } from '../common/ui-open-close.js';
 
@@ -72,7 +72,11 @@ export function applyAtlasColorReplace(canvas: HTMLCanvasElement, rects: readonl
             context.putImageData(pixels, 0, 0);
             refresh();
         };
-        record({ undo: () => apply(before, colorsBefore), redo: () => apply(after, colorsAfter) });
+        recordStateChange({
+            before: false, after: true,
+            apply: changed => changed ? apply(after, colorsAfter) : apply(before, colorsBefore),
+            animation: { root: loadedObjectGroup, targets: [] }
+        });
     } catch (error) {
         restorePlayerHeadAtlasState(before);
         context.putImageData(pixelsBefore, 0, 0);
@@ -87,6 +91,7 @@ let overlay: HTMLElement | null = null;
 let cancelReplace: (() => void) | null = null;
 let source: RgbColor = [0, 0, 0];
 let target: RgbColor = [0, 0, 0];
+let tolerance = '0';
 window.addEventListener('keydown', event => {
     if (!overlay || overlay.hidden) return;
     event.stopImmediatePropagation();
@@ -137,6 +142,9 @@ export function openAtlasColorReplace(canvas: HTMLCanvasElement, selection: read
     const targetButton = root.querySelector<HTMLButtonElement>('[data-target]')!;
     const sourceInput = root.querySelector<HTMLInputElement>('[data-source-color]')!;
     const targetInput = root.querySelector<HTMLInputElement>('[data-target-color]')!;
+    const toleranceInput = root.querySelector<HTMLInputElement>('[data-tolerance]')!;
+    toleranceInput.value = tolerance;
+    toleranceInput.oninput = () => { if (toleranceInput.validity.valid) tolerance = toleranceInput.value; };
     const sync = () => {
         for (const [button, input, color] of [[sourceButton, sourceInput, source], [targetButton, targetInput, target]] as const) {
             input.value = rgbToHex(color);
@@ -165,7 +173,7 @@ export function openAtlasColorReplace(canvas: HTMLCanvasElement, selection: read
     root.querySelector<HTMLButtonElement>('.settings-close')!.onclick = close;
     root.querySelector('form')!.onsubmit = event => {
         event.preventDefault();
-        try { applyAtlasColorReplace(canvas, rects, source, target, Number(root.querySelector<HTMLInputElement>('[data-tolerance]')!.value)); close(); }
+        try { applyAtlasColorReplace(canvas, rects, source, target, Number(toleranceInput.value)); close(); }
         catch (error) { root.querySelector('[role="status"]')!.textContent = `색상 교체 실패: ${String(error)}`; }
     };
     document.body.append(root);

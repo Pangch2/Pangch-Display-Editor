@@ -1,7 +1,7 @@
 import { loadedObjectGroup } from '../load-project/display/display-instancing';
 import { encodePdeProject } from './pde-format';
 import { serializeProject } from './project-state';
-import { flushProjectEdits } from './pending-edits';
+import { commitFocusedProjectEdit, flushProjectEdits } from './pending-edits';
 
 let activeProjectId: string | undefined;
 let projectRevision = 0;
@@ -13,17 +13,17 @@ window.addEventListener('pde:active-project-changed', (event: CustomEvent<string
     window.ipcApi.setActiveProject?.(activeProjectId);
 });
 
-export async function saveProject(): Promise<boolean> {
+export async function saveProject(saveAs = false): Promise<boolean> {
     if (saving || !activeProjectId) return false;
     saving = true;
     const id = activeProjectId;
     const revision = projectRevision;
     try {
-        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        commitFocusedProjectEdit();
         await flushProjectEdits();
         if (revision !== projectRevision) return false;
         const project = serializeProject(loadedObjectGroup);
-        const result = await window.ipcApi.saveProject(id, project.name, encodePdeProject(project));
+        const result = await window.ipcApi.saveProject(id, project.name, encodePdeProject(project), saveAs);
         if (!result.success && !result.canceled) throw new Error(result.error ?? '파일을 저장할 수 없습니다.');
         return result.success && revision === projectRevision;
     } catch (error) {
@@ -34,8 +34,8 @@ export async function saveProject(): Promise<boolean> {
 
 window.addEventListener('keydown', event => {
     if (document.querySelector('dialog[open], .settings-overlay:not([hidden])')) return;
-    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 's') return;
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 's') return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (!event.repeat && !event.isComposing) void saveProject();
+    if (!event.repeat && !event.isComposing) void saveProject(event.shiftKey);
 }, true);
