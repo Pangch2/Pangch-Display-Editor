@@ -318,10 +318,10 @@
   appearance: none;
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid #45454a;
-  border-radius: 3px;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
   padding: 3px 5px;
-  background: #1e1e21;
+  background: var(--ui-control-bg);
   color: #f0f0f0;
   font: inherit;
   white-space: nowrap;
@@ -619,10 +619,10 @@
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  border: 1px solid #45454a;
-  border-radius: 3px;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
   padding: 3px 4px;
-  background: #1e1e21;
+  background: var(--ui-control-bg);
   color: #f0f0f0;
   font: inherit;
   user-select: text;
@@ -825,9 +825,9 @@
 }
 
 .object-property .text-display-effect:has(input:checked) {
-  border-color: #69b7ff;
-  background: #69b7ff;
-  color: #111;
+  border-color: var(--ui-accent);
+  background: var(--ui-selected-bg);
+  color: var(--ui-accent);
 }
 
 .object-property .text-display-effect input {

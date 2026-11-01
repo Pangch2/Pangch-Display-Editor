@@ -283,19 +283,6 @@
   font-weight: 500;
 }
 
-.summon-command-window .settings-close {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border-radius: 3px;
-  color: #aaa;
-}
-
-.summon-command-window .settings-close:hover {
-  background: #3b3b40;
-  color: #f0f0f0;
-}
-
 .summon-command-window::backdrop {
   background: #0009;
 }
@@ -532,10 +519,23 @@
 }
 
 .settings-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: 0;
+  border-radius: var(--ui-control-radius);
   background: transparent;
   font-size: 24px;
+  line-height: 1;
   cursor: pointer;
+}
+
+.settings-close:hover:not(:disabled) {
+  background: var(--ui-control-hover);
+  color: #f0f0f0;
 }
 
 .settings-body {
@@ -566,9 +566,14 @@
   cursor: pointer;
 }
 
-.settings-nav button:hover:not(:disabled),
+.settings-nav button:hover:not(:disabled, .active) {
+  background: var(--ui-control-hover);
+}
+
 .settings-nav button.active {
-  background: #3b3b40;
+  background: var(--ui-selected-bg);
+  box-shadow: inset 2px 0 var(--ui-accent);
+  color: var(--ui-accent);
 }
 
 .settings-nav button:disabled {
@@ -812,9 +817,10 @@
   flex: 1;
   min-width: 0;
   padding: 6px 8px;
-  border: 1px solid #45454a;
-  border-radius: 4px;
-  background: #1e1e1e;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  background: var(--ui-control-bg);
+  font: inherit;
 }
 
 #scene-object-types {
@@ -828,9 +834,10 @@
 .settings-row > input[type='text'] {
   min-width: 0;
   padding: 6px 8px;
-  border: 1px solid #45454a;
-  border-radius: 4px;
-  background: #1e1e1e;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  background: var(--ui-control-bg);
+  font: inherit;
 }
 
 .settings-range output {
@@ -1002,10 +1009,11 @@
 .settings-mineskin-row input {
   min-width: 0;
   padding: 6px 8px;
-  border: 1px solid #55555a;
-  border-radius: 4px;
-  background: #252528;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  background: var(--ui-control-bg);
   color: inherit;
+  font: inherit;
 }
 
 .settings-account-face {
@@ -1026,16 +1034,11 @@
 .settings-mineskin-add {
   width: 32px;
   height: 32px;
-  border: 1px solid #55555a;
-  border-radius: 4px;
-  background: #343438;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  background: var(--ui-control-bg);
   color: inherit;
   cursor: pointer;
-}
-
-.settings-head-accounts :focus-visible {
-  outline: 2px solid #6ba5ff;
-  outline-offset: 2px;
 }
 
 .settings-account-row :disabled,
@@ -1048,10 +1051,16 @@
 #auto-save-open-folder {
   justify-self: start;
   padding: 7px 14px;
-  border: 1px solid #55555a;
-  border-radius: 4px;
-  background: #343438;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  background: var(--ui-control-bg);
+  font: inherit;
   cursor: pointer;
+}
+
+:is(.settings-account-remove, .settings-mineskin-row button, .settings-mineskin-add,
+    .settings-login, #auto-save-open-folder):hover:not(:disabled) {
+  background: var(--ui-control-hover);
 }
 
 .block-item-search {

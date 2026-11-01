@@ -98,17 +98,23 @@
 }
 
 .project-ui-button {
-  background-color: #3c3c3c;
-  border: 1px solid #555;
+  background-color: var(--ui-control-bg);
+  border: 1px solid var(--ui-control-border);
   color: #f0f0f0;
   padding: 5px 10px;
-  border-radius: 3px;
+  border-radius: var(--ui-control-radius);
   cursor: pointer;
+  font-family: inherit;
   font-size: 14px;
 }
 
-.project-ui-button:hover {
-  background-color: #4f4f4f;
+.project-ui-button:hover:not(:disabled) {
+  background-color: var(--ui-control-hover);
+}
+
+.project-ui-button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .welcome-overlay[open] {
@@ -202,12 +208,6 @@
 .welcome-start img {
   width: 24px;
   height: 24px;
-}
-
-.welcome-start:disabled {
-  opacity: 0.4;
-  cursor: default;
-  background: #3c3c3c;
 }
 
 .welcome-error {

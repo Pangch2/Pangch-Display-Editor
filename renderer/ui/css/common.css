@@ -17,6 +17,14 @@
 /* ----- 기본 설정 ----- */
 body {
   --menu-bar-height: 28.8px;
+  --ui-control-bg: #1e1e21;
+  --ui-control-border: #45454a;
+  --ui-control-hover: #3b3b40;
+  --ui-control-radius: 3px;
+  --ui-accent: #70c7ff;
+  --ui-selected-bg: #344551;
+  color-scheme: dark;
+  accent-color: var(--ui-accent);
   margin: 0;
   overflow: hidden;
   background: #1e1e1e;
@@ -42,17 +50,21 @@ input[type="number"]:hover::-webkit-inner-spin-button {
 
 .pde-input {
   box-sizing: border-box;
-  border: 1px solid #45454a;
-  border-radius: 3px;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
   padding: 3px 5px;
-  background: #1e1e21;
+  background: var(--ui-control-bg);
   color: #f0f0f0;
   font: inherit;
 }
 
-:focus,
-:focus-visible {
+:focus:not(:focus-visible) {
   outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
 }
 
 canvas {

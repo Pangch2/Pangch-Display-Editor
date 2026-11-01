@@ -24,14 +24,14 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-timing { justify-self: end; justify-content: flex-end; }
 :is(.animation-controls, .animation-tools) label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .animation-controls input { width: 62px; font-variant-numeric: tabular-nums; }
-:is(.animation-controls, .animation-tools) button { color: inherit; background: #303035; border: 1px solid transparent; border-radius: 3px; padding: 4px 8px; cursor: pointer; font: inherit; }
-:is(.animation-controls, .animation-tools) button:hover:not(:disabled) { background: #414149; }
+:is(.animation-controls, .animation-tools) button { color: inherit; background: var(--ui-control-bg); border: 1px solid var(--ui-control-border); border-radius: var(--ui-control-radius); padding: 4px 8px; cursor: pointer; font: inherit; }
+:is(.animation-controls, .animation-tools) button:hover:not(:disabled, [aria-pressed="true"]) { background: var(--ui-control-hover); }
 :is(.animation-controls, .animation-tools) button:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
 :is(.animation-controls, .animation-tools) button:disabled { opacity: .4; cursor: default; }
 .animation-transport { display: flex; gap: 4px; flex: none; }
 .animation-transport button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; font-size: 16px; }
 .animation-transport button.lucide-icon { font-family: 'lucide'; }
-#animation-pause { background: #364d5d; color: #b8e4ff; }
+#animation-pause { background: var(--ui-selected-bg); color: var(--ui-accent); }
 #animation-loop { margin-left: 6px; border-left-color: #505057; }
 .animation-transport button:focus-visible { outline: 1px solid #70c7ff; outline-offset: 2px; }
 .animation-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 4px 12px; flex: none; border-bottom: 1px solid #414149; background: #29292e; }
@@ -94,7 +94,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-key.disconnected.selected { background: #70c7ff; }
 .animation-key.curved { border-radius: 50%; }
 #animation-panel [hidden] { display: none; }
-.animation-controls button[aria-pressed="true"] { border-color: #70c7ff; background: #344551; }
+.animation-controls button[aria-pressed="true"] { border-color: var(--ui-accent); background: var(--ui-selected-bg); color: var(--ui-accent); }
 .animation-tools select { color-scheme: dark; max-width: 130px; font-size: 11px; }
 .animation-graph-row { height: 160px; }
 .animation-graph-row .animation-key { transform: translate(-50%, -50%) rotate(45deg); cursor: move; }
@@ -559,22 +559,25 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
   width: 32px;
   height: 30px;
   padding: 0;
-  border: 1px solid #45454a;
-  border-radius: 3px;
-  background: #252528;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  background: var(--ui-control-bg);
   color: #bbb;
   font: normal 400 18px/1 'lucide';
   cursor: pointer;
 }
 
-.player-head-atlas-tools button:hover,
-.player-head-atlas-tools button[aria-pressed="true"] {
-  border-color: #70c7ff;
-  background: #3a3a3f;
-  color: #fff;
+.player-head-atlas-tools button:hover:not(:disabled, [aria-pressed="true"]) {
+  background: var(--ui-control-hover);
 }
 
-.player-head-atlas-tools button:focus-visible { outline: 2px solid white; }
+.player-head-atlas-tools button[aria-pressed="true"] {
+  border-color: var(--ui-accent);
+  background: var(--ui-selected-bg);
+  color: var(--ui-accent);
+}
+
+.player-head-atlas-tools button:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -2px; }
 .player-head-atlas-tools button:disabled { opacity: 0.4; cursor: default; }
 
 .player-head-uv-selection {
