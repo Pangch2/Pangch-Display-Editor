@@ -225,7 +225,7 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
                 if (!record(clip) || !Array.isArray(clip.tracks)) throw new Error('잘못된 애니메이션 클립입니다.');
                 for (const track of clip.tracks) {
                     if (!record(track)) throw new Error('잘못된 애니메이션 대상입니다.');
-                    track.id = resolve(track.id);
+                    if (track.type !== 'camera') track.id = resolve(track.id);
                 }
                 if (clip.excludedNodes !== undefined) {
                     if (!Array.isArray(clip.excludedNodes)) throw new Error('잘못된 애니메이션 제외 대상입니다.');
@@ -315,7 +315,7 @@ export function encodePdeProject(project: PdeProject): Uint8Array {
     for (const id of hidden) reference(id);
     for (const [id, partner] of mirrors) { reference(id); reference(partner); }
     const animation = project.editorState?.animation;
-    const saveClip = (clip: AnimationClip) => ({ ...clip, tracks: clip.tracks.map(track => ({ ...track, id: reference(track.id) })),
+    const saveClip = (clip: AnimationClip) => ({ ...clip, tracks: clip.tracks.map(track => ({ ...track, id: track.type === 'camera' ? track.id : reference(track.id) })),
         excludedNodes: clip.excludedNodes?.map(reference) });
     const savedAnimation = animation && indexed ? { ...animation, ...saveClip(animation), clips: animation.clips?.map(saveClip) } : animation;
     // Editor links use preorder indices; UUIDs exist only while editing.

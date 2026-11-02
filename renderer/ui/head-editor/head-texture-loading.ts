@@ -33,7 +33,7 @@ export function beginPlayerHeadLoading(): () => void {
     text.className = 'head-texture-loading-text';
     text.setAttribute('role', 'status');
     text.setAttribute('aria-live', 'polite');
-    text.textContent = '팽치가 머리를 옮기는중...';
+    text.textContent = '팽치가 머리를 옮기는중';
     playerHeadOverlay.append(icon, text);
     scene.append(playerHeadOverlay);
   }
@@ -74,7 +74,7 @@ export function createHeadTextureLoading(onCancel: () => void) {
   return {
     cancel: cancelButton,
     show(message: string) {
-      text.textContent = message;
+      text.textContent = message.replace(/\.\.\.$/, '');
       if (!dialog!.open) {
         void window.ipcApi.headTextures.setInputLocked(true).catch(console.error);
         window.dispatchEvent(new Event('blur'));

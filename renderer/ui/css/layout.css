@@ -13,14 +13,13 @@
 }
 
 body.animation-active #main-content { bottom: var(--animation-panel-height, 360px); }
-#animation-panel { position: absolute; inset: auto var(--panel-dock-right-width, 0px) 0 var(--panel-dock-left-width, 0px); height: var(--animation-panel-height, 360px); box-sizing: border-box; z-index: 15; background: #252528; border-top: 1px solid #48484e; color: #ddd; font-size: 12px; display: flex; flex-direction: column; }
+#animation-panel { position: absolute; inset: auto var(--panel-dock-right-width, 0px) 0 var(--panel-dock-left-width, 0px); height: var(--animation-panel-height, 360px); box-sizing: border-box; z-index: 15; background: #252528; border-top: 1px solid #48484e; color: #ddd; font-size: 12px; display: flex; flex-direction: column; container-type: inline-size; }
 #animation-panel[hidden] { display: none; }
 #animation-panel:focus-visible, .animation-resizer:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
 .animation-resizer { touch-action: none; user-select: none; }
 .animation-header { flex: none; max-height: calc(var(--animation-panel-height, 360px) - 74px); overflow: auto; scrollbar-width: thin; }
 .animation-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 6px 12px; flex: none; border-bottom: 1px solid #3a3a3e; }
 .animation-actions, .animation-timing { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
-.animation-actions strong { margin-right: 8px; font-size: 12px; letter-spacing: .04em; }
 .animation-timing { justify-self: end; justify-content: flex-end; }
 :is(.animation-controls, .animation-tools) label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .animation-controls input { width: 62px; font-variant-numeric: tabular-nums; }
@@ -36,14 +35,19 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-transport button:focus-visible { outline: 1px solid #70c7ff; outline-offset: 2px; }
 .animation-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 4px 12px; flex: none; border-bottom: 1px solid #414149; background: #29292e; }
 .animation-tools label { color: #aaaab5; }
-.animation-clip-controls { justify-content: flex-start; }
-.animation-clip-controls > input { width: 130px; }
-.animation-clip-controls select { max-width: 180px; }
-.animation-settings { position: relative; margin-left: auto; }
-.animation-settings summary { cursor: pointer; padding: 4px 6px; }
-.animation-settings-body { position: fixed; bottom: calc(var(--animation-panel-height, 360px) + 8px); right: 12px; width: min(430px, calc(100vw - 32px)); max-height: min(55vh, calc(100vh - var(--animation-panel-height, 360px) - var(--menu-bar-height, 32px) - 20px)); overflow: auto; box-sizing: border-box; padding: 14px; border: 1px solid #60606b; border-radius: 4px; background: #29292e; box-shadow: 0 5px 24px #0008; z-index: 5; display: grid; gap: 10px; }
+.animation-clip-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.animation-clip-controls > label { min-width: 0; }
+.animation-clip-controls > label select { width: 110px; min-width: 0; color-scheme: dark; }
+.animation-settings { position: relative; flex: none; }
+.animation-settings summary { cursor: pointer; padding: 4px 6px; white-space: nowrap; }
+.animation-settings summary:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
+.animation-settings[open] > summary { color: var(--ui-accent); background: var(--ui-selected-bg); }
+.animation-settings:not([open]) > .animation-settings-body { display: none; }
+.animation-settings-body { position: fixed; bottom: 12px; right: calc(var(--panel-dock-right-width, 0px) + 12px); width: min(430px, calc(100vw - var(--panel-dock-left-width, 0px) - var(--panel-dock-right-width, 0px) - 24px)); max-height: calc(100vh - var(--menu-bar-height, 32px) - 32px); overflow: auto; box-sizing: border-box; padding: 14px; border: 1px solid #60606b; border-radius: 4px; background: #29292e; box-shadow: 0 5px 24px #0008; z-index: 5; display: grid; gap: 10px; }
 .animation-settings-body label { justify-content: space-between; gap: 12px; }
 .animation-settings-body input[type=number] { width: 90px; }
+.animation-settings-body #animation-clip-name { width: 200px; max-width: 65%; }
+.animation-settings-body select { max-width: 65%; color-scheme: dark; }
 .animation-settings-body p, .animation-key-values small { color: #aaaab5; margin: 0; font-size: 11px; }
 .animation-settings-body #animation-layers { display: grid; gap: 6px; }
 .animation-settings-body #animation-layers label { justify-content: flex-start; }
@@ -52,15 +56,22 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-layer-timing { padding-left: 24px; }
 .animation-layer-timing [data-layer-starts] { width: 160px; min-width: 0; }
 .animation-layer-timing button { justify-self: start; }
-.animation-key-values { justify-content: flex-start; max-height: 82px; overflow-y: auto; }
-.animation-key-values label input:not([type=checkbox]) { width: 95px; }
-.animation-pre-values { display: flex; gap: 8px; }
-.animation-key-values small { flex-basis: 100%; }
+.animation-workspace { display: flex; flex: 1; min-height: 0; }
+.animation-inspector { order: 1; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; flex-wrap: nowrap; gap: 10px; width: 200px; min-width: 0; box-sizing: border-box; padding: 10px 12px; overflow: auto; border: 0; border-left: 1px solid #414149; scrollbar-width: thin; }
+.animation-inspector > strong { font-size: 11px; color: #a3a3af; }
+.animation-inspector label { justify-content: space-between; }
+.animation-inspector select { width: 130px; min-width: 0; }
+.animation-key-values, .animation-pre-values { display: grid; gap: 8px; }
+.animation-key-values { padding-top: 10px; border-top: 1px solid #414149; }
+.animation-key-values > span { color: #a3a3af; font-size: 11px; }
+.animation-key-values label input:not([type=checkbox]) { width: 120px; min-width: 0; }
+.animation-key-values label:has(input[type=checkbox]) { justify-content: flex-start; }
+.animation-key-values small { line-height: 1.6; }
 .animation-zoom { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .animation-zoom output { min-width: 42px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; color: #aaaab5; }
 .animation-zoom button { white-space: nowrap; }
 #animation-add { color: #9fd5f7; }
-.animation-scroll { overflow-x: scroll; overflow-y: auto; min-height: 72px; flex: 1; contain: paint; color-scheme: dark; }
+.animation-scroll { overflow-x: scroll; overflow-y: auto; min-width: 0; min-height: 28px; flex: 1; contain: paint; color-scheme: dark; }
 .animation-ruler, .animation-row { display: grid; grid-template-columns: 220px var(--animation-timeline-width, 618px); width: max-content; }
 .animation-ruler { height: 28px; position: sticky; top: 0; background: #2c2c30; z-index: 2; }
 .animation-ruler > span { position: sticky; left: 0; z-index: 1; padding: 5px 10px; background: #2c2c30; border-right: 1px solid #48484e; display: flex; justify-content: space-between; align-items: center; }
@@ -84,8 +95,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-visibility { flex: none; order: 1; align-self: center; margin-left: auto; padding: 4px; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .animation-visibility[aria-pressed="false"] { color: #888; }
 .animation-visibility:focus-visible { outline: 1px solid #70c7ff; }
-.animation-target-filter summary { padding: 4px 12px; cursor: pointer; }
-.animation-target-filter .animation-tools { justify-content: flex-start; flex-wrap: wrap; }
+.animation-target-filter summary { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
 .animation-filter-targets { display: flex; flex-wrap: wrap; gap: 4px; max-height: 80px; overflow: auto; }
 .animation-row.selected:not(.animation-graph-row) .animation-part-cell { background: #344551; }
 .animation-key { position: absolute; top: 9px; width: 10px; height: 10px; padding: 0; border: 1px solid #abc4d4; background: #82a1b5; transform: translateX(-50%) rotate(45deg); cursor: ew-resize; touch-action: none; z-index: 1; }
@@ -94,7 +104,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-key.disconnected.selected { background: #70c7ff; }
 .animation-key.curved { border-radius: 50%; }
 #animation-panel [hidden] { display: none; }
-.animation-controls button[aria-pressed="true"] { border-color: var(--ui-accent); background: var(--ui-selected-bg); color: var(--ui-accent); }
+:is(.animation-controls, .animation-tools) button[aria-pressed="true"] { border-color: var(--ui-accent); background: var(--ui-selected-bg); color: var(--ui-accent); }
 .animation-tools select { color-scheme: dark; max-width: 130px; font-size: 11px; }
 .animation-graph-row { height: 160px; }
 .animation-graph-row .animation-key { transform: translate(-50%, -50%) rotate(45deg); cursor: move; }
@@ -114,13 +124,22 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-ruler .animation-playhead::before { content: ''; position: absolute; left: -5px; top: 0; width: 11px; height: 8px; background: #f08172; clip-path: polygon(0 0, 100% 0, 100% 50%, 50% 100%, 0 50%); }
 .animation-end-marker { position: absolute; bottom: 0; width: 6px; height: 8px; border-right: 2px solid #70c7ff; border-bottom: 2px solid #70c7ff; transform: translateX(-100%); }
 .animation-empty { position: sticky; left: 0; width: fit-content; max-width: calc(100% - 32px); margin: 14px 16px; color: #a3a3af; font-size: 11px; }
-@media (max-width: 760px) {
-  .animation-controls { gap: 6px; padding: 4px 8px; }
+@container (max-width: 720px) {
+  .animation-controls { grid-template-columns: 1fr auto; gap: 6px; padding: 4px 8px; }
+  .animation-clip-controls { grid-column: 1 / -1; }
+  .animation-clip-controls > label { flex: 1; }
+  .animation-clip-controls > label select { flex: 1; }
   .animation-controls input { width: 48px; }
-  .animation-actions strong { display: none; }
   .animation-transport { gap: 1px; }
   .animation-transport button { width: 24px; }
   .animation-tools { padding: 4px 8px; }
+  .animation-workspace { flex-direction: column; }
+  .animation-inspector { flex-direction: row; flex-wrap: wrap; align-items: center; width: auto; max-height: min(92px, calc(var(--animation-panel-height, 360px) / 4)); gap: 6px 12px; border-left: 0; border-top: 1px solid #414149; }
+  .animation-inspector > strong { display: none; }
+  .animation-key-values { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding-top: 6px; }
+  .animation-key-values > span, .animation-key-values small { flex-basis: 100%; }
+  .animation-pre-values { display: flex; flex-wrap: wrap; }
+  .animation-key-values label input:not([type=checkbox]) { width: 88px; }
 }
 
 .menu-bar-logo {

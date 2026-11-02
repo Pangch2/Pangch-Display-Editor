@@ -36,6 +36,7 @@ import './ui/scene-panel/scene-panel';
 import './ui/layout/panel-layout';
 import './ui/object-properties/object-properties';
 import './ui/animation-panel';
+import { bindAnimationCamera, isAnimationCameraPreview, setAnimationCameraPreview } from './animation/animation-camera';
 import { initHeadPainter, updateHeadPainter } from './ui/head-editor/head-painter';
 import { waitForWelcome } from './ui/dialogs/welcome';
 
@@ -156,6 +157,7 @@ window.addEventListener('pde:camera-type-changed', (event: Event) => {
 
 window.addEventListener('pde:set-camera-state', (event: Event) => {
     if (!camera || !controls) return;
+    setAnimationCameraPreview(loadedObjectGroup, false);
     const state = (event as CustomEvent<{ position: [number, number, number]; target: [number, number, number]; zoom: number }>).detail;
     camera.position.fromArray(state.position);
     controls.target.fromArray(state.target);
@@ -545,6 +547,7 @@ async function initScene(): Promise<void> {
     // 4. 컨트롤(Controls)
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
+    bindAnimationCamera(loadedObjectGroup, () => camera, controls);
     controls.addEventListener('change', notifyCameraChanged);
     initHeadPainter({
         renderer,
@@ -600,7 +603,7 @@ async function initScene(): Promise<void> {
         (child as Object3D & { material: SpriteMaterial }).material = new SpriteMaterial({ map: texture, opacity: 0.8, transparent: true, toneMapped: false });
     });
     renderer.domElement.addEventListener('pointerup', event => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || isAnimationCameraPreview(loadedObjectGroup)) return;
         viewHelperWasAnimating = viewHelper.handleClick(event);
         if (viewHelperWasAnimating) {
             notifyCameraChanged();
@@ -674,6 +677,7 @@ async function initScene(): Promise<void> {
 }
 
 function setCameraType(type: 'perspective' | 'orthographic'): void {
+    setAnimationCameraPreview(loadedObjectGroup, false);
     if (!camera || !controls || !viewHelper) return;
     if (type === 'perspective' ? camera.isPerspectiveCamera : camera.isOrthographicCamera) return;
 
@@ -734,7 +738,7 @@ function animate(): void {
     if (renderer && scene && camera && !scenePrecompileInProgress) {
         viewHelper.center.copy(controls.target);
         viewHelperTimer.update();
-        if (viewHelper.animating) viewHelper.update(viewHelperTimer.getDelta());
+        if (viewHelper.animating && !isAnimationCameraPreview(loadedObjectGroup)) viewHelper.update(viewHelperTimer.getDelta());
         if (viewHelperWasAnimating && !viewHelper.animating) {
             const direction = camera.position.clone().sub(controls.target).normalize().round();
             floorGrid.rotation.set(Math.abs(direction.z) * Math.PI / 2, 0, -Math.abs(direction.x) * Math.PI / 2);

@@ -20,7 +20,8 @@ export type AnimationVector = [number | string, number | string, number | string
 export type AnimationKey = { tick: number; transform: AnimationTransform; curve?: AnimationCurve; texture?: string; properties?: AnimationProperties; pivot?: number[] | null;
     channels?: AnimationChannel[]; curves?: Partial<Record<AnimationChannel, AnimationCurve>>;
     values?: Partial<Record<AnimationChannel, AnimationVector>>; pre?: Partial<Record<AnimationChannel, AnimationVector>> };
-export type AnimationTrack = { type: 'group' | 'object'; id: string; keys: AnimationKey[] };
+export const animationCameraId = 'pde:camera';
+export type AnimationTrack = { type: 'group' | 'object' | 'camera'; id: string; keys: AnimationKey[] };
 export type AnimationLayerTiming = { id: string; starts: number[]; interval?: number };
 export type AnimationClip = { id?: string; name?: string; duration: number; tickRate?: number; tracks: AnimationTrack[];
     loopMode?: 'once' | 'hold' | 'loop'; loopDelay?: number; endTick?: number; transitionTicks?: number; excludedNodes?: string[];
@@ -411,6 +412,25 @@ function interpolateTextOptions(from: TextDisplayOptions, to: TextDisplayOptions
     return options;
 }
 
+export function offsetAnimationChannel(track: AnimationTrack, channel: AnimationChannel, before: number[], after: number[]): void {
+    const factors = before.map((value, axis) => channel === 'scale' && value !== 0 ? after[axis] / value : 1);
+    const offsets = before.map((value, axis) => factors[axis] === 1 ? after[axis] - value : 0);
+    if (factors.every(value => Math.abs(value - 1) < 1e-10) && offsets.every(value => Math.abs(value) < 1e-10)) return;
+    for (const key of track.keys) {
+        if (key.tick === 0 || !keyHasChannel(key, channel)) continue;
+        for (const field of ['values', 'pre'] as const) {
+            if (field === 'pre' && !key.pre?.[channel]) continue;
+            const vector = key[field]?.[channel] ?? [0, 1, 2].map(axis => channelValue(key.transform, channel, axis));
+            // Keep the stored transform so expressions retain their original `value` binding.
+            (key[field] ??= {})[channel] = vector.map((value, axis) => {
+                const factor = factors[axis], offset = offsets[axis];
+                if (factor === 1 && offset === 0) return value;
+                return typeof value === 'string' ? `(${value})*(${factor})+(${offset})` : value * factor + offset;
+            }) as AnimationVector;
+        }
+    }
+}
+
 export function putKey(track: AnimationTrack, tick: number, matrix: Matrix4, base: Matrix4, channels?: AnimationChannel[]): void {
     if (tick > 0) {
         const missing = channels?.filter(channel => !track.keys.some(key => keyHasChannel(key, channel)));
@@ -449,7 +469,8 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
         || vector(curve, 4) && curve[0] >= 0 && curve[2] <= 1 && curve[0] <= curve[2];
     const seen = new Set<string>();
     for (const track of value.tracks) {
-        if (!track || !['object', 'group'].includes(track.type) || !(track.type === 'group' ? groups : objects).has(track.id)
+        if (!track || !['object', 'group', 'camera'].includes(track.type) || (track.type === 'camera'
+            ? track.id !== animationCameraId : !(track.type === 'group' ? groups : objects).has(track.id))
             || seen.has(track.id) || !Array.isArray(track.keys) || !track.keys.length) throw new Error('잘못된 애니메이션 대상입니다.');
         seen.add(track.id);
         let previous = -1;

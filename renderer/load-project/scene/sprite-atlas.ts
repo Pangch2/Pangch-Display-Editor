@@ -123,12 +123,15 @@ function firstAnimationFrame(metadata: AnimationMetadata | null, imageWidth: num
 }
 
 async function loadPreparedSprite(id: string, path: string, metadataPath?: string): Promise<PreparedSprite> {
-    const [image, metadata] = await Promise.all([
+    const [imageResult, metadataResult] = await Promise.allSettled([
         loadBitmap(path),
         metadataPath ? readJson<AnimationMetadata>(metadataPath) : Promise.resolve(null)
     ]);
+    if (imageResult.status === 'rejected') throw imageResult.reason;
+    const image = imageResult.value;
     try {
-        const frame = firstAnimationFrame(metadata, image.width, image.height);
+        if (metadataResult.status === 'rejected') throw metadataResult.reason;
+        const frame = firstAnimationFrame(metadataResult.value, image.width, image.height);
         return { id: parseIdentifier(id).id, image, sourceX: frame.x, sourceY: frame.y, width: frame.width, height: frame.height };
     } catch (error) {
         image.close();
@@ -141,6 +144,28 @@ function addSprite(sprites: Map<string, PreparedSprite>, sprite: PreparedSprite)
     sprites.set(sprite.id, sprite);
 }
 
+async function addSprites<T>(
+    sprites: Map<string, PreparedSprite>,
+    sources: T[],
+    prepare: (source: T) => Promise<PreparedSprite>
+): Promise<void> {
+    const loaded = new Array<PreparedSprite>(sources.length);
+    let cursor = 0;
+    const workers = await Promise.allSettled(Array.from({ length: Math.min(decodeConcurrency, sources.length) }, async () => {
+        while (cursor < sources.length) {
+            const index = cursor++;
+            loaded[index] = await prepare(sources[index]);
+        }
+    }));
+    const failed = workers.find(result => result.status === 'rejected');
+    if (failed) {
+        loaded.forEach(sprite => sprite.image.close());
+        throw failed.reason;
+    }
+    // Keep source order for duplicate IDs and stable atlas coordinates.
+    loaded.forEach(sprite => addSprite(sprites, sprite));
+}
+
 async function addDirectorySource(sprites: Map<string, PreparedSprite>, source: DirectorySource): Promise<void> {
     const sourcePath = source.source.replace(/^\/+|\/+$/g, '');
     const root = `${textureDirectory}${sourcePath ? `/${sourcePath}` : ''}`;
@@ -148,20 +173,10 @@ async function addDirectorySource(sprites: Map<string, PreparedSprite>, source: 
     const fileSet = new Set(files);
     const pngFiles = files.filter(file => file.startsWith(`${root}/`) && file.endsWith('.png')).sort();
 
-    for (let start = 0; start < pngFiles.length; start += decodeConcurrency) {
-        const loaded = await Promise.allSettled(pngFiles.slice(start, start + decodeConcurrency).map(file => {
-            const relative = file.slice(root.length + 1, -4);
-            return loadPreparedSprite(`minecraft:${source.prefix}${relative}`, file, fileSet.has(`${file}.mcmeta`) ? `${file}.mcmeta` : undefined);
-        }));
-        const failed = loaded.find(result => result.status === 'rejected');
-        if (failed) {
-            loaded.forEach(result => {
-                if (result.status === 'fulfilled') result.value.image.close();
-            });
-            throw failed.reason;
-        }
-        loaded.forEach(result => addSprite(sprites, (result as PromiseFulfilledResult<PreparedSprite>).value));
-    }
+    await addSprites(sprites, pngFiles, file => {
+        const relative = file.slice(root.length + 1, -4);
+        return loadPreparedSprite(`minecraft:${source.prefix}${relative}`, file, fileSet.has(`${file}.mcmeta`) ? `${file}.mcmeta` : undefined);
+    });
 }
 
 async function addSingleSource(sprites: Map<string, PreparedSprite>, source: SingleSource): Promise<void> {
@@ -204,17 +219,17 @@ async function addPalettedSource(sprites: Map<string, PreparedSprite>, source: P
     for (const texture of source.textures) {
         const resource = parseIdentifier(texture);
         const image = await loadImageData(texturePath(texture));
-        for (const [name, palette] of palettes) {
+        await addSprites(sprites, palettes, async ([name, palette]) => {
             const bitmap = await createImageBitmap(applyPalette(image, basePalette, palette));
-            addSprite(sprites, {
+            return {
                 id: `${resource.id}${separator}${name}`,
                 image: bitmap,
                 sourceX: 0,
                 sourceY: 0,
                 width: bitmap.width,
                 height: bitmap.height
-            });
-        }
+            };
+        });
     }
 }
 

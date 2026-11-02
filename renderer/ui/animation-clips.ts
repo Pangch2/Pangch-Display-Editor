@@ -4,13 +4,15 @@ import { animationClips, animationEndTick, animationLayers, type AnimationLayerT
 
 export function initAnimationClipControls(selection: () => Set<string>, edit: (action: () => void) => void, select: (id: string) => void) {
     const element = document.createElement('div');
-    element.className = 'animation-clip-controls animation-tools';
+    element.className = 'animation-clip-controls';
     element.innerHTML = `<label>동작 <select id="animation-clip" class="pde-input" aria-label="애니메이션 클립"></select></label>
-        <input id="animation-clip-name" class="pde-input" aria-label="애니메이션 이름" maxlength="120" placeholder="애니메이션 이름">
-        <button type="button" id="animation-clip-add">새 동작</button>
-        <button type="button" id="animation-clip-copy">동작 복제</button>
-        <button type="button" id="animation-clip-delete">동작 삭제</button>
-        <details class="animation-settings"><summary>재생 설정</summary><div class="animation-settings-body">
+        <details class="animation-settings"><summary title="동작 이름·추가·복제·삭제 및 재생 설정">동작 설정</summary><div class="animation-settings-body">
+            <label>이름 <input id="animation-clip-name" class="pde-input" aria-label="애니메이션 이름" maxlength="120" placeholder="애니메이션 이름"></label>
+            <div class="animation-actions">
+                <button type="button" id="animation-clip-add">새 동작</button>
+                <button type="button" id="animation-clip-copy">동작 복제</button>
+                <button type="button" id="animation-clip-delete">동작 삭제</button>
+            </div>
             <label>종료 방식 <select id="animation-loop-mode" class="pde-input"><option value="once">한 번 재생 후 처음으로</option><option value="hold">마지막 자세 유지</option><option value="loop">반복</option></select></label>
             <label>종료 틱 <input id="animation-end-tick" class="pde-input" type="number" min="0" step="1" placeholder="마지막 키"></label>
             <label>반복 대기 틱 <input id="animation-loop-delay" class="pde-input" type="number" min="0" step="1" value="0"></label>

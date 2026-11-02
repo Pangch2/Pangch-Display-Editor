@@ -466,44 +466,51 @@ async function buildAtlases(
     const rendered = document.createElement('canvas');
     rendered.width = grid.width;
     rendered.height = grid.height;
-    if (modelNames.length) {
-        renderer.setSize(grid.width, grid.height, false);
-        camera.left = 0;
-        camera.right = grid.columns;
-        camera.top = 0;
-        camera.bottom = -grid.columns;
-        camera.position.set(0, 0, 10);
-        camera.lookAt(0, 0, 0);
-        camera.updateProjectionMatrix();
-        for (const name of modelNames) {
-            const position = modelPositions.get(name)!;
-            scene.add(placeIconGroup(
-                createModelGroup(prepared.get(name)!, atlasTexture, materials),
-                position.x / iconSize + 0.5, -position.y / iconSize - 0.5
-            ));
+    let renderedImage: ImageBitmap | undefined;
+    try {
+        if (modelNames.length) {
+            renderer.setSize(grid.width, grid.height, false);
+            camera.left = 0;
+            camera.right = grid.columns;
+            camera.top = 0;
+            camera.bottom = -grid.columns;
+            camera.position.set(0, 0, 10);
+            camera.lookAt(0, 0, 0);
+            camera.updateProjectionMatrix();
+            for (const name of modelNames) {
+                const position = modelPositions.get(name)!;
+                scene.add(placeIconGroup(
+                    createModelGroup(prepared.get(name)!, atlasTexture, materials),
+                    position.x / iconSize + 0.5, -position.y / iconSize - 0.5
+                ));
+            }
+            await renderer.compileAsync(scene, camera);
+            renderer.render(scene, camera);
+            const context = rendered.getContext('2d', { willReadFrequently: true })!;
+            context.drawImage(renderer.domElement, 0, 0);
+            // Rasterize once; cropping a canvas can replay its full render for every icon at PNG export.
+            renderedImage = await createImageBitmap(context.getImageData(0, 0, grid.width, grid.height));
         }
-        await renderer.compileAsync(scene, camera);
-        renderer.render(scene, camera);
-        // Copy the GPU canvas once; all per-icon crops then use this 2D canvas.
-        rendered.getContext('2d')!.drawImage(renderer.domElement, 0, 0);
-    }
 
-    for (const name of new Set([...itemNames, ...blockNames])) {
-        const icon = prepared.get(name);
-        if (!icon) continue;
-        for (const target of targets) {
-            const position = target.icons.get(name);
-            if (!position) continue;
-            if (icon.image) {
-                target.context.drawImage(icon.image, position.x, position.y, iconSize, iconSize);
-            } else {
+        for (const name of new Set([...itemNames, ...blockNames])) {
+            const icon = prepared.get(name);
+            if (!icon) continue;
+            for (const target of targets) {
+                const position = target.icons.get(name);
+                if (!position) continue;
+                if (icon.image) {
+                    target.context.drawImage(icon.image, position.x, position.y, iconSize, iconSize);
+                    continue;
+                }
                 const source = modelPositions.get(name)!;
-                target.context.drawImage(rendered, source.x, source.y, iconSize, iconSize,
+                target.context.drawImage(renderedImage!, source.x, source.y, iconSize, iconSize,
                     position.x, position.y, iconSize, iconSize);
             }
         }
+    } finally {
+        renderedImage?.close();
+        rendered.width = rendered.height = 0;
     }
-    rendered.width = rendered.height = 0;
     return {
         items: { image: targets[0].image, icons: targets[0].icons },
         blocks: { image: targets[1].image, icons: targets[1].icons }
