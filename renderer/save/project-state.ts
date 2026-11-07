@@ -1,12 +1,11 @@
-import { Matrix4, Vector3, Quaternion, type Group, type InstancedMesh } from 'three/webgpu';
+import { Matrix4, Vector3, Quaternion, type Group } from 'three/webgpu';
 import { getPlayerHeadTexture } from '../load-project/display/player-head-atlas';
 import { applySceneVisibility } from '../controls/scene-visibility';
 import type { GroupData } from '../controls/grouping/group';
 import { validatePdeProject, type PdeEditorState, type PdeNode, type PdeProject, type ObjectEditorState } from './pde-format';
 import { animationSession, serializeAnimation, importAnimation, renderModelTransform } from '../animation/animation-state';
-
-type ObjectRef = { mesh: InstancedMesh; instanceId: number };
-const headAttributeNames = { uvFlip: 'instancedUvFlip', knifeUvScale: 'instancedKnifeUvScale', knifeUvOffset: 'instancedKnifeUvOffset' } as const;
+import { getDisplayType, getInstanceHasHat, getInstanceMatrix, hasInstanceHatData, objectHeadValues, objectIsCustomPivot, objectPivot, setInstanceHasHat,
+    setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, type ObjectRef } from '../scene-store/object-access';
 
 export type ProjectSelection = { groups: Iterable<string>; objectUuids: Iterable<string> };
 
@@ -36,36 +35,26 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
         const base = animationSession(root);
         const properties = base.enabled ? base.base.get(uuid)?.properties : undefined;
         const name = properties?.name ?? data.objectNames?.get(uuid) ?? mesh.name ?? '';
-        const type = mesh.userData.displayTypes?.get(instanceId) ?? mesh.userData.displayType;
+        const type = getDisplayType(mesh, instanceId);
         const isText = properties ? properties.displayType === 'text_display' : type === 'text_display' || data.objectTextDisplayOptions?.has(uuid);
         const isItem = !isText && (properties ? properties.displayType === 'item_display' : data.objectIsItemDisplay?.has(uuid) ?? type === 'item_display');
         const isHead = isItem && name.split('[')[0].replace(/^minecraft:/, '') === 'player_head';
-        const matrix = new Matrix4();
         const renderModel = renderModelTransform(root, uuid, mesh, instanceId);
-        if (mesh.isInstancedMesh) {
-            mesh.getMatrixAt(instanceId, matrix);
-            matrix.multiply(renderModel.clone().invert());
-        }
+        const matrix = getInstanceMatrix(mesh, instanceId, new Matrix4()).multiply(renderModel.clone().invert());
         matrix.premultiply(inverse.clone().multiply(mesh.matrixWorld));
         if (base.enabled && base.base.has(uuid)) matrix.fromArray(base.base.get(uuid)!.matrix);
         const object: ObjectEditorState = { uuid, label: data.objectLabels?.get(uuid) };
-        const pivot = mesh.userData.customPivots?.get(instanceId) ?? mesh.userData.customPivots?.get(String(instanceId));
+        const pivot = objectPivot(root, uuid);
         // Pivots use display coordinates so a different render batch keeps the same point.
         if (base.enabled) object.pivot = base.base.get(uuid)?.pivot;
         else if (pivot) object.pivot = pivot.clone().applyMatrix4(renderModel).toArray();
-        if (mesh.userData.customPivot) object.customPivot = base.enabled ? base.base.get(uuid)?.pivot : mesh.userData.customPivot.clone().applyMatrix4(renderModel).toArray();
-        const isCustomPivot = base.enabled ? base.base.get(uuid)?.isCustomPivot : mesh.userData.isCustomPivot;
+        const isCustomPivot = base.enabled ? base.base.get(uuid)?.isCustomPivot : objectIsCustomPivot(root, uuid);
         if (isCustomPivot !== undefined) object.isCustomPivot = isCustomPivot;
-        for (const [key, attributeName] of Object.entries(headAttributeNames)) {
-            const attribute = mesh.geometry.getAttribute(attributeName);
-            if (attribute) object[key] = Array.from({ length: attribute.itemSize }, (_, i) => attribute.getComponent(instanceId, i));
-        }
-        const layer = mesh.geometry.getAttribute('headLayerVisible');
-        if (layer) object.headLayerVisible = layer.getX(instanceId);
+        Object.assign(object, objectHeadValues(root, uuid));
         if (mesh.userData.imageHeadLayer !== undefined) object.imageHeadLayer = mesh.userData.imageHeadLayer;
         state.objects.push(object);
         const paintTexture = isHead ? (base.enabled ? base.base.get(uuid)?.texture : undefined) ?? getPlayerHeadTexture(uuid, data) : undefined;
-        if (mesh.userData.hasHat) object.hasHat = (base.enabled ? base.base.get(uuid)?.hasHat : undefined) ?? mesh.userData.hasHat[instanceId];
+        if (hasInstanceHatData(mesh)) object.hasHat = (base.enabled ? base.base.get(uuid)?.hasHat : undefined) ?? getInstanceHasHat(mesh, instanceId);
         if (isHead && !paintTexture) throw new Error(`헤드 텍스처를 저장할 수 없습니다: ${uuid}`);
         return {
             uuid, name, transforms: matrix.transpose().toArray(), nbt: properties?.nbt ?? data.objectNbt?.get(uuid) ?? '',
@@ -74,8 +63,8 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
                 : isItem ? { isItemDisplay: true, paintTexture } : { isBlockDisplay: true })
         };
     };
-    const saveEntry = (entry: { type: string; id?: string; mesh?: InstancedMesh; instanceId?: number }): PdeNode | undefined => {
-        const id = entry.id ?? data.instanceKeyToObjectUuid?.get(`${entry.mesh?.uuid}_${entry.instanceId}`);
+    const saveEntry = (entry: { type: string; id: string }): PdeNode | undefined => {
+        const { id } = entry;
         if (entry.type === 'object') return saveObject(id);
         if (groupStack.has(id)) throw new Error('순환 그룹은 저장할 수 없습니다.');
         const group = groups.get(id);
@@ -116,9 +105,7 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
     for (const entry of [...(data.sceneOrder ?? []), ...[...groups.values()].filter(group => !group.parent).map(group => ({ type: 'group', id: group.id })),
         ...[...groups.keys()].map(id => ({ type: 'group', id })), ...[...refs.keys()].map(id => ({ type: 'object', id }))]) {
         if (selection) {
-            const ref = refs.get(entry.id);
-            const parent = entry.type === 'group' ? groups.get(entry.id)?.parent
-                : ref && data.objectToGroup?.get(`${ref.mesh.uuid}_${ref.instanceId}`);
+            const parent = entry.type === 'group' ? groups.get(entry.id)?.parent : data.objectToGroup?.get(entry.id);
             if (!(entry.type === 'group' ? selectedGroups : selectedObjects).has(entry.id) || coveredBySelection(parent)) continue;
         }
         const node = saveEntry(entry);
@@ -154,21 +141,10 @@ export function restoreEditorState(root: Group, state: PdeEditorState | undefine
         const { mesh, instanceId } = ref;
         if (object.label !== undefined) data.objectLabels.set(uuid, object.label);
         const pivot = object.pivot ?? object.customPivot;
-        if (pivot) (mesh.userData.customPivots ??= new Map()).set(instanceId, new Vector3().fromArray(pivot).applyMatrix4(renderModelTransform(root, uuid, mesh, instanceId).invert()));
-        if (object.isCustomPivot !== undefined) mesh.userData.isCustomPivot = object.isCustomPivot;
-        for (const [key, attributeName] of Object.entries(headAttributeNames)) {
-            const attribute = mesh.geometry.getAttribute(attributeName);
-            if (object[key] && attribute) {
-                object[key].forEach((value: number, i: number) => attribute.setComponent(instanceId, i, value));
-                attribute.needsUpdate = true;
-            }
-        }
-        const layer = mesh.geometry.getAttribute('headLayerVisible');
-        if (layer && object.headLayerVisible !== undefined) {
-            layer.setX(instanceId, object.headLayerVisible);
-            layer.needsUpdate = true;
-        }
-        if (object.hasHat !== undefined) (mesh.userData.hasHat ??= [])[instanceId] = object.hasHat;
+        if (pivot) setObjectPivot(root, uuid, new Vector3().fromArray(pivot).applyMatrix4(renderModelTransform(root, uuid, mesh, instanceId).invert()));
+        if (object.isCustomPivot !== undefined) setObjectIsCustomPivot(root, uuid, object.isCustomPivot);
+        setObjectHeadValues(root, uuid, object);
+        if (object.hasHat !== undefined) setInstanceHasHat(mesh, instanceId, object.hasHat);
     }
     for (const group of state.groups) {
         const target = (data.groups as Map<string, GroupData>).get(groupId(group.id));

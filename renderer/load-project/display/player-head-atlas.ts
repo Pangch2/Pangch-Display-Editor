@@ -1,4 +1,4 @@
-import { BoxGeometry, BufferAttribute, BufferGeometry, DoubleSide, InstancedBufferAttribute, InstancedInterleavedBuffer, InstancedMesh, InterleavedBufferAttribute, Material, Matrix4, NearestFilter, SRGBColorSpace, StorageInstancedBufferAttribute, Texture } from 'three/webgpu';
+import { BoxGeometry, BufferAttribute, BufferGeometry, DoubleSide, InstancedInterleavedBuffer, InstancedMesh, InterleavedBufferAttribute, Material, Matrix4, NearestFilter, SRGBColorSpace, StorageInstancedBufferAttribute, Texture } from 'three/webgpu';
 import { type HeadUvEntry, resetHeadAtlasUvs, createHeadAtlasUvTexture, captureHeadAtlasUvs, setHeadAtlasUvRect, readHeadAtlasRegion, copyHeadAtlasRegion, getHeadAtlasUvRect } from '../../ui/head-editor/head-atlas-uv';
 import { getPlayerHeadDisplayMatrix } from '../scene/scene-parser';
 import { type HeadGeometrySet, type TypedArrayConstructor } from '../pbde/pbde-types';
@@ -8,6 +8,9 @@ import { MAX_INSTANCES_PER_INSTANCED_MESH } from './display-instancing';
 import { isApplying } from '../../controls/undo-redo/undo-redo';
 import { trackProjectEdit } from '../../save/pending-edits';
 import { animationClips, type AnimationData } from '../../animation/animation-data';
+import { getInstanceCount, getInstanceHasHat, getInstanceTile, getInstanceValue, getInstanceValues, hasInstanceHatData, hasInstanceTiles, instanceValueSize,
+    objectBatches, objectUuidAt, setInstanceHasHat, setInstanceTile, setInstanceValue, setInstanceValues, type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
+import type { ObjectStore } from '../../scene-store/object-store';
 
 export const PLAYER_HEAD_ATLAS_SIZE = 2048;
 const PLAYER_HEAD_PART_SIZE = 8;
@@ -74,7 +77,7 @@ export function getPlayerHeadRenderMatrix(displayType?: string): Matrix4 {
 
 
 export type PlayerHeadPaintSurface = {
-    mesh: InstancedMesh;
+    mesh: ObjectBatch;
     instanceId: number;
     objectUuid: string;
     context: CanvasRenderingContext2D;
@@ -815,87 +818,78 @@ if (import.meta.env.DEV) {
     }
 }
 
-function getPlayerHeadSlot(uvOffsets: BufferAttribute | InterleavedBufferAttribute, instanceId: number): number {
-    return Math.round(uvOffsets.getX(instanceId) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH)
-        + Math.round((1 - uvOffsets.getY(instanceId)) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT - 1) * PLAYER_HEAD_BLOCKS_PER_ROW;
+function getPlayerHeadSlot(batch: ObjectBatch, instanceId: number): number {
+    return Math.round(getInstanceValue(batch, instanceId, 'instancedUvOffset', 0)! * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH)
+        + Math.round((1 - getInstanceValue(batch, instanceId, 'instancedUvOffset', 1)!) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT - 1) * PLAYER_HEAD_BLOCKS_PER_ROW;
 }
 
 function getPlayerHeadPaintUsage(material: Material): { slots: Map<number, number>; imageTiles: Map<number, number> } {
     const slots = new Map<number, number>();
     const imageTiles = new Map<number, number>();
     const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
-    loadedObjectGroup.traverse(object => {
-        if (!(object as InstancedMesh).isInstancedMesh) return;
-        const mesh = object as InstancedMesh;
+    for (const mesh of objectBatches(loadedObjectGroup)) {
         const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-        if (meshMaterial !== material) return;
-        const positions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
-        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as BufferAttribute | InterleavedBufferAttribute | undefined;
-        for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
-            if (positions) {
-                const position = positions[instanceId];
+        if (meshMaterial !== material) continue;
+        const tiles = hasInstanceTiles(mesh);
+        const offsets = instanceValueSize(mesh, 'instancedUvOffset') > 0;
+        for (let instanceId = 0; instanceId < getInstanceCount(mesh); instanceId++) {
+            if (tiles) {
+                const position = getInstanceTile(mesh, instanceId);
                 if (!position) continue;
                 const tile = position[1] / PLAYER_HEAD_PART_SIZE * tilesPerRow + position[0] / PLAYER_HEAD_PART_SIZE;
                 imageTiles.set(tile, (imageTiles.get(tile) ?? 0) + 1);
             } else if (offsets) {
-                const slot = getPlayerHeadSlot(offsets, instanceId);
+                const slot = getPlayerHeadSlot(mesh, instanceId);
                 slots.set(slot, (slots.get(slot) ?? 0) + 1);
             }
         }
-    });
+    }
     return { slots, imageTiles };
 }
 
-type PlayerHeadAtlasTargets = Iterable<string> | Map<InstancedMesh, Iterable<number>>;
+type PlayerHeadAtlasTargets = Iterable<string> | Map<ObjectBatch, Iterable<number>>;
 
-function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets, onInstance?: (mesh: InstancedMesh, instanceId: number, material: Material) => void): {
+function collectPlayerHeadAtlasUsage(targets?: PlayerHeadAtlasTargets, onInstance?: (mesh: ObjectBatch, instanceId: number, material: Material) => void): {
     slots: Map<Material, Set<number>>;
     imageTiles: Map<Material, Set<number>>;
 } {
     const slots = new Map<Material, Set<number>>();
     const imageTiles = new Map<Material, Set<number>>();
-    const collect = (mesh: InstancedMesh, instanceIds: Iterable<number>): void => {
+    const collect = (mesh: ObjectBatch, instanceIds: Iterable<number>): void => {
         const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
         if (!playerHeadAtlases.has(material)) return;
-        const tilePositions = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
-        if (tilePositions) {
+        if (hasInstanceTiles(mesh)) {
             const used = imageTiles.get(material) ?? new Set<number>();
             for (const instanceId of instanceIds) {
                 onInstance?.(mesh, instanceId, material);
-                const tile = tilePositions[instanceId];
+                const tile = getInstanceTile(mesh, instanceId);
                 if (tile) used.add(tile[1] / PLAYER_HEAD_PART_SIZE * (PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE)
                     + tile[0] / PLAYER_HEAD_PART_SIZE);
             }
             imageTiles.set(material, used);
             return;
         }
-        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as BufferAttribute | InterleavedBufferAttribute | undefined;
-        if (!offsets) return;
+        if (!instanceValueSize(mesh, 'instancedUvOffset')) return;
         const used = slots.get(material) ?? new Set<number>();
         for (const instanceId of instanceIds) {
-            used.add(getPlayerHeadSlot(offsets, instanceId));
+            used.add(getPlayerHeadSlot(mesh, instanceId));
             onInstance?.(mesh, instanceId, material);
         }
         slots.set(material, used);
     };
     if (targets instanceof Map) targets.forEach((ids, mesh) => collect(mesh, ids));
     else if (targets) {
-        const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined;
-        const byMesh = new Map<InstancedMesh, Set<number>>();
+        const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, ObjectRef> | undefined;
+        const byMesh = new Map<ObjectBatch, Set<number>>();
         for (const uuid of targets) {
             const ref = refs?.get(uuid);
-            if (!ref?.mesh?.isInstancedMesh) continue;
+            if (!ref) continue;
             const ids = byMesh.get(ref.mesh) ?? new Set<number>();
             ids.add(ref.instanceId);
             byMesh.set(ref.mesh, ids);
         }
         byMesh.forEach((ids, mesh) => collect(mesh, ids));
-    } else loadedObjectGroup.traverse(object => {
-        if ((object as InstancedMesh).isInstancedMesh) collect(
-            object as InstancedMesh,
-            Array.from({ length: (object as InstancedMesh).count }, (_, instanceId) => instanceId)
-        );
-    });
+    } else for (const mesh of objectBatches(loadedObjectGroup)) collect(mesh, Array.from({ length: getInstanceCount(mesh) }, (_, instanceId) => instanceId));
     return { slots, imageTiles };
 }
 
@@ -911,23 +905,20 @@ function isReservedImageHeadTile(atlas: PlayerHeadAtlas, tile: number): boolean 
 export function capturePlayerHeadAtlasState(targets?: PlayerHeadAtlasTargets): PlayerHeadAtlasSnapshot[] {
     const instances = new Map<Material, NonNullable<PlayerHeadAtlasSnapshot['instances']>>();
     const usage = collectPlayerHeadAtlasUsage(targets, (mesh, instanceId, material) => {
-        const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(`${mesh.uuid}_${instanceId}`);
-        const offset = mesh.geometry.getAttribute('instancedUvOffset');
+        const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId);
+        const offset = getInstanceValues(mesh, instanceId, 'instancedUvOffset');
         if (!uuid || !offset) return;
-        const flip = mesh.geometry.getAttribute('instancedUvFlip');
-        const knifeScale = mesh.geometry.getAttribute('instancedKnifeUvScale');
-        const knifeOffset = mesh.geometry.getAttribute('instancedKnifeUvOffset');
-        const tile = mesh.userData.imageHeadTilePositions?.[instanceId];
+        const tile = getInstanceTile(mesh, instanceId);
         const entries = instances.get(material) ?? [];
         entries.push({
             uuid,
-            offset: [offset.getX(instanceId), offset.getY(instanceId)],
-            flip: flip ? [flip.getX(instanceId), flip.getY(instanceId)] : undefined,
+            offset: offset.slice(0, 2) as [number, number],
+            flip: getInstanceValues(mesh, instanceId, 'instancedUvFlip')?.slice(0, 2) as [number, number] | undefined,
             texture: loadedObjectGroup.userData.objectTextures?.get(uuid),
-            hasHat: mesh.userData.hasHat?.[instanceId],
+            hasHat: getInstanceHasHat(mesh, instanceId),
             tile: tile ? [...tile] as [number, number] : undefined,
-            knifeScale: knifeScale ? [knifeScale.getX(instanceId), knifeScale.getY(instanceId), knifeScale.getZ(instanceId)] : undefined,
-            knifeOffset: knifeOffset ? [knifeOffset.getX(instanceId), knifeOffset.getY(instanceId), knifeOffset.getZ(instanceId)] : undefined
+            knifeScale: getInstanceValues(mesh, instanceId, 'instancedKnifeUvScale')?.slice(0, 3) as [number, number, number] | undefined,
+            knifeOffset: getInstanceValues(mesh, instanceId, 'instancedKnifeUvOffset')?.slice(0, 3) as [number, number, number] | undefined
         });
         instances.set(material, entries);
     });
@@ -1012,28 +1003,12 @@ export function restorePlayerHeadAtlasState(value: unknown): void {
         for (const instance of state.instances ?? []) {
             const ref = loadedObjectGroup.userData.objectUuidToInstance?.get(instance.uuid);
             if (!ref) continue;
-            const offset = ref.mesh.geometry.getAttribute('instancedUvOffset');
-            const flip = ref.mesh.geometry.getAttribute('instancedUvFlip');
-            if (offset) {
-                offset.setXY(ref.instanceId, ...instance.offset);
-                offset.needsUpdate = true;
-            }
-            if (flip && instance.flip) {
-                flip.setXY(ref.instanceId, ...instance.flip);
-                flip.needsUpdate = true;
-            }
-            if (instance.tile) ref.mesh.userData.imageHeadTilePositions[ref.instanceId] = [...instance.tile];
-            for (const [name, value] of [
-                ['instancedKnifeUvScale', instance.knifeScale],
-                ['instancedKnifeUvOffset', instance.knifeOffset]
-            ] as const) {
-                const attribute = ref.mesh.geometry.getAttribute(name);
-                if (attribute && value) {
-                    attribute.setXYZ(ref.instanceId, ...value);
-                    attribute.needsUpdate = true;
-                }
-            }
-            if (ref.mesh.userData.hasHat) ref.mesh.userData.hasHat[ref.instanceId] = instance.hasHat;
+            setInstanceValues(ref.mesh, ref.instanceId, 'instancedUvOffset', instance.offset);
+            if (instance.flip) setInstanceValues(ref.mesh, ref.instanceId, 'instancedUvFlip', instance.flip);
+            if (instance.tile) setInstanceTile(ref.mesh, ref.instanceId, [...instance.tile]);
+            if (instance.knifeScale) setInstanceValues(ref.mesh, ref.instanceId, 'instancedKnifeUvScale', instance.knifeScale);
+            if (instance.knifeOffset) setInstanceValues(ref.mesh, ref.instanceId, 'instancedKnifeUvOffset', instance.knifeOffset);
+            if (hasInstanceHatData(ref.mesh)) setInstanceHasHat(ref.mesh, ref.instanceId, instance.hasHat);
             const textures = loadedObjectGroup.userData.objectTextures;
             if (instance.texture === undefined) textures?.delete(instance.uuid);
             else textures?.set(instance.uuid, instance.texture);
@@ -1129,7 +1104,7 @@ export function cleanupUnusedPlayerHeadAtlasSlots(): void {
 }
 
 export function getPlayerHeadPaintSurface(
-    mesh: InstancedMesh,
+    mesh: ObjectBatch,
     instanceId: number,
     exclusive = false,
     paintUsage?: Map<Material, ReturnType<typeof getPlayerHeadPaintUsage>>,
@@ -1137,13 +1112,12 @@ export function getPlayerHeadPaintSurface(
 ): PlayerHeadPaintSurface | null {
     const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
-    const uvOffsets = mesh.geometry.getAttribute('instancedUvOffset') as BufferAttribute | InterleavedBufferAttribute | undefined;
-    const objectUuid = (projectData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(`${mesh.uuid}_${instanceId}`);
-    if (!atlas || !uvOffsets || !objectUuid || instanceId < 0 || instanceId >= mesh.count) return null;
+    const objectUuid = (projectData.objectUuidToInstance as ObjectStore | undefined)?.uuidAt(mesh, instanceId);
+    if (!atlas || !instanceValueSize(mesh, 'instancedUvOffset') || !objectUuid || instanceId < 0 || instanceId >= getInstanceCount(mesh)) return null;
     const usage = exclusive ? paintUsage?.get(material) ?? getPlayerHeadPaintUsage(material) : undefined;
     if (usage) paintUsage?.set(material, usage);
     const denseLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
-    const denseTile = (mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined)?.[instanceId];
+    const denseTile = getInstanceTile(mesh, instanceId);
     if (denseLayer !== undefined && denseTile) {
         let [x, y] = denseTile;
         if (exclusive) {
@@ -1161,13 +1135,12 @@ export function getPlayerHeadPaintSurface(
                 usage!.imageTiles.set(nextTile, 1);
                 x = nextX;
                 y = nextY;
-                (mesh.userData.imageHeadTilePositions as Array<[number, number]>)[instanceId] = [x, y];
+                setInstanceTile(mesh, instanceId, [x, y]);
                 const partY = denseLayer ? 24 : 8;
-                uvOffsets.setXY(instanceId,
+                setInstanceValues(mesh, instanceId, 'instancedUvOffset', [
                     (x - 8) / PLAYER_HEAD_ATLAS_SIZE,
                     1 - (y + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
-                );
-                uvOffsets.needsUpdate = true;
+                ]);
                 // Upload the copied tile before rendering its new UV coordinates.
                 atlas.texture.needsUpdate = true;
             } else {
@@ -1180,7 +1153,7 @@ export function getPlayerHeadPaintSurface(
         };
     }
 
-    let slot = getPlayerHeadSlot(uvOffsets, instanceId);
+    let slot = getPlayerHeadSlot(mesh, instanceId);
     if (exclusive && (usage!.slots.get(slot) ?? 0) > 1) {
         const nextSlot = takePlayerHeadSlot(atlas);
         if (nextSlot === undefined) throw new Error('Player head paint atlas is full.');
@@ -1192,8 +1165,7 @@ export function getPlayerHeadPaintSurface(
         usage!.slots.set(slot, usage!.slots.get(slot)! - 1);
         usage!.slots.set(nextSlot, 1);
         slot = nextSlot;
-        uvOffsets.setXY(instanceId, nextX / PLAYER_HEAD_ATLAS_SIZE, 1 - (nextY + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE);
-        uvOffsets.needsUpdate = true;
+        setInstanceValues(mesh, instanceId, 'instancedUvOffset', [nextX / PLAYER_HEAD_ATLAS_SIZE, 1 - (nextY + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE]);
         // Upload the copied slot before rendering its new UV coordinates.
         atlas.texture.needsUpdate = true;
     }
@@ -1274,7 +1246,7 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = 
             }
         }
     }
-    surface.mesh.userData.hasHat[surface.instanceId] = hasHat;
+    setInstanceHasHat(surface.mesh, surface.instanceId, hasHat);
 
     const skin = playerHeadSkinCanvas ??= document.createElement('canvas');
     if (skin.width !== 64 || skin.height !== 64) skin.width = skin.height = 64;
@@ -1309,7 +1281,7 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = 
 export function getPlayerHeadTexture(objectUuid: string, projectData = loadedObjectGroup.userData): string | undefined {
     const textures = projectData.objectTextures as Map<string, string> | undefined;
     const texture = textures?.get(objectUuid);
-    const ref = (projectData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const ref = (projectData.objectUuidToInstance as Map<string, ObjectRef> | undefined)?.get(objectUuid);
     if (!ref) return texture;
     const surface = getPlayerHeadPaintSurface(ref.mesh, ref.instanceId, false, undefined, projectData);
     if (!surface) return projectData.animationSession?.enabled
@@ -1325,7 +1297,7 @@ export function getPlayerHeadTexture(objectUuid: string, projectData = loadedObj
 // A hosted copy changes the reference only; keep dense image tiles, knife UVs and mirrored UVs intact.
 export function replacePlayerHeadTextureReference(objectUuid: string, previous: string, next: string): boolean {
     const textures = loadedObjectGroup.userData.objectTextures as Map<string, string> | undefined;
-    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, ObjectRef> | undefined)?.get(objectUuid);
     if (!ref) return false;
     let changed = false;
     const data = loadedObjectGroup.userData;
@@ -1360,26 +1332,22 @@ export function replacePlayerHeadTextureReference(objectUuid: string, previous: 
         const skin = atlas.skins.get(previous);
         if (skin?.slot === surface.slot) atlas.skins.delete(previous);
         atlas.slotUrls[surface.slot] = next;
-        if (!atlas.skins.has(next)) atlas.skins.set(next, { slot: surface.slot, hasHat: !!ref.mesh.userData.hasHat[ref.instanceId] });
+        if (!atlas.skins.has(next)) atlas.skins.set(next, { slot: surface.slot, hasHat: !!getInstanceHasHat(ref.mesh, ref.instanceId) });
     }
     textures.set(objectUuid, next);
     return true;
 }
 
 export function setPlayerHeadLayerVisible(visible: boolean): void {
-    loadedObjectGroup.traverse(object => {
-        if (!(object as InstancedMesh).isInstancedMesh) return;
-        const mesh = object as InstancedMesh;
-        const attribute = mesh.geometry.getAttribute('headLayerVisible') as InstancedBufferAttribute | undefined;
-        if (!attribute) return;
-        for (let instanceId = 0; instanceId < mesh.count; instanceId++) attribute.setX(instanceId, visible ? 1 : 0);
-        attribute.needsUpdate = true;
-    });
+    for (const mesh of objectBatches(loadedObjectGroup)) {
+        if (!instanceValueSize(mesh, 'headLayerVisible')) continue;
+        for (let instanceId = 0; instanceId < getInstanceCount(mesh); instanceId++) setInstanceValue(mesh, instanceId, 'headLayerVisible', visible ? 1 : 0);
+    }
 }
 
 function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: HTMLImageElement, root = loadedObjectGroup): void {
     const userData = root.userData;
-    const ref = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const ref = (userData.objectUuidToInstance as Map<string, ObjectRef> | undefined)?.get(objectUuid);
     if (!ref) throw new Error('텍스처를 변경할 플레이어 헤드를 찾을 수 없습니다.');
 
     if (ref.mesh.userData.imageHeadLayer !== undefined) {
@@ -1401,23 +1369,18 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
 
     const material = (Array.isArray(ref.mesh.material) ? ref.mesh.material[0] : ref.mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
-    const uvOffsets = ref.mesh.geometry.getAttribute('instancedUvOffset') as InstancedBufferAttribute | undefined;
-    if (!atlas || !uvOffsets) throw new Error('플레이어 헤드 아틀라스를 찾을 수 없습니다.');
+    if (!atlas || !instanceValueSize(ref.mesh, 'instancedUvOffset')) throw new Error('플레이어 헤드 아틀라스를 찾을 수 없습니다.');
 
-    const oldU = uvOffsets.getX(ref.instanceId);
-    const oldV = uvOffsets.getY(ref.instanceId);
+    const oldU = getInstanceValue(ref.mesh, ref.instanceId, 'instancedUvOffset', 0)!;
+    const oldV = getInstanceValue(ref.mesh, ref.instanceId, 'instancedUvOffset', 1)!;
     let usageCount = 0;
-    root.traverse(object => {
-        if (!(object as InstancedMesh).isInstancedMesh) return;
-        const mesh = object as InstancedMesh;
+    for (const mesh of objectBatches(root)) {
         const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-        if (meshMaterial !== material) return;
-        const offsets = mesh.geometry.getAttribute('instancedUvOffset') as InstancedBufferAttribute | undefined;
-        if (!offsets) return;
-        for (let index = 0; index < mesh.count; index++) {
-            if (offsets.getX(index) === oldU && offsets.getY(index) === oldV) usageCount++;
+        if (meshMaterial !== material || !instanceValueSize(mesh, 'instancedUvOffset')) continue;
+        for (let index = 0; index < getInstanceCount(mesh); index++) {
+            if (getInstanceValue(mesh, index, 'instancedUvOffset', 0) === oldU && getInstanceValue(mesh, index, 'instancedUvOffset', 1) === oldV) usageCount++;
         }
-    });
+    }
 
     const oldSlot = Math.round(oldU * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_WIDTH)
         + Math.round((1 - oldV) * PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_BLOCK_HEIGHT - 1) * PLAYER_HEAD_BLOCKS_PER_ROW;
@@ -1439,13 +1402,11 @@ function applyPlayerHeadTexture(objectUuid: string, textureUrl: string, image: H
         atlas.slotUrls[slot] = storedUrl;
     }
 
-    ref.mesh.userData.hasHat[ref.instanceId] = hasHat;
-    uvOffsets.setXY(
-        ref.instanceId,
+    setInstanceHasHat(ref.mesh, ref.instanceId, hasHat);
+    setInstanceValues(ref.mesh, ref.instanceId, 'instancedUvOffset', [
         (slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH / PLAYER_HEAD_ATLAS_SIZE,
         1 - (Math.floor(slot / PLAYER_HEAD_BLOCKS_PER_ROW) + 1) * PLAYER_HEAD_BLOCK_HEIGHT / PLAYER_HEAD_ATLAS_SIZE
-    );
-    uvOffsets.needsUpdate = true;
+    ]);
     atlas.texture.needsUpdate = true;
     (userData.objectTextures as Map<string, string> | undefined)?.set(objectUuid, storedUrl);
 }
@@ -1463,8 +1424,10 @@ export function previewPlayerHeadTextures(root: typeof loadedObjectGroup, desire
         const ref = data.objectUuidToInstance?.get(uuid);
         if (!ref || !getPlayerHeadPaintSurface(ref.mesh, ref.instanceId, false, undefined, data)) continue;
         const apply = (image: HTMLImageElement) => {
+            // The store returns a new ref per get(), so the slot is compared, not the object.
+            const current = data.objectUuidToInstance?.get(uuid);
             if (root.userData !== data || data.objectTextures !== textures || preview.desired.get(uuid) !== texture
-                || textures.get(uuid) !== previous || !ref || data.objectUuidToInstance?.get(uuid) !== ref) return;
+                || textures.get(uuid) !== previous || current?.mesh !== ref.mesh || current.instanceId !== ref.instanceId) return;
             applyPlayerHeadTexture(uuid, texture, image, root);
             window.dispatchEvent(new Event('pde:animation-textures-updated'));
         };
@@ -1510,20 +1473,18 @@ export function flipPlayerHeadTextures(objectUuids: string[], axis: PlayerHeadMi
 
 async function flipHeadTextures(objectUuids: string[], axis: PlayerHeadMirrorAxis): Promise<void> {
     const userData = loadedObjectGroup.userData;
-    const refs = userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined;
+    const refs = userData.objectUuidToInstance as Map<string, ObjectRef> | undefined;
     const prepared = (await Promise.all(objectUuids.map(async objectUuid => {
         const ref = refs?.get(objectUuid);
-        const flips = ref?.mesh.geometry.getAttribute('instancedUvFlip') as InstancedBufferAttribute | undefined;
-        if (!ref || !flips) return null;
+        if (!ref || !instanceValueSize(ref.mesh, 'instancedUvFlip')) return null;
         const texture = getPlayerHeadTexture(objectUuid) ?? DEFAULT_PLAYER_HEAD_TEXTURE;
         const image = await loadPlayerHeadImage(texture);
-        const dataUrl = playerHeadTextureDataUrl(image, flips.getX(ref.instanceId) < 0.5 ? axis : null);
-        return { objectUuid, ref, flips, dataUrl, image: dataUrl ? await loadPlayerHeadImage(dataUrl) : null };
+        const dataUrl = playerHeadTextureDataUrl(image, getInstanceValue(ref.mesh, ref.instanceId, 'instancedUvFlip')! < 0.5 ? axis : null);
+        return { objectUuid, ref, dataUrl, image: dataUrl ? await loadPlayerHeadImage(dataUrl) : null };
     }))).filter(prepared => prepared !== null);
-    for (const { objectUuid, ref, flips, dataUrl, image } of prepared) {
+    for (const { objectUuid, ref, dataUrl, image } of prepared) {
         if (dataUrl && image) applyPlayerHeadTexture(objectUuid, dataUrl, image);
-        flips.setX(ref.instanceId, 0);
-        flips.needsUpdate = true;
+        setInstanceValue(ref.mesh, ref.instanceId, 'instancedUvFlip', 0);
     }
 }
 

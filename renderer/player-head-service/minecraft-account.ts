@@ -110,11 +110,11 @@ export class MinecraftAccount {
       const stored = await readAccountFile<{ encrypted: string }>(accountsFile);
       const legacy = await readAccountFile<{ encrypted: string }>('pde-minecraft-account.json');
       if (stored || legacy) {
-        if (!safeStorage.isEncryptionAvailable()) throw new Error('운영체제의 안전한 계정 저장소를 사용할 수 없습니다.');
-        const sessions: Session[] = stored ? JSON.parse(safeStorage.decryptString(Buffer.from(stored.encrypted, 'base64'))) : [];
+        if (!await safeStorage.isAsyncEncryptionAvailable()) throw new Error('운영체제의 안전한 계정 저장소를 사용할 수 없습니다.');
+        const sessions: Session[] = stored ? JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(stored.encrypted, 'base64'))).result) : [];
         if (!Array.isArray(sessions)) throw new Error('저장된 Minecraft 계정 목록이 올바르지 않습니다.');
         if (legacy) {
-          const previous = JSON.parse(safeStorage.decryptString(Buffer.from(legacy.encrypted, 'base64')));
+          const previous = JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(legacy.encrypted, 'base64'))).result);
           const uuid = accountUuid(previous.uuid);
           if (!sessions.some(session => accountUuid(session.uuid) === uuid)) sessions.push({ ...previous, uuid, enabled: true });
         }
@@ -163,11 +163,11 @@ export class MinecraftAccount {
   }
 
   private async saveSessions(sessions: Map<string, Session>): Promise<void> {
-    if (!safeStorage.isEncryptionAvailable() || (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')) {
+    if (!await safeStorage.isAsyncEncryptionAvailable() || (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')) {
       throw new Error('운영체제의 안전한 계정 저장소를 사용할 수 없습니다.');
     }
     await writeAccountFile(accountsFile, {
-      encrypted: safeStorage.encryptString(JSON.stringify([...sessions.values()])).toString('base64')
+      encrypted: (await safeStorage.encryptStringAsync(JSON.stringify([...sessions.values()]))).toString('base64')
     });
   }
 

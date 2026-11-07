@@ -1,4 +1,5 @@
 import { Color, InstancedBufferAttribute, Matrix4, type InstancedMesh } from 'three/webgpu';
+import { cloneBatchGeometry } from '../../scene-store/object-access';
 import { applyModelTransform, planUvTransforms, relativeModelTransform, relativeUvTransform, type UvTransform } from './geometry-batching';
 import type { GeometryInstanceMeta, GeometryMeta } from '../pbde/pbde-types';
 
@@ -73,7 +74,7 @@ export function planAtlasAppend(mesh: InstancedMesh, source: AtlasPart[], incomi
 
 export function applyAtlasAppend(mesh: InstancedMesh, plan: ReturnType<typeof planAtlasAppend>) {
     const oldGeometry = mesh.geometry;
-    const geometry = oldGeometry.clone();
+    const geometry = cloneBatchGeometry(oldGeometry);
     const capacity = mesh.instanceMatrix.count;
     for (const name of Object.keys(geometry.attributes)) {
         if (/^instanced(?:UvTransform\d*|Tint\d+)$/.test(name)) geometry.deleteAttribute(name);

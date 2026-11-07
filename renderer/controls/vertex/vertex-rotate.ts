@@ -2,18 +2,18 @@ import {
     Matrix4,
     Vector3,
     Quaternion,
-    InstancedMesh,
     Mesh,
-    Object3D,
     Group,
     Sprite
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
-import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
+import { isSlotSelected, toMeshMap, type SelectionState } from '../selection/select';
+import { performSelectionSwap, primarySource, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
 import { applyLinkedMirrorDelta } from '../transform/mirroring';
+import { getInstanceMatrix, getInstancePivot, setInstanceMatrix, type ObjectBatch } from '../../scene-store/object-access';
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_INSTANCE_MATRIX = new Matrix4();
@@ -24,7 +24,6 @@ const _TMP_VEC3_D = new Vector3();
 const _TMP_QUAT_B = new Quaternion();
 const _TMP_QUAT_C = new Quaternion();
 
-type MeshType = InstancedMesh | Mesh;
 
 function computeBlockbenchLocalRotation(
     objectWorldMatrix: Matrix4,
@@ -79,11 +78,7 @@ function computeWorldRotationDelta(
 interface VertexRotateContext {
     isVertexMode: boolean;
     gizmoMode: string;
-    currentSelection: {
-        groups: Set<string>;
-        objects: Map<Object3D, Set<number>>;
-        primary: SelectionSource | null;
-    };
+    currentSelection: SelectionState;
     loadedObjectGroup: Group;
     selectionHelper: Mesh;
 
@@ -126,14 +121,7 @@ export function processVertexRotate(
 ): boolean {
     if (!isVertexMode || gizmoMode !== 'rotate') return false;
 
-    const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
-    let objectIdCount = 0;
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const ids of currentSelection.objects.values()) {
-            objectIdCount += ids.size;
-        }
-    }
-    const activeSelectionCount = groupCount + objectIdCount;
+    const activeSelectionCount = currentSelection.groups.size + currentSelection.objects.size;
     const preserveSelectionOnSnap = activeSelectionCount > 1;
 
     const keys = Array.from(selectedVertexKeys);
@@ -169,7 +157,7 @@ export function processVertexRotate(
 
         const sourceWorldMatrix = new Matrix4();
         if (src.type === 'object') {
-            (src.mesh as InstancedMesh).getMatrixAt(src.instanceId, sourceWorldMatrix);
+            getInstanceMatrix(src.mesh, src.instanceId, sourceWorldMatrix);
             sourceWorldMatrix.premultiply(src.mesh.matrixWorld);
         } else {
             getGroupWorldMatrixWithFallback(src.id, sourceWorldMatrix);
@@ -179,12 +167,11 @@ export function processVertexRotate(
         const isSrcEffectiveSelected = (() => {
             if (src.type === 'group') return currentSelection.groups.has(src.id);
             if (src.type === 'object') {
-                if (currentSelection.objects.has(src.mesh) && currentSelection.objects.get(src.mesh)!.has(src.instanceId)) return true;
+                if (isSlotSelected(src.mesh, src.instanceId, currentSelection)) return true;
                 
                 const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
                 if (objectToGroup) {
-                    const key = GroupUtils.getGroupKey(src.mesh, src.instanceId);
-                    let groupId = objectToGroup.get(key);
+                    let groupId = GroupUtils.getSlotGroupId(loadedObjectGroup, src.mesh, src.instanceId);
                     while (groupId) {
                         if (currentSelection.groups.has(groupId)) return true;
                         const g = getGroups().get(groupId);
@@ -200,7 +187,7 @@ export function processVertexRotate(
         sourceWorldMatrix.decompose(_TMP_VEC3_C, _TMP_QUAT_B, _TMP_VEC3_D);
         const sourceGroup = src.type === 'group' ? getGroups().get(src.id) : null;
         const customPivot = src.type === 'object'
-            ? src.mesh.userData.customPivots?.get(src.instanceId)
+            ? getInstancePivot(src.mesh, src.instanceId)
             : sourceGroup?.isCustomPivot ? GroupUtils.normalizePivotToVector3(sourceGroup.pivot) : null;
         const pivotWorld = customPivot
             ? src.type === 'group' ? customPivot : customPivot.clone().applyMatrix4(sourceWorldMatrix)
@@ -218,11 +205,11 @@ export function processVertexRotate(
         // 2. Build explicit lists of what to move
         const targets = {
             groups: new Set<string>(),
-            instances: new Map<MeshType, Set<number>>(),
+            instances: new Map<ObjectBatch, Set<number>>(),
             isBundleMove: false
         };
 
-        const addInstance = (mesh: MeshType, id: number) => {
+        const addInstance = (mesh: ObjectBatch, id: number) => {
             let set = targets.instances.get(mesh);
             if (!set) { set = new Set(); targets.instances.set(mesh, set); }
             set.add(id);
@@ -269,9 +256,9 @@ export function processVertexRotate(
                 for (const gid of currentSelection.groups) addGroup(gid);
             }
             if (currentSelection.objects) {
-                for (const [mesh, ids] of currentSelection.objects) {
+                for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
                     for (const id of ids) {
-                        addInstance(mesh as MeshType, id);
+                        addInstance(mesh as ObjectBatch, id);
                     }
                 }
             }
@@ -306,14 +293,9 @@ export function processVertexRotate(
                 .multiply(sourceTransformMat)
                 .multiply(mesh.matrixWorld);
             for (const id of ids) {
-                (mesh as InstancedMesh).getMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                getInstanceMatrix(mesh, id, _TMP_INSTANCE_MATRIX);
                 _TMP_INSTANCE_MATRIX.premultiply(localTransform);
-                (mesh as InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
-            }
-            if ((mesh as InstancedMesh).isInstancedMesh) {
-                const instanceMatrix = (mesh as InstancedMesh).instanceMatrix;
-                ids.forEach(id => instanceMatrix.addUpdateRange(id * instanceMatrix.itemSize, instanceMatrix.itemSize));
-                instanceMatrix.needsUpdate = true;
+                setInstanceMatrix(mesh, id, _TMP_INSTANCE_MATRIX);
             }
         }
 
@@ -353,7 +335,7 @@ export function processVertexRotate(
         // Swapping selection state
         let targetSrc: SelectionSource | null = sprite2.userData.source ?? null;
         if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
-            targetSrc = currentSelection.primary;
+            targetSrc = primarySource(currentSelection);
         }
         performSelectionSwap(src, targetSrc, {
             currentSelection,

@@ -12,7 +12,6 @@ import type {
     SceneDropHint
 } from './scene-panel-types';
 import {
-    getObjectGroupKeyByUuid,
     getParentGroupIdFromElement,
     isGroupAncestorOf,
     moveSceneItemsByDropHint
@@ -38,19 +37,8 @@ function clearSceneDragPreview(): void {
     scenePanelState.sceneDragPreviewEl = null;
 }
 
-function collectSelectedObjectUuids(ud: LoadedObjectUserData): Set<string> {
-    const out = new Set<string>();
-    const keyToUuid = ud.instanceKeyToObjectUuid;
-    if (!keyToUuid) return out;
-
-    for (const [mesh, ids] of currentSelection.objects) {
-        for (const instanceId of ids) {
-            const uuid = keyToUuid.get(`${mesh.uuid}_${instanceId}`);
-            if (uuid) out.add(uuid);
-        }
-    }
-
-    return out;
+function collectSelectedObjectUuids(_ud: LoadedObjectUserData): Set<string> {
+    return new Set(currentSelection.objects);
 }
 
 function isSceneDragSourceSelected(
@@ -108,8 +96,7 @@ function collectSceneDragBundleItems(
         if (!ud.objectUuidToInstance?.has(uuid)) continue;
 
         let coveredBySelectedGroup = false;
-        const objectKey = getObjectGroupKeyByUuid(uuid, ud);
-        let parentId = objectKey ? (ud.objectToGroup?.get(objectKey) ?? null) : null;
+        let parentId = ud.objectToGroup?.get(uuid) ?? null;
 
         while (parentId) {
             if (topGroupSet.has(parentId)) {

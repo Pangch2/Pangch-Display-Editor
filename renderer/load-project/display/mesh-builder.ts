@@ -1,14 +1,12 @@
-import { BufferGeometry, Color, Euler, InstancedBufferAttribute, InstancedMesh, Material, MathUtils, Matrix4, Mesh, MeshBasicNodeMaterial, Quaternion, Sphere, StorageInstancedBufferAttribute, Texture, Vector3 } from 'three/webgpu';
+import { BufferGeometry, Euler, InstancedBufferAttribute, InstancedMesh, Material, MathUtils, Matrix4, Mesh, MeshBasicNodeMaterial, Quaternion, Sphere, StorageInstancedBufferAttribute, Texture, Vector3 } from 'three/webgpu';
 import * as Overlay from '../../controls/selection/overlay';
-import * as GroupUtils from '../../controls/grouping/group';
 import { type DeletedSceneDelta, deleteSelectedItems } from '../../controls/grouping/delete';
-import { loadedObjectGroup, type GlobalBrightness, type Brightness, setInstanceSkyBrightness, isInstancedGeometryAttribute, addTextDisplayItems } from './display-instancing';
+import { loadedObjectGroup, type GlobalBrightness, type Brightness, setInstanceSkyBrightness, addTextDisplayItems } from './display-instancing';
 import { getPlayerHeadRenderMatrix, PLAYER_HEAD_LAYER_SCALE, getPlayerHeadTexture } from './player-head-atlas';
 import { getItemDisplayModelMatrix } from '../scene/scene-parser';
 import { isApplying } from '../../controls/undo-redo/undo-redo';
 import { changeInstanceModelTransform, removeInstanceModelTransform } from '../batching/instance-model-transform';
 import { trackProjectEdit } from '../../save/pending-edits';
-import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-history';
 import { entityVisibleAttributeName, setEntityStateAttributes, dragSelectedAttributeName } from '../../entity-material';
 import { type GroupData, type OtherItem } from '../pbde/pbde-types';
 import { textDisplayInstanceAttributeNames, createTextDisplayTemplates, getTextDisplayTemplateKey, type TextDisplayOptions } from './text-display';
@@ -16,6 +14,8 @@ import { appendDisplayObjects, loadAndRenderPbde, performSelection } from './pro
 import { compressSync, strToU8 } from 'fflate';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../../controls/transform/mirroring';
 import { cloneAnimationTarget } from '../../animation/animation-state';
+import { batchOf, cloneBatchGeometry, getInstancePivot, setInstancePivot } from '../../scene-store/object-access';
+import { removeInstances } from '../../scene-store/object-batches';
 export { previewObjectModels as previewDisplayObjects } from './object-model-preview';
 
 export { loadedObjectGroup, beginPbdeLoadGeneration, type GlobalBrightness, type LoadedSelection } from './display-instancing';
@@ -61,8 +61,7 @@ async function updateObjectMatrix(objectUuid: string, name: string, preview: boo
     const newDisplayType = /\bdisplay=([^,\]]+)/.exec(name)?.[1];
     const matrix = new Matrix4();
     ref.mesh.getMatrixAt(ref.instanceId, matrix);
-    const customPivots = ref.mesh.userData.customPivots as Map<number, Vector3> | undefined;
-    const pivotParent = customPivots?.get(ref.instanceId)?.clone().applyMatrix4(matrix);
+    const pivotParent = getInstancePivot(ref.mesh, ref.instanceId)?.clone().applyMatrix4(matrix);
 
     if (name.startsWith('player_head')) {
         matrix.multiply(getPlayerHeadRenderMatrix(oldDisplayType).invert()).multiply(getPlayerHeadRenderMatrix(newDisplayType));
@@ -75,7 +74,7 @@ async function updateObjectMatrix(objectUuid: string, name: string, preview: boo
         changeInstanceModelTransform(ref.mesh, ref.instanceId, matrix, oldModelMatrix, newModelMatrix);
     }
 
-    if (pivotParent) customPivots!.set(ref.instanceId, pivotParent.applyMatrix4(matrix.clone().invert()));
+    if (pivotParent) setInstancePivot(ref.mesh, ref.instanceId, pivotParent.applyMatrix4(matrix.clone().invert()));
 
     ref.mesh.setMatrixAt(ref.instanceId, matrix);
     ref.mesh.instanceMatrix.needsUpdate = true;
@@ -107,10 +106,10 @@ function disposeUnusedTextDisplayResources(geometry: BufferGeometry, material: M
             candidate as Material & { map?: Texture | null }
         ).map === texture);
     });
-    if (!geometryUsed && !isSceneHistoryResourceRetained(geometry)) geometry.dispose();
+    if (!geometryUsed) geometry.dispose();
     const atlasMaterial = !!material.userData.textDisplayAtlas;
-    if (!materialUsed && !atlasMaterial && !isSceneHistoryResourceRetained(material)) material.dispose();
-    if (texture && !textureUsed && !atlasMaterial && !isSceneHistoryResourceRetained(texture)) texture.dispose();
+    if (!materialUsed && !atlasMaterial) material.dispose();
+    if (texture && !textureUsed && !atlasMaterial) texture.dispose();
 }
 
 export function isolateTextDisplay(objectUuid: string): void {
@@ -122,7 +121,7 @@ export function isolateTextDisplay(objectUuid: string): void {
     const oldMesh = ref.mesh;
     const oldInstanceId = ref.instanceId;
     const oldLastInstanceId = oldMesh.count - 1;
-    const geometry = oldMesh.geometry.clone();
+    const geometry = cloneBatchGeometry(oldMesh.geometry);
     for (const attributeName of textDisplayInstanceAttributeNames) {
         const source = oldMesh.geometry.getAttribute(attributeName);
         const values = new Float32Array(source.itemSize);
@@ -149,68 +148,10 @@ export function isolateTextDisplay(objectUuid: string): void {
     const brightness = (userData.objectBrightness as Map<string, Brightness> | undefined)?.get(objectUuid);
     setInstanceSkyBrightness(mesh, 0, brightness);
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    for (const key of ['customPivots', 'localMatrices', 'displayTypes', 'textDisplayTemplateKeys'] as const) {
-        const values = oldMesh.userData[key] as Map<number, unknown> | undefined;
-        const value = values?.get(oldInstanceId);
-        if (value !== undefined) mesh.userData[key] = new Map([[0, value]]);
-    }
 
-    const oldKey = GroupUtils.getGroupKey(oldMesh, oldInstanceId);
-    const newKey = GroupUtils.getGroupKey(mesh, 0);
-    const keyToUuid = userData.instanceKeyToObjectUuid as Map<string, string>;
-    keyToUuid.delete(oldKey);
-    keyToUuid.set(newKey, objectUuid);
     refs!.set(objectUuid, { mesh, instanceId: 0 });
-    const objectToGroup = userData.objectToGroup as Map<string, string> | undefined;
-    const groupId = objectToGroup?.get(oldKey);
-    objectToGroup?.delete(oldKey);
-    if (groupId) {
-        objectToGroup!.set(newKey, groupId);
-        const group = (userData.groups as Map<string, GroupData> | undefined)?.get(groupId);
-        const child = group?.children.find(candidate => candidate.type === 'object' && candidate.id === objectUuid);
-        if (child?.type === 'object') {
-            child.mesh = mesh;
-            child.instanceId = 0;
-        }
-    }
 
-    if (oldInstanceId < oldLastInstanceId) {
-        oldMesh.getMatrixAt(oldLastInstanceId, matrix);
-        oldMesh.setMatrixAt(oldInstanceId, matrix);
-        if (oldMesh.instanceColor) {
-            const color = new Color();
-            oldMesh.getColorAt(oldLastInstanceId, color);
-            oldMesh.setColorAt(oldInstanceId, color);
-        }
-        for (const attribute of Object.values(oldMesh.geometry.attributes)) {
-            if (!isInstancedGeometryAttribute(attribute)) continue;
-            const instanced = attribute;
-            if (instanced.isInterleavedBufferAttribute) {
-                for (let component = 0; component < instanced.itemSize; component++) {
-                    instanced.setComponent(oldInstanceId, component, instanced.getComponent(oldLastInstanceId, component));
-                }
-            } else {
-                const source = oldLastInstanceId * instanced.itemSize;
-                const target = oldInstanceId * instanced.itemSize;
-                instanced.array.copyWithin(target, source, source + instanced.itemSize);
-            }
-            instanced.needsUpdate = true;
-        }
-        for (const key of ['customPivots', 'localMatrices', 'displayTypes', 'textDisplayTemplateKeys'] as const) {
-            const values = oldMesh.userData[key] as Map<number, unknown> | undefined;
-            values?.delete(oldInstanceId);
-            if (values?.has(oldLastInstanceId)) values.set(oldInstanceId, values.get(oldLastInstanceId));
-            values?.delete(oldLastInstanceId);
-        }
-        GroupUtils.updateGroupReferenceForMovedInstance(loadedObjectGroup, oldMesh, oldLastInstanceId, oldInstanceId);
-    } else {
-        for (const key of ['customPivots', 'localMatrices', 'displayTypes', 'textDisplayTemplateKeys'] as const) {
-            (oldMesh.userData[key] as Map<number, unknown> | undefined)?.delete(oldInstanceId);
-        }
-    }
-    oldMesh.count--;
-    oldMesh.instanceMatrix.needsUpdate = true;
-    if (oldMesh.instanceColor) oldMesh.instanceColor.needsUpdate = true;
+    removeInstances(loadedObjectGroup, batchOf(oldMesh), [oldInstanceId]);
     oldMesh.computeBoundingBox();
     oldMesh.computeBoundingSphere();
     mesh.computeBoundingBox();
@@ -263,9 +204,7 @@ async function updateTextObject(objectUuid: string, name: string, options: TextD
         const optionMap = (userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)
             ?? (userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>());
         optionMap.set(objectUuid, { ...options });
-        const templateKeys = (ref.mesh.userData.textDisplayTemplateKeys as Map<number, string> | undefined)
-            ?? (ref.mesh.userData.textDisplayTemplateKeys = new Map<number, string>());
-        templateKeys.set(ref.instanceId, templateKey);
+        ref.mesh.userData.textDisplayBatch = true;
         Overlay.updateSelectionOverlayObject(ref.mesh, ref.instanceId);
         return;
     }
@@ -323,8 +262,6 @@ async function updateTextObject(objectUuid: string, name: string, options: TextD
     const optionMap = (userData.objectTextDisplayOptions as Map<string, TextDisplayOptions> | undefined)
         ?? (userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>());
     optionMap.set(objectUuid, { ...options });
-    (ref.mesh.userData.textDisplayTemplateKeys as Map<number, string> | undefined)
-        ?.set(ref.instanceId, templateKey);
     Overlay.updateSelectionOverlayObject(ref.mesh, ref.instanceId);
 }
 
@@ -398,7 +335,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         const oldGeometryDisplayType = Overlay.getDisplayType(oldRef.mesh, oldRef.instanceId);
         const oldPlayerHeadScale = wasPlayerHead && Overlay.isItemDisplayHatEnabled(oldRef.mesh, oldRef.instanceId) ? PLAYER_HEAD_LAYER_SCALE : 1;
         if (isPlayerHead) oldMatrix.multiply(getPlayerHeadRenderMatrix(oldDisplayType).invert());
-        const groupId = (ud.objectToGroup as Map<string, string> | undefined)?.get(`${oldRef.mesh.uuid}_${oldRef.instanceId}`);
+        const groupId = (ud.objectToGroup as Map<string, string> | undefined)?.get(objectUuid);
         const group = groupId ? (ud.groups as Map<string, GroupData> | undefined)?.get(groupId) : undefined;
         if (groupId && group && !previousGroupChildren.has(groupId)) previousGroupChildren.set(groupId, [...group.children]);
         const wasItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
@@ -407,7 +344,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         // Property changes replace the model without moving or resizing the object.
         const preservesObjectTransform = !displayTypeChanged
             && oldName.split('[', 1)[0] === name.split('[', 1)[0];
-        const customPivot = (oldRef.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(oldRef.instanceId)?.clone();
+        const customPivot = getInstancePivot(oldRef.mesh, oldRef.instanceId)?.clone();
         const pivot = transformContext?.pivotMode === 'center' || displayTypeChanged
             ? Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new Vector3())
             : customPivot ?? (oldGeometryDisplayType === 'block_display' && !wasPlayerHead && !isPlayerHead
@@ -463,9 +400,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         }))
         : null;
     if (directTextItems) {
-        const keyToUuid = ud.instanceKeyToObjectUuid as Map<string, string>;
         await addTextDisplayItems(directTextItems, (mesh, instanceId, uuid) => {
-            keyToUuid.set(GroupUtils.getGroupKey(mesh, instanceId), uuid);
             refs.set(uuid, { mesh, instanceId });
         });
         const names = ud.objectNames as Map<string, string>;
@@ -512,6 +447,8 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         oldLastInstanceId: number;
         mesh: InstancedMesh;
         instanceId: number;
+        oldUuid: string;
+        uuid: string;
     }> = [];
     const deletionOrder = Array.from(deletionStates, ([mesh, states]) => {
         let oldLastInstanceId = mesh.count - 1;
@@ -542,12 +479,11 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
     for (const [groupId, children] of previousGroupChildren) {
         const group = (ud.groups as Map<string, GroupData>).get(groupId);
         group.children = children.map(child => {
-            const replacementUuid = child.type === 'object' && child.id ? replacementUuids.get(child.id) : undefined;
+            const replacementUuid = child.type === 'object' ? replacementUuids.get(child.id) : undefined;
             if (!replacementUuid) return child;
-            const replacement = refs.get(replacementUuid);
-            if (!replacement) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
-            (ud.objectToGroup as Map<string, string>).set(`${replacement.mesh.uuid}_${replacement.instanceId}`, groupId);
-            return { ...child, id: replacementUuid, mesh: replacement.mesh, instanceId: replacement.instanceId };
+            if (!refs.has(replacementUuid)) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
+            (ud.objectToGroup as Map<string, string>).set(replacementUuid, groupId);
+            return { type: 'object' as const, id: replacementUuid };
         });
     }
 
@@ -621,13 +557,9 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             replacement.mesh.instanceMatrix.needsUpdate = true;
         }
         if (state.customPivotParent) {
-            if (!replacement.mesh.userData.customPivots) replacement.mesh.userData.customPivots = new Map<number, Vector3>();
             const replacementMatrix = new Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
-            replacement.mesh.userData.customPivots.set(
-                replacement.instanceId,
-                state.customPivotParent.applyMatrix4(replacementMatrix.invert())
-            );
+            setInstancePivot(replacement.mesh, replacement.instanceId, state.customPivotParent.applyMatrix4(replacementMatrix.invert()));
         }
 
     }
@@ -640,7 +572,8 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         const replacement = refs.get(state.replacementUuid)!;
         selectionReplacements.push({
             oldMesh: state.oldMesh, oldInstanceId: state.oldInstanceId, oldLastInstanceId,
-            mesh: replacement.mesh, instanceId: replacement.instanceId
+            mesh: replacement.mesh, instanceId: replacement.instanceId,
+            oldUuid: state.objectUuid, uuid: state.replacementUuid
         });
     }
     window.dispatchEvent(new CustomEvent('pde:replace-object-selection', { detail: selectionReplacements }));

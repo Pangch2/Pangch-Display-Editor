@@ -12,8 +12,8 @@ const keyId = (value: unknown): string => {
   if (typeof value !== 'string' || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/.test(value)) throw new Error('MineSkin 키 ID가 올바르지 않습니다.');
   return value;
 };
-const secureStorage = () => {
-  if (!safeStorage.isEncryptionAvailable() || (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')) {
+const secureStorage = async () => {
+  if (!await safeStorage.isAsyncEncryptionAvailable() || (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')) {
     throw new Error('운영체제의 안전한 키 저장소를 사용할 수 없습니다.');
   }
 };
@@ -26,9 +26,9 @@ export class MineSkinKeyStore {
       const stored = await readAccountFile<{ encrypted: string }>(keysFile);
       let keys: MineSkinKey[] = [];
       if (stored) {
-        secureStorage();
+        await secureStorage();
         try {
-          keys = JSON.parse(safeStorage.decryptString(Buffer.from(stored.encrypted, 'base64')));
+          keys = JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(stored.encrypted, 'base64'))).result);
           if (!Array.isArray(keys) || keys.length > 64 || new Set(keys.map(entry => keyId(entry.id))).size !== keys.length) throw new Error();
           keys = keys.map(entry => ({ id: keyId(entry.id), key: keyValue(entry.key) }));
         } catch { throw new Error('저장된 MineSkin 키 목록을 읽을 수 없습니다.'); }
@@ -48,8 +48,8 @@ export class MineSkinKeyStore {
       if (action === 'remove') keys.splice(index, 1);
       else keys[index].key = keyValue(value);
     }
-    secureStorage();
-    await writeAccountFile(keysFile, { encrypted: safeStorage.encryptString(JSON.stringify(keys)).toString('base64') });
+    await secureStorage();
+    await writeAccountFile(keysFile, { encrypted: (await safeStorage.encryptStringAsync(JSON.stringify(keys))).toString('base64') });
     this.keys = keys;
     return this.list();
   }

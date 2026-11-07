@@ -4,10 +4,7 @@ import {
     Renderer,
     Camera,
     Group,
-    Object3D,
-    InstancedMesh,
-    Quaternion,
-    Mesh
+    Quaternion
 } from 'three/webgpu';
 import * as Select from './select';
 import type { SelectionCallbacks } from './select';
@@ -15,8 +12,9 @@ import * as Overlay from './overlay';
 import * as GroupUtils from '../grouping/group';
 import { getVisibleInstanceIds } from '../scene-visibility';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import { transformInstanceRange, type InstanceIdRange } from './instance-ranges';
+import type { InstanceIdRange } from './instance-ranges';
 import { matchesPointerShortcut } from '../input/shortcuts';
+import { invalidateBatchBounds, objectBatches, transformInstanceMatrices, type ObjectBatch } from '../../scene-store/object-access';
 
 interface OrbitControlsLike {
     enabled: boolean;
@@ -105,8 +103,8 @@ export interface DragInterface {
 
 export interface ApplyDeltaParams {
     deltaMatrix: Matrix4;
-    meshToInstanceIds?: Map<Object3D, number[]>;
-    meshToInstanceRanges?: Map<Object3D, InstanceIdRange[]>;
+    meshToInstanceIds?: Map<ObjectBatch, number[]>;
+    meshToInstanceRanges?: Map<ObjectBatch, InstanceIdRange[]>;
     selectedGroupIds?: Set<string>;
     loadedObjectGroup: Group;
 }
@@ -116,7 +114,6 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
 
     const tmpMeshWorldInverse = new Matrix4();
     const tmpLocalDelta = new Matrix4();
-    const tmpInstanceMatrix = new Matrix4();
     const meshToRanges = meshToInstanceRanges ?? new Map(
         Array.from(meshToInstanceIds ?? [], ([mesh, instanceIds]) => [
             mesh,
@@ -125,34 +122,12 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
     );
 
     for (const [mesh, ranges] of meshToRanges) {
-        tmpMeshWorldInverse.copy((mesh as Object3D).matrixWorld).invert();
+        tmpMeshWorldInverse.copy(mesh.matrixWorld).invert();
         tmpLocalDelta.multiplyMatrices(tmpMeshWorldInverse, deltaMatrix);
-        tmpLocalDelta.multiply((mesh as Object3D).matrixWorld);
+        tmpLocalDelta.multiply(mesh.matrixWorld);
 
-        const matrices = (mesh as InstancedMesh).isInstancedMesh ? (mesh as InstancedMesh).instanceMatrix.array : null;
-        for (const { start, count } of ranges) {
-            if (matrices) {
-                transformInstanceRange(matrices, tmpLocalDelta, start, count);
-            } else {
-                for (let instanceId = start; instanceId < start + count; instanceId++) {
-                    (mesh as InstancedMesh).getMatrixAt(instanceId, tmpInstanceMatrix);
-                    tmpInstanceMatrix.premultiply(tmpLocalDelta);
-                    (mesh as InstancedMesh).setMatrixAt(instanceId, tmpInstanceMatrix);
-                }
-            }
-        }
-
-        if ((mesh as InstancedMesh).isInstancedMesh) {
-            const instancedMesh = mesh as InstancedMesh;
-            const instanceMatrix = instancedMesh.instanceMatrix;
-            if (meshToInstanceRanges) {
-                for (const { start, count } of ranges) {
-                    instanceMatrix.addUpdateRange(start * instanceMatrix.itemSize, count * instanceMatrix.itemSize);
-                }
-            }
-            instanceMatrix.needsUpdate = true;
-            instancedMesh.boundingSphere = null;
-        }
+        for (const { start, count } of ranges) transformInstanceMatrices(mesh, tmpLocalDelta, start, count);
+        invalidateBatchBounds(mesh);
     }
 
     if (selectedGroupIds && selectedGroupIds.size > 0) {
@@ -255,12 +230,12 @@ export function initDrag({
         getControls().enabled = marqueePrevControlsEnabled;
     };
 
-    function _replaceSelectionWithObjectsMap(meshToIds: Map<Mesh | InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
-        Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
+    function _replaceSelectionWithObjectsMap(meshToIds: Map<ObjectBatch, Set<number>>, options?: { anchorMode?: string }) {
+        Select.replaceSelectionWithObjects(Select.toObjectUuids(meshToIds), getSelectionCallbacks(), options);
     }
 
-    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<Mesh | InstancedMesh, Set<number>>, options?: { anchorMode?: string }) {
-        Select.replaceSelectionWithGroupsAndObjects(groupIds!, meshToIds, getSelectionCallbacks(), options);
+    function _replaceSelectionWithGroupsAndObjects(groupIds: Set<string> | null, meshToIds: Map<ObjectBatch, Set<number>>, options?: { anchorMode?: string }) {
+        Select.replaceSelectionWithGroupsAndObjects(groupIds, Select.toObjectUuids(meshToIds), getSelectionCallbacks(), options);
     }
 
     return {
@@ -343,24 +318,20 @@ export function initDrag({
                 const maxY = bottom - canvasRect.top;
 
                 const groupIds = ignoreGroups ? null : new Set<string>();
-                const meshToIds = new Map<Mesh | InstancedMesh, Set<number>>();
+                const meshToIds = new Map<ObjectBatch, Set<number>>();
                 const tmpMat = _TMP_MAT4_A;
                 const camera = getCamera();
 
-                const objectToGroup = ignoreGroups ? null : GroupUtils.getObjectToGroup(loadedObjectGroup) as Map<string, string>;
 
-                loadedObjectGroup.traverse((obj: Object3D) => {
-                    if (!obj || !(obj as InstancedMesh).isInstancedMesh) return;
-                    if (obj.visible === false) return;
-
-                    const mesh = obj as InstancedMesh;
+                for (const mesh of objectBatches(loadedObjectGroup)) {
+                    if (mesh.visible === false) continue;
                     for (const instanceId of getVisibleInstanceIds(mesh)) {
-                        if (!Overlay.isInstanceValid(obj as InstancedMesh, instanceId)) continue;
+                        if (!Overlay.isInstanceValid(mesh, instanceId)) continue;
 
-                        const bbox = Overlay.getInstanceLocalBox(obj as InstancedMesh, instanceId);
+                        const bbox = Overlay.getInstanceLocalBox(mesh, instanceId);
                         if (!bbox) continue;
 
-                        Overlay.getInstanceWorldMatrix(obj as InstancedMesh, instanceId, tmpMat);
+                        Overlay.getInstanceWorldMatrix(mesh, instanceId, tmpMat);
 
                         // 투영된 바운딩 박스 계산을 위한 코너 좌표
                         _TMP_CORNERS[0].set(bbox.min.x, bbox.min.y, bbox.min.z);
@@ -398,9 +369,8 @@ export function initDrag({
                         if (minSx > maxX || maxSx < minX || minSy > maxY || maxSy < minY) continue;
                         if (!projectedBoxIntersectsMarquee(_TMP_CORNERS, validCornerCount, minX, maxX, minY, maxY)) continue;
 
-                        if (!ignoreGroups && objectToGroup) {
-                            const key = GroupUtils.getGroupKey(obj as InstancedMesh, instanceId);
-                            const immediateGroupId = objectToGroup.get(key);
+                        if (!ignoreGroups) {
+                            const immediateGroupId = GroupUtils.getSlotGroupId(loadedObjectGroup, mesh, instanceId);
                             if (immediateGroupId) {
                                 const chain = GroupUtils.getGroupChain(loadedObjectGroup, immediateGroupId);
                                 if (groupIds) groupIds.add(chain[0] ?? immediateGroupId);
@@ -408,14 +378,14 @@ export function initDrag({
                             }
                         }
 
-                        let set = meshToIds.get(obj as InstancedMesh);
+                        let set = meshToIds.get(mesh);
                         if (!set) {
                             set = new Set<number>();
-                            meshToIds.set(obj as InstancedMesh, set);
+                            meshToIds.set(mesh, set);
                         }
                         set.add(instanceId);
                     }
-                });
+                }
 
                 if (ignoreGroups) {
                     _replaceSelectionWithObjectsMap(meshToIds, { anchorMode: 'center' });

@@ -1,24 +1,19 @@
 import {
-    InstancedMesh,
     Vector3,
     Object3D,
     Group,
     Matrix4
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
+import { getInstanceMatrix, getInstancePivot, setInstanceMatrix, setInstancePivot, type ObjectBatch } from '../../scene-store/object-access';
+import { toMeshMap, type SelectionState } from '../selection/select';
 
 export interface ShearItem {
-    mesh: InstancedMesh;
+    mesh: ObjectBatch;
     instanceId: number;
 }
 
-export interface ShearSelection {
-    groups?: Set<string>;
-    objects?: Map<InstancedMesh, Set<number>>;
-    primary?: {
-        type: 'group' | 'object';
-    } | null;
-}
+export type ShearSelection = Partial<SelectionState>;
 
 export interface ShearCallbacks {
     SelectionCenter: (pivotMode: string, isCustomPivot: boolean, pivotOffset: Vector3) => Vector3;
@@ -44,11 +39,7 @@ export function removeShearFromSelection(
 
     if (items.length > 0) {
         const getSelectionItemCount = (): number => {
-            let count = currentSelection.groups?.size ?? 0;
-            if (currentSelection.objects) {
-                for (const ids of currentSelection.objects.values()) count += ids.size;
-            }
-            return count;
+            return (currentSelection.groups?.size ?? 0) + (currentSelection.objects?.size ?? 0);
         };
 
         const isMultiSelection = getSelectionItemCount() > 1;
@@ -58,20 +49,14 @@ export function removeShearFromSelection(
         const originalCustomPivotWorlds = new Map<string, Vector3>();
         const getCustomPivot = (mesh: any, instanceId: number): Vector3 | null => {
             if (!mesh || !mesh.userData) return null;
-            if (mesh.userData.customPivots) {
-                return (mesh.userData.customPivots as Map<number, Vector3>).get(instanceId) ?? null;
-            }
-            if (mesh.userData.customPivot) {
-                return mesh.userData.customPivot as Vector3;
-            }
-            return null;
+            return getInstancePivot(mesh, instanceId) ?? null;
         };
 
         items.forEach(({ mesh, instanceId }) => {
             const customPivot = getCustomPivot(mesh, instanceId);
             if (customPivot) {
                 const matrix = new Matrix4();
-                mesh.getMatrixAt(instanceId, matrix);
+                getInstanceMatrix(mesh, instanceId, matrix);
                 const worldMatrix = matrix.premultiply(mesh.matrixWorld);
                 const worldPos = customPivot.clone().applyMatrix4(worldMatrix);
                 const key = `${mesh.uuid}_${instanceId}`;
@@ -83,7 +68,7 @@ export function removeShearFromSelection(
         // This method mathematically guarantees 0 shear in one step, so no iteration is needed.
         items.forEach(({mesh, instanceId}) => {
             const matrix = new Matrix4();
-            mesh.getMatrixAt(instanceId, matrix);
+            getInstanceMatrix(mesh, instanceId, matrix);
             
             const position = new Vector3().setFromMatrixPosition(matrix);
             
@@ -119,14 +104,9 @@ export function removeShearFromSelection(
             matrix.makeBasis(x, y, z);
             matrix.setPosition(position);
             
-            mesh.setMatrixAt(instanceId, matrix);
+            setInstanceMatrix(mesh, instanceId, matrix);
         });
         
-        items.forEach(({mesh}) => {
-             if ((mesh as InstancedMesh).isInstancedMesh) {
-                 (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
-             }
-        });
 
         // For group selections, drop shear-carrying cached matrices BEFORE computing SelectionCenter.
         // This ensures the center used for offset matches what updateHelperPosition() will use next.
@@ -159,7 +139,7 @@ export function removeShearFromSelection(
 
                 items.forEach(({mesh, instanceId}) => {
                     const inverseMeshWorld = mesh.matrixWorld.clone().invert();
-                    mesh.getMatrixAt(instanceId, tempMat);
+                    getInstanceMatrix(mesh, instanceId, tempMat);
                     tempMat.premultiply(mesh.matrixWorld);
 
                     tempMat.elements[12] += offset.x;
@@ -167,10 +147,7 @@ export function removeShearFromSelection(
                     tempMat.elements[14] += offset.z;
 
                     tempMat.premultiply(inverseMeshWorld);
-                    mesh.setMatrixAt(instanceId, tempMat);
-                    if ((mesh as InstancedMesh).isInstancedMesh) {
-                        (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
-                    }
+                    setInstanceMatrix(mesh, instanceId, tempMat);
                 });
             }
 
@@ -182,15 +159,12 @@ export function removeShearFromSelection(
                 currentSelection.objects.size === 1 &&
                 currentSelection.primary?.type === 'object'
             ) {
-                for (const [mesh, ids] of currentSelection.objects) {
+                for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
                     if (!mesh || !ids || ids.size === 0) continue;
-                    if (!(mesh as InstancedMesh).isInstancedMesh) continue;
 
                     const worldMatrix = new Matrix4();
                     const invWorldMatrix = new Matrix4();
 
-                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
-                    const customPivots = mesh.userData.customPivots as Map<number, Vector3>;
 
                     for (const instanceId of ids) {
                         const key = `${mesh.uuid}_${instanceId}`;
@@ -199,10 +173,10 @@ export function removeShearFromSelection(
                             ? originalWorldPos.clone().add(offset)
                             : targetPosition.clone();
 
-                        mesh.getMatrixAt(instanceId, worldMatrix);
+                        getInstanceMatrix(mesh, instanceId, worldMatrix);
                         worldMatrix.premultiply(mesh.matrixWorld);
                         invWorldMatrix.copy(worldMatrix).invert();
-                        customPivots.set(instanceId, newWorldPos.applyMatrix4(invWorldMatrix));
+                        setInstancePivot(mesh, instanceId, newWorldPos.applyMatrix4(invWorldMatrix));
                     }
                 }
             }

@@ -1,33 +1,28 @@
 import {
     Matrix4,
     Vector3,
-    InstancedMesh,
     Mesh,
-    Object3D,
     Group,
     Sprite
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
-import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
+import { isSlotSelected, toMeshMap, type SelectionState } from '../selection/select';
+import { performSelectionSwap, primarySource, SelectionSource, QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
 import { applyLinkedMirrorDelta, syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../transform/mirroring';
 import { applyDeltaToSelection } from '../selection/drag';
+import { getInstanceMatrix, objectUuidAt, setInstanceIsCustomPivot, setInstancePivot, type ObjectBatch } from '../../scene-store/object-access';
 
 const _TMP_MAT4_A = new Matrix4();
 const _ZERO_VEC3 = new Vector3(0, 0, 0);
 
-type MeshType = InstancedMesh | Mesh;
 
 interface VertexTranslateContext {
     isVertexMode: boolean;
     gizmoMode: string;
-    currentSelection: {
-        groups: Set<string>;
-        objects: Map<Object3D, Set<number>>;
-        primary: SelectionSource | null;
-    };
+    currentSelection: SelectionState;
     loadedObjectGroup: Group;
     selectionHelper: Mesh;
 
@@ -76,14 +71,7 @@ export function processVertexSnap(
 ): boolean {
     if (!isVertexMode) return false;
 
-    const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
-    let objectIdCount = 0;
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const ids of currentSelection.objects.values()) {
-            objectIdCount += ids.size;
-        }
-    }
-    const activeSelectionCount = groupCount + objectIdCount;
+    const activeSelectionCount = currentSelection.groups.size + currentSelection.objects.size;
     const preserveSelectionOnSnap = _isMultiSelection() || activeSelectionCount > 1;
 
     const keys = Array.from(selectedVertexKeys);
@@ -110,8 +98,8 @@ export function processVertexSnap(
                 const target = item.items.find(sub => {
                     if (sub.type !== sourceItem.type) return false;
                     if (sub.type === 'group') return sub.id === (sourceItem as { type: 'group'; id: string }).id;
-                    return sub.mesh === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).mesh
-                        && sub.instanceId === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).instanceId;
+                    return sub.mesh === (sourceItem as { type: 'object'; mesh: ObjectBatch; instanceId: number }).mesh
+                        && sub.instanceId === (sourceItem as { type: 'object'; mesh: ObjectBatch; instanceId: number }).instanceId;
                 });
                 if (target) {
                     target.gizmoLocalPosition = newPivot;
@@ -126,8 +114,8 @@ export function processVertexSnap(
                         return;
                     }
                 } else {
-                    if (target.mesh === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).mesh
-                        && target.instanceId === (sourceItem as { type: 'object'; mesh: MeshType; instanceId: number }).instanceId) {
+                    if (target.mesh === (sourceItem as { type: 'object'; mesh: ObjectBatch; instanceId: number }).mesh
+                        && target.instanceId === (sourceItem as { type: 'object'; mesh: ObjectBatch; instanceId: number }).instanceId) {
                         target.gizmoLocalPosition = newPivot;
                         return;
                     }
@@ -150,23 +138,14 @@ export function processVertexSnap(
                 const { mesh, instanceId } = src;
                 const instanceMatrix = _TMP_MAT4_A;
 
-                if ((mesh as InstancedMesh).isInstancedMesh) {
-                    (mesh as InstancedMesh).getMatrixAt(instanceId, instanceMatrix);
-                } else {
-                    instanceMatrix.identity();
-                }
+                getInstanceMatrix(mesh, instanceId, instanceMatrix);
                 const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                 const inv = worldMatrix.clone().invert();
                 const localPivot = targetPos.clone().applyMatrix4(inv);
 
-                if ((mesh as InstancedMesh).isInstancedMesh) {
-                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
-                    mesh.userData.customPivots.set(instanceId, localPivot);
-                } else {
-                    mesh.userData.customPivot = localPivot;
-                }
-                mesh.userData.isCustomPivot = true;
-                const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(GroupUtils.getGroupKey(mesh, instanceId));
+                setInstancePivot(mesh, instanceId, localPivot);
+                setInstanceIsCustomPivot(mesh, instanceId, true);
+                const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId);
                 if (uuid) syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
                 updateQueueItemPivot(src, localPivot);
                 console.log(`Cloned Gizmo: Custom pivot updated for object ${mesh.uuid} instance ${instanceId}`);
@@ -189,7 +168,7 @@ export function processVertexSnap(
 
             let targetSrc: SelectionSource | null = sprite2.userData.source ?? null;
             if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
-                targetSrc = currentSelection.primary;
+                targetSrc = primarySource(currentSelection);
             }
             performSelectionSwap(src, targetSrc, {
                 currentSelection,
@@ -258,27 +237,21 @@ export function processVertexSnap(
                 }
 
                 if (currentSelection.objects && currentSelection.objects.size > 0) {
-                    for (const [mesh, ids] of currentSelection.objects) {
+                    for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
                         if (!mesh || !ids) continue;
 
                         for (const id of ids) {
                             const instanceMatrix = _TMP_MAT4_A;
-                            if ((mesh as InstancedMesh).isInstancedMesh) (mesh as InstancedMesh).getMatrixAt(id, instanceMatrix);
-                            else instanceMatrix.identity();
+                            getInstanceMatrix(mesh, id, instanceMatrix);
                             const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                             const inv = worldMatrix.clone().invert();
                             const localPivot = targetPos.clone().applyMatrix4(inv);
 
-                            if ((mesh as InstancedMesh).isInstancedMesh) {
-                                if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
-                                mesh.userData.customPivots.set(id, localPivot);
-                            } else {
-                                mesh.userData.customPivot = localPivot;
-                            }
-                            mesh.userData.isCustomPivot = true;
-                            const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(GroupUtils.getGroupKey(mesh as MeshType, id));
+                            setInstancePivot(mesh, id, localPivot);
+                            setInstanceIsCustomPivot(mesh, id, true);
+                            const uuid = objectUuidAt(loadedObjectGroup, mesh as ObjectBatch, id);
                             if (uuid) syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
-                            updateQueueItemPivot({ type: 'object', mesh: mesh as MeshType, instanceId: id }, localPivot);
+                            updateQueueItemPivot({ type: 'object', mesh: mesh as ObjectBatch, instanceId: id }, localPivot);
                         }
                     }
                 }
@@ -307,12 +280,11 @@ export function processVertexSnap(
         const isSrcEffectiveSelected = (() => {
             if (src.type === 'group') return currentSelection.groups.has(src.id);
             if (src.type === 'object') {
-                if (currentSelection.objects.has(src.mesh) && currentSelection.objects.get(src.mesh)!.has(src.instanceId)) return true;
+                if (isSlotSelected(src.mesh, src.instanceId, currentSelection)) return true;
 
                 const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
                 if (objectToGroup) {
-                    const key = GroupUtils.getGroupKey(src.mesh, src.instanceId);
-                    let groupId = objectToGroup.get(key);
+                    let groupId = GroupUtils.getSlotGroupId(loadedObjectGroup, src.mesh, src.instanceId);
                     while (groupId) {
                         if (currentSelection.groups.has(groupId)) return true;
                         const g = getGroups().get(groupId);
@@ -326,11 +298,11 @@ export function processVertexSnap(
         // 2. Build explicit lists of what to move
         const targets = {
             groups: new Set<string>(),
-            instances: new Map<MeshType, Set<number>>(),
+            instances: new Map<ObjectBatch, Set<number>>(),
             isBundleMove: false
         };
 
-        const addInstance = (mesh: MeshType, id: number) => {
+        const addInstance = (mesh: ObjectBatch, id: number) => {
             let set = targets.instances.get(mesh);
             if (!set) { set = new Set(); targets.instances.set(mesh, set); }
             set.add(id);
@@ -376,9 +348,9 @@ export function processVertexSnap(
                 for (const gid of currentSelection.groups) addGroup(gid);
             }
             if (currentSelection.objects) {
-                for (const [mesh, ids] of currentSelection.objects) {
+                for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
                     for (const id of ids) {
-                        addInstance(mesh as MeshType, id);
+                        addInstance(mesh as ObjectBatch, id);
                     }
                 }
             }
@@ -432,7 +404,7 @@ export function processVertexSnap(
         // Swapping selection state
         let targetSrc: SelectionSource | null = sprite2.userData.source ?? null;
         if (!targetSrc && sprite2.userData.isCenter && currentSelection.primary) {
-            targetSrc = currentSelection.primary;
+            targetSrc = primarySource(currentSelection);
         }
 
         performSelectionSwap(src, targetSrc, {

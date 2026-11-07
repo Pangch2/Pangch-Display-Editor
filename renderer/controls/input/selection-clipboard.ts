@@ -1,4 +1,4 @@
-import { type Mesh, type InstancedMesh } from 'three/webgpu';
+import { objectSlots } from '../../scene-store/object-access';
 import { loadedObjectGroup, currentLoadGen } from '../../load-project/display/display-instancing';
 import { loadAndRenderPbde, type CreatedProjectIds } from '../../load-project/display/project-renderer';
 import { encodePdeProject } from '../../save/pde-format';
@@ -26,13 +26,7 @@ function enqueue(command: () => Promise<void>): Promise<void> {
 export function isSelectionPastePending(): boolean { return pendingPastes > 0; }
 
 export async function copySelection(selection: SelectionState): Promise<void> {
-    const data = loadedObjectGroup.userData;
-    const objectUuids: string[] = [];
-    for (const [mesh, ids] of selection.objects) for (const id of ids) {
-        const uuid = data.instanceKeyToObjectUuid?.get(`${mesh.uuid}_${id}`);
-        if (uuid) objectUuids.push(uuid);
-    }
-    const project = serializeProject(loadedObjectGroup, { groups: selection.groups, objectUuids });
+    const project = serializeProject(loadedObjectGroup, { groups: selection.groups, objectUuids: [...selection.objects] });
     if (!project.children.length) return Promise.resolve();
     const bytes = encodePdeProject(project);
     const revision = projectRevision;
@@ -68,27 +62,17 @@ function mergeSelectionFiles(targets: string[], readFiles: () => Promise<Prepare
         const created: CreatedProjectIds = { objects: new Set(), groups: new Set() };
         const groups = getGroups(loadedObjectGroup);
         const selectedGroups = new Set<string>();
-        const selectedObjects = new Map<Mesh | InstancedMesh, Set<number>>();
+        const selectedObjects = new Set<string>();
         const generation = currentLoadGen;
         let canceled = false;
-        const objectSelection = () => {
-            const objects = new Map<Mesh | InstancedMesh, Set<number>>();
-            for (const uuid of created.objects) {
-                const ref = data.objectUuidToInstance?.get(uuid);
-                if (!ref) continue;
-                let ids = objects.get(ref.mesh);
-                if (!ids) objects.set(ref.mesh, ids = new Set());
-                ids.add(ref.instanceId);
-            }
-            return objects;
-        };
+        const objectSelection = () => objectSlots(loadedObjectGroup, created.objects);
         const rollback = () => {
             deleteSelectedItems(loadedObjectGroup, { groups: created.groups, objects: objectSelection() },
                 { resetSelectionAndDeselect: () => {} })?.dispose();
             // The loader writes metadata before asynchronous mesh creation can fail.
             for (const uuid of created.objects) {
                 for (const key of ['objectNames', 'objectLabels', 'objectIsItemDisplay', 'objectDisplayTypes', 'objectBlockProps',
-                    'objectTextDisplayOptions', 'objectTextures', 'objectNbt', 'objectBrightness', 'hiddenObjectUuids', 'objectMirrorPairs']) {
+                    'objectTextDisplayOptions', 'objectTextures', 'objectNbt', 'objectBrightness', 'objectPivots', 'objectIsCustomPivot', 'objectDisplayKinds', 'hiddenObjectUuids', 'objectMirrorPairs']) {
                     data[key]?.delete(uuid);
                 }
             }
@@ -137,14 +121,11 @@ function mergeSelectionFiles(targets: string[], readFiles: () => Promise<Prepare
                         }
                         selectedGroups.add(entry.id);
                     } else {
-                        const { mesh, instanceId } = data.objectUuidToInstance.get(entry.id);
                         if (target) {
-                            target.children.push({ type: 'object', id: entry.id, mesh, instanceId });
-                            objectToGroup.set(`${mesh.uuid}_${instanceId}`, targetId);
+                            target.children.push({ type: 'object', id: entry.id });
+                            objectToGroup.set(entry.id, targetId);
                         }
-                        let ids = selectedObjects.get(mesh);
-                        if (!ids) selectedObjects.set(mesh, ids = new Set());
-                        ids.add(instanceId);
+                        selectedObjects.add(entry.id);
                     }
                 }
                 if (target) {

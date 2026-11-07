@@ -6,6 +6,7 @@ import {
 } from 'three/webgpu';
 import { createImageHeadAtlasMeshes, deferredPlayerHeadTexture, loadedObjectGroup } from '../../load-project/display/mesh-builder';
 import type { GroupData } from '../../load-project/pbde/pbde-types';
+import { ObjectStore } from '../../scene-store/object-store';
 
 export type PlayerModel = 'default' | 'animation';
 export type SkinModel = 'classic' | 'slim';
@@ -202,9 +203,8 @@ export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupN
   const children: GroupData['children'] = [];
   const userData = loadedObjectGroup.userData;
   const groups = (userData.groups as Map<string, GroupData> | undefined) ?? (userData.groups = new Map());
-  const objectToGroup = (userData.objectToGroup as Map<string, string> | undefined) ?? (userData.objectToGroup = new Map());
-  const keyToUuid = (userData.instanceKeyToObjectUuid as Map<string, string> | undefined) ?? (userData.instanceKeyToObjectUuid = new Map());
-  const uuidToInstance = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined) ?? (userData.objectUuidToInstance = new Map());
+  const objectToGroup = (userData.objectToGroup as Map<string, string> | undefined) ?? (userData.objectToGroup = new Map<string, string>());
+  const uuidToInstance = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined) ?? (userData.objectUuidToInstance = new ObjectStore());
   const objectNames = (userData.objectNames as Map<string, string> | undefined) ?? (userData.objectNames = new Map());
   const objectNbt = (userData.objectNbt as Map<string, string> | undefined) ?? (userData.objectNbt = new Map());
   userData.objectBrightness ??= new Map<string, { sky?: number; block?: number }>();
@@ -218,17 +218,15 @@ export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupN
     objects.set(mesh, new Set(Array.from({ length: mesh.count }, (_, instanceId) => instanceId)));
     for (let localIndex = 0; localIndex < mesh.count; localIndex++) {
       const uuid = crypto.randomUUID();
-      const key = `${mesh.uuid}_${localIndex}`;
-      keyToUuid.set(key, uuid);
       uuidToInstance.set(uuid, { mesh, instanceId: localIndex });
-      objectToGroup.set(key, groupId);
+      objectToGroup.set(uuid, groupId);
       objectNames.set(uuid, mesh.name);
       objectNbt.set(uuid, '');
       // ponytail: encode the 64x64 skin only if a later editor action actually asks for it.
       objectTextures.set(uuid, deferredPlayerHeadTexture);
       itemDisplays.add(uuid);
       displayTypes.set(uuid, 'none');
-      children.push({ type: 'object', mesh, instanceId: localIndex, id: uuid });
+      children.push({ type: 'object', id: uuid });
     }
     loadedObjectGroup.add(mesh);
   }

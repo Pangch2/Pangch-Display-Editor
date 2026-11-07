@@ -1,22 +1,9 @@
-import {
-    Mesh,
-    InstancedMesh,
-    Vector3
-} from 'three/webgpu';
+import { Vector3 } from 'three/webgpu';
 import type { GroupData } from '../grouping/group';
+import { setInstanceIsCustomPivot, setInstancePivot } from '../../scene-store/object-access';
+import { toMeshMap, type SelectionState } from '../selection/select';
 
-interface SelectionElement {
-    type: 'group' | 'object';
-    id?: string;
-    mesh?: Mesh | InstancedMesh;
-    instanceId?: number;
-}
-
-interface CurrentSelection {
-    primary?: SelectionElement;
-    groups?: Set<string>;
-    objects?: Map<Mesh | InstancedMesh, Set<number>>;
-}
+type CurrentSelection = Partial<SelectionState>;
 
 interface PivotFlags {
     isCustomPivot: boolean;
@@ -83,13 +70,12 @@ export function resetCustomPivot(
                 }
             }
             if (currentSelection.objects && currentSelection.objects.size > 0) {
-                for (const [mesh, ids] of currentSelection.objects) {
+                for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
                     if (!mesh) continue;
-                    if (mesh.isInstancedMesh && mesh.userData['customPivots']) {
-                        for (const id of ids) (mesh.userData['customPivots'] as Map<number, Vector3>).delete(id);
+                    for (const id of ids) {
+                        setInstancePivot(mesh, id, undefined);
+                        setInstanceIsCustomPivot(mesh, id, undefined);
                     }
-                    delete mesh.userData['customPivot'];
-                    delete mesh.userData['isCustomPivot'];
                 }
             }
 
@@ -114,13 +100,12 @@ export function resetCustomPivot(
         }
 
         if (currentSelection.objects && currentSelection.objects.size > 0) {
-            for (const [mesh, ids] of currentSelection.objects) {
+            for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
                 if (!mesh) continue;
-                if (mesh.isInstancedMesh && mesh.userData['customPivots']) {
-                    for (const id of ids) (mesh.userData['customPivots'] as Map<number, Vector3>).delete(id);
+                for (const id of ids) {
+                    setInstancePivot(mesh, id, undefined);
+                    setInstanceIsCustomPivot(mesh, id, undefined);
                 }
-                delete mesh.userData['customPivot'];
-                delete mesh.userData['isCustomPivot'];
             }
         }
 

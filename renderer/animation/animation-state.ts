@@ -1,5 +1,4 @@
-import { Group, Matrix4, Quaternion, Vector3, type InstancedMesh, type Mesh } from 'three/webgpu';
-import { getInstanceModelTransform } from '../load-project/batching/instance-model-transform';
+import { Group, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import { deferredPlayerHeadTexture, getPlayerHeadRenderMatrix, getPlayerHeadTexture, previewPlayerHeadTextures } from '../load-project/display/player-head-atlas';
 import { getGroupWorldMatrix, shouldUseGroupPivot, normalizePivotToVector3, type GroupData } from '../controls/grouping/group';
 import { activeAnimation, animationClips, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyTransform, putKey, sampleTrack, setKeyCurve,
@@ -10,6 +9,8 @@ import { captureAnimationCamera, previewAnimationCamera, setAnimationCameraPrevi
 import { applyAnimationProperties, hasPendingAnimationProperties } from './animation-properties';
 import { applyAnimationMeshPreview, canReuseAnimationMeshPreview, createAnimationMeshPreview, restoreAnimationMeshPreview,
     type AnimationMeshPreview } from './animation-mesh-preview';
+import { getBatchMatrixVersion, getInstanceHasHat, getInstanceIsCustomPivot, getInstanceMatrix, getInstanceModelMatrix, getInstancePivot, invalidateBatchBounds,
+    readInstanceMatrix, setInstanceIsCustomPivot, setInstanceMatrix, setInstancePivot, type ObjectBatch } from '../scene-store/object-access';
 
 type PoseNode = { type: 'group' | 'object'; parent: string | null; matrix: number[]; texture?: string; hasHat?: boolean; properties?: AnimationProperties;
     pivot?: number[]; isCustomPivot?: boolean; animatePivot?: boolean; matrixAutoUpdate?: boolean };
@@ -27,8 +28,8 @@ export function animationSession(root: Group): AnimationSession {
     return root.userData.animationSession ??= { enabled: false, tick: 0, base: new Map(), local: new Map() };
 }
 
-export function renderModelTransform(root: Group, id: string, mesh: InstancedMesh, instanceId: number, out = new Matrix4()): Matrix4 {
-    const matrix = getInstanceModelTransform(mesh, instanceId, out);
+export function renderModelTransform(root: Group, id: string, mesh: ObjectBatch, instanceId: number, out = new Matrix4()): Matrix4 {
+    const matrix = getInstanceModelMatrix(mesh, instanceId, out);
     if (root.userData.objectIsItemDisplay?.has(id) && root.userData.objectNames?.get(id)?.split('[')[0].replace(/^minecraft:/, '') === 'player_head') {
         matrix.multiply(getPlayerHeadRenderMatrix(root.userData.objectDisplayTypes?.get(id)));
     }
@@ -45,33 +46,28 @@ export function captureAnimationPose(root: Group): AnimationPose {
     }
     root.updateWorldMatrix(true, true);
     const inverse = root.matrixWorld.clone().invert();
-    const meshTransforms = new Map<Mesh, Matrix4>();
+    const meshTransforms = new Map<ObjectBatch, Matrix4>();
     const modelTransform = new Matrix4();
-    for (const [id, { mesh, instanceId }] of (data.objectUuidToInstance ?? new Map()) as Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }>) {
+    for (const [id, { mesh, instanceId }] of (data.objectUuidToInstance ?? new Map()) as Map<string, { mesh: ObjectBatch; instanceId: number }>) {
         if (data.animationPreviewObjectIds?.has(id)) continue;
-        const matrix = new Matrix4();
-        if ((mesh as InstancedMesh).isInstancedMesh) {
-            (mesh as InstancedMesh).getMatrixAt(instanceId, matrix);
-            matrix.multiply(renderModelTransform(root, id, mesh as InstancedMesh, instanceId, modelTransform).invert());
-        }
+        const matrix = getInstanceMatrix(mesh, instanceId, new Matrix4());
+        matrix.multiply(renderModelTransform(root, id, mesh, instanceId, modelTransform).invert());
         let meshTransform = meshTransforms.get(mesh);
         if (!meshTransform) meshTransforms.set(mesh, meshTransform = inverse.clone().multiply(mesh.matrixWorld));
         matrix.premultiply(meshTransform);
         const texture = data.objectTextures?.get(id);
         const brightness = data.objectBrightness?.get(id);
         const options = data.objectTextDisplayOptions?.get(id);
-        const pivot = (mesh as InstancedMesh).isInstancedMesh && mesh.userData.customPivots
-            ? mesh.userData.customPivots?.get(instanceId) ?? mesh.userData.customPivots?.get(String(instanceId))
-            : mesh.userData.customPivot;
-        pose.set(id, { type: 'object', parent: data.objectToGroup?.get(`${mesh.uuid}_${instanceId}`) ?? null,
+        const pivot = getInstancePivot(mesh, instanceId);
+        pose.set(id, { type: 'object', parent: data.objectToGroup?.get(id) ?? null,
             properties: { nbt: data.objectNbt?.get(id) ?? '', name: data.objectNames?.get(id) ?? mesh.name ?? '',
                 brightness: brightness ? { sky: brightness.sky ?? 15, block: brightness.block ?? 0 } : null,
                 displayType: options ? 'text_display' : data.objectIsItemDisplay?.has(id) ? 'item_display' : 'block_display',
                 options: options && structuredClone(options) },
             matrix: matrix.toArray(), matrixAutoUpdate: data.animationSession?.meshPreview?.meshes.get(mesh)?.autoUpdate ?? mesh.matrixAutoUpdate,
-            pivot: pivot ? ((mesh as InstancedMesh).isInstancedMesh ? pivot.clone().applyMatrix4(modelTransform.clone().invert()) : pivot).toArray() : undefined,
-            isCustomPivot: mesh.userData.isCustomPivot,
-            hasHat: mesh.userData.hasHat?.[instanceId],
+            pivot: pivot ? pivot.clone().applyMatrix4(modelTransform.clone().invert()).toArray() : undefined,
+            isCustomPivot: getInstanceIsCustomPivot(mesh, instanceId),
+            hasHat: getInstanceHasHat(mesh, instanceId),
             texture: data.objectNames?.get(id)?.split('[')[0].replace(/^minecraft:/, '') === 'player_head'
                 ? texture === deferredPlayerHeadTexture ? getPlayerHeadTexture(id, data) : texture : undefined });
     }
@@ -79,6 +75,7 @@ export function captureAnimationPose(root: Group): AnimationPose {
 }
 
 function matrix(node: PoseNode): Matrix4 { return new Matrix4().fromArray(node.matrix); }
+const currentMatrix = new Float32Array(16);
 const localTransforms = new WeakMap<PoseNode, AnimationTransform>();
 function localTransform(node: PoseNode): AnimationTransform {
     let transform = localTransforms.get(node);
@@ -247,7 +244,7 @@ export function applyAnimationPose(root: Group, pose: AnimationPose, restoreBase
     const data = root.userData;
     const pending = applyAnimationProperties(root, pose);
     let changed = false;
-    const meshes = new Set<Mesh | InstancedMesh>();
+    const meshes = new Set<ObjectBatch>();
     const parentTransforms = new Map<Matrix4, Matrix4>();
     const modelTransform = new Matrix4();
     for (const [id, node] of pose) {
@@ -257,53 +254,28 @@ export function applyAnimationPose(root: Group, pose: AnimationPose, restoreBase
             changed = applyGroupPose(root, id, node, value) || changed;
             continue;
         }
-        const ref = data.objectUuidToInstance?.get(id) as { mesh: Mesh | InstancedMesh; instanceId: number } | undefined;
+        const ref = data.objectUuidToInstance?.get(id) as { mesh: ObjectBatch; instanceId: number } | undefined;
         if (!ref) continue;
         const { mesh, instanceId } = ref;
-        if ((mesh as InstancedMesh).isInstancedMesh) {
-            if (node.pivot) {
-                const pivot = new Vector3().fromArray(node.pivot)
-                    .applyMatrix4(renderModelTransform(root, id, mesh as InstancedMesh, instanceId, modelTransform).invert());
-                if (!mesh.userData.customPivots?.get(instanceId)?.equals(pivot)) changed = true;
-                (mesh.userData.customPivots ??= new Map()).set(instanceId, pivot);
-            } else {
-                if (mesh.userData.customPivot) mesh.userData.customPivots ??= new Map();
-                changed = (mesh.userData.customPivots?.delete(instanceId) ?? false) || changed;
-            }
-            mesh.userData.customPivots?.delete(String(instanceId));
-        } else if (node.pivot) {
-            const pivot = new Vector3().fromArray(node.pivot);
-            if (!mesh.userData.customPivot?.equals(pivot)) changed = true;
-            mesh.userData.customPivot = pivot;
-        } else { changed ||= !!mesh.userData.customPivot; delete mesh.userData.customPivot; }
+        const pivot = node.pivot && new Vector3().fromArray(node.pivot).applyMatrix4(renderModelTransform(root, id, mesh, instanceId, modelTransform).invert());
+        const current = getInstancePivot(mesh, instanceId);
+        if (pivot ? !current?.equals(pivot) : !!current) changed = true;
+        setInstancePivot(mesh, instanceId, pivot || undefined);
         if (restoreBase) {
-            changed ||= mesh.userData.isCustomPivot !== node.isCustomPivot;
-            if (node.isCustomPivot === undefined) delete mesh.userData.isCustomPivot;
-            else mesh.userData.isCustomPivot = node.isCustomPivot;
+            changed ||= getInstanceIsCustomPivot(mesh, instanceId) !== node.isCustomPivot;
+            setInstanceIsCustomPivot(mesh, instanceId, node.isCustomPivot);
         }
-        const parent = (mesh as InstancedMesh).isInstancedMesh ? mesh.matrixWorld : mesh.parent?.matrixWorld ?? root.matrixWorld;
+        const parent = mesh.matrixWorld;
         let parentTransform = parentTransforms.get(parent);
         if (!parentTransform) parentTransforms.set(parent, parentTransform = parent.clone().invert().multiply(root.matrixWorld));
         value.premultiply(parentTransform);
-        if ((mesh as InstancedMesh).isInstancedMesh) {
-            const instancedMesh = mesh as InstancedMesh;
-            value.multiply(renderModelTransform(root, id, instancedMesh, instanceId, modelTransform));
-            if (value.elements.every((component, index) => Math.fround(component) === instancedMesh.instanceMatrix.array[instanceId * 16 + index])) continue;
-            instancedMesh.setMatrixAt(instanceId, value);
-            instancedMesh.instanceMatrix.addUpdateRange(instanceId * 16, 16);
-        } else {
-            mesh.matrixAutoUpdate = restoreBase ? node.matrixAutoUpdate ?? true : false;
-            if (mesh.matrix.equals(value)) continue;
-            mesh.matrix.copy(value);
-            value.decompose(mesh.position, mesh.quaternion, mesh.scale);
-            mesh.matrixWorldNeedsUpdate = true;
-        }
+        value.multiply(renderModelTransform(root, id, mesh, instanceId, modelTransform));
+        readInstanceMatrix(mesh, instanceId, currentMatrix);
+        if (value.elements.every((component, index) => Math.fround(component) === currentMatrix[index])) continue;
+        setInstanceMatrix(mesh, instanceId, value);
         meshes.add(mesh);
     }
-    for (const mesh of meshes) {
-        if ((mesh as InstancedMesh).isInstancedMesh) (mesh as InstancedMesh).instanceMatrix.needsUpdate = true;
-        mesh.boundingBox = null; mesh.boundingSphere = null;
-    }
+    meshes.forEach(invalidateBatchBounds);
     if (changed || meshes.size) data.animationPreviewRevision = (data.animationPreviewRevision ?? 0) + 1;
     root.updateMatrixWorld(true);
     previewPlayerHeadTextures(root, new Map([...pose].flatMap(([id, node]) => node.texture ? [[id, node.texture] as const] : [])));
@@ -369,7 +341,7 @@ function applyPreview(root: Group, tick: number, layers?: Array<{ clip: Animatio
         preview = groupOnly ? createAnimationMeshPreview(root, session.local, session.base, animatedGroups) : undefined;
         if (preview) {
             applyAnimationPose(root, session.base, true);
-            for (const state of preview.meshes.values()) state.version = state.mesh.instanceMatrix.version;
+            for (const state of preview.meshes.values()) state.version = getBatchMatrixVersion(state.mesh);
             session.meshPreview = preview;
         }
     }
@@ -779,6 +751,7 @@ export function serializeAnimation(root: Group, objects: Set<string>, groups: Se
     for (const clip of animationClips(result)) {
         const source = animationClips(data).find(entry => (entry.id ?? 'default') === (clip.id ?? 'default'))!;
         clip.tracks = clip.tracks.filter(track => track.type === 'camera' ? !selection : ids.has(track.id));
+        if (selection) delete clip.cameraShake;
         if (clip.excludedNodes) clip.excludedNodes = clip.excludedNodes.filter(id => ids.has(id));
         if (!needsRebase || !source.tracks.length) continue;
         const ticks = animationBakeTicks(source);
@@ -816,12 +789,13 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
         const ids = new Map<string, string>();
         const legacy = !data.clips?.length && !data.name && !data.id && !data.loopMode && data.endTick === undefined;
         const compatible = (a: AnimationClip, b: AnimationClip) =>
+            (['enabled', 'translation', 'rotation', 'frequency'] as const).every(field => a.cameraShake?.[field] === b.cameraShake?.[field]) &&
             !(a.tracks.some(track => track.type === 'camera') && b.tracks.some(track => track.type === 'camera')) &&
             (['name', 'tickRate', 'loopMode', 'loopDelay', 'endTick', 'transitionTicks'] as const).every(field => a[field] === b[field]);
         for (const clip of animationClips(data)) {
             const target = animationClips(old).find(entry => clip.id && entry.id === clip.id && compatible(entry, clip))
                 ?? (clip === data && compatible(old, clip) ? old : undefined)
-                ?? (clip === source && (legacy && !clip.tracks.some(track => track.type === 'camera') || compatible(destination, clip)) ? destination : undefined);
+                ?? (clip === source && (legacy && !clip.cameraShake && !clip.tracks.some(track => track.type === 'camera') || compatible(destination, clip)) ? destination : undefined);
             if (target) {
                 target.tracks.push(...clip.tracks);
                 if (clip.excludedNodes?.length) target.excludedNodes = [...new Set([...(target.excludedNodes ?? []), ...clip.excludedNodes])];

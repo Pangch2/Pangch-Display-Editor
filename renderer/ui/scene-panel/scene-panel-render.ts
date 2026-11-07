@@ -20,6 +20,7 @@ import {
     resolveChildObjectUuid
 } from './scene-panel-model';
 import { isSceneItemEnabled, setSceneItemEnabled } from '../../controls/scene-visibility';
+import { objectDisplayType } from '../../scene-store/object-access';
 
 function updateVisibilityToggle(icon: HTMLElement, type: 'group' | 'object', id: string): void {
     const enabled = isSceneItemEnabled(loadedObjectGroup, type, id);
@@ -66,7 +67,7 @@ function updateObjectIcon(icon: HTMLElement, uuid: string): void {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const rawName = getObjectLabel(ud, uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
     const isItemDisplay = ud.objectIsItemDisplay?.has(uuid) ?? false;
-    const isTextDisplay = ud.objectUuidToInstance?.get(uuid)?.mesh.userData.displayType === 'text_display';
+    const isTextDisplay = objectDisplayType(loadedObjectGroup, uuid) === 'text_display';
     const texture = ud.objectTextures?.get(uuid);
     const isPaintedHead = rawName.startsWith('player_head') && (
         texture?.startsWith('data:image/png;base64') || texture === 'pde:deferred-player-head-texture'
@@ -81,7 +82,7 @@ function makeObjectRow(row: ScenePanelRow): HTMLElement {
     const ud = loadedObjectGroup.userData as LoadedObjectUserData;
     const rawName = getObjectLabel(ud, uuid) ?? ud.objectNames?.get(uuid) ?? uuid.slice(0, 8);
     const isItemDisplay = ud.objectIsItemDisplay?.has(uuid) ?? false;
-    const isTextDisplay = ud.objectUuidToInstance?.get(uuid)?.mesh.userData.displayType === 'text_display';
+    const isTextDisplay = objectDisplayType(loadedObjectGroup, uuid) === 'text_display';
 
     let extraInfo = '';
     if (isItemDisplay) {

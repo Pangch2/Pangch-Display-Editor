@@ -1,8 +1,9 @@
 import { Box3, BufferGeometry, CanvasTexture, Float32BufferAttribute, FrontSide, InstancedBufferAttribute, InstancedMesh, MathUtils, MeshBasicNodeMaterial, NearestFilter, Sphere, SRGBColorSpace, Texture, Vector3 } from 'three/webgpu';
-import { attribute, mix, positionGeometry, positionLocal, texture, uv, vec2, vec3 } from 'three/tsl';
+import { attribute, mix, positionGeometry, positionLocal, texture, uv, vec2, vec3, vertexStage } from 'three/tsl';
 import { strFromU8 } from 'fflate';
 import { getAssetBytes } from '../../asset-manager';
 import { entityVisiblePosition, setEntityStateAttributes } from '../../entity-material';
+import { instanceAttribute } from '../../gpu-draw/pool-instance';
 import { findUnihexGlyph } from './unihex-font';
 import { loadedObjectGroup } from './display-instancing';
 import { appendTextGlyphQuads, type BitmapGlyph, type TextGlyphDraw, type TextGlyphQuad } from './text-glyph-geometry';
@@ -573,7 +574,7 @@ class TextDisplayMaterial extends MeshBasicNodeMaterial {
     }
 
     setupPosition(builder: unknown) {
-        const layout = attribute(textDisplayLayoutAttributeName, 'vec4');
+        const layout = instanceAttribute(textDisplayLayoutAttributeName, 'vec4');
         const background = attribute(textDisplayBackgroundAttributeName, 'float');
         const centerX = layout.x.add(layout.y).mul(0.5);
         const backgroundHalfWidth = layout.w.mul(0.5);
@@ -600,14 +601,14 @@ function createTextDisplayMaterial(textTexture: Texture): MeshBasicNodeMaterial 
     });
     const background = attribute(textDisplayBackgroundAttributeName, 'float');
     material.positionNode = entityVisiblePosition();
-    const uvBounds = attribute(textDisplayUvBoundsAttributeName, 'vec4');
+    const uvBounds = vertexStage(instanceAttribute(textDisplayUvBoundsAttributeName, 'vec4'));
     const textUv = vec2(
         mix(uvBounds.x, uvBounds.y, uv().x),
         mix(uvBounds.z, uvBounds.w, uv().y)
     );
     material.colorNode = texture(
         textTexture,
-        mix(textUv, attribute(textDisplayBackgroundUvAttributeName, 'vec2'), background)
+        mix(textUv, vertexStage(instanceAttribute(textDisplayBackgroundUvAttributeName, 'vec2')), background)
     );
     return material;
 }

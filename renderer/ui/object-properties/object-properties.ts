@@ -1,4 +1,4 @@
-import { Euler, InstancedMesh, Matrix4, Mesh, Quaternion, Vector3 } from 'three/webgpu';
+import { Euler, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import type { SelectedItem, SelectionState } from '../../controls/selection/select';
 import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
 import { getPlayerHeadTexture, replaceDisplayObject, updateDisplayObjectMatrix, updateObjectBrightness, updatePlayerHeadTexture, updateTextDisplay } from '../../load-project/display/mesh-builder';
@@ -38,6 +38,7 @@ import { isValidSpriteReference, openSpriteAtlasPicker, openSpritePicker, resolv
 import { evaluateMathExpression } from '../../math-expression';
 import { normalizeTransformInput } from './transform-input-value';
 import { renderModelTransform } from '../../animation/animation-state';
+import { getInstancePivot, hasInstanceHatData, objectRef, objectSlots, objectUuidAt, objectWorldMatrix, setInstancePivot, type ObjectBatch } from '../../scene-store/object-access';
 
 const title = document.getElementById('details-title')!;
 const tabs = document.getElementById('project-tabs')!;
@@ -74,7 +75,7 @@ let draggedMetadataKey: string | null = null;
 let metadataDropRow: HTMLElement | null = null;
 let draggedPropertySection: HTMLElement | null = null;
 let propertySectionDropTarget: HTMLElement | null = null;
-type PropertySelection = { key: string; groupId: string; group: GroupData } | { key: string; mesh: InstancedMesh; instanceId: number };
+type PropertySelection = { key: string; groupId: string; group: GroupData } | { key: string; uuid: string; mesh: ObjectBatch; instanceId: number };
 let selectionOrder: PropertySelection[] = [];
 let multiSelectionKey = '';
 const multiSelectionMatrix = new Matrix4();
@@ -678,7 +679,7 @@ function scaleInput(
 }
 
 function capturePropertyTransformState(items: SelectedItem[], groupIds: Set<string>): TransformHistoryState {
-    const objects = new Map<Mesh | InstancedMesh, Set<number>>();
+    const objects = new Map<ObjectBatch, Set<number>>();
     items.forEach(({ mesh, instanceId }) => {
         const ids = objects.get(mesh) ?? new Set<number>();
         ids.add(instanceId);
@@ -705,37 +706,31 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
         return;
     }
     const applyDelta = (deltaMatrix: Matrix4): void => {
-        const meshToInstanceIds = new Map<InstancedMesh, number[]>();
-        const add = (mesh: InstancedMesh, instanceId: number): void => {
+        const meshToInstanceIds = new Map<ObjectBatch, number[]>();
+        const add = (mesh: ObjectBatch, instanceId: number): void => {
             const ids = meshToInstanceIds.get(mesh) ?? [];
             if (!ids.includes(instanceId)) ids.push(instanceId);
             meshToInstanceIds.set(mesh, ids);
         };
-        selection.objects.forEach((ids, mesh) => {
-            if (mesh instanceof InstancedMesh) ids.forEach(instanceId => add(mesh, instanceId));
-        });
+        objectSlots(loadedObjectGroup, selection.objects).forEach((ids, mesh) => ids.forEach(instanceId => add(mesh, instanceId)));
         selection.groups.forEach(groupId => GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId)
-            .forEach(child => child.mesh instanceof InstancedMesh && add(child.mesh, child.instanceId)));
+            .forEach(child => add(child.mesh, child.instanceId)));
         applyDeltaToSelection({ deltaMatrix, meshToInstanceIds, selectedGroupIds: selection.groups, loadedObjectGroup });
         applyLinkedMirrorDelta(
             loadedObjectGroup,
             deltaMatrix,
-            Array.from(selection.objects, ([mesh, ids]) => [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))).flat(),
+            Array.from(objectSlots(loadedObjectGroup, selection.objects), ([mesh, ids]) => [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))).flat(),
             selection.groups
         );
-        meshToInstanceIds.forEach((_ids, mesh) => {
-            mesh.computeBoundingBox();
-            mesh.computeBoundingSphere();
-        });
         window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     };
 
     const key = [
         ...selection.groups,
-        ...Array.from(selection.objects, ([mesh, ids]) => `${mesh.uuid}:${[...ids].sort((a, b) => a - b).join(',')}`)
+        ...selection.objects
     ].sort().join('|');
     const pivot = pivotWorld?.clone() ?? pivotLocal.clone();
-    const directItems = Array.from(selection.objects, ([mesh, ids]) =>
+    const directItems = Array.from(objectSlots(loadedObjectGroup, selection.objects), ([mesh, ids]) =>
         [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))
     ).flat();
     const captureTransformHistory = () => capturePropertyTransformState(directItems, new Set(selection.groups));
@@ -797,10 +792,7 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
                     new Quaternion(group.quaternion.x, group.quaternion.y, group.quaternion.z, group.quaternion.w),
                     new Vector3(group.scale.x, group.scale.y, group.scale.z)
                 ));
-            } else if (selection.primary?.type === 'object' && selection.primary.mesh instanceof InstancedMesh) {
-                selection.primary.mesh.getMatrixAt(selection.primary.instanceId, primaryMatrix);
-                primaryMatrix.premultiply(selection.primary.mesh.matrixWorld);
-            } else {
+            } else if (selection.primary?.type !== 'object' || !objectWorldMatrix(loadedObjectGroup, selection.primary.uuid, primaryMatrix)) {
                 return;
             }
             window.dispatchEvent(new CustomEvent('pde:multi-selection-pivot-change', {
@@ -869,15 +861,15 @@ function getScalePivot(localPivot: Vector3, localBox: { min: Vector3; max: Vecto
 }
 
 function applySelectionDelta(deltaMatrix: Matrix4, target: PropertySelection): void {
-    const meshToInstanceIds = new Map<InstancedMesh, number[]>();
-    const add = (mesh: InstancedMesh, instanceId: number): void => {
+    const meshToInstanceIds = new Map<ObjectBatch, number[]>();
+    const add = (mesh: ObjectBatch, instanceId: number): void => {
         const ids = meshToInstanceIds.get(mesh) ?? [];
         if (!ids.includes(instanceId)) ids.push(instanceId);
         meshToInstanceIds.set(mesh, ids);
     };
     if ('group' in target) {
         GroupUtils.getAllGroupChildren(loadedObjectGroup, target.groupId)
-            .forEach(child => child.mesh instanceof InstancedMesh && add(child.mesh, child.instanceId));
+            .forEach(child => add(child.mesh, child.instanceId));
     } else {
         add(target.mesh, target.instanceId);
     }
@@ -893,22 +885,17 @@ function applySelectionDelta(deltaMatrix: Matrix4, target: PropertySelection): v
         'group' in target ? [] : [{ type: 'object', mesh: target.mesh, instanceId: target.instanceId }],
         'group' in target ? new Set([target.groupId]) : new Set()
     );
-    meshToInstanceIds.forEach((_ids, mesh) => {
-        mesh.computeBoundingBox();
-        mesh.computeBoundingSphere();
-    });
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
 }
 
-function getObjectPropertyMatrix(mesh: InstancedMesh, instanceId: number, modelTransform: Matrix4, out: Matrix4): Matrix4 {
+function getObjectPropertyMatrix(mesh: ObjectBatch, instanceId: number, modelTransform: Matrix4, out: Matrix4): Matrix4 {
     return Overlay.getInstanceWorldMatrix(mesh, instanceId, out)
         .multiply(modelTransform.clone().invert())
         .premultiply(loadedObjectGroup.matrixWorld.clone().invert());
 }
 
-function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pivotWorld?: Vector3): HTMLElement {
-    const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
-        ?.get(`${mesh.uuid}_${instanceId}`) ?? `${mesh.name || '오브젝트'} ${instanceId}`;
+function renderObject(mesh: ObjectBatch, instanceId: number, index: number, pivotWorld?: Vector3): HTMLElement {
+    const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId) ?? `${mesh.name || '오브젝트'} ${instanceId}`;
     const modelTransform = renderModelTransform(loadedObjectGroup, uuid, mesh, instanceId);
     getObjectPropertyMatrix(mesh, instanceId, modelTransform, matrix);
     matrix.decompose(position, quaternion, scale);
@@ -937,9 +924,9 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     const displayType = Overlay.getDisplayType(mesh, instanceId);
     const isTextDisplay = displayType === 'text_display';
     if (displayType === 'block_display') Overlay.getInstanceLocalBoxMin(mesh, instanceId, pivotBase);
-    else if (displayType === 'item_display' && mesh.userData.hasHat) pivotBase.y = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
+    else if (displayType === 'item_display' && hasInstanceHatData(mesh)) pivotBase.y = Overlay.isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0;
     else if (displayType === 'item_display') Overlay.getInstanceLocalBox(mesh, instanceId)?.getCenter(pivotBase);
-    const storedPivot = (mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(instanceId);
+    const storedPivot = getInstancePivot(mesh, instanceId);
     const localPivot = (storedPivot?.clone() ?? pivotBase.clone()).applyMatrix4(modelTransform);
     if (pivotWorld) {
         localPivot.copy(pivotWorld).applyMatrix4(loadedObjectGroup.matrixWorld.clone().invert()).applyMatrix4(matrix.clone().invert());
@@ -975,7 +962,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
                 const nextMatrix = rowIndex === 0 ? matrix : keepPivotFixed(currentMatrix, matrix, transformPivot);
                 const currentWorld = currentMatrix.clone().premultiply(loadedObjectGroup.matrixWorld);
                 const nextWorld = nextMatrix.clone().premultiply(loadedObjectGroup.matrixWorld);
-                applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
+                applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', uuid, mesh, instanceId });
             };
             row.append(rowIndex === 2
                 ? scaleInput(value, change, captureTransformHistory)
@@ -991,11 +978,10 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     pivotLabel.textContent = '피벗';
     pivotRow.append(pivotLabel);
     (['x', 'y', 'z'] as const).forEach(axis => pivotRow.append(numberInput(pivot[axis], next => {
-        if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
         pivot[axis] = next;
         localPivot.copy(pivot);
         const renderPivot = localPivot.clone().applyMatrix4(renderModelTransform(loadedObjectGroup, uuid, mesh, instanceId).invert());
-        (mesh.userData.customPivots as Map<number, Vector3>).set(instanceId, renderPivot);
+        setInstancePivot(mesh, instanceId, renderPivot);
         syncLinkedMirrorPivot(loadedObjectGroup, uuid, renderPivot);
         window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
     }, captureTransformHistory)));
@@ -1011,7 +997,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
         keepPivotFixed(currentMatrix, nextMatrix, transformPivot, true);
         const currentWorld = currentMatrix.clone().premultiply(loadedObjectGroup.matrixWorld);
         const nextWorld = nextMatrix.clone().premultiply(loadedObjectGroup.matrixWorld);
-        applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', mesh, instanceId });
+        applySelectionDelta(nextWorld.multiply(currentWorld.invert()), { key: '', uuid, mesh, instanceId });
         return nextMatrix;
     }, captureTransformHistory);
     section.append(propertySection('matrix', matrixParts[0] as HTMLElement, ...matrixParts.slice(1)));
@@ -1028,7 +1014,7 @@ function renderObject(mesh: InstancedMesh, instanceId: number, index: number, pi
     section.append(propertySection('nbt', 'NBT', nbt));
     const isItemDisplay = (loadedObjectGroup.userData.objectIsItemDisplay as Set<string> | undefined)?.has(uuid) ?? false;
     const brightnessMap = loadedObjectGroup.userData.objectBrightness as Map<string, { sky?: number; block?: number }>;
-    const brightness = brightnessMap.get(uuid) ?? {};
+    const brightness = { ...brightnessMap.get(uuid) };
     const updateBrightness = async (value: { sky: number; block: number }) => {
         updateObjectBrightness(uuid, value);
         Object.assign(brightness, value);
@@ -1781,7 +1767,7 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
         nextMatrix.decompose(nextPosition, nextQuaternion, nextScale);
         if (!previewDelta) pivot = pivotWorld?.clone() ?? GroupUtils.normalizePivotToVector3(group.pivot) ?? new Vector3();
     } else {
-        const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(`${item.mesh.uuid}_${item.instanceId}`) ?? '';
+        const uuid = objectUuidAt(loadedObjectGroup, item.mesh, item.instanceId) ?? '';
         const modelTransform = renderModelTransform(loadedObjectGroup, uuid, item.mesh, item.instanceId);
         getObjectPropertyMatrix(item.mesh, item.instanceId, modelTransform, nextMatrix);
         if (previewDelta) {
@@ -1794,9 +1780,9 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
             const pivotBase = new Vector3();
             const displayType = Overlay.getDisplayType(item.mesh, item.instanceId);
             if (displayType === 'block_display') Overlay.getInstanceLocalBoxMin(item.mesh, item.instanceId, pivotBase);
-            else if (displayType === 'item_display' && item.mesh.userData.hasHat) pivotBase.y = Overlay.isItemDisplayHatEnabled(item.mesh, item.instanceId) ? 0.03125 : 0;
+            else if (displayType === 'item_display' && hasInstanceHatData(item.mesh)) pivotBase.y = Overlay.isItemDisplayHatEnabled(item.mesh, item.instanceId) ? 0.03125 : 0;
             else if (displayType === 'item_display') Overlay.getInstanceLocalBox(item.mesh, item.instanceId)?.getCenter(pivotBase);
-            const storedPivot = (item.mesh.userData.customPivots as Map<number, Vector3> | undefined)?.get(item.instanceId);
+            const storedPivot = getInstancePivot(item.mesh, item.instanceId);
             pivot = pivotWorld
                 ?.clone().applyMatrix4(loadedObjectGroup.matrixWorld.clone().invert()).applyMatrix4(nextMatrix.clone().invert())
                 ?? (storedPivot?.clone() ?? pivotBase).applyMatrix4(modelTransform);
@@ -1988,9 +1974,10 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
             const group = groups?.get(id);
             return group ? [{ key: `group:${id}`, groupId: id, group }] : [];
         }),
-        ...Array.from(selection?.objects ?? []).flatMap(([mesh, ids]) => mesh instanceof InstancedMesh
-            ? Array.from(ids, instanceId => ({ key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId }))
-            : [])
+        ...Array.from(selection?.objects ?? []).flatMap(uuid => {
+            const ref = objectRef(loadedObjectGroup, uuid);
+            return ref ? [{ key: `object:${uuid}`, uuid, mesh: ref.mesh, instanceId: ref.instanceId }] : [];
+        })
     ];
     if (renderMulti) renderMultiSelectionProperties(selection, pivotWorld, current.length > 1 ? multiCustomPivotLocal ?? new Vector3() : undefined);
     const propertyPivotWorld = current.length === 1 ? pivotWorld : undefined;
@@ -2026,40 +2013,22 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
 }
 
 window.addEventListener('pde:replace-object-selection', event => {
-    const replacements = (event as CustomEvent<Array<{
-        oldMesh: InstancedMesh;
-        oldInstanceId: number;
-        oldLastInstanceId: number;
-        mesh: InstancedMesh;
-        instanceId: number;
-    }>>).detail;
+    // oldUuid/uuid are set when a new object replaced the old one; other entries only move slots.
+    const replacements = (event as CustomEvent<Array<{ oldUuid?: string; uuid?: string }>>).detail;
+    const renamed = new Map(replacements.flatMap(({ oldUuid, uuid }) => oldUuid && uuid ? [[oldUuid, uuid] as const] : []));
     const oldHeights = selectionOrder.map(item => propertySectionHeights.get(item.key) ?? propertySectionEstimate);
-    const selectionIndexes = new Map(selectionOrder.map((item, index) => [item.key, index]));
     const changedIndexes = new Set<number>();
-    const replacedIndexes: Array<{ index: number; mesh: InstancedMesh; instanceId: number }> = [];
-    for (const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } of replacements) {
-        const oldKey = `object:${oldMesh.uuid}:${oldInstanceId}`;
-        const oldLastKey = `object:${oldMesh.uuid}:${oldLastInstanceId}`;
-        const replacedIndex = selectionIndexes.get(oldKey);
-        const movedIndex = oldInstanceId < oldLastInstanceId ? selectionIndexes.get(oldLastKey) : undefined;
-        if (replacedIndex !== undefined) {
-            selectionIndexes.delete(oldKey);
-            replacedIndexes.push({ index: replacedIndex, mesh, instanceId });
-        }
-        if (movedIndex !== undefined) {
-            const moved = { key: oldKey, mesh: oldMesh, instanceId: oldInstanceId };
-            selectionOrder[movedIndex] = moved;
-            selectionIndexes.delete(oldLastKey);
-            selectionIndexes.set(oldKey, movedIndex);
-            changedIndexes.add(movedIndex);
-        }
-    }
-    for (const { index, mesh, instanceId } of replacedIndexes) {
-        const replacement = { key: `object:${mesh.uuid}:${instanceId}`, mesh, instanceId };
-        selectionOrder[index] = replacement;
-        selectionIndexes.set(replacement.key, index);
+    // Sections capture their slot, so any section whose object moved or was replaced is rebuilt. This listener is
+    // registered at import, before the gizmo's, so it runs before the gizmo's reselection re-renders same-uuid keys.
+    selectionOrder.forEach((item, index) => {
+        if (!('mesh' in item)) return;
+        const uuid = renamed.get(item.uuid) ?? item.uuid;
+        const ref = objectRef(loadedObjectGroup, uuid);
+        if (!ref || (uuid === item.uuid && ref.mesh === item.mesh && ref.instanceId === item.instanceId)) return;
+        selectionOrder[index] = { key: `object:${uuid}`, uuid, mesh: ref.mesh, instanceId: ref.instanceId };
         changedIndexes.add(index);
-    }
+    });
+    if (!changedIndexes.size) return;
     const nextHeights = new Map<string, number>();
     selectionOrder.forEach((item, index) => {
         nextHeights.set(item.key, oldHeights[index]);

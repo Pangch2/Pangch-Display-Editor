@@ -1,21 +1,15 @@
 import {
-    Color,
     Group,
-    InterleavedBufferAttribute,
-    InstancedBufferAttribute,
     InstancedMesh,
     MathUtils,
-    Matrix4,
-    Mesh,
-    Object3D,
-    StorageInstancedBufferAttribute
-} from 'three/webgpu';
+    Object3D } from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { CloneJobEntry } from './group';
 import * as Overlay from '../selection/overlay';
 import { isPbdeLogEnabled, pbdeLogNames } from '../../load-project/pbde/pbde-log';
-import { dragSelectedAttributeName } from '../../entity-material';
-import { restoreAtlasPartMaterials } from '../../load-project/batching/atlas-part-material';
+import { ObjectStore } from '../../scene-store/object-store';
+import { objectIsCustomPivot, objectPivot, setObjectIsCustomPivot, setObjectPivot, type ObjectBatch } from '../../scene-store/object-access';
+import { appendInstanceCopies } from '../../scene-store/object-batches';
 
 const getDisplayType = Overlay.getDisplayType;
 
@@ -27,8 +21,7 @@ interface SceneOrderEntry {
 }
 
 interface DuplicateUserData {
-    instanceKeyToObjectUuid?: Map<string, string>;
-    objectUuidToInstance?: Map<string, { mesh: Object3D; instanceId: number }>;
+    objectUuidToInstance?: ObjectStore<{ mesh: Object3D; instanceId: number }>;
     objectToGroup?: Map<string, string>;
     objectNames?: Map<string, string>;
     objectLabels?: Map<string, string>;
@@ -39,6 +32,7 @@ interface DuplicateUserData {
     objectNbt?: Map<string, string>;
     objectBrightness?: Map<string, unknown>;
     objectTextures?: Map<string, string>;
+    objectDisplayKinds?: Map<string, string>;
     sceneOrder?: SceneOrderEntry[];
 }
 
@@ -60,7 +54,7 @@ interface DirectInsertionPlan {
 }
 
 interface CloneResult {
-    mesh: Mesh | InstancedMesh;
+    mesh: ObjectBatch;
     instanceId: number;
     objectUuid: string;
     coveredByGroup: boolean;
@@ -72,25 +66,12 @@ interface DuplicateTimingStats {
     chunks: number;
 }
 
-type InstancedGeometryAttribute = InstancedBufferAttribute | InterleavedBufferAttribute;
 
-function isInstancedGeometryAttribute(attribute: unknown): attribute is InstancedGeometryAttribute {
-    const candidate = attribute as InstancedBufferAttribute & {
-        isInterleavedBufferAttribute?: boolean;
-        data?: { isInstancedInterleavedBuffer?: boolean };
-    };
-    return !!(candidate?.isInstancedBufferAttribute
-        || (candidate?.isInterleavedBufferAttribute && candidate.data?.isInstancedInterleavedBuffer));
-}
 
 export interface DuplicationSelection {
     groups: Set<string>;
-    objects: Map<InstancedMesh | Mesh, Set<number>>;
+    objects: Map<ObjectBatch, Set<number>>;
 }
-
-const tmpTargetLocal = new Matrix4();
-const tmpColor = new Color();
-const appendableInstancedChunks = new WeakMap<InstancedMesh, InstancedMesh>();
 
 function cloneData<T>(value: T): T {
     if (value === null || value === undefined) return value;
@@ -110,8 +91,7 @@ function cloneData<T>(value: T): T {
 
 function ensureStores(loadedObjectGroup: Group) {
     const ud = loadedObjectGroup.userData as DuplicateUserData;
-    if (!ud.instanceKeyToObjectUuid) ud.instanceKeyToObjectUuid = new Map<string, string>();
-    if (!ud.objectUuidToInstance) ud.objectUuidToInstance = new Map<string, { mesh: Object3D; instanceId: number }>();
+    if (!ud.objectUuidToInstance) ud.objectUuidToInstance = new ObjectStore<{ mesh: Object3D; instanceId: number }>();
     if (!ud.objectNames) ud.objectNames = new Map<string, string>();
     if (!ud.objectLabels) ud.objectLabels = new Map<string, string>();
     if (!ud.objectIsItemDisplay) ud.objectIsItemDisplay = new Set<string>();
@@ -123,19 +103,16 @@ function ensureStores(loadedObjectGroup: Group) {
 
 function registerClone(
     loadedObjectGroup: Group,
-    sourceMesh: Mesh | InstancedMesh,
+    sourceMesh: ObjectBatch,
     sourceInstanceId: number,
-    targetMesh: Mesh | InstancedMesh,
+    targetMesh: ObjectBatch,
     targetInstanceId: number,
     targetGroupId: string | null
 ): string {
     const stores = ensureStores(loadedObjectGroup);
-    const sourceKey = GroupUtils.getGroupKey(sourceMesh, sourceInstanceId);
-    const sourceUuid = stores.instanceKeyToObjectUuid!.get(sourceKey);
+    const sourceUuid = stores.objectUuidToInstance!.uuidAt(sourceMesh, sourceInstanceId);
     const targetUuid = MathUtils.generateUUID();
-    const targetKey = GroupUtils.getGroupKey(targetMesh, targetInstanceId);
 
-    stores.instanceKeyToObjectUuid!.set(targetKey, targetUuid);
     stores.objectUuidToInstance!.set(targetUuid, { mesh: targetMesh, instanceId: targetInstanceId });
 
     if (!sourceUuid) {
@@ -165,6 +142,12 @@ function registerClone(
         stores.objectBrightness.set(targetUuid, cloneData(stores.objectBrightness.get(sourceUuid)));
     }
     if (stores.objectTextures?.has(sourceUuid)) stores.objectTextures.set(targetUuid, stores.objectTextures.get(sourceUuid)!);
+    setObjectPivot(loadedObjectGroup, targetUuid, objectPivot(loadedObjectGroup, sourceUuid)?.clone());
+    if (targetMesh.userData.mixedDisplayKinds) {
+        const kind = getDisplayType(sourceMesh, sourceInstanceId) ?? sourceMesh.userData?.displayType ?? 'block_display';
+        (stores.objectDisplayKinds ??= new Map<string, string>()).set(targetUuid, kind);
+    }
+    setObjectIsCustomPivot(loadedObjectGroup, targetUuid, objectIsCustomPivot(loadedObjectGroup, sourceUuid));
 
     cloneAnimationTarget(loadedObjectGroup, sourceUuid, targetUuid, targetGroupId);
 
@@ -181,10 +164,9 @@ function prepareDirectInsertionPlan(
     const wantedByParent = new Map<string | null, Set<string>>();
 
     for (const job of jobs) {
-        const sourceKey = GroupUtils.getGroupKey(job.mesh, job.instanceId);
-        const sourceUuid = stores.instanceKeyToObjectUuid!.get(sourceKey);
+        const sourceUuid = stores.objectUuidToInstance!.uuidAt(job.mesh, job.instanceId);
         if (!sourceUuid) continue;
-        const parentGroupId = stores.objectToGroup?.get(sourceKey) ?? null;
+        const parentGroupId = stores.objectToGroup?.get(sourceUuid) ?? null;
         let wanted = wantedByParent.get(parentGroupId);
         if (!wanted) wantedByParent.set(parentGroupId, wanted = new Set());
         wanted.add(sourceUuid);
@@ -264,19 +246,15 @@ function flushDirectCloneInsertions(loadedObjectGroup: Group, plan: DirectInsert
 
 function insertCloneEntry(
     loadedObjectGroup: Group,
-    sourceMesh: Mesh | InstancedMesh,
+    sourceMesh: ObjectBatch,
     sourceInstanceId: number,
     targetGroupId: string | null,
-    targetMesh: Mesh | InstancedMesh,
-    targetInstanceId: number,
     targetUuid: string,
     coveredByGroup: boolean,
     insertionPlan: DirectInsertionPlan
 ): void {
     const stores = ensureStores(loadedObjectGroup);
-    const sourceKey = GroupUtils.getGroupKey(sourceMesh, sourceInstanceId);
-    const sourceUuid = stores.instanceKeyToObjectUuid!.get(sourceKey);
-    const targetKey = GroupUtils.getGroupKey(targetMesh, targetInstanceId);
+    const sourceUuid = stores.objectUuidToInstance!.uuidAt(sourceMesh, sourceInstanceId);
 
     if (targetGroupId) {
         const targetGroup = GroupUtils.getGroups(loadedObjectGroup).get(targetGroupId);
@@ -284,16 +262,14 @@ function insertCloneEntry(
         if (!Array.isArray(targetGroup.children)) targetGroup.children = [];
 
         stores.objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
-        stores.objectToGroup.set(targetKey, targetGroupId);
+        stores.objectToGroup.set(targetUuid, targetGroupId);
 
         if (!coveredByGroup) {
-            queueDirectCloneEntry(insertionPlan, sourceUuid, targetGroupId, {
-                type: 'object', mesh: targetMesh, instanceId: targetInstanceId, id: targetUuid
-            });
+            queueDirectCloneEntry(insertionPlan, sourceUuid, targetGroupId, { type: 'object', id: targetUuid });
             return;
         }
 
-        targetGroup.children.push({ type: 'object', mesh: targetMesh, instanceId: targetInstanceId, id: targetUuid });
+        targetGroup.children.push({ type: 'object', id: targetUuid });
         return;
     }
 
@@ -309,199 +285,28 @@ function getAncestorSelected(groups: Map<string, GroupUtils.GroupData>, groupId:
     return false;
 }
 
-function getInstancedCapacity(mesh: InstancedMesh): number {
-    let capacity = (mesh.instanceMatrix as InstancedBufferAttribute).count;
-    if (mesh.instanceColor) capacity = Math.min(capacity, (mesh.instanceColor as InstancedBufferAttribute).count);
-    for (const attribute of Object.values(mesh.geometry.attributes)) {
-        if (isInstancedGeometryAttribute(attribute)) capacity = Math.min(capacity, attribute.count);
-    }
-    return capacity;
-}
-
-function copyInstancedGeometryAttributes(
-    sourceMesh: InstancedMesh,
-    sourceId: number,
-    targetMesh: InstancedMesh,
-    targetId: number,
-    updatedAttributes: Set<InstancedGeometryAttribute>
-): void {
-    for (const [name, attribute] of Object.entries(sourceMesh.geometry.attributes)) {
-        if (!isInstancedGeometryAttribute(attribute)) continue;
-        const sourceAttribute = attribute;
-
-        const targetAttribute = targetMesh.geometry.getAttribute(name);
-        if (!isInstancedGeometryAttribute(targetAttribute)) continue;
-
-        const itemSize = Math.min(sourceAttribute.itemSize, targetAttribute.itemSize);
-        const srcOffset = sourceId * sourceAttribute.itemSize;
-        const dstOffset = targetId * targetAttribute.itemSize;
-        if (name === dragSelectedAttributeName) targetAttribute.setX(targetId, 0);
-        else if (sourceAttribute.isInterleavedBufferAttribute || targetAttribute.isInterleavedBufferAttribute) {
-            for (let component = 0; component < itemSize; component++) {
-                targetAttribute.setComponent(targetId, component, sourceAttribute.getComponent(sourceId, component));
-            }
-        } else {
-            targetAttribute.array.set(sourceAttribute.array.subarray(srcOffset, srcOffset + itemSize), dstOffset);
-        }
-        updatedAttributes.add(targetAttribute);
-    }
-}
-
-function copyUserDataForInstance(sourceMesh: InstancedMesh, sourceId: number, targetMesh: InstancedMesh, targetId: number): void {
-    const displayType = getDisplayType(sourceMesh, sourceId) ?? sourceMesh.userData?.displayType ?? 'block_display';
-    if (!targetMesh.userData.displayTypes) targetMesh.userData.displayTypes = new Map<number, string>();
-    targetMesh.userData.displayTypes.set(targetId, displayType);
-
-    if (sourceMesh.userData?.hasHat?.[sourceId] !== undefined) {
-        if (!targetMesh.userData.hasHat) targetMesh.userData.hasHat = [];
-        targetMesh.userData.hasHat[targetId] = sourceMesh.userData.hasHat[sourceId];
-    }
-
-    const imageHeadTile = sourceMesh.userData.imageHeadTilePositions?.[sourceId] as [number, number] | undefined;
-    if (imageHeadTile) {
-        targetMesh.userData.imageHeadLayer = sourceMesh.userData.imageHeadLayer;
-        targetMesh.userData.imageHeadTilePositions ??= [];
-        targetMesh.userData.imageHeadTilePositions[targetId] = [...imageHeadTile];
-    }
-
-    const customPivot = sourceMesh.userData?.customPivots?.get(sourceId) ?? sourceMesh.userData?.customPivot;
-    if (customPivot) {
-        if (!targetMesh.userData.customPivots) targetMesh.userData.customPivots = new Map();
-        targetMesh.userData.customPivots.set(targetId, customPivot.clone());
-    }
-
-    const localMatrix = sourceMesh.userData?.localMatrices?.get(sourceId);
-    if (localMatrix) {
-        if (!targetMesh.userData.localMatrices) targetMesh.userData.localMatrices = new Map();
-        targetMesh.userData.localMatrices.set(targetId, localMatrix.clone());
-    }
-
-    const textDisplayTemplateKey = sourceMesh.userData?.textDisplayTemplateKeys?.get(sourceId);
-    if (textDisplayTemplateKey) {
-        targetMesh.userData.textDisplayTemplateKeys ??= new Map<number, string>();
-        targetMesh.userData.textDisplayTemplateKeys.set(targetId, textDisplayTemplateKey);
-    }
-}
-
-function clonePlainMesh(
-    loadedObjectGroup: Group,
-    sourceMesh: Mesh,
-    sourceInstanceId: number,
-    targetGroupId: string | null,
-    coveredByGroup: boolean,
-    insertionPlan: DirectInsertionPlan
-): CloneResult {
-    const clone = sourceMesh.clone() as Mesh;
-    clone.userData = cloneData(sourceMesh.userData);
-    loadedObjectGroup.add(clone);
-
-    const objectUuid = registerClone(loadedObjectGroup, sourceMesh, sourceInstanceId, clone, 0, targetGroupId ?? null);
-    insertCloneEntry(loadedObjectGroup, sourceMesh, sourceInstanceId, targetGroupId, clone, 0, objectUuid, coveredByGroup, insertionPlan);
-    return { mesh: clone, instanceId: 0, objectUuid, coveredByGroup };
-}
-
-function createInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMesh): InstancedMesh {
-    const capacity = Math.max(1, getInstancedCapacity(sourceMesh));
-    const material = Array.isArray(sourceMesh.material) ? [...sourceMesh.material] : sourceMesh.material;
-    const chunk = new InstancedMesh(sourceMesh.geometry.clone(), material, capacity);
-    chunk.instanceMatrix = new StorageInstancedBufferAttribute(capacity, 16);
-    if (sourceMesh.instanceColor) chunk.instanceColor = sourceMesh.instanceColor.clone();
-    chunk.count = 0;
-    chunk.userData.pdeDuplicateChunk = true;
-    chunk.userData.displayType = sourceMesh.userData?.displayType;
-    chunk.userData.displayTypes = new Map<number, string>();
-    if (sourceMesh.userData.pbdeModelMatrix) chunk.userData.pbdeModelMatrix = [...sourceMesh.userData.pbdeModelMatrix];
-    if (sourceMesh.geometry.userData.atlasBatch) {
-        chunk.userData.pbdeSignature = sourceMesh.userData.pbdeSignature;
-    }
-    if (sourceMesh.userData?.hasHat) chunk.userData.hasHat = [];
-    if (sourceMesh.userData.imageHeadLayer !== undefined) {
-        chunk.userData.imageHeadLayer = sourceMesh.userData.imageHeadLayer;
-        chunk.userData.imageHeadTilePositions = [];
-    }
-    chunk.frustumCulled = sourceMesh.frustumCulled;
-    chunk.renderOrder = sourceMesh.renderOrder;
-    chunk.visible = false;
-    chunk.layers.mask = sourceMesh.layers.mask;
-    loadedObjectGroup.add(chunk);
-    return chunk;
-}
-
-function takeAppendableInstancedChunk(loadedObjectGroup: Group, sourceMesh: InstancedMesh): InstancedMesh {
-    const chunk = appendableInstancedChunks.get(sourceMesh);
-    if (chunk?.parent === loadedObjectGroup && chunk.count < getInstancedCapacity(chunk)
-        && chunk.geometry.userData.atlasBatch === sourceMesh.geometry.userData.atlasBatch) return chunk;
-
-    const created = createInstancedChunk(loadedObjectGroup, sourceMesh);
-    appendableInstancedChunks.set(sourceMesh, created);
-    return created;
-}
-
 function cloneInstancedBatch(
     loadedObjectGroup: Group,
-    sourceMesh: InstancedMesh,
+    sourceMesh: ObjectBatch,
     jobs: CloneJobEntry[],
     insertionPlan: DirectInsertionPlan,
     timings?: DuplicateTimingStats
 ): CloneResult[] {
-    if (!sourceMesh.geometry || jobs.length === 0) return [];
-    restoreAtlasPartMaterials(sourceMesh);
-
-    let targetMesh = sourceMesh;
-    let targetCapacity = getInstancedCapacity(targetMesh);
-    const results: CloneResult[] = [];
-    const updatedMeshes = new Set<InstancedMesh>();
-    const updatedColorMeshes = new Set<InstancedMesh>();
-    const updatedAttributes = new Set<InstancedGeometryAttribute>();
-
-    for (const job of jobs) {
-        if (targetMesh.count >= targetCapacity) {
-            targetMesh = takeAppendableInstancedChunk(loadedObjectGroup, sourceMesh);
-            targetCapacity = getInstancedCapacity(targetMesh);
-            if (timings && targetMesh.count === 0) timings.chunks++;
-        }
-
-        const targetId = targetMesh.count;
-        sourceMesh.getMatrixAt(job.instanceId, tmpTargetLocal);
-        targetMesh.setMatrixAt(targetId, tmpTargetLocal);
-        const attrsStart = timings ? performance.now() : 0;
-        copyInstancedGeometryAttributes(sourceMesh, job.instanceId, targetMesh, targetId, updatedAttributes);
-        if (timings) timings.attrsMs += performance.now() - attrsStart;
-
-        if (sourceMesh.instanceColor && sourceMesh.getColorAt) {
-            sourceMesh.getColorAt(job.instanceId, tmpColor);
-            targetMesh.setColorAt(targetId, tmpColor);
-            updatedColorMeshes.add(targetMesh);
-        }
-
-        const metadataStart = timings ? performance.now() : 0;
-        copyUserDataForInstance(sourceMesh, job.instanceId, targetMesh, targetId);
-
-        const objectUuid = registerClone(loadedObjectGroup, sourceMesh, job.instanceId, targetMesh, targetId, job.targetGroupId ?? null);
-        insertCloneEntry(
-            loadedObjectGroup,
-            sourceMesh,
-            job.instanceId,
-            job.targetGroupId,
-            targetMesh,
-            targetId,
-            objectUuid,
-            job.coveredByGroup,
-            insertionPlan
-        );
-        if (timings) timings.metadataMs += performance.now() - metadataStart;
-        results.push({ mesh: targetMesh, instanceId: targetId, objectUuid, coveredByGroup: job.coveredByGroup });
-        targetMesh.count++;
-        updatedMeshes.add(targetMesh);
+    const attrsStart = timings ? performance.now() : 0;
+    const slots = appendInstanceCopies(loadedObjectGroup, sourceMesh, jobs.map(job => job.instanceId));
+    if (slots.length !== jobs.length) return [];
+    if (timings) {
+        timings.attrsMs += performance.now() - attrsStart;
+        timings.chunks += new Set(slots.map(slot => slot.mesh).filter(mesh => mesh !== sourceMesh)).size;
     }
-
-    for (const mesh of updatedMeshes) mesh.instanceMatrix.needsUpdate = true;
-    for (const mesh of updatedColorMeshes) {
-        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    }
-    for (const attribute of updatedAttributes) attribute.needsUpdate = true;
-    for (const mesh of updatedMeshes) mesh.visible = sourceMesh.visible;
-
+    const metadataStart = timings ? performance.now() : 0;
+    const results = jobs.map((job, index) => {
+        const { mesh, instanceId } = slots[index];
+        const objectUuid = registerClone(loadedObjectGroup, sourceMesh, job.instanceId, mesh, instanceId, job.targetGroupId ?? null);
+        insertCloneEntry(loadedObjectGroup, sourceMesh, job.instanceId, job.targetGroupId, objectUuid, job.coveredByGroup, insertionPlan);
+        return { mesh, instanceId, objectUuid, coveredByGroup: job.coveredByGroup };
+    });
+    if (timings) timings.metadataMs += performance.now() - metadataStart;
     return results;
 }
 
@@ -518,16 +323,14 @@ export function flushPendingHeadClones(_loadedObjectGroup?: Group, _ctx?: unknow
 export function duplicateGroupsAndObjects(
     loadedObjectGroup: Group,
     groupIds: Set<string> | null,
-    objectEntries: Array<{ mesh: Mesh | InstancedMesh, instanceId: number }> | null
+    objectEntries: Array<{ mesh: ObjectBatch, instanceId: number }> | null
 ): DuplicationSelection {
     const logTimings = isPbdeLogEnabled(pbdeLogNames.duplicateTimings);
     const totalStart = logTimings ? performance.now() : 0;
     const timings: DuplicateTimingStats | undefined = logTimings ? { attrsMs: 0, metadataMs: 0, chunks: 0 } : undefined;
     let groupCloneMs = 0;
     let collectMs = 0;
-    let plainCloneMs = 0;
     let instancedCloneMs = 0;
-    let plainJobs = 0;
 
     const newSelection: DuplicationSelection = { groups: new Set(), objects: new Map() };
     const groups = GroupUtils.getGroups(loadedObjectGroup);
@@ -538,9 +341,8 @@ export function duplicateGroupsAndObjects(
 
     if (objectEntries) {
         const collectStart = logTimings ? performance.now() : 0;
-        const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
         for (const { mesh, instanceId } of objectEntries) {
-            const parentGroupId = objectToGroup.get(GroupUtils.getGroupKey(mesh, instanceId)) ?? null;
+            const parentGroupId = GroupUtils.getSlotGroupId(loadedObjectGroup, mesh, instanceId) ?? null;
             if (getAncestorSelected(groups, parentGroupId, groupIds)) continue;
             directJobs.push({ mesh, instanceId, targetGroupId: parentGroupId as string, coveredByGroup: false });
         }
@@ -579,28 +381,11 @@ export function duplicateGroupsAndObjects(
 
     for (const job of directJobs) jobs.push(job);
 
-    const instancedJobs = new Map<InstancedMesh, CloneJobEntry[]>();
+    const instancedJobs = new Map<ObjectBatch, CloneJobEntry[]>();
     for (const job of jobs) {
-        if (job.mesh.isInstancedMesh) {
-            let bucket = instancedJobs.get(job.mesh);
-            if (!bucket) {
-                bucket = [];
-                instancedJobs.set(job.mesh, bucket);
-            }
-            bucket.push(job);
-        } else {
-            plainJobs++;
-            const plainStart = logTimings ? performance.now() : 0;
-            addSelection(newSelection, clonePlainMesh(
-                loadedObjectGroup,
-                job.mesh as Mesh,
-                job.instanceId,
-                job.targetGroupId,
-                job.coveredByGroup,
-                insertionPlan
-            ));
-            if (logTimings) plainCloneMs += performance.now() - plainStart;
-        }
+        let bucket = instancedJobs.get(job.mesh);
+        if (!bucket) instancedJobs.set(job.mesh, bucket = []);
+        bucket.push(job);
     }
 
     for (const [sourceMesh, batchJobs] of instancedJobs) {
@@ -615,26 +400,15 @@ export function duplicateGroupsAndObjects(
     flushDirectCloneInsertions(loadedObjectGroup, insertionPlan);
 
     if (logTimings && timings) {
-        const instancedJobsCount = jobs.length - plainJobs;
         console.log(
             `[PBDE] Duplicate timings: total=${(performance.now() - totalStart).toFixed(2)}ms ` +
-            `jobs=${jobs.length} plain=${plainJobs} instanced=${instancedJobsCount} ` +
+            `jobs=${jobs.length} ` +
             `groups=${newSelection.groups.size} batches=${instancedJobs.size} chunks=${timings.chunks} ` +
             `groupClone=${groupCloneMs.toFixed(2)}ms collect=${collectMs.toFixed(2)}ms ` +
-            `plainClone=${plainCloneMs.toFixed(2)}ms instancedClone=${instancedCloneMs.toFixed(2)}ms ` +
+            `instancedClone=${instancedCloneMs.toFixed(2)}ms ` +
             `attrs=${timings.attrsMs.toFixed(2)}ms metadata=${timings.metadataMs.toFixed(2)}ms`
         );
     }
 
     return newSelection;
-}
-
-if (import.meta.env.DEV) {
-    const root = new Group();
-    const source = new InstancedMesh(undefined, undefined, 2);
-    source.count = 2;
-    root.add(source);
-    const chunk = takeAppendableInstancedChunk(root, source);
-    chunk.count = 1;
-    console.assert(takeAppendableInstancedChunk(root, source) === chunk && root.children.length === 2, 'Duplicate must reuse a partially filled chunk.');
 }

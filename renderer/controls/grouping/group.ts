@@ -1,6 +1,4 @@
 import {
-    Mesh,
-    InstancedMesh,
     Vector3,
     Quaternion,
     Matrix4,
@@ -10,12 +8,18 @@ import {
 
 // Types
 import { assertAnimationParentsInvertible, cloneAnimationTarget } from '../../animation/animation-state';
+import { objectRef, objectUuidAt, type ObjectBatch } from '../../scene-store/object-access';
 
+/** A group's object child, by uuid. Slots are looked up when needed, so slot moves never touch groups. */
 export interface GroupChildObject {
     type: 'object';
-    mesh: Mesh | InstancedMesh;
+    id: string;
+}
+
+/** An object child with its current slot, as getAllGroupChildren returns it. */
+export interface GroupObjectSlot extends GroupChildObject {
+    mesh: ObjectBatch;
     instanceId: number;
-    id?: string;
 }
 
 export interface GroupChildGroup {
@@ -47,14 +51,14 @@ export interface SceneOrderEntry {
 }
 
 export interface CloneJobEntry {
-    mesh: Mesh | InstancedMesh;
+    mesh: ObjectBatch;
     instanceId: number;
     targetGroupId: string;
     coveredByGroup: boolean;
 }
 
 export interface CollectCloneContext {
-    planBatchCallback?: (mesh: Mesh | InstancedMesh, instanceId: number, targetGroupId: string) => void;
+    planBatchCallback?: (mesh: ObjectBatch, instanceId: number, targetGroupId: string) => void;
     _groupIdMap?: Map<string, string>;
 }
 
@@ -199,10 +203,7 @@ function _findObjectLocationForCreate(
 ): SceneItemLocation | null {
     const groups = getGroups(loadedObjectGroup);
     const ud = loadedObjectGroup.userData;
-    const objectKey = ud?.objectUuidToInstance?.get(objectUuid)
-        ? getGroupKey(ud.objectUuidToInstance.get(objectUuid)!.mesh as Mesh | InstancedMesh, ud.objectUuidToInstance.get(objectUuid)!.instanceId)
-        : null;
-    const mappedParentId = objectKey ? (ud?.objectToGroup?.get(objectKey) ?? null) : null;
+    const mappedParentId = getObjectToGroup(loadedObjectGroup).get(objectUuid) ?? null;
 
     if (mappedParentId) {
         const parent = groups.get(mappedParentId);
@@ -299,6 +300,7 @@ export function getGroups(loadedObjectGroup: Group): Map<string, GroupData> {
     return loadedObjectGroup.userData.groups;
 }
 
+/** Object uuid → its immediate parent group id. */
 export function getObjectToGroup(loadedObjectGroup: Group): Map<string, string> {
     if (!loadedObjectGroup || !loadedObjectGroup.userData) return new Map();
     if (!loadedObjectGroup.userData.objectToGroup) {
@@ -307,7 +309,13 @@ export function getObjectToGroup(loadedObjectGroup: Group): Map<string, string> 
     return loadedObjectGroup.userData.objectToGroup;
 }
 
-export function getGroupKey(mesh: Mesh | InstancedMesh, instanceId: number): string {
+/** The immediate parent group of the object in a slot. */
+export function getSlotGroupId(loadedObjectGroup: Group, mesh: ObjectBatch, instanceId: number): string | undefined {
+    const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId);
+    return uuid ? getObjectToGroup(loadedObjectGroup).get(uuid) : undefined;
+}
+
+export function getGroupKey(mesh: ObjectBatch, instanceId: number): string {
     return `${mesh.uuid}_${instanceId}`;
 }
 
@@ -324,12 +332,13 @@ export function getGroupChain(loadedObjectGroup: Group, startGroupId: string): s
     return chain;
 }
 
-export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): GroupChildObject[] {
+// shortcut: resolves every descendant object to its current slot for callers that still work on slots; drop with the store (M7).
+export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): GroupObjectSlot[] {
     const groups = getGroups(loadedObjectGroup);
     const group = groups.get(groupId);
     if (!group) return [];
 
-    const out: GroupChildObject[] = [];
+    const out: GroupObjectSlot[] = [];
     const stack: GroupChild[] = Array.isArray(group.children) ? group.children.slice().reverse() : [];
     while (stack.length > 0) {
         const child = stack.pop();
@@ -343,7 +352,8 @@ export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): 
                 }
             }
         } else {
-            out.push(child);
+            const ref = objectRef(loadedObjectGroup, child.id);
+            if (ref) out.push({ type: 'object', id: child.id, mesh: ref.mesh, instanceId: ref.instanceId });
         }
     }
     return out;
@@ -389,77 +399,16 @@ export function getGroupWorldMatrix(group: GroupData | null | undefined, out: Ma
 }
 
 // Structure Modification
-export function updateGroupReferenceForMovedInstance(
-    loadedObjectGroup: Group,
-    mesh: Mesh | InstancedMesh,
-    oldInstanceId: number,
-    newInstanceId: number,
-    childrenByGroup?: Map<string, Map<string, GroupChildObject>>
-): void {
-    const objectToGroup = getObjectToGroup(loadedObjectGroup);
-    const groups = getGroups(loadedObjectGroup);
-    const keyToUuid = loadedObjectGroup?.userData?.instanceKeyToObjectUuid as Map<string, string> | undefined;
-    const uuidToInstance = loadedObjectGroup?.userData?.objectUuidToInstance as
-        | Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }>
-        | undefined;
-
-    const oldKey = getGroupKey(mesh, oldInstanceId);
-    const newKey = getGroupKey(mesh, newInstanceId);
-
-    const groupId = objectToGroup.get(oldKey);
-
-    objectToGroup.delete(oldKey);
-
-    if (groupId) {
-        objectToGroup.set(newKey, groupId);
-
-        const group = groups.get(groupId);
-        if (group && Array.isArray(group.children)) {
-            let childrenByKey = childrenByGroup?.get(groupId);
-            if (childrenByGroup && !childrenByKey) {
-                childrenByKey = new Map();
-                for (const child of group.children) {
-                    if (child.type === 'object') childrenByKey.set(getGroupKey(child.mesh, child.instanceId), child);
-                }
-                childrenByGroup.set(groupId, childrenByKey);
-            }
-            const childEntry = childrenByKey ? childrenByKey.get(oldKey) : group.children.find(
-                (c): c is GroupChildObject => c.type === 'object' && c.mesh === mesh && c.instanceId === oldInstanceId
-            );
-            if (childEntry) {
-                childEntry.instanceId = newInstanceId;
-                if (childrenByKey) {
-                    childrenByKey.delete(oldKey);
-                    childrenByKey.set(newKey, childEntry);
-                }
-            }
-        }
-    }
-
-    if (keyToUuid) {
-        const objectUuid = keyToUuid.get(oldKey);
-        if (objectUuid) {
-            keyToUuid.delete(oldKey);
-            keyToUuid.set(newKey, objectUuid);
-
-            if (uuidToInstance) {
-                uuidToInstance.set(objectUuid, { mesh, instanceId: newInstanceId });
-            }
-        }
-    }
-}
-
 export function createGroupStructure(
     loadedObjectGroup: Group,
     selectedGroupIds: string[],
-    selectedObjects: { mesh: Mesh | InstancedMesh; instanceId: number }[],
+    selectedObjects: { mesh: ObjectBatch; instanceId: number }[],
     initialPosition: Vector3,
     primaryId?: string | null
 ): string {
     const groups = getGroups(loadedObjectGroup);
     const objectToGroup = getObjectToGroup(loadedObjectGroup);
     const ud = loadedObjectGroup.userData;
-    const keyToUuid = ud?.instanceKeyToObjectUuid as Map<string, string> | undefined;
     let sceneOrder = ud?.sceneOrder as SceneOrderEntry[] | undefined;
 
     const newGroupId = MathUtils.generateUUID();
@@ -476,8 +425,7 @@ export function createGroupStructure(
 
     const selectedUuids = new Set<string>();
     for (const { mesh, instanceId } of selectedObjects) {
-        const key = getGroupKey(mesh, instanceId);
-        const uuid = keyToUuid?.get(key);
+        const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId);
         if (uuid) selectedUuids.add(uuid);
     }
     const selectedGroupSet = new Set(selectedGroupIds);
@@ -531,7 +479,7 @@ export function createGroupStructure(
     assertAnimationParentsInvertible(loadedObjectGroup, [newGroup.parent]);
     const affectedGroupIds = new Set<string>();
     const removedGroupIdsByParent = new Map<string, Set<string>>();
-    const removedObjectKeysByParent = new Map<string, Set<string>>();
+    const removedObjectUuidsByParent = new Map<string, Set<string>>();
     const removedRootGroupIds = new Set<string>();
     const removedRootObjectUuids = new Set<string>();
 
@@ -556,23 +504,20 @@ export function createGroupStructure(
         newGroup.children.push({ type: 'group', id: childGroupId });
     }
 
-    for (const { mesh, instanceId } of selectedObjects) {
-        if (!mesh && (mesh as unknown) !== 0) continue;
-        const key = getGroupKey(mesh, instanceId);
-        const objectUuid = keyToUuid?.get(key);
-        const oldGroupId = objectToGroup.get(key);
+    for (const objectUuid of selectedUuids) {
+        const oldGroupId = objectToGroup.get(objectUuid);
         if (oldGroupId) {
             affectedGroupIds.add(oldGroupId);
-            addRemoval(removedObjectKeysByParent, oldGroupId, key);
-        } else if (objectUuid && sceneOrder) {
+            addRemoval(removedObjectUuidsByParent, oldGroupId, objectUuid);
+        } else if (sceneOrder) {
             removedRootObjectUuids.add(objectUuid);
         }
-        newGroup.children.push({ type: 'object', mesh, instanceId, id: objectUuid });
-        objectToGroup.set(key, newGroupId);
+        newGroup.children.push({ type: 'object', id: objectUuid });
+        objectToGroup.set(objectUuid, newGroupId);
     }
 
     let insertedNewGroup = false;
-    const affectedParents = new Set([...removedGroupIdsByParent.keys(), ...removedObjectKeysByParent.keys()]);
+    const affectedParents = new Set([...removedGroupIdsByParent.keys(), ...removedObjectUuidsByParent.keys()]);
     if (insertionContainerKind === 'group' && insertionParentId) affectedParents.add(insertionParentId);
 
     for (const parentId of affectedParents) {
@@ -580,7 +525,7 @@ export function createGroupStructure(
         if (!parent || !Array.isArray(parent.children)) continue;
 
         const removedGroupIds = removedGroupIdsByParent.get(parentId);
-        const removedObjectKeys = removedObjectKeysByParent.get(parentId);
+        const removedObjectUuids = removedObjectUuidsByParent.get(parentId);
         const rebuilt: GroupChild[] = [];
         for (let index = 0; index < parent.children.length; index++) {
             const child = parent.children[index];
@@ -588,7 +533,7 @@ export function createGroupStructure(
                 rebuilt.push({ type: 'group', id: newGroupId });
                 insertedNewGroup = true;
             }
-            if (child.type === 'group' ? removedGroupIds?.has(child.id) : removedObjectKeys?.has(getGroupKey(child.mesh, child.instanceId))) continue;
+            if ((child.type === 'group' ? removedGroupIds : removedObjectUuids)?.has(child.id)) continue;
             rebuilt.push(child);
         }
         parent.children = rebuilt;
@@ -669,9 +614,8 @@ export function ungroupGroupStructure(
             const sub = groups.get(child.id);
             if (sub) sub.parent = parentId;
         } else if (child.type === 'object') {
-            const key = getGroupKey(child.mesh, child.instanceId);
-            if (parentId) objectToGroup.set(key, parentId);
-            else objectToGroup.delete(key);
+            if (parentId) objectToGroup.set(child.id, parentId);
+            else objectToGroup.delete(child.id);
         }
     }
 
@@ -688,10 +632,7 @@ export function ungroupGroupStructure(
         if (Array.isArray(sceneOrder)) {
             const entries: SceneOrderEntry[] = [];
             for (const child of children) {
-                if (!child) continue;
-                const id = child.id ?? (child.type === 'object'
-                    ? loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(getGroupKey(child.mesh, child.instanceId)) : undefined);
-                if (id) entries.push({ type: child.type, id });
+                if (child?.id) entries.push({ type: child.type, id: child.id });
             }
             const idx = sceneOrder.findIndex(entry => entry.type === 'group' && entry.id === groupId);
             loadedObjectGroup.userData.sceneOrder = idx !== -1
@@ -796,10 +737,12 @@ export function collectCloneJobsFromGroup(
     for (const child of sourceGroup.children) {
         if (!child) continue;
         if (child.type === 'object') {
+            const ref = objectRef(loadedObjectGroup, child.id);
+            if (!ref) continue;
             if (ctx && ctx.planBatchCallback) {
-                ctx.planBatchCallback(child.mesh, child.instanceId, newGroupId);
+                ctx.planBatchCallback(ref.mesh, ref.instanceId, newGroupId);
             }
-            outJobs.push({ mesh: child.mesh, instanceId: child.instanceId, targetGroupId: newGroupId, coveredByGroup: true });
+            outJobs.push({ mesh: ref.mesh, instanceId: ref.instanceId, targetGroupId: newGroupId, coveredByGroup: true });
         } else if (child.type === 'group') {
             const mappedChildId = ctx && ctx._groupIdMap ? ctx._groupIdMap.get(child.id) : null;
             collectCloneJobsFromGroup(loadedObjectGroup, child.id, mappedChildId || newGroupId, ctx, outJobs);

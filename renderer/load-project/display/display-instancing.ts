@@ -63,12 +63,18 @@ function effectiveBrightness(brightness?: Brightness): Brightness {
     return global?.enabled && (brightness?.sky ?? 15) === 15 && (brightness?.block ?? 0) === 0 ? global : brightness ?? {};
 }
 
-export function setInstanceSkyBrightness(mesh: InstancedMesh, instanceId: number, brightness?: Brightness): void {
+/** The instance color that lights an object with the given (or the global) brightness. */
+export function skyBrightnessColor(brightness?: Brightness): Color {
     const effective = effectiveBrightness(brightness);
     const level = Math.round(MathUtils.clamp(effective.sky ?? 15, 0, 15));
     const block = Math.round(MathUtils.clamp(effective.block ?? 0, 0, 15));
-    mesh.setColorAt(instanceId, lightMapColors[level + block * 16]);
-    mesh.instanceColor!.setUsage(DynamicDrawUsage);
+    return lightMapColors[level + block * 16];
+}
+
+export function setInstanceSkyBrightness(mesh: InstancedMesh, instanceId: number, brightness?: Brightness): void {
+    mesh.setColorAt(instanceId, skyBrightnessColor(brightness));
+    // A batch the draw pool adopted holds its colors in an interleaved row view, which has no usage of its own.
+    if (!(mesh.instanceColor as unknown as InterleavedBufferAttribute).isInterleavedBufferAttribute) mesh.instanceColor!.setUsage(DynamicDrawUsage);
 }
 
 export function addLoadedInstance(selection: LoadedSelection, mesh: Object3D, instanceId: number): void {
@@ -91,11 +97,11 @@ export async function addTextDisplayItems(
     const reusable = new Map<string, InstancedMesh>();
     for (const child of loadedObjectGroup.children) {
         const mesh = child as InstancedMesh;
-        if (!mesh.isInstancedMesh || !mesh.userData.textDisplayTemplateKeys || mesh.count >= getInstancedCapacity(mesh)) continue;
+        if (!mesh.isInstancedMesh || !mesh.userData.textDisplayBatch || mesh.count >= getInstancedCapacity(mesh)) continue;
         reusable.set(`${(mesh.material as Material).uuid}:${mesh.geometry.userData.textDisplayGeometryKey ?? ''}`, mesh);
     }
 
-    const groups = new Map<string, Array<{ item: OtherItem; template: InstancedMesh; key: string }>>();
+    const groups = new Map<string, Array<{ item: OtherItem; template: InstancedMesh }>>();
     const reusedMeshes = new Set<InstancedMesh>();
     const usedMaterials = new Set<Material>();
     for (const item of items) {
@@ -117,7 +123,6 @@ export async function addTextDisplayItems(
             }
             setInstanceSkyBrightness(mesh, instanceId, item.brightness as Brightness | undefined);
             mesh.geometry.boundingBox?.union(template.geometry.boundingBox!);
-            (mesh.userData.textDisplayTemplateKeys as Map<number, string>).set(instanceId, key);
             registerObject(mesh, instanceId, item.uuid, item.groupId);
             if (selection) addLoadedInstance(selection, mesh, instanceId);
             reusedMeshes.add(mesh);
@@ -126,7 +131,7 @@ export async function addTextDisplayItems(
         }
 
         const group = groups.get(batchKey) ?? [];
-        group.push({ item, template, key });
+        group.push({ item, template });
         groups.set(batchKey, group);
     }
     const usedGeometries = new Set<BufferGeometry>();
@@ -160,14 +165,13 @@ export async function addTextDisplayItems(
             textMesh.instanceMatrix = new StorageInstancedBufferAttribute(capacity, 16);
             textMesh.count = chunk.length;
             textMesh.userData.displayType = 'text_display';
-            textMesh.userData.textDisplayTemplateKeys = new Map<number, string>();
+            textMesh.userData.textDisplayBatch = true;
             textMesh.frustumCulled = false;
             textMesh.renderOrder = 1;
             textMesh.layers.enable(2);
-            chunk.forEach(({ item, key }, instanceId) => {
+            chunk.forEach(({ item }, instanceId) => {
                 textMesh.setMatrixAt(instanceId, new Matrix4().fromArray(item.transform).transpose());
                 setInstanceSkyBrightness(textMesh, instanceId, item.brightness as Brightness | undefined);
-                textMesh.userData.textDisplayTemplateKeys.set(instanceId, key);
                 registerObject(textMesh, instanceId, item.uuid, item.groupId);
                 if (selection) addLoadedInstance(selection, textMesh, instanceId);
             });
@@ -311,5 +315,6 @@ export function getInstanceDisplayType(instance: GeometryInstanceMeta, part?: Ge
 }
 
 export function getAppendableInstanceCapacity(count: number): number {
-    return Math.max(count, Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, Math.max(256, count * 2)));
+    // 1/8 room to append: the pooled draw never uploads these arrays, so growing past it only adds a chunk mesh.
+    return Math.max(count, Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, Math.max(256, count + Math.ceil(count / 8))));
 }

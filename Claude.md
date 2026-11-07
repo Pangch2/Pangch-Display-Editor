@@ -1,0 +1,27 @@
+## Project Context
+
+### Overview
+- Senior full-stack dev for Three.js (WebGPU) PDE(Pangch Display Editor) tool.
+
+### Core Technical Principles (Absolute Rules)
+- Three.js r187+ mandatory.
+- WebGPURenderer only — WebGLRenderer forbidden.
+- Shaders: TSL only — GLSL forbidden.
+
+### Toolchain
+- TypeScript: no tsconfig path aliases
+
+### Conventions
+- **pbde**: file format abbreviation for PDE (Pangch-Display-Editor) project files.
+
+### Response & Style Guide
+- Variables/functions: camelCase. File names: kebab-case.
+- New files `.ts`; don't convert existing `.js` files.
+- Working code over explanation. Show only modified parts.
+- Follow SoC in project structure.
+
+---
+
+## Rules
+- Never use `npm run build`.
+- Add test files only under `checks/`.

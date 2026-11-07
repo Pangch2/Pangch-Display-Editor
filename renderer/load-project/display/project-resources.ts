@@ -1,6 +1,5 @@
 import { BufferGeometry, type InstancedMesh, Material, type Mesh, Node, type Object3D, Texture } from 'three/webgpu';
 import { getAtlasPartMaterials } from '../batching/atlas-part-material';
-import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-history';
 import { disposeTexture, forgetBlockRenderResources } from './block-render-resources';
 import { clearImageHeadBlackMaterial, headGeometries } from './player-head-atlas';
 
@@ -47,11 +46,6 @@ export function disposeProjectResources(project: ProjectScene, remainingProjects
     const resources = collectProjectResources(project);
     const retained = new Set<ProjectResource>(Object.values(headGeometries ?? {}).filter(Boolean));
     for (const remaining of remainingProjects) for (const resource of collectProjectResources(remaining)) retained.add(resource);
-    for (const resource of resources) if (isSceneHistoryResourceRetained(resource)) {
-        if (resource instanceof Material) addMaterialResources(resource, retained);
-        else retained.add(resource);
-        if (resource instanceof BufferGeometry) for (const material of getAtlasPartMaterials(resource)) addMaterialResources(material, retained);
-    }
     for (const resource of retained) resources.delete(resource);
     const retainedImages = new Set([...retained].filter(resource => resource instanceof Texture).map(texture => texture.image));
     forgetBlockRenderResources(resources);

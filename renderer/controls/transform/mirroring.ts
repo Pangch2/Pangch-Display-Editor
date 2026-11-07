@@ -1,11 +1,12 @@
-import { Group, InstancedMesh, Matrix4, Mesh, Vector3 } from 'three/webgpu';
+import { Group, InstancedMesh, Matrix4, Vector3 } from 'three/webgpu';
 import { applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
 import type { SelectedItem } from '../selection/select';
+import { batchOf, objectPivot, objectUuidAt, objectWorldMatrix, setObjectIsCustomPivot, setObjectPivot, type ObjectBatch } from '../../scene-store/object-access';
+import { ObjectStore } from '../../scene-store/object-store';
 
-type PdeMesh = InstancedMesh | Mesh;
 type MirrorPairKey = 'objectMirrorPairs' | 'groupMirrorPairs';
 
 const worldXReflection = new Matrix4().makeScale(-1, 1, 1).setPosition(-1, 0, 0);
@@ -86,7 +87,7 @@ export function getLinkedMirrorUuid(loadedObjectGroup: Group, uuid: string): str
     return getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs').get(uuid);
 }
 
-function getObjectReflection(mesh: PdeMesh, instanceId: number): Matrix4 {
+function getObjectReflection(mesh: ObjectBatch, instanceId: number): Matrix4 {
     const displayType = Overlay.getDisplayType(mesh, instanceId);
     return (displayType === 'block_display' || displayType === 'item_display' || displayType === 'text_display')
         ? centeredXReflection
@@ -96,24 +97,19 @@ function getObjectReflection(mesh: PdeMesh, instanceId: number): Matrix4 {
 export function syncLinkedMirrorPivot(loadedObjectGroup: Group, uuid: string, localPivot: Vector3): void {
     if (!mirrorModeling) return;
     const partnerUuid = getLinkedMirrorUuid(loadedObjectGroup, uuid);
-    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: PdeMesh; instanceId: number }> | undefined;
+    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined;
     const source = refs?.get(uuid);
     const partner = partnerUuid ? refs?.get(partnerUuid) : undefined;
     if (!source || !partner) return;
 
-    const sourceMatrix = source.mesh.matrixWorld.clone();
-    const partnerMatrix = partner.mesh.matrixWorld.clone();
-    if (source.mesh.isInstancedMesh) sourceMatrix.multiply(source.mesh.getMatrixAt(source.instanceId, new Matrix4()));
-    if (partner.mesh.isInstancedMesh) partnerMatrix.multiply(partner.mesh.getMatrixAt(partner.instanceId, new Matrix4()));
+    const sourceMatrix = objectWorldMatrix(loadedObjectGroup, uuid, new Matrix4())!;
+    const partnerMatrix = objectWorldMatrix(loadedObjectGroup, partnerUuid!, new Matrix4())!;
     const mirroredPivot = localPivot.clone()
         .applyMatrix4(sourceMatrix)
         .applyMatrix4(getObjectReflection(source.mesh, source.instanceId))
         .applyMatrix4(partnerMatrix.invert());
-    if (partner.mesh.isInstancedMesh) {
-        const pivots = (partner.mesh.userData.customPivots ??= new Map<number, Vector3>()) as Map<number, Vector3>;
-        pivots.set(partner.instanceId, mirroredPivot);
-    } else partner.mesh.userData.customPivot = mirroredPivot;
-    partner.mesh.userData.isCustomPivot = true;
+    setObjectPivot(loadedObjectGroup, partnerUuid!, mirroredPivot);
+    setObjectIsCustomPivot(loadedObjectGroup, partnerUuid!, true);
 }
 
 export function syncLinkedMirrorGroupPivot(loadedObjectGroup: Group, groupId: string, worldPivot: Vector3): void {
@@ -127,21 +123,20 @@ export function syncLinkedMirrorGroupPivot(loadedObjectGroup: Group, groupId: st
 }
 
 function getItemUuid(loadedObjectGroup: Group, { mesh, instanceId }: SelectedItem): string | undefined {
-    return (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
-        ?.get(GroupUtils.getGroupKey(mesh, instanceId));
+    return objectUuidAt(loadedObjectGroup, mesh, instanceId);
 }
 
 export function getLinkedMirrorSelection(loadedObjectGroup: Group, items: SelectedItem[], groupIds: Set<string>): {
-    objects: Map<PdeMesh, Set<number>>;
+    objects: Map<ObjectBatch, Set<number>>;
     groups: Set<string>;
 } {
-    const objects = new Map<PdeMesh, Set<number>>();
+    const objects = new Map<ObjectBatch, Set<number>>();
     const groups = new Set<string>();
     if (!mirrorModeling) return { objects, groups };
 
     const selectedUuids = new Set(items.map(item => getItemUuid(loadedObjectGroup, item)).filter((uuid): uuid is string => !!uuid));
     const objectPairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
-    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: PdeMesh; instanceId: number }> | undefined;
+    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined;
     for (const uuid of selectedUuids) {
         const partnerUuid = objectPairs.get(uuid);
         const partner = partnerUuid && !selectedUuids.has(partnerUuid) ? refs?.get(partnerUuid) : undefined;
@@ -160,12 +155,11 @@ export function getLinkedMirrorSelection(loadedObjectGroup: Group, items: Select
 
 if (import.meta.env.DEV) {
     const testGroup = new Group();
-    const source = new Mesh();
-    const partner = new Mesh();
-    testGroup.userData.instanceKeyToObjectUuid = new Map([[GroupUtils.getGroupKey(source, 0), 'source']]);
+    const source = new InstancedMesh(undefined!, undefined!, 1);
+    const partner = new InstancedMesh(undefined!, undefined!, 1);
     partner.position.x = -1;
     partner.updateMatrixWorld(true);
-    testGroup.userData.objectUuidToInstance = new Map([
+    testGroup.userData.objectUuidToInstance = new ObjectStore([
         ['source', { mesh: source, instanceId: 0 }],
         ['partner', { mesh: partner, instanceId: 0 }]
     ]);
@@ -175,33 +169,34 @@ if (import.meta.env.DEV) {
     replaceMirrorUuid(testGroup, 'replacement', 'source');
     const groupChild = new InstancedMesh(undefined!, undefined!, 1);
     groupChild.setMatrixAt(0, new Matrix4());
+    testGroup.userData.objectUuidToInstance.set('groupChild', { mesh: groupChild, instanceId: 0 });
     testGroup.userData.groups = new Map([
         ['sourceGroup', { id: 'sourceGroup', children: [], parent: null, matrix: new Matrix4().makeTranslation(0.75, 0, 0) }],
         ['partnerGroup', {
-            id: 'partnerGroup', children: [{ type: 'object', mesh: groupChild, instanceId: 0 }], parent: null,
+            id: 'partnerGroup', children: [{ type: 'object', id: 'groupChild' }], parent: null,
             matrix: worldXReflection.clone().multiply(new Matrix4().makeTranslation(0.75, 0, 0))
         }]
     ]);
     linkMirrorPair(getMirrorPairs(testGroup, 'groupMirrorPairs'), 'sourceGroup', 'partnerGroup');
     const previous = mirrorModeling;
     mirrorModeling = true;
-    console.assert(getLinkedMirrorSelection(testGroup, [{ type: 'object', mesh: source, instanceId: 0 }], new Set()).objects.get(partner)?.has(0), 'Mirror partner selection failed.');
+    console.assert(getLinkedMirrorSelection(testGroup, [{ type: 'object', mesh: batchOf(source), instanceId: 0 }], new Set()).objects.get(batchOf(partner))?.has(0), 'Mirror partner selection failed.');
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(1, 2, 3));
     syncLinkedMirrorGroupPivot(testGroup, 'sourceGroup', new Vector3(1, 2, 3));
-    console.assert(partner.userData.customPivot.equals(new Vector3(-1, 2, 3)), 'Object custom pivot X was not mirrored.');
+    console.assert(objectPivot(testGroup, 'partner')!.equals(new Vector3(-1, 2, 3)), 'Object custom pivot X was not mirrored.');
     source.userData.displayType = 'block_display';
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(1.046789, 0, 0));
-    console.assert(Math.abs(partner.userData.customPivot.x + 0.046789) < 1e-9, 'Block display pivot did not mirror around X=0.5.');
+    console.assert(Math.abs(objectPivot(testGroup, 'partner')!.x + 0.046789) < 1e-9, 'Block display pivot did not mirror around X=0.5.');
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(0, 0, 0));
-    console.assert(Math.abs(partner.userData.customPivot.x - 1) < 1e-9, 'Block display origin pivot did not mirror to X=1.');
+    console.assert(Math.abs(objectPivot(testGroup, 'partner')!.x - 1) < 1e-9, 'Block display origin pivot did not mirror to X=1.');
     source.userData.displayType = 'item_display';
     source.userData.hasHat = [true];
     partner.userData.displayType = 'item_display';
     partner.position.set(0, 0, 0);
     partner.updateMatrixWorld(true);
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(0.279198, 0, 0));
-    console.assert(Math.abs(partner.userData.customPivot.x + 0.279198) < 1e-9, 'Centered item pivot used the block reflection plane.');
-    const centeredRotation = getObjectReflection(source, 0).clone().multiply(new Matrix4().makeRotationZ(Math.PI / 2)).multiply(getObjectReflection(source, 0));
+    console.assert(Math.abs(objectPivot(testGroup, 'partner')!.x + 0.279198) < 1e-9, 'Centered item pivot used the block reflection plane.');
+    const centeredRotation = getObjectReflection(batchOf(source), 0).clone().multiply(new Matrix4().makeRotationZ(Math.PI / 2)).multiply(getObjectReflection(batchOf(source), 0));
     console.assert(Math.abs(centeredRotation.elements[13]) < 1e-9, 'Player head rotation added a Y offset.');
     delete source.userData.displayType;
     delete partner.userData.displayType;
@@ -235,7 +230,7 @@ export function applyLinkedMirrorDelta(
     const linked = getLinkedMirrorSelection(loadedObjectGroup, items, groupIds);
     if (linked.objects.size === 0 && linked.groups.size === 0) return;
 
-    const groupedObjects = new Map<PdeMesh, Set<number>>();
+    const groupedObjects = new Map<ObjectBatch, Set<number>>();
     for (const groupId of linked.groups) {
         for (const child of GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId)) {
             const ids = linked.objects.get(child.mesh) ?? new Set<number>();

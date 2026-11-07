@@ -25,18 +25,12 @@ export function getObjectLabel(ud: LoadedObjectUserData, uuid: string): string |
     return label === 'text_display' && !ud.objectTextDisplayOptions?.has(uuid) ? undefined : label;
 }
 
-export function resolveChildObjectUuid(child: GroupChild, ud: LoadedObjectUserData): string | null {
-    if (child.type !== 'object') return null;
-    if (child.id) return child.id;
-    if (!child.mesh || typeof child.instanceId !== 'number') return null;
-    return ud.instanceKeyToObjectUuid?.get(`${child.mesh.uuid}_${child.instanceId}`) ?? null;
+export function resolveChildObjectUuid(child: GroupChild, _ud: LoadedObjectUserData): string | null {
+    return child.type === 'object' ? child.id ?? null : null;
 }
 
 export function isObjectUuidGrouped(uuid: string, ud: LoadedObjectUserData): boolean {
-    const inst = ud.objectUuidToInstance?.get(uuid);
-    if (!inst) return false;
-    const key = `${inst.mesh.uuid}_${inst.instanceId}`;
-    return ud.objectToGroup?.has(key) ?? false;
+    return !!ud.objectUuidToInstance?.has(uuid) && (ud.objectToGroup?.has(uuid) ?? false);
 }
 
 export function hasRenderableObject(uuid: string, ud: LoadedObjectUserData): boolean {
@@ -91,12 +85,6 @@ export function getObjectInstanceByUuid(
     ud: LoadedObjectUserData
 ): { mesh: Object3D; instanceId: number } | null {
     return ud.objectUuidToInstance?.get(uuid) ?? null;
-}
-
-export function getObjectGroupKeyByUuid(uuid: string, ud: LoadedObjectUserData): string | null {
-    const inst = getObjectInstanceByUuid(uuid, ud);
-    if (!inst) return null;
-    return `${inst.mesh.uuid}_${inst.instanceId}`;
 }
 
 export function findObjectChildIndexByUuid(children: GroupChild[], objectUuid: string, ud: LoadedObjectUserData): number {
@@ -168,8 +156,7 @@ export function findGroupLocation(groupId: string, ud: LoadedObjectUserData): Sc
 
 export function findObjectLocation(objectUuid: string, ud: LoadedObjectUserData): SceneItemLocation | null {
     const groups = ud.groups;
-    const objectKey = getObjectGroupKeyByUuid(objectUuid, ud);
-    const mappedParentId = objectKey ? (ud.objectToGroup?.get(objectKey) ?? null) : null;
+    const mappedParentId = ud.objectToGroup?.get(objectUuid) ?? null;
 
     if (mappedParentId && groups) {
         const parent = groups.get(mappedParentId);
@@ -364,24 +351,17 @@ export function moveSceneItemsByDropHint(bundle: SceneDragBundle, hint: SceneDro
             continue;
         }
 
-        const inst = getObjectInstanceByUuid(item.id, ud);
-        if (!inst) continue;
+        if (!getObjectInstanceByUuid(item.id, ud)) continue;
 
         if (!ud.objectToGroup) ud.objectToGroup = new Map<string, string>();
-        const objectKey = `${inst.mesh.uuid}_${inst.instanceId}`;
         if (insertion.parentGroupId) {
-            ud.objectToGroup.set(objectKey, insertion.parentGroupId);
+            ud.objectToGroup.set(item.id, insertion.parentGroupId);
         } else {
-            ud.objectToGroup.delete(objectKey);
+            ud.objectToGroup.delete(item.id);
         }
 
         if (insertion.containerKind === 'group') {
-            (insertion.container as GroupChild[]).splice(insertionIndex + insertedCount, 0, {
-                type: 'object',
-                id: item.id,
-                mesh: inst.mesh,
-                instanceId: inst.instanceId
-            });
+            (insertion.container as GroupChild[]).splice(insertionIndex + insertedCount, 0, { type: 'object', id: item.id });
         } else {
             (insertion.container as SceneOrderEntry[]).splice(insertionIndex + insertedCount, 0, {
                 type: 'object',

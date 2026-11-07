@@ -1,28 +1,27 @@
 import {
     Matrix4,
     Vector3,
-    InstancedMesh,
-    Mesh,
     Quaternion,
-    Object3D,
     Box3
 } from 'three/webgpu';
 import * as Overlay from '../selection/overlay';
 import * as GroupUtils from '../grouping/group';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
+import { getInstanceMatrix, getInstancePivot, type ObjectBatch } from '../../scene-store/object-access';
+import { getPrimaryObjectRef, isSlotSelected, slotObjectUuid, toMeshMap, type PrimarySelection, type SelectionState } from '../selection/select';
 
 const _TMP_MAT4_A = new Matrix4();
 const _ZERO_VEC3 = new Vector3(0, 0, 0);
 
 export type SelectionSource = 
     | { type: 'group'; id: string }
-    | { type: 'object'; mesh: InstancedMesh | Mesh; instanceId: number };
+    | { type: 'object'; mesh: ObjectBatch; instanceId: number };
 
 export interface QueueEntry {
     type: 'group' | 'object';
     id?: string;
-    mesh?: InstancedMesh | Mesh;
+    mesh?: ObjectBatch;
     instanceId?: number;
     gizmoLocalPosition: Vector3;
     gizmoLocalQuaternion: Quaternion;
@@ -43,11 +42,7 @@ export interface QueueBundle {
 export type QueueItem = QueueEntry | QueueBundle;
 
 export interface SwapContext {
-    currentSelection: {
-        groups: Set<string>;
-        objects: Map<Object3D, Set<number>>;
-        primary: SelectionSource | null;
-    };
+    currentSelection: SelectionState;
     getGroups: () => Map<string, GroupData>;
     getGroupWorldMatrixWithFallback: (id: string, target: Matrix4) => Matrix4;
     setGizmoState: (state: Partial<GizmoState>) => void;
@@ -66,6 +61,14 @@ export interface SwapOptions {
 interface PivotSnapshot {
     isCustomPivot: boolean;
     pivotOffset: Vector3;
+}
+
+/** The selection's primary as a slot source. */
+export function primarySource(selection: SelectionState): SelectionSource | null {
+    const primary = selection.primary;
+    if (primary?.type === 'group') return { type: 'group', id: primary.id };
+    const ref = getPrimaryObjectRef(selection);
+    return ref ? { type: 'object', mesh: ref.mesh, instanceId: ref.instanceId } : null;
 }
 
 export function performSelectionSwap(
@@ -95,14 +98,8 @@ export function performSelectionSwap(
         if (!a || !b || a.type !== b.type) return false;
         if (a.type === 'group') return (a as { type: 'group'; id?: string }).id === (b.type === 'group' ? b.id : undefined);
         return a.type === 'object' && b.type === 'object'
-            && (a as { type: 'object'; mesh?: InstancedMesh | Mesh }).mesh === b.mesh
+            && (a as { type: 'object'; mesh?: ObjectBatch }).mesh === b.mesh
             && (a as { type: 'object'; instanceId?: number }).instanceId === b.instanceId;
-    };
-
-    const toSelectionSource = (source: SelectionSource | null): SelectionSource | null => {
-        if (!source) return null;
-        if (source.type === 'group') return { type: 'group', id: source.id };
-        return { type: 'object', mesh: source.mesh, instanceId: source.instanceId };
     };
 
     const toSelectionSourceFromEntry = (entry: QueueEntry): SelectionSource => {
@@ -112,8 +109,21 @@ export function performSelectionSwap(
         return { type: 'object', mesh: entry.mesh!, instanceId: entry.instanceId! };
     };
 
-    const getCurrentPrimary = (): SelectionSource | null => {
-        return toSelectionSource(currentSelection.primary as SelectionSource | null);
+    const getCurrentPrimary = (): SelectionSource | null => primarySource(currentSelection);
+
+    const toPrimary = (source: SelectionSource | null): PrimarySelection | null => {
+        if (!source) return null;
+        if (source.type === 'group') return { type: 'group', id: source.id };
+        const uuid = slotObjectUuid(source.mesh, source.instanceId);
+        return uuid ? { type: 'object', uuid } : null;
+    };
+
+    const addToSelection = (source: SelectionSource): void => {
+        if (source.type === 'group') currentSelection.groups.add(source.id);
+        else {
+            const uuid = slotObjectUuid(source.mesh, source.instanceId);
+            if (uuid) currentSelection.objects.add(uuid);
+        }
     };
 
     const listIncludesSource = (list: SelectionSource[], source: SelectionSource | null): boolean => {
@@ -124,8 +134,7 @@ export function performSelectionSwap(
     const isSelectedSource = (source: SelectionSource | null): boolean => {
         if (!source) return false;
         if (source.type === 'group') return currentSelection.groups.has(source.id);
-        const ids = currentSelection.objects.get(source.mesh);
-        return !!(ids && ids.has(source.instanceId));
+        return isSlotSelected(source.mesh, source.instanceId, currentSelection);
     };
 
     const findQueueLocation = (source: SelectionSource | null): { kind: 'direct' | 'bundle'; itemIndex: number; subIndex?: number } | null => {
@@ -155,32 +164,17 @@ export function performSelectionSwap(
             const { mesh, instanceId } = source;
 
             const getWorldPivot = (id: number): Vector3 | null => {
-                let local: Vector3 | null = null;
-                if (mesh.userData.customPivots) {
-                    local = mesh.userData.customPivots.get(id);
-                    if (!local) {
-                        const k = String(id);
-                        local = mesh.userData.customPivots.get(k);
-                    }
-                }
+                const local = getInstancePivot(mesh, id);
                 if (local) {
                     const m = _TMP_MAT4_A;
-                    if ((mesh as InstancedMesh).isInstancedMesh) {
-                        (mesh as InstancedMesh).getMatrixAt(id, m);
-                    } else {
-                        m.copy(mesh.matrix);
-                    }
+                    getInstanceMatrix(mesh, id, m);
                     m.premultiply(mesh.matrixWorld);
                     return local.clone().applyMatrix4(m);
                 }
                 return null;
             };
 
-            if ((mesh as InstancedMesh).isInstancedMesh) {
-                pivotWorld = getWorldPivot(instanceId);
-            } else if (mesh.userData.customPivot) {
-                pivotWorld = mesh.userData.customPivot.clone().applyMatrix4(mesh.matrixWorld);
-            }
+            pivotWorld = getWorldPivot(instanceId);
         } else if (source.type === 'group') {
             const groups = getGroups();
             const group = groups.get(source.id);
@@ -205,11 +199,7 @@ export function performSelectionSwap(
         }
 
         const { mesh, instanceId } = source;
-        if ((mesh as InstancedMesh).isInstancedMesh) {
-            (mesh as InstancedMesh).getMatrixAt(instanceId, target);
-        } else {
-            target.copy(mesh.matrix);
-        }
+        getInstanceMatrix(mesh, instanceId, target);
 
         return target.premultiply(mesh.matrixWorld);
     };
@@ -288,21 +278,9 @@ export function performSelectionSwap(
         if (!hasCustomPivot && state.pivotMode !== 'center') {
             if (source.type === 'object') {
                 const { mesh, instanceId } = source;
-                if ((mesh as InstancedMesh).isInstancedMesh) {
-                    let pivot: Vector3 | null = null;
-                    if (mesh.userData.customPivots) {
-                        pivot = mesh.userData.customPivots.get(instanceId);
-                        if (!pivot) {
-                            const key = String(instanceId);
-                            pivot = mesh.userData.customPivots.get(key);
-                        }
-                    }
-                    if (pivot) {
-                        targetLocalPivot.copy(pivot);
-                        hasCustomPivot = true;
-                    }
-                } else if (mesh.userData.customPivot) {
-                    targetLocalPivot.copy(mesh.userData.customPivot);
+                const pivot = getInstancePivot(mesh, instanceId);
+                if (pivot) {
+                    targetLocalPivot.copy(pivot);
                     hasCustomPivot = true;
                 }
 
@@ -407,14 +385,7 @@ export function performSelectionSwap(
         };
     };
 
-    const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
-    let objectIdCount = 0;
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const ids of currentSelection.objects.values()) {
-            objectIdCount += ids.size;
-        }
-    }
-    const activeSelectionCount = groupCount + objectIdCount;
+    const activeSelectionCount = currentSelection.groups.size + currentSelection.objects.size;
     const hasActiveSelection = activeSelectionCount > 0;
     
     const isSwap = !!options.preserveSelection;
@@ -423,8 +394,7 @@ export function performSelectionSwap(
     // its primary-local capture remains valid because the primary gets the same transform.
     const clearExplicitPivot = () => {
         const finalState = getGizmoState();
-        let selectionCount = currentSelection.groups.size;
-        for (const ids of currentSelection.objects.values()) selectionCount += ids.size;
+        const selectionCount = currentSelection.groups.size + currentSelection.objects.size;
 
         if (selectionCount > 1 && finalState._multiSelectionOriginAnchorValid) {
             if (finalState.isCustomPivot) {
@@ -481,8 +451,8 @@ export function performSelectionSwap(
                 for (const gid of currentSelection.groups) itemsToQueue.push({ type: 'group', id: gid });
             }
             if (currentSelection.objects) {
-                for (const [mesh, ids] of currentSelection.objects) {
-                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as InstancedMesh | Mesh, instanceId: id });
+                for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
+                    for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as ObjectBatch, instanceId: id });
                 }
             }
             const currentSelectionAnchorWorld = getCurrentSelectionAnchorWorld(itemsToQueue.length);
@@ -492,25 +462,14 @@ export function performSelectionSwap(
             currentSelection.objects.clear();
             currentSelection.primary = null;
 
-            for (const item of itemsToSelect) {
-                if (item.type === 'group') {
-                    currentSelection.groups.add(item.id);
-                } else {
-                    let set = currentSelection.objects.get(item.mesh);
-                    if (!set) {
-                        set = new Set();
-                        currentSelection.objects.set(item.mesh, set);
-                    }
-                    set.add(item.instanceId);
-                }
-            }
+            for (const item of itemsToSelect) addToSelection(item);
 
             const primaryToUse =
                 (queuedPrimary && listIncludesSource(itemsToSelect, queuedPrimary))
                     ? queuedPrimary
                     : (listIncludesSource(itemsToSelect, newPrimarySrc) ? newPrimarySrc : (itemsToSelect[0] ?? null));
 
-            currentSelection.primary = primaryToUse ? toSelectionSource(primaryToUse) : null;
+            currentSelection.primary = toPrimary(primaryToUse);
 
             const newQueueItem = createQueueItem(
                 itemsToQueue,
@@ -583,8 +542,8 @@ export function performSelectionSwap(
             const previousPrimary = getCurrentPrimary();
             const itemsToQueue: SelectionSource[] = [];
             for (const gid of currentSelection.groups) itemsToQueue.push({ type: 'group', id: gid });
-            for (const [mesh, ids] of currentSelection.objects) {
-                for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as InstancedMesh | Mesh, instanceId: id });
+            for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
+                for (const id of ids) itemsToQueue.push({ type: 'object', mesh: mesh as ObjectBatch, instanceId: id });
             }
             const currentSelectionAnchorWorld = getCurrentSelectionAnchorWorld(itemsToQueue.length);
             const currentStateSnapshot = deriveEffectivePivotSnapshot(getGizmoState(), itemsToQueue.length);
@@ -593,15 +552,8 @@ export function performSelectionSwap(
             currentSelection.objects.clear();
             currentSelection.primary = null;
 
-            if (src.type === 'group') {
-                currentSelection.groups.add(src.id);
-                currentSelection.primary = { type: 'group', id: src.id };
-            } else {
-                const ids = new Set<number>();
-                ids.add(src.instanceId);
-                currentSelection.objects.set(src.mesh, ids);
-                currentSelection.primary = { type: 'object', mesh: src.mesh, instanceId: src.instanceId };
-            }
+            addToSelection(src);
+            currentSelection.primary = toPrimary(src);
 
             vertexQueue.length = 0;
             const newQueueItem = createQueueItem(
@@ -634,17 +586,8 @@ export function performSelectionSwap(
         currentSelection.objects.clear();
         currentSelection.primary = null;
 
-        if (src.type === 'group') {
-            currentSelection.groups.add(src.id);
-            currentSelection.primary = { type: 'group', id: src.id };
-        } else {
-            const { mesh, instanceId } = src;
-            const ids = new Set<number>();
-            ids.add(instanceId);
-
-            currentSelection.objects.set(mesh, ids);
-            currentSelection.primary = { type: 'object', mesh, instanceId };
-        }
+        addToSelection(src);
+        currentSelection.primary = toPrimary(src);
 
         setGizmoState({ selectionAnchorMode: 'default' });
         computeAndApplyPivotState(src);
@@ -656,8 +599,7 @@ export function performSelectionSwap(
     if (targetSrc.type === 'group') {
         if (currentSelection.groups.has(targetSrc.id)) isTargetSelected = true;
     } else if (targetSrc.type === 'object') {
-        const ids = currentSelection.objects.get(targetSrc.mesh);
-        if (ids && ids.has(targetSrc.instanceId)) isTargetSelected = true;
+        isTargetSelected = isSlotSelected(targetSrc.mesh, targetSrc.instanceId, currentSelection);
     }
 
     if (isTargetSelected) {

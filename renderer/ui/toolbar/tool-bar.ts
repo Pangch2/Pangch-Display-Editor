@@ -4,7 +4,7 @@ import { currentSelection } from '../../controls/selection/select';
 import { addDisplayObject, addTextDisplay, loadedObjectGroup, replaceDisplayObjects } from '../../load-project/display/mesh-builder';
 import { getCompatibleBlockProperties } from '../../load-project/pbde/pbde-assets';
 import { captureHistoryUiState, recordCreationChange, recordReplacementChange } from '../../controls/undo-redo/scene-history.js';
-import type { InstancedMesh } from 'three/webgpu';
+import type { ObjectRef } from '../../scene-store/object-access';
 import { matchesShortcut } from '../../controls/input/shortcuts';
 import { toggleHeadPainter } from '../head-editor/head-painter';
 
@@ -46,11 +46,8 @@ let applying = false;
 let loadId = 0;
 
 function getSelectedUuids(): string[] {
-  const keyToUuid = loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
-  return Array.from(currentSelection.objects, ([mesh, instanceIds]) =>
-    [...instanceIds].map(instanceId => keyToUuid?.get(`${mesh.uuid}_${instanceId}`)))
-    .flat()
-    .filter((uuid): uuid is string => !!uuid);
+  const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, unknown> | undefined;
+  return [...currentSelection.objects].filter(uuid => refs?.has(uuid));
 }
 
 function getHoveredName(names: string[], x: number, y: number): string {
@@ -90,7 +87,7 @@ async function applyIcon(name: string, isItemDisplay = activeAtlasName === 'item
 
     if (!selectedUuids.length) {
       const uuid = await addDisplayObject(targetName, isItemDisplay);
-      const ref = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }>).get(uuid)!;
+      const ref = (userData.objectUuidToInstance as Map<string, ObjectRef>).get(uuid)!;
       recordCreationChange(loadedObjectGroup, {
         groups: new Set(),
         objects: new Map([[ref.mesh, new Set([ref.instanceId])]])
@@ -239,7 +236,7 @@ atlasButtons[3]?.addEventListener('click', async () => {
   if (result.history) {
     recordReplacementChange(loadedObjectGroup, result.history.removed, result.history.created, beforeUi);
   } else {
-    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }>).get(result.uuid)!;
+    const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, ObjectRef>).get(result.uuid)!;
     recordCreationChange(loadedObjectGroup, {
       groups: new Set(),
       objects: new Map([[ref.mesh, new Set([ref.instanceId])]])

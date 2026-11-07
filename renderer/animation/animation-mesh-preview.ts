@@ -1,8 +1,9 @@
-import { Matrix4, type Group, type InstancedMesh } from 'three/webgpu';
+import { Matrix4, type Group } from 'three/webgpu';
+import { getBatchMatrixVersion, getInstanceCount, type ObjectBatch } from '../scene-store/object-access';
 import type { AnimationPose } from './animation-state';
 
 type MeshState = {
-    mesh: InstancedMesh;
+    mesh: ObjectBatch;
     parent: string | null;
     matrix: Matrix4;
     inverseParent: Matrix4;
@@ -15,13 +16,13 @@ export type AnimationMeshPreview = {
     source: AnimationPose;
     base: AnimationPose;
     size: number;
-    objects: Map<string, { mesh: InstancedMesh; instanceId: number }>;
+    objects: Map<string, { mesh: ObjectBatch; instanceId: number }>;
     groups: unknown;
     groupCount: number;
     animatedGroups: Set<string>;
     local: AnimationPose;
     groupBase: AnimationPose;
-    meshes: Map<InstancedMesh, MeshState>;
+    meshes: Map<ObjectBatch, MeshState>;
     valid: boolean;
 };
 
@@ -32,7 +33,7 @@ export function createAnimationMeshPreview(root: Group, local: AnimationPose, ba
         source: local, base, size: local.size, objects, groups: root.userData.groups, groupCount: root.userData.groups?.size ?? 0, animatedGroups,
         local: new Map(), groupBase: new Map(), meshes: new Map(), valid: true
     };
-    const counts = new Map<InstancedMesh, number>();
+    const counts = new Map<ObjectBatch, number>();
     const parents = new Map<string, string | null>();
     const motionParent = (id: string | null): string | null => {
         if (!id || animatedGroups.has(id)) return id;
@@ -46,7 +47,7 @@ export function createAnimationMeshPreview(root: Group, local: AnimationPose, ba
             continue;
         }
         const ref = objects.get(id);
-        if (!ref?.mesh.isInstancedMesh || ref.mesh.parent !== root) return undefined;
+        if (!ref || ref.mesh.parent !== root) return undefined;
         const { mesh } = ref;
         const parentId = motionParent(node.parent);
         let state = preview.meshes.get(mesh);
@@ -56,13 +57,13 @@ export function createAnimationMeshPreview(root: Group, local: AnimationPose, ba
             if (inverseParent.determinant() === 0) return undefined;
             if (mesh.matrixAutoUpdate) mesh.updateMatrix();
             preview.meshes.set(mesh, state = { mesh, parent: parentId, matrix: mesh.matrix.clone(),
-                inverseParent: inverseParent.invert(), autoUpdate: mesh.matrixAutoUpdate, version: mesh.instanceMatrix.version, count: mesh.count });
+                inverseParent: inverseParent.invert(), autoUpdate: mesh.matrixAutoUpdate, version: getBatchMatrixVersion(mesh), count: getInstanceCount(mesh) });
         }
         // shortcut: independently animated groups sharing a batch use per-instance playback; split batches if that becomes a bottleneck.
         if (state.parent !== parentId) return undefined;
         counts.set(mesh, (counts.get(mesh) ?? 0) + 1);
     }
-    for (const [mesh, count] of counts) if (count !== mesh.count) return undefined;
+    for (const [mesh, count] of counts) if (count !== getInstanceCount(mesh)) return undefined;
     return preview;
 }
 
@@ -72,7 +73,7 @@ export function canReuseAnimationMeshPreview(root: Group, preview: AnimationMesh
         || preview.groupCount !== (root.userData.groups?.size ?? 0) || local.size !== preview.objects.size + preview.groupCount
         || preview.animatedGroups.size !== animatedGroups.size || [...animatedGroups].some(id => !preview.animatedGroups.has(id))) return false;
     for (const state of preview.meshes.values()) {
-        if (state.mesh.parent !== root || state.mesh.instanceMatrix.version !== state.version || state.mesh.count !== state.count) return false;
+        if (state.mesh.parent !== root || getBatchMatrixVersion(state.mesh) !== state.version || getInstanceCount(state.mesh) !== state.count) return false;
     }
     return true;
 }

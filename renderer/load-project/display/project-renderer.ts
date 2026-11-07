@@ -1,6 +1,7 @@
 import { BufferAttribute, BufferGeometry, Cache, Color, InstancedBufferAttribute, InstancedInterleavedBuffer, InstancedMesh, InterleavedBufferAttribute, Material, MathUtils, Matrix4, Object3D, Quaternion, StorageInstancedBufferAttribute, Texture, Vector3 } from 'three/webgpu';
 import { gunzipSync } from 'fflate';
 import pLimit from 'p-limit';
+import { objectUuidAt } from '../../scene-store/object-access';
 import { loadedObjectGroup, type LoadedSelection, currentLoadGen, beginPbdeLoadGeneration } from './display-instancing';
 import { headGeometries, PLAYER_HEAD_ATLAS_SIZE, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT, PLAYER_HEAD_BLOCKS_PER_ROW, type PlayerHeadSkin, type PlayerHeadAtlas, getPlayerHeadRenderMatrix, clearImageHeadBlackMaterial, mergeIndexedGeometries, createHeadGeometries, createPlayerHeadAtlasGeometry, loadPlayerHeadBitmap, drawPlayerHeadSlot, getProjectPlayerHeadAtlases, notifyPlayerHeadAtlasesChanged, getOrCreatePlayerHeadAtlas, createPlayerHeadAtlas, takePlayerHeadSlot } from './player-head-atlas';
 import { type GroupData, type GeometryInstanceBatch, type GeometryInstanceMeta, type GeometryMeta, type OtherItem, type WorkerMetadata } from '../pbde/pbde-types';
@@ -11,7 +12,6 @@ import { parsePbdeProject, type ParsedPbdeProject } from '../scene/scene-parser'
 import { mainThreadAssetProvider } from '../pbde/pbde-assets';
 import { isPbdeLogEnabled, pbdeLogNames } from '../pbde/pbde-log';
 import { resetTextDisplayAtlases, type TextDisplayOptions } from './text-display';
-import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-history';
 import { applyModelTransform, planUvTransforms, relativeUvTransform as getRelativeUvTransform } from '../batching/geometry-batching';
 import { setInstanceModelTransform } from '../batching/instance-model-transform';
 import { applyAtlasAppend, atlasBatchSignature, getTintParts, planAtlasAppend, rebaseAtlasInstances, setAtlasBatchState } from '../batching/atlas-instance-batch';
@@ -23,6 +23,7 @@ import { createImageHeadAtlasGeometry, getImageHeadAtlasMaterial } from './playe
 import { beginPlayerHeadLoading } from '../../ui/head-editor/head-texture-loading';
 import type { PdeNode } from '../../save/pde-format';
 import { yieldPreview } from '../../animation/yield-preview';
+import { ObjectStore } from '../../scene-store/object-store';
 
 function _clearSceneAndCaches(): void {
     // 1-1. 캐시된 텍스처 및 리소스 완벽 해제
@@ -74,10 +75,10 @@ export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, an
     if (loadedObjectGroup.userData.headPainterActive) return;
     const selectGroupsObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithGroupsAndObjects as
         | undefined
-        | ((groupIds: Set<string>, meshToIds: Map<Object3D, Set<number>>, opts?: unknown) => void);
-    const selectObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithObjectsMap as
+        | ((groupIds: Set<string>, objectUuids: Set<string>, opts?: unknown) => void);
+    const selectObjectsFn = (loadedObjectGroup.userData as Record<string, unknown>)?.replaceSelectionWithObjects as
         | undefined
-        | ((meshToIds: Map<Object3D, Set<number>>, opts?: unknown) => void);
+        | ((objectUuids: Set<string>, opts?: unknown) => void);
 
     if (newlyAddedSelectableMeshes.size > 0) {
         const groupsMap = (loadedObjectGroup.userData.groups as Map<string, GroupData>) ?? new Map<string, GroupData>();
@@ -102,7 +103,7 @@ export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, an
         };
 
         const groupIds = new Set<string>();
-        const meshToIds = new Map<any, Set<number>>();
+        const objectUuids = new Set<string>();
 
         for (const [mesh, instanceIds] of newlyAddedSelectableMeshes) {
             if (!mesh) continue;
@@ -112,31 +113,25 @@ export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, an
 
             if (instanceIds.size === 0) continue;
 
-            let ids: Set<number> | null = null;
             for (const instanceId of instanceIds) {
-                const key = `${mesh.uuid}_${instanceId}`;
-                const immediateGroupId = objectToGroupMap.get(key);
+                const uuid = objectUuidAt(loadedObjectGroup, instancedMesh, instanceId);
+                const immediateGroupId = uuid ? objectToGroupMap.get(uuid) : undefined;
                 if (immediateGroupId) {
                     const root = resolveRootGroupId(immediateGroupId) ?? immediateGroupId;
                     if (root) groupIds.add(root);
                     continue;
                 }
 
-                if (!ids) ids = new Set<number>();
-                ids.add(instanceId);
-            }
-
-            if (ids && ids.size > 0) {
-                meshToIds.set(mesh, ids);
+                if (uuid) objectUuids.add(uuid);
             }
         }
 
         // Group-priority selection: if an instance belongs to a group, select the (root) group instead.
         if (typeof selectGroupsObjectsFn === 'function') {
-            selectGroupsObjectsFn(groupIds, meshToIds, { anchorMode, primaryIsRangeStart: true });
+            selectGroupsObjectsFn(groupIds, objectUuids, { anchorMode, primaryIsRangeStart: true });
         } else if (typeof selectObjectsFn === 'function') {
             // Fallback: select raw objects if gizmo API is not available.
-            selectObjectsFn(meshToIds, { anchorMode });
+            selectObjectsFn(objectUuids, { anchorMode });
         }
     }
 }
@@ -219,7 +214,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
             _clearSceneAndCaches();
             resetTextDisplayAtlases();
             loadedObjectGroup.userData.blockAtlasTextures = [];
-            for (const key of ['hiddenObjectUuids', 'hiddenGroupIds', 'objectMirrorPairs', 'groupMirrorPairs', 'globalBrightness', 'animation', 'animationSession', 'animationPreviewObjectIds']) delete loadedObjectGroup.userData[key];
+            for (const key of ['hiddenObjectUuids', 'hiddenGroupIds', 'objectMirrorPairs', 'groupMirrorPairs', 'globalBrightness', 'animation', 'animationSession', 'animationPreviewObjectIds', 'objectPivots', 'objectIsCustomPivot', 'objectDisplayKinds']) delete loadedObjectGroup.userData[key];
             loadedObjectGroup.userData.objectNbt = new Map<string, string>();
         } else {
             clearBlockMaterialPromises();
@@ -340,45 +335,21 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                     }
                 }
 
-                const groupObjectChildIndices = new WeakMap<GroupData, Map<string, number>>();
-
                 function registerObject(mesh: Object3D, instanceId: number, uuid: string, groupId: string) {
                     if (preview) {
                         const visible = (mesh as InstancedMesh).geometry?.getAttribute(entityVisibleAttributeName);
                         if (visible) { visible.setX(instanceId, 0); visible.needsUpdate = true; }
                     }
-                    const key = `${mesh.uuid}_${instanceId}`;
-                    // Always store reverse lookup: instanceKey → custom uuid
-                    (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string>).set(key, uuid);
-                    // Forward reverse lookup: custom uuid → { mesh, instanceId }
+                    // The store keeps both uuid → slot and slot → uuid.
                     (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: Object3D; instanceId: number }>)
                         .set(uuid, { mesh, instanceId });
 
-                    if (!groupId || !incomingGroups) return;
-                    const finalGroupId = groupIdRemap.get(groupId) ?? groupId;
-                    objectToGroup.set(key, finalGroupId);
-
-                    const group = effectiveGroups.get(finalGroupId);
-                    if (group && Array.isArray(group.children)) {
-                        let childIndices = groupObjectChildIndices.get(group);
-                        if (!childIndices) {
-                            childIndices = new Map<string, number>();
-                            for (let index = 0; index < group.children.length; index++) {
-                                const child = group.children[index];
-                                if (child?.type === 'object' && child.id !== undefined && !childIndices.has(child.id)) {
-                                    childIndices.set(child.id, index);
-                                }
-                            }
-                            groupObjectChildIndices.set(group, childIndices);
-                        }
-                        const childIndex = childIndices.get(uuid);
-                        if (childIndex !== undefined) {
-                            group.children[childIndex] = { type: 'object', mesh: mesh, instanceId: instanceId, id: uuid };
-                        }
-                    }
+                    // Group children already name the object by uuid; only the parent lookup needs it.
+                    if (groupId && incomingGroups) objectToGroup.set(uuid, groupIdRemap.get(groupId) ?? groupId);
                 }
 
                 function populateInstances(mesh: InstancedMesh, instances: GeometryInstanceMeta[], sourceStart: number, targetStart: number, count: number, firstPart: GeometryMeta): void {
+                    const displayKinds = (loadedObjectGroup.userData.objectDisplayKinds ??= new Map<string, string>()) as Map<string, string>;
                     const matrix = new Matrix4();
                     const selected = mesh.geometry.getAttribute(dragSelectedAttributeName);
                     const visible = mesh.geometry.getAttribute(entityVisibleAttributeName);
@@ -386,13 +357,13 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                         const meta = instances[sourceStart + i];
                         const instanceId = targetStart + i;
                         matrix.fromArray(meta.transform).transpose();
-                        mesh.instanceMatrix.array.set(matrix.elements, instanceId * 16);
+                        mesh.setMatrixAt(instanceId, matrix);
                         setInstanceModelTransform(mesh, instanceId, meta.modelTransform);
                         selected?.setX(instanceId, 0);
                         visible?.setX(instanceId, 1);
                         setInstanceSkyBrightness(mesh, instanceId, meta.brightness);
                         registerObject(mesh, instanceId, meta.uuid, meta.groupId);
-                        mesh.userData.displayTypes.set(instanceId, getInstanceDisplayType(meta, firstPart));
+                        displayKinds.set(meta.uuid, getInstanceDisplayType(meta, firstPart));
                         addLoadedInstance(newlyAddedSelectableMeshes, mesh, instanceId);
                     }
                     if (selected) selected.needsUpdate = true;
@@ -427,13 +398,10 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                     loadedObjectGroup.userData.objectTextDisplayOptions = new Map<string, TextDisplayOptions>();
                     loadedObjectGroup.userData.objectBrightness = new Map<string, unknown>();
                     loadedObjectGroup.userData.objectTextures = new Map<string, string>();
-                    loadedObjectGroup.userData.instanceKeyToObjectUuid = new Map<string, string>();
-                    loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: Object3D; instanceId: number }>();
+                    loadedObjectGroup.userData.objectUuidToInstance = new ObjectStore<{ mesh: Object3D; instanceId: number }>();
                 } else {
-                    if (!loadedObjectGroup.userData.instanceKeyToObjectUuid)
-                        loadedObjectGroup.userData.instanceKeyToObjectUuid = new Map<string, string>();
                     if (!loadedObjectGroup.userData.objectUuidToInstance)
-                        loadedObjectGroup.userData.objectUuidToInstance = new Map<string, { mesh: Object3D; instanceId: number }>();
+                        loadedObjectGroup.userData.objectUuidToInstance = new ObjectStore<{ mesh: Object3D; instanceId: number }>();
                 }
                 const objectNamesMap: Map<string, string> =
                     (loadedObjectGroup.userData.objectNames as Map<string, string>) ?? new Map<string, string>();
@@ -454,12 +422,31 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                 const objectTextures: Map<string, string> =
                     (loadedObjectGroup.userData.objectTextures as Map<string, string>) ?? new Map<string, string>();
 
+                // Names, brightness and block states repeat across objects: keep one copy per distinct value.
+                // Shared objects are frozen, so an in-place edit fails loudly instead of changing every object.
+                const sharedNames = new Map<string, string>();
+                const sharedObjects = new Map<string, object>();
+                const sharedName = (name: string) => sharedNames.get(name) ?? (sharedNames.set(name, name), name);
+                const sharedObject = <T extends object>(key: string, value: T): T => {
+                    const existing = sharedObjects.get(key);
+                    if (existing) return existing as T;
+                    const frozen = Object.freeze({ ...value });
+                    sharedObjects.set(key, frozen);
+                    return frozen;
+                };
+                const sharedBrightness = (brightness: Brightness) => sharedObject(`b${brightness.sky},${brightness.block}`, brightness);
+                // Empty block states and '' NBT are left out; readers fall back to {} (or to the name, which has
+                // no state then) and to ''.
+                const setBlockProps = (uuid: string, props: Record<string, string>) => {
+                    if (Object.keys(props).length) objectBlockProps.set(uuid, sharedObject(`p${JSON.stringify(props)}`, props));
+                };
+
                 if (activeGeometryBatches) {
                     for (const batch of activeGeometryBatches) {
                         const firstPart = batch.parts[0];
                         for (const instance of batch.instances) {
                             if (instance.uuid && !objectNamesMap.has(instance.uuid) && instance.name) {
-                                objectNamesMap.set(instance.uuid, instance.name);
+                                objectNamesMap.set(instance.uuid, sharedName(instance.name));
                             }
                             const instanceIsItemDisplay = (instance as any).isItemDisplayModel ?? firstPart?.isItemDisplayModel;
                             const instanceItemDisplayType = (instance as any).itemDisplayType ?? (firstPart as any)?.itemDisplayType;
@@ -471,16 +458,16 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                             }
                             const instanceBlockProps = (instance as any).blockProps ?? (firstPart as any)?.blockProps;
                             if (instance.uuid && firstPart && !instanceIsItemDisplay && instanceBlockProps) {
-                                objectBlockProps.set(instance.uuid, instanceBlockProps);
+                                setBlockProps(instance.uuid, instanceBlockProps);
                             }
-                            if (instance.uuid) objectNbt.set(instance.uuid, instance.nbt ?? '');
-                            if (instance.uuid && instance.brightness) objectBrightness.set(instance.uuid, instance.brightness);
+                            if (instance.uuid && instance.nbt) objectNbt.set(instance.uuid, instance.nbt);
+                            if (instance.uuid && instance.brightness) objectBrightness.set(instance.uuid, sharedBrightness(instance.brightness as Brightness));
                         }
                     }
                 } else {
                     for (const meta of geometryMetas) {
                         if (meta.uuid && !objectNamesMap.has(meta.uuid) && meta.name) {
-                            objectNamesMap.set(meta.uuid, meta.name);
+                            objectNamesMap.set(meta.uuid, sharedName(meta.name));
                         }
                         if (meta.uuid && meta.isItemDisplayModel) {
                             objectIsItemDisplay.add(meta.uuid);
@@ -489,15 +476,15 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                             }
                         }
                         if (meta.uuid && !meta.isItemDisplayModel && (meta as any).blockProps) {
-                            objectBlockProps.set(meta.uuid, (meta as any).blockProps);
+                            setBlockProps(meta.uuid, (meta as any).blockProps);
                         }
-                        if (meta.uuid) objectNbt.set(meta.uuid, meta.nbt ?? '');
-                        if (meta.uuid && (meta as any).brightness) objectBrightness.set(meta.uuid, (meta as any).brightness);
+                        if (meta.uuid && meta.nbt) objectNbt.set(meta.uuid, meta.nbt);
+                        if (meta.uuid && (meta as any).brightness) objectBrightness.set(meta.uuid, sharedBrightness((meta as any).brightness));
                     }
                 }
                 for (const item of otherItems) {
                     if (item.uuid && !objectNamesMap.has(item.uuid) && (item.type === 'textDisplay' || (item as any).name)) {
-                        objectNamesMap.set(item.uuid, (item as any).name ?? '');
+                        objectNamesMap.set(item.uuid, sharedName((item as any).name ?? ''));
                     }
                     if (item.uuid && item.type === 'itemDisplay') {
                         objectIsItemDisplay.add(item.uuid);
@@ -509,8 +496,8 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                         if (!objectLabels.has(item.uuid)) objectLabels.set(item.uuid, 'text_display');
                         objectTextDisplayOptions.set(item.uuid, { ...((item.options as TextDisplayOptions | undefined) ?? {}) });
                     }
-                    if (item.uuid) objectNbt.set(item.uuid, typeof item.nbt === 'string' ? item.nbt : '');
-                    if (item.uuid && item.brightness) objectBrightness.set(item.uuid, item.brightness);
+                    if (item.uuid && typeof item.nbt === 'string' && item.nbt) objectNbt.set(item.uuid, item.nbt);
+                    if (item.uuid && item.brightness) objectBrightness.set(item.uuid, sharedBrightness(item.brightness as Brightness));
                     if (item.uuid && item.textureUrl) objectTextures.set(item.uuid, item.textureUrl);
                 }
                 loadedObjectGroup.userData.objectNames = objectNamesMap;
@@ -707,7 +694,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                     if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
                                     const oldGeometry = applyAtlasAppend(instancedMesh, appendPlan);
                                     instancedMesh.material = setAtlasPartMaterial(instancedMesh.geometry, representativeParts, appendPlan.uvPlan, appendPlan.tintParts, nextMaterials, instancedMesh.count + appendCount, atlasMaterial);
-                                    if (!isSceneHistoryResourceRetained(oldGeometry)) oldGeometry.dispose();
+                                    oldGeometry.dispose();
                                 }
                                 populateInstances(instancedMesh, appendPlan?.instances ?? instances, appendPlan ? 0 : transformStart,
                                     instancedMesh.count, appendCount, representativeParts[0]);
@@ -819,7 +806,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                 instancedMesh.count = chunkCount;
                                 
                                 instancedMesh.userData.displayType = getInstanceDisplayType(instances[chunkStart], representativeParts[0]);
-                                instancedMesh.userData.displayTypes = new Map<number, 'block_display' | 'item_display'>();
+                                instancedMesh.userData.mixedDisplayKinds = true;
                                 instancedMesh.userData.pbdeModelMatrix = representativeParts[0].modelMatrix.slice();
                                 if (hasReusableSignature) instancedMesh.userData.pbdeSignature = signature;
                                 if (group.isAtlasBatch) setAtlasBatchState(instancedMesh, representativeParts, group.uvPlan!, group.tintParts!);

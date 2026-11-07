@@ -35,18 +35,20 @@ import { createHeadPainterGridMaterial, createHeadPainterPreviewMaterial } from 
 import * as GroupUtils from '../grouping/group';
 import { decomposeDisplayMatrix } from '../../animation/display-transformation';
 import type { AnimationMeshPreview } from '../../animation/animation-mesh-preview';
-import { getInstanceModelTransform } from '../../load-project/batching/instance-model-transform';
-import type { GroupChildObject } from '../grouping/group';
+import type { GroupObjectSlot } from '../grouping/group';
 import { dragDeltaMatrix, dragPreviewPositionNode, dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
 import { transformInstanceRange } from './instance-ranges';
+import { getDisplayType, getInstanceCount, getInstanceHasHat, getInstanceLocalBox, getInstanceLocalBoxMin, getInstanceLocalOriginOffset, getInstanceValue,
+    getInstanceWorldMatrix, getInstanceWorldMatrixForOrigin, instanceValueSize, isInstanceValid, isItemDisplayHatEnabled, objectBatches, objectSlots, objectUuidAt,
+    type ObjectBatch } from '../../scene-store/object-access';
 
 // --- Types & Interfaces ---
 
-type PdeMesh = InstancedMesh | Mesh;
 
 export interface SelectionState {
     groups: Set<string>;
-    objects: Map<Mesh | InstancedMesh, Set<number>>;
+    /** Object uuids. */
+    objects: Set<string>;
 }
 
 export type QueueItemType = 'group' | 'object' | 'bundle';
@@ -54,7 +56,7 @@ export type QueueItemType = 'group' | 'object' | 'bundle';
 export interface QueueItem {
     type: QueueItemType;
     id?: string;
-    mesh?: Mesh | InstancedMesh;
+    mesh?: ObjectBatch;
     instanceId?: number;
     items?: QueueItem[];
     gizmoLocalPosition?: Vector3;
@@ -66,7 +68,7 @@ export interface QueueItem {
 interface OverlayItemSource {
     type: 'group' | 'object';
     id?: string;
-    mesh?: Mesh | InstancedMesh;
+    mesh?: ObjectBatch;
     instanceId?: number;
     cachedLocalCenter?: Vector3;
     cachedLocalSize?: Vector3;
@@ -84,7 +86,6 @@ interface OverlayItem {
 // --- Constants & Temporaries ---
 
 const _TMP_MAT4_A = new Matrix4();
-const _TMP_MAT4_B = new Matrix4();
 const _TMP_MAT4_C = new Matrix4();
 const _TMP_BOX3_A = new Box3();
 const _TMP_VEC3_A = new Vector3();
@@ -96,6 +97,15 @@ const animationGroupBounds = new WeakMap<AnimationMeshPreview, Map<string, { box
 
 export function setLoadedObjectGroup(group: Group | null): void {
     loadedObjectGroup = group;
+}
+
+function selectedSlots(uuids: Iterable<string>): Map<ObjectBatch, Set<number>> {
+    return loadedObjectGroup ? objectSlots(loadedObjectGroup, uuids) : new Map();
+}
+
+/** The slot's object uuid, used for selection checks and vertex keys; the slot key when no object owns it. */
+export function slotKeyUuid(mesh: ObjectBatch, instanceId: number): string {
+    return (loadedObjectGroup && objectUuidAt(loadedObjectGroup, mesh, instanceId)) || `${mesh.uuid}_${instanceId}`;
 }
 
 function getGroups() {
@@ -204,27 +214,8 @@ const _unitCubeCorners = [
 
 // --- Helper Functions ---
 
-export function getInstanceCount(mesh: Mesh | InstancedMesh): number {
-    if (!mesh) return 0;
-    if ((mesh as InstancedMesh).isInstancedMesh) return (mesh as InstancedMesh).count ?? 0;
-    return 0;
-}
-
-export function isInstanceValid(mesh: Mesh | InstancedMesh, instanceId: number): boolean {
-    if (!mesh) return false;
-    if ((mesh as InstancedMesh).isInstancedMesh) {
-        return instanceId < ((mesh as InstancedMesh).count ?? 0);
-    }
-    return false;
-}
-
-export function getDisplayType(mesh: PdeMesh, instanceId: number): string | undefined {
-    if (!mesh) return undefined;
-    if (mesh.userData?.displayTypes instanceof Map) {
-        return mesh.userData.displayTypes.get(instanceId) ?? mesh.userData?.displayType;
-    }
-    return mesh.userData?.displayType;
-}
+export { getDisplayType, getInstanceCount, getInstanceLocalBox, getInstanceLocalBoxMin, getInstanceLocalOriginOffset, getInstanceWorldMatrix,
+    getInstanceWorldMatrixForOrigin, isInstanceValid, isItemDisplayHatEnabled };
 
 function getDisplayOverlayColor(displayType?: string): number {
     if (displayType === 'item_display') return 0x2E87EC;
@@ -232,48 +223,7 @@ function getDisplayOverlayColor(displayType?: string): number {
     return 0xFFD147;
 }
 
-export function isItemDisplayHatEnabled(mesh: PdeMesh, instanceId: number): boolean {
-    return !!(getDisplayType(mesh, instanceId) === 'item_display' && mesh?.userData?.hasHat && mesh.userData.hasHat[instanceId]);
-}
-
-export function getInstanceLocalOriginOffset(mesh: PdeMesh, instanceId: number, out = new Vector3()): Vector3 {
-    out.set(0, isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0, 0);
-    if (getDisplayType(mesh, instanceId) === 'block_display' && (mesh as InstancedMesh).isInstancedMesh) {
-        out.applyMatrix4(getInstanceModelTransform(mesh as InstancedMesh, instanceId).invert());
-    }
-    if (getDisplayType(mesh, instanceId) === 'text_display') {
-        const box = getInstanceLocalBox(mesh, instanceId);
-        if (box) out.x = (box.min.x + box.max.x) * 0.5;
-    }
-    return out;
-}
-
-export function getInstanceLocalBoxMin(mesh: PdeMesh, instanceId: number, out = new Vector3()): Vector3 | null {
-    const box = getInstanceLocalBox(mesh, instanceId);
-    if (!box) return null;
-    if ((mesh as InstancedMesh).isInstancedMesh) {
-        const modelTransform = getInstanceModelTransform(mesh as InstancedMesh, instanceId);
-        // Find the display-space corner before converting back to batch coordinates.
-        out.copy(box.applyMatrix4(modelTransform).min);
-        return out.applyMatrix4(modelTransform.invert());
-    }
-    return out.copy(box.min);
-}
-
-export function getInstanceWorldMatrixForOrigin(mesh: PdeMesh, instanceId: number, outMatrix: Matrix4): Matrix4 {
-    outMatrix.identity();
-    if (!mesh) return outMatrix;
-
-    mesh.getMatrixAt(instanceId, outMatrix);
-    if (mesh.userData?.localMatrices && mesh.userData.localMatrices.has(instanceId)) {
-        _TMP_MAT4_B.copy(mesh.userData.localMatrices.get(instanceId)).invert();
-        outMatrix.multiply(_TMP_MAT4_B);
-    }
-    outMatrix.premultiply(mesh.matrixWorld);
-    return outMatrix;
-}
-
-export function calculateAvgOriginForChildren(children: GroupChildObject[], out = new Vector3()): Vector3 {
+export function calculateAvgOriginForChildren(children: GroupObjectSlot[], out = new Vector3()): Vector3 {
     out.set(0, 0, 0);
     if (!Array.isArray(children) || children.length === 0) return out;
 
@@ -315,47 +265,6 @@ export function unionTransformedBox3(targetBox: Box3, localBox: Box3, matrix: Ma
     if (!targetBox || !localBox) return;
     tempBox.copy(localBox).applyMatrix4(matrix);
     targetBox.union(tempBox);
-}
-
-export function getInstanceLocalBox(mesh: PdeMesh, instanceId: number): Box3 | null {
-    if (!mesh) return null;
-
-    if (!mesh.geometry) return null;
-    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-    if (!mesh.geometry.boundingBox) return null;
-
-    const textLayout = mesh.geometry.getAttribute('textDisplayLayout');
-    let box = mesh.geometry.boundingBox.clone();
-    if (textLayout && instanceId < textLayout.count && !mesh.geometry.userData.textDisplayGeometryKey) {
-        const centerX = (textLayout.getX(instanceId) + textLayout.getY(instanceId)) * 0.5;
-        const halfWidth = textLayout.getW(instanceId) * 0.5;
-        box.min.set(centerX - halfWidth, 0, mesh.geometry.boundingBox.min.z);
-        box.max.set(centerX + halfWidth, textLayout.getZ(instanceId), mesh.geometry.boundingBox.max.z);
-    }
-
-    if (getDisplayType(mesh, instanceId) === 'item_display' && mesh.userData?.hasHat && !mesh.userData.hasHat[instanceId]) {
-        const center = new Vector3();
-        box.getCenter(center);
-        box = new Box3().setFromCenterAndSize(center, new Vector3(1, 1, 1));
-    }
-
-    return box;
-}
-
-if (import.meta.env.DEV) {
-    const geometry = new BufferGeometry();
-    geometry.boundingBox = new Box3(new Vector3(-1, 0, 0), new Vector3(3, 1, 0));
-    const mesh = new InstancedMesh(geometry, undefined, 1);
-    mesh.userData.displayType = 'text_display';
-    console.assert(getInstanceLocalOriginOffset(mesh, 0).equals(new Vector3(1, 0, 0)), 'Text display origin must stay horizontally centered.');
-}
-
-export function getInstanceWorldMatrix(mesh: PdeMesh, instanceId: number, outMatrix: Matrix4): Matrix4 {
-    outMatrix.identity();
-    if (!mesh) return outMatrix;
-    mesh.getMatrixAt(instanceId, outMatrix);
-    outMatrix.premultiply(mesh.matrixWorld);
-    return outMatrix;
 }
 
 export function getGroupLocalBoundingBox(groupId: string): Box3 {
@@ -468,7 +377,7 @@ export function getSelectionBoundingBox(currentSelection: SelectionState, previe
     }
 
     if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
+        for (const [mesh, ids] of selectedSlots(currentSelection.objects)) {
             for (const id of ids) {
                 const localBox = getInstanceLocalBox(mesh, id);
                 if (!localBox) continue;
@@ -484,13 +393,7 @@ export function getSelectionBoundingBox(currentSelection: SelectionState, previe
 }
 
 function _getSelectedObjectCount(currentSelection: SelectionState): number {
-    let count = 0;
-    if (currentSelection.objects) {
-        for (const ids of currentSelection.objects.values()) {
-            count += ids.size;
-        }
-    }
-    return count;
+    return currentSelection.objects?.size ?? 0;
 }
 
 export function prepareMultiSelectionDrag(_currentSelection: SelectionState): void {
@@ -552,11 +455,8 @@ export function updateHeadPainterGridOverlay(
         _headGridDragMatrix.copy(dragDeltaMatrix);
         return;
     }
-    const meshes: InstancedMesh[] = [];
     objectGroup.updateMatrixWorld(true);
-    objectGroup.traverse(object => {
-        if ((object as InstancedMesh).isInstancedMesh && (object as InstancedMesh).geometry.getAttribute('headLayerVisible')) meshes.push(object as InstancedMesh);
-    });
+    const meshes = objectBatches(objectGroup).filter(batch => instanceValueSize(batch, 'headLayerVisible') > 0);
     if (!headPainterGridOverlay) {
         headPainterGridOverlay = new Group();
         headPainterGridOverlay.name = 'head-painter-grid';
@@ -564,8 +464,7 @@ export function updateHeadPainterGridOverlay(
     }
     headPainterGridOverlay.visible = true;
     for (const child of headPainterGridOverlay.children) (child as InstancedMesh).count = 0;
-    const total = meshes.reduce((sum, mesh) => sum + mesh.count, 0);
-    const keyToUuid = objectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
+    const total = meshes.reduce((sum, mesh) => sum + getInstanceCount(mesh), 0);
     const worldMatrix = new Matrix4();
     let chunkIndex = 0;
     const changed = new Set<BufferAttribute>();
@@ -578,15 +477,14 @@ export function updateHeadPainterGridOverlay(
         if (differs) changed.add(attribute);
     };
     for (const mesh of meshes) {
-        for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
-            if (mesh.geometry.getAttribute(entityVisibleAttributeName)?.getX(instanceId) === 0) continue;
-            const uuid = keyToUuid?.get(`${mesh.uuid}_${instanceId}`);
+        for (let instanceId = 0; instanceId < getInstanceCount(mesh); instanceId++) {
+            if (getInstanceValue(mesh, instanceId, entityVisibleAttributeName) === 0) continue;
+            const uuid = objectUuidAt(objectGroup, mesh, instanceId);
             if (!uuid) continue;
-            const showLayer = layerMode === 'layer' || (layerMode === 'auto' && !!mesh.userData.hasHat?.[instanceId]);
+            const showLayer = layerMode === 'layer' || (layerMode === 'auto' && !!getInstanceHasHat(mesh, instanceId));
             const scale = showLayer ? 1.0625 : 1;
-            mesh.getMatrixAt(instanceId, worldMatrix);
-            worldMatrix.premultiply(mesh.matrixWorld);
-            if (mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(instanceId)) worldMatrix.premultiply(dragDeltaMatrix);
+            getInstanceWorldMatrix(mesh, instanceId, worldMatrix);
+            if (getInstanceValue(mesh, instanceId, dragSelectedAttributeName)) worldMatrix.premultiply(dragDeltaMatrix);
             let lines = headPainterGridOverlay.children[chunkIndex] as InstancedMesh;
             if (lines && lines.count === lines.instanceMatrix.count) lines = headPainterGridOverlay.children[++chunkIndex] as InstancedMesh;
             if (!lines) {
@@ -680,10 +578,10 @@ export function getHeadPainterFaceAxes(face: number, scale: number): [Vector3, V
 
 export function updateHeadPainterStampPreview(
     scene: Scene,
-    hits: Array<{ mesh: InstancedMesh; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number; textureWidth?: number; textureHeight?: number }>
+    hits: Array<{ mesh: ObjectBatch; instanceId: number; face: number; layer: 0 | 1; x: number; y: number; columns: number; rows: number; textureWidth?: number; textureHeight?: number }>
 ): void {
     if (!hits.length) return hideHeadPainterStampPreview();
-    const faces = new Map<InstancedMesh, Map<number, { hit: typeof hits[number]; low: number; high: number }>>();
+    const faces = new Map<ObjectBatch, Map<number, { hit: typeof hits[number]; low: number; high: number }>>();
     let count = 0;
     for (const hit of hits) {
         let meshFaces = faces.get(hit.mesh);
@@ -730,9 +628,8 @@ export function updateHeadPainterStampPreview(
     let updateStart = count;
     let updateEnd = 0;
     for (const meshFaces of faces.values()) for (const { hit, low, high } of meshFaces.values()) {
-        hit.mesh.getMatrixAt(hit.instanceId, matrix);
-        matrix.premultiply(hit.mesh.matrixWorld);
-        if (hit.mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(hit.instanceId)) matrix.premultiply(dragDeltaMatrix);
+        getInstanceWorldMatrix(hit.mesh, hit.instanceId, matrix);
+        if (getInstanceValue(hit.mesh, hit.instanceId, dragSelectedAttributeName)) matrix.premultiply(dragDeltaMatrix);
         const [origin, horizontal, vertical] = getHeadPainterFaceAxes(hit.face, (hit.layer ? 1.0625 : 1) * 1.006);
         faceMatrix.makeBasis(horizontal, vertical, horizontal.clone().cross(vertical).normalize());
         faceMatrix.setPosition(origin.addScaledVector(horizontal, 0.5).addScaledVector(vertical, 0.5));
@@ -782,7 +679,7 @@ let selectionPointsOverlay: Group | null = null;
 let multiSelectionOverlay: Group | null = null;
 let hoveredVertex: Sprite | null = null;
 
-export function updateSelectionOverlayObject(mesh: PdeMesh, instanceId: number): void {
+export function updateSelectionOverlayObject(mesh: ObjectBatch, instanceId: number): void {
     const index = (selectionOverlay?.userData['objectIndexes'] as Map<string, number> | undefined)
         ?.get(`${mesh.uuid}:${instanceId}`);
     if (index === undefined || !selectionOverlay) return;
@@ -874,7 +771,7 @@ export function updateSelectionOverlay(
     }
 
     if (currentSelection.objects) {
-        for (const [mesh, ids] of currentSelection.objects) {
+        for (const [mesh, ids] of selectedSlots(currentSelection.objects)) {
             for (const id of ids) {
                 const localBox = getInstanceLocalBox(mesh, id);
                 if (!localBox) continue;
@@ -900,7 +797,7 @@ export function updateSelectionOverlay(
         if (item.type === 'group' && item.id) {
             if (currentSelection.groups.has(item.id)) isSelected = true;
         } else if (item.type === 'object' && item.mesh && item.instanceId !== undefined) {
-            if (currentSelection.objects.has(item.mesh) && currentSelection.objects.get(item.mesh)!.has(item.instanceId)) isSelected = true;
+            if (currentSelection.objects.has(slotKeyUuid(item.mesh, item.instanceId))) isSelected = true;
         }
         if (isSelected) return;
 
@@ -1036,7 +933,7 @@ export function updateSelectionOverlay(
                     const queueSprite = new Sprite(_vertexSpriteMat);
                     queueSprite.position.copy(item.gizmoPosition);
                     const src = item.source;
-                    const idStr = src.type === 'group' ? `G_${src.id}` : `O_${src.mesh!.uuid}_${src.instanceId}`;
+                    const idStr = src.type === 'group' ? `G_${src.id}` : `O_${slotKeyUuid(src.mesh!, src.instanceId!)}`;
                     const qKey = `QUEUE_${idStr}_${posForKey.x.toFixed(4)}_${posForKey.y.toFixed(4)}_${posForKey.z.toFixed(4)}`;
                     queueSprite.userData = { isCenter: true, key: qKey, source: src };
                     if (selectedVertexKeys.has(qKey)) queueSprite.material = _selectedVertexSpriteMat;

@@ -1,12 +1,13 @@
-import { Box3, BufferAttribute, Group, InterleavedBufferAttribute, InstancedMesh, Matrix4, Mesh, Vector3 } from 'three/webgpu';
+import { Box3, Group, InstancedMesh, Matrix4, Vector3 } from 'three/webgpu';
 import { duplicateGroupsAndObjects, type DuplicationSelection } from './duplicate';
 import * as GroupUtils from './group';
 import * as Overlay from '../selection/overlay';
-import type { SelectionState, SelectedItem } from '../selection/select';
+import { toMeshMap, type SelectionState, type SelectedItem } from '../selection/select';
 import { getLinkedMirrorSelection, getMirrorPairs, linkMirrorPair } from '../transform/mirroring';
+import { batchOf, getInstanceMatrix, getInstanceValue, invalidateBatchBounds, instanceValueSize, objectUuidAt, setInstanceMatrix, setInstanceValue,
+    type ObjectBatch } from '../../scene-store/object-access';
 
-type KnifeItem = { mesh: Mesh | InstancedMesh; instanceId: number };
-type KnifeUvAttribute = BufferAttribute | InterleavedBufferAttribute;
+type KnifeItem = { mesh: ObjectBatch; instanceId: number };
 
 export interface KnifeResult extends DuplicationSelection {
     changed: boolean;
@@ -18,11 +19,11 @@ function getItemKey({ mesh, instanceId }: KnifeItem): string {
 }
 
 function getItemUuid(loadedObjectGroup: Group, item: KnifeItem): string | undefined {
-    return (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(getItemKey(item));
+    return objectUuidAt(loadedObjectGroup, item.mesh, item.instanceId);
 }
 
-function groupItemsByMesh(items: KnifeItem[]): Map<Mesh | InstancedMesh, KnifeItem[]> {
-    const groups = new Map<Mesh | InstancedMesh, KnifeItem[]>();
+function groupItemsByMesh(items: KnifeItem[]): Map<ObjectBatch, KnifeItem[]> {
+    const groups = new Map<ObjectBatch, KnifeItem[]>();
     for (const item of items) {
         const group = groups.get(item.mesh) ?? [];
         group.push(item);
@@ -37,7 +38,7 @@ function collectKnifeItems(loadedObjectGroup: Group, selection: SelectionState, 
     const directItems: SelectedItem[] = [];
 
     selection.groups.forEach(groupId => GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId).forEach(add));
-    selection.objects.forEach((ids, mesh) => ids.forEach(instanceId => {
+    toMeshMap(selection.objects).forEach((ids, mesh) => ids.forEach(instanceId => {
         const item = { type: 'object' as const, mesh, instanceId };
         directItems.push(item);
         add(item);
@@ -52,22 +53,12 @@ function collectKnifeItems(loadedObjectGroup: Group, selection: SelectionState, 
     return [...items.values()];
 }
 
-function getObjectMatrix(item: KnifeItem, out: Matrix4): Matrix4 {
-    if (item.mesh.isInstancedMesh) return item.mesh.getMatrixAt(item.instanceId, out);
-    if (item.mesh.matrixAutoUpdate) item.mesh.updateMatrix();
-    return out.copy(item.mesh.matrix);
-}
-
-function setObjectMatrix(item: KnifeItem, value: Matrix4): void {
-    if (item.mesh.isInstancedMesh) {
-        item.mesh.setMatrixAt(item.instanceId, value);
-        return;
-    }
-
-    item.mesh.matrix.copy(value);
-    value.decompose(item.mesh.position, item.mesh.quaternion, item.mesh.scale);
-    item.mesh.matrixWorldNeedsUpdate = true;
-}
+const knifeUvScale = 'instancedKnifeUvScale', knifeUvOffset = 'instancedKnifeUvOffset';
+const readUv = (item: KnifeItem, name: string): Vector3 | null => instanceValueSize(item.mesh, name) ? new Vector3(
+    getInstanceValue(item.mesh, item.instanceId, name, 0), getInstanceValue(item.mesh, item.instanceId, name, 1), getInstanceValue(item.mesh, item.instanceId, name, 2)) : null;
+const writeUv = (item: KnifeItem, name: string, value: Vector3): void => {
+    value.toArray().forEach((component, index) => setInstanceValue(item.mesh, item.instanceId, name, component, index));
+};
 
 function getCellMatrix(bounds: Box3, x: number, y: number, z: number, index: number, out = new Matrix4()): Matrix4 {
     const scaleX = 1 / x;
@@ -111,22 +102,20 @@ export function knifeSelection(
     const items = collectKnifeItems(loadedObjectGroup, selection, includeMirrors);
     const result: KnifeResult = {
         groups: new Set(selection.groups),
-        objects: new Map(Array.from(selection.objects, ([mesh, ids]) => [mesh, new Set(ids)])),
+        objects: toMeshMap(selection.objects),
         changed: items.length > 0 && pieceCount > 1,
         created: { groups: new Set(), objects: new Map() }
     };
     if (!result.changed) return result;
     if (!Number.isSafeInteger(pieceCount)) throw new Error('나이프 결과가 너무 큽니다.');
 
-    const selectedDirectKeys = new Set(Array.from(selection.objects, ([mesh, ids]) =>
+    const selectedDirectKeys = new Set(Array.from(toMeshMap(selection.objects), ([mesh, ids]) =>
         [...ids].map(instanceId => GroupUtils.getGroupKey(mesh, instanceId))
     ).flat());
     const copiesByUuid = new Map<string, Array<string | undefined>>();
-    const updatedMeshes = new Set<Mesh | InstancedMesh>();
-    const updatedAttributes = new Set<KnifeUvAttribute>();
+    const updatedMeshes = new Set<ObjectBatch>();
     const originalMatrix = new Matrix4();
     const pieceMatrix = new Matrix4();
-    const modelInverse = new Matrix4();
     const cellMatrix = new Matrix4();
     const boundsByItem = new Map(items.map(item => {
         const bounds = Overlay.getInstanceLocalBox(item.mesh, item.instanceId);
@@ -136,19 +125,10 @@ export function knifeSelection(
     const duplicatedItems = duplicateItems(loadedObjectGroup, items, pieceCount - 1);
 
     for (const source of items) {
-        const modelMatrix = (source.mesh.userData.localMatrices as Map<number, Matrix4> | undefined)?.get(source.instanceId);
         const bounds = boundsByItem.get(getItemKey(source))!.clone();
-        if (modelMatrix) bounds.applyMatrix4(modelMatrix);
-        getObjectMatrix(source, originalMatrix);
-
-        const sourceUvScale = source.mesh.geometry.getAttribute('instancedKnifeUvScale') as KnifeUvAttribute | undefined;
-        const sourceUvOffset = source.mesh.geometry.getAttribute('instancedKnifeUvOffset') as KnifeUvAttribute | undefined;
-        const originalUvScale = sourceUvScale
-            ? new Vector3(sourceUvScale.getX(source.instanceId), sourceUvScale.getY(source.instanceId), sourceUvScale.getZ(source.instanceId))
-            : null;
-        const originalUvOffset = sourceUvOffset
-            ? new Vector3(sourceUvOffset.getX(source.instanceId), sourceUvOffset.getY(source.instanceId), sourceUvOffset.getZ(source.instanceId))
-            : null;
+        getInstanceMatrix(source.mesh, source.instanceId, originalMatrix);
+        const originalUvScale = readUv(source, knifeUvScale);
+        const originalUvOffset = readUv(source, knifeUvOffset);
 
         const pieces = [source, ...(duplicatedItems.get(getItemKey(source)) ?? [])];
         if (pieces.length !== pieceCount) throw new Error('오브젝트 복제에 실패했습니다.');
@@ -159,32 +139,19 @@ export function knifeSelection(
 
         for (let index = 0; index < pieces.length; index++) {
             getCellMatrix(bounds, x, y, z, index, cellMatrix);
-            pieceMatrix.copy(originalMatrix);
-            if (modelMatrix && Math.abs(modelMatrix.determinant()) > 1e-10) {
-                pieceMatrix.multiply(modelInverse.copy(modelMatrix).invert()).multiply(cellMatrix).multiply(modelMatrix);
-            } else {
-                pieceMatrix.multiply(cellMatrix);
-            }
-            setObjectMatrix(pieces[index], pieceMatrix);
+            pieceMatrix.copy(originalMatrix).multiply(cellMatrix);
+            setInstanceMatrix(pieces[index].mesh, pieces[index].instanceId, pieceMatrix);
             updatedMeshes.add(pieces[index].mesh);
 
-            if (originalUvScale && originalUvOffset) {
-                const uvScale = pieces[index].mesh.geometry.getAttribute('instancedKnifeUvScale') as KnifeUvAttribute | undefined;
-                const uvOffset = pieces[index].mesh.geometry.getAttribute('instancedKnifeUvOffset') as KnifeUvAttribute | undefined;
-                if (uvScale && uvOffset) {
-                    const column = index % x;
-                    const row = Math.floor(index / x) % y;
-                    const layer = Math.floor(index / (x * y));
-                    uvScale.setXYZ(pieces[index].instanceId, originalUvScale.x / x, originalUvScale.y / y, originalUvScale.z / z);
-                    uvOffset.setXYZ(
-                        pieces[index].instanceId,
-                        originalUvOffset.x + originalUvScale.x * column / x,
-                        originalUvOffset.y + originalUvScale.y * row / y,
-                        originalUvOffset.z + originalUvScale.z * layer / z
-                    );
-                    updatedAttributes.add(uvScale);
-                    updatedAttributes.add(uvOffset);
-                }
+            if (originalUvScale && originalUvOffset && instanceValueSize(pieces[index].mesh, knifeUvScale) && instanceValueSize(pieces[index].mesh, knifeUvOffset)) {
+                const column = index % x;
+                const row = Math.floor(index / x) % y;
+                const layer = Math.floor(index / (x * y));
+                writeUv(pieces[index], knifeUvScale, new Vector3(originalUvScale.x / x, originalUvScale.y / y, originalUvScale.z / z));
+                writeUv(pieces[index], knifeUvOffset, new Vector3(
+                    originalUvOffset.x + originalUvScale.x * column / x,
+                    originalUvOffset.y + originalUvScale.y * row / y,
+                    originalUvOffset.z + originalUvScale.z * layer / z));
             }
 
             if (index > 0 && selectedDirectKeys.has(getItemKey(source))) {
@@ -216,13 +183,7 @@ export function knifeSelection(
         }
     }
 
-    updatedMeshes.forEach(mesh => {
-        if (mesh.isInstancedMesh) {
-            mesh.instanceMatrix.needsUpdate = true;
-            mesh.computeBoundingSphere();
-        }
-    });
-    updatedAttributes.forEach(attribute => { attribute.needsUpdate = true; });
+    updatedMeshes.forEach(invalidateBatchBounds);
     return result;
 }
 
@@ -231,6 +192,6 @@ if (import.meta.env.DEV) {
     const union = new Box3();
     for (let index = 0; index < 8; index++) union.union(bounds.clone().applyMatrix4(getCellMatrix(bounds, 2, 2, 2, index)));
     console.assert(union.min.equals(bounds.min) && union.max.equals(bounds.max), 'Knife cells must preserve the original bounds.');
-    const mesh = new Mesh();
+    const mesh = batchOf(new InstancedMesh(undefined, undefined, 2));
     console.assert(groupItemsByMesh([{ mesh, instanceId: 0 }, { mesh, instanceId: 1 }]).get(mesh)?.length === 2, 'Knife copies from one mesh must stay in one batch.');
 }

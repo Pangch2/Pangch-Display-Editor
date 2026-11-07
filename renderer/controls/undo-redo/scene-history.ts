@@ -1,19 +1,18 @@
-import { BufferAttribute, BufferGeometry, Group, InstancedMesh, InterleavedBufferAttribute, Matrix4, Material, Mesh, Quaternion, Vector3 } from 'three/webgpu';
+import { Group, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 
 import { record } from './undo-redo.js';
 import { getAllDescendantGroups, getAllGroupChildren, normalizePivotToVector3, type GroupData } from '../grouping/group';
 import type { SelectionState } from '../selection/select';
-import { mergeInstanceIds, type InstanceIdRange } from '../selection/instance-ranges';
 import { getLinkedMirrorSelection } from '../transform/mirroring';
 import { deleteSelectedItems, type DeletedSceneDelta } from '../grouping/delete';
 import type { QueueItem, SelectionSource } from '../vertex/vertex-swap';
 import { animationSession, captureAnimationSnapshot, recordAnimationTransform, restoreAnimationSnapshot, remapAnimationSnapshot, rebaseAnimationStructure, syncAnimationTargets, type AnimationSnapshot } from '../../animation/animation-state';
+import { getInstanceCount, invalidateBatchBounds, markInstanceMatrices, objectHeadValues, objectIsCustomPivot, objectPivot, objectRef, objectSlots,
+    objectUuidAt, readInstanceMatrix, setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, writeInstanceMatrix, type ObjectBatch,
+    type ObjectHeadValues } from '../../scene-store/object-access';
+import { ObjectStore } from '../../scene-store/object-store';
 
-interface HistorySelection {
-    groups: Set<string>;
-    objects: Map<Mesh | InstancedMesh, Set<number>>;
-    primary: { type: 'group'; id: string } | { type: 'object'; mesh: Mesh | InstancedMesh; instanceId: number } | null;
-}
+type HistorySelection = SelectionState;
 
 export interface HistoryGizmoState {
     isVertexMode: boolean;
@@ -40,21 +39,13 @@ export interface HistoryUiState {
     gizmo: HistoryGizmoState | null;
 }
 
-interface TransformObjectState {
-    mesh: Mesh | InstancedMesh;
-    instanceIds: number[];
-    instanceRanges?: InstanceIdRange[];
-    matrices?: Float32Array;
-    position?: Vector3;
-    quaternion?: Quaternion;
-    scale?: Vector3;
-    matrix?: Matrix4;
-    hadCustomPivots: boolean;
-    customPivots: Array<{ key: number | string; value: Vector3 }>;
-    hadCustomPivot: boolean;
-    customPivot?: Vector3;
-    hadIsCustomPivot: boolean;
-    isCustomPivot?: boolean;
+/** Per-object transforms by uuid. Restoring writes each object's current slot, wherever slot moves put it. */
+interface TransformObjectsState {
+    uuids: string[];
+    /** Batch-local instance matrices, 16 floats per object. */
+    matrices: Float32Array;
+    pivots: Array<Vector3 | undefined>;
+    isCustomPivots: Array<boolean | undefined>;
 }
 
 interface TransformGroupState {
@@ -69,7 +60,7 @@ interface TransformGroupState {
 }
 
 interface TransformState {
-    objects: TransformObjectState[];
+    objects: TransformObjectsState;
     groups: TransformGroupState[];
 }
 
@@ -79,17 +70,10 @@ export interface TransformHistoryState {
     animation?: AnimationSnapshot;
 }
 
-type GeometryAttribute = BufferAttribute | InterleavedBufferAttribute;
-
-interface GeometryObjectState {
-    mesh: Mesh | InstancedMesh;
-    geometry: BufferGeometry;
-    material: Material | Material[];
-    attributes: Array<{ attribute: GeometryAttribute; array: ArrayLike<number> & { slice(): ArrayLike<number> } }>;
-}
-
+/** Vertex, knife and smart-scale edits change only matrices, pivots and head UV values, so those are all it keeps. */
 export interface GeometryHistoryState extends TransformHistoryState {
-    geometries: GeometryObjectState[];
+    /** By index into transform.objects; only objects whose batch carries head values. */
+    headValues: Map<number, ObjectHeadValues>;
 }
 
 interface GroupEntryState {
@@ -100,7 +84,7 @@ interface GroupEntryState {
 }
 
 interface ParentEntryState {
-    key: string;
+    uuid: string;
     exists: boolean;
     groupId?: string;
 }
@@ -118,25 +102,6 @@ export interface GroupStructureHistoryState {
 let currentSelection: HistorySelection | null = null;
 let captureGizmoState: (() => HistoryGizmoState) | null = null;
 let restoreGizmoState: ((state: HistoryGizmoState) => void) | null = null;
-const retainedResourceCounts = new WeakMap<object, number>();
-
-export function isSceneHistoryResourceRetained(resource: object): boolean {
-    return (retainedResourceCounts.get(resource) ?? 0) > 0;
-}
-
-export function retainHistoryResources(resources: Iterable<object>, disposeIfUnused: (resource: object) => void): () => void {
-    const retained = [...new Set(resources)];
-    retained.forEach(resource => retainedResourceCounts.set(resource, (retainedResourceCounts.get(resource) ?? 0) + 1));
-    return () => retained.forEach(resource => {
-        const count = (retainedResourceCounts.get(resource) ?? 1) - 1;
-        if (count > 0) retainedResourceCounts.set(resource, count);
-        else {
-            retainedResourceCounts.delete(resource);
-            disposeIfUnused(resource);
-        }
-    });
-}
-
 function cloneValue<T>(value: T, seen = new Map<object, unknown>()): T {
     if (!value || typeof value !== 'object') return value;
     const object = value as object & { isObject3D?: boolean; isMaterial?: boolean; isTexture?: boolean; isBufferGeometry?: boolean; clone?: () => unknown };
@@ -171,11 +136,11 @@ function cloneValue<T>(value: T, seen = new Map<object, unknown>()): T {
 
 function captureSelection(): HistorySelection | null {
     if (!currentSelection) return null;
-    return {
-        groups: new Set(currentSelection.groups),
-        objects: new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)])),
-        primary: currentSelection.primary ? { ...currentSelection.primary } : null
-    };
+    return cloneSelection(currentSelection);
+}
+
+function cloneSelection(selection: HistorySelection): HistorySelection {
+    return { groups: new Set(selection.groups), objects: new Set(selection.objects), primary: selection.primary ? { ...selection.primary } : null };
 }
 
 export function captureHistoryUiState(): HistoryUiState {
@@ -184,9 +149,7 @@ export function captureHistoryUiState(): HistoryUiState {
 
 export function restoreHistoryUiState(state: HistoryUiState): void {
     if (currentSelection && state.selection) {
-        currentSelection.groups = new Set(state.selection.groups);
-        currentSelection.objects = new Map(Array.from(state.selection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
-        currentSelection.primary = state.selection.primary ? { ...state.selection.primary } : null;
+        Object.assign(currentSelection, cloneSelection(state.selection));
     }
     if (restoreGizmoState && state.gizmo) restoreGizmoState(cloneValue(state.gizmo));
 }
@@ -236,31 +199,33 @@ export function recordStateChange<T>({ before, after, apply, refresh, dispose, a
 
 type StructuralSelection = {
     groups: Set<string>;
-    objects: Map<Mesh | InstancedMesh, Set<number>>;
+    objects: Map<ObjectBatch, Set<number>>;
 };
 
-function captureObjectSelectionResolver(root: Group, objects: StructuralSelection['objects']): () => StructuralSelection['objects'] {
-    const entries = [...objects].flatMap(([mesh, ids]) => [...ids].map(instanceId => ({
-        mesh, instanceId, uuid: root.userData.instanceKeyToObjectUuid?.get(`${mesh.uuid}_${instanceId}`) as string | undefined
-    })));
-    return () => {
-        const result: StructuralSelection['objects'] = new Map();
-        for (const entry of entries) {
-            const ref = entry.uuid ? root.userData.objectUuidToInstance?.get(entry.uuid) : entry;
-            if (!ref) continue;
-            let ids = result.get(ref.mesh);
-            if (!ids) result.set(ref.mesh, ids = new Set());
-            ids.add(ref.instanceId);
+/** The uuids of the registered objects in the given slots, deduplicated. */
+function slotUuids(root: Group, meshToInstanceIds: Map<ObjectBatch, Iterable<number>>): string[] {
+    const uuids = new Set<string>();
+    meshToInstanceIds.forEach((ids, mesh) => {
+        const count = getInstanceCount(mesh);
+        for (const id of ids) {
+            if (!Number.isInteger(id) || id < 0 || id >= count) continue;
+            const uuid = objectUuidAt(root, mesh, id);
+            if (uuid) uuids.add(uuid);
         }
-        return result;
-    };
+    });
+    return [...uuids];
+}
+
+function captureObjectSelectionResolver(root: Group, objects: StructuralSelection['objects']): () => StructuralSelection['objects'] {
+    const uuids = slotUuids(root, objects);
+    return () => objectSlots(root, uuids);
 }
 
 function recordCreatedAnimationKeys(root: Group, created: StructuralSelection): void {
     if (!animationSession(root).enabled || animationSession(root).tick === 0) return;
     const ids = new Set<string>();
-    const addObject = (mesh: Mesh | InstancedMesh, instanceId: number) => {
-        const id = root.userData.instanceKeyToObjectUuid?.get(`${mesh.uuid}_${instanceId}`);
+    const addObject = (mesh: ObjectBatch, instanceId: number) => {
+        const id = objectUuidAt(root, mesh, instanceId);
         if (id) ids.add(id);
     };
     for (const id of created.groups) {
@@ -285,11 +250,11 @@ export function recordCreationChange(
     const coveredGroups = new Set(created.groups);
     created.groups.forEach(id => getAllDescendantGroups(root, id).forEach(childId => coveredGroups.add(childId)));
     const objectToGroup = root.userData.objectToGroup as Map<string, string> | undefined;
-    const uncoveredObjects = new Map<Mesh | InstancedMesh, Set<number>>();
+    const uncoveredObjects = new Map<ObjectBatch, Set<number>>();
     created.objects.forEach((instanceIds, mesh) => {
         let uncovered: Set<number> | undefined;
         for (const instanceId of instanceIds) {
-            if (coveredGroups.has(objectToGroup?.get(`${mesh.uuid}_${instanceId}`) ?? '')) continue;
+            if (coveredGroups.has(objectToGroup?.get(objectUuidAt(root, mesh, instanceId) ?? '') ?? '')) continue;
             (uncovered ??= new Set()).add(instanceId);
         }
         if (uncovered) uncoveredObjects.set(mesh, uncovered);
@@ -314,7 +279,7 @@ export function recordCreationChange(
 export function recordReplacementChange(
     root: Group,
     removed: DeletedSceneDelta,
-    created: Map<InstancedMesh, Set<number>>,
+    created: Map<ObjectBatch, Set<number>>,
     beforeUi: HistoryUiState,
     afterUi = captureHistoryUiState()
 ): void {
@@ -347,7 +312,7 @@ export async function recordReplacementTransformChange(
     root: Group,
     before: TransformHistoryState,
     after: TransformHistoryState,
-    replacements: Array<{ removed: DeletedSceneDelta; created: Map<InstancedMesh, Set<number>>; objectIds?: Map<string, string> }>,
+    replacements: Array<{ removed: DeletedSceneDelta; created: Map<ObjectBatch, Set<number>>; objectIds?: Map<string, string> }>,
     auxiliary?: { before: unknown; after: unknown; apply: (state: unknown) => void | Promise<void> }
 ): Promise<void> {
     const objectIds = new Map(replacements.flatMap(replacement => [...replacement.objectIds ?? []]));
@@ -399,44 +364,17 @@ export async function recordReplacementTransformChange(
     });
 }
 
-function captureTransformObject(mesh: Mesh | InstancedMesh, instanceIds: Iterable<number>): TransformObjectState {
-    const isInstanced = (mesh as InstancedMesh).isInstancedMesh;
-    const ids = [...new Set(instanceIds)]
-        .filter(id => Number.isInteger(id) && (!isInstanced || (id >= 0 && id < (mesh as InstancedMesh).count)));
-    const pivotMap = mesh.userData.customPivots as Map<number | string, Vector3> | undefined;
-    const state: TransformObjectState = {
-        mesh,
-        instanceIds: ids,
-        hadCustomPivots: Object.prototype.hasOwnProperty.call(mesh.userData, 'customPivots'),
-        customPivots: [],
-        hadCustomPivot: Object.prototype.hasOwnProperty.call(mesh.userData, 'customPivot'),
-        customPivot: (mesh.userData.customPivot as Vector3 | undefined)?.clone(),
-        hadIsCustomPivot: Object.prototype.hasOwnProperty.call(mesh.userData, 'isCustomPivot'),
-        isCustomPivot: mesh.userData.isCustomPivot as boolean | undefined
-    };
-    if (pivotMap?.size) {
-        for (const id of ids) {
-            for (const key of [id, String(id)]) {
-                const value = pivotMap.get(key);
-                if (value) state.customPivots.push({ key, value: value.clone() });
-            }
-        }
+function captureTransformObjects(root: Group, uuids: string[]): TransformObjectsState {
+    const state: TransformObjectsState = { uuids: [], matrices: new Float32Array(uuids.length * 16), pivots: [], isCustomPivots: [] };
+    for (const uuid of uuids) {
+        const ref = objectRef(root, uuid);
+        if (!ref) continue;
+        const index = state.uuids.push(uuid) - 1;
+        readInstanceMatrix(ref.mesh, ref.instanceId, state.matrices, index * 16);
+        state.pivots.push(objectPivot(root, uuid)?.clone());
+        state.isCustomPivots.push(objectIsCustomPivot(root, uuid));
     }
-    if (isInstanced) {
-        state.instanceRanges = mergeInstanceIds(ids);
-        state.matrices = new Float32Array(ids.length * 16);
-        const matrices = (mesh as InstancedMesh).instanceMatrix.array;
-        let offset = 0;
-        for (const { start, count } of state.instanceRanges) {
-            state.matrices.set(matrices.subarray(start * 16, (start + count) * 16), offset);
-            offset += count * 16;
-        }
-    } else {
-        state.position = mesh.position.clone();
-        state.quaternion = mesh.quaternion.clone();
-        state.scale = mesh.scale.clone();
-        state.matrix = mesh.matrix.clone();
-    }
+    if (state.uuids.length < uuids.length) state.matrices = state.matrices.slice(0, state.uuids.length * 16);
     return state;
 }
 
@@ -453,21 +391,25 @@ function captureTransformGroup(group: GroupData): TransformGroupState {
     };
 }
 
-export function captureTransformState(root: Group, meshToInstanceIds: Map<Mesh | InstancedMesh, Iterable<number>>, groupIds: Iterable<string>): TransformHistoryState {
+function captureObjectTransformState(root: Group, uuids: string[], groupIds: Iterable<string>): TransformHistoryState {
     const groups = root.userData.groups as Map<string, GroupData> | undefined;
     return {
         ui: captureHistoryUiState(),
         animation: captureAnimationSnapshot(root),
         transform: {
-            objects: Array.from(meshToInstanceIds, ([mesh, instanceIds]) => captureTransformObject(mesh, instanceIds)),
+            objects: captureTransformObjects(root, uuids),
             groups: Array.from(new Set(groupIds), id => groups?.get(id)).filter((group): group is GroupData => !!group).map(captureTransformGroup)
         }
     };
 }
 
-export function captureSelectionTransformState(root: Group, meshToInstanceIds: Map<Mesh | InstancedMesh, Iterable<number>>, groupIds: Iterable<string>): TransformHistoryState {
-    const objects = new Map<Mesh | InstancedMesh, Set<number>>();
-    const add = (mesh: Mesh | InstancedMesh, instanceId: number): void => {
+export function captureTransformState(root: Group, meshToInstanceIds: Map<ObjectBatch, Iterable<number>>, groupIds: Iterable<string>): TransformHistoryState {
+    return captureObjectTransformState(root, slotUuids(root, meshToInstanceIds), groupIds);
+}
+
+export function captureSelectionTransformState(root: Group, meshToInstanceIds: Map<ObjectBatch, Iterable<number>>, groupIds: Iterable<string>): TransformHistoryState {
+    const objects = new Map<ObjectBatch, Set<number>>();
+    const add = (mesh: ObjectBatch, instanceId: number): void => {
         const ids = objects.get(mesh) ?? new Set<number>();
         ids.add(instanceId);
         objects.set(mesh, ids);
@@ -488,11 +430,9 @@ export function captureVertexHistoryState(
     queue: QueueItem[],
     source?: SelectionSource
 ): TransformHistoryState {
-    const objects = new Map<Mesh | InstancedMesh, Set<number>>(
-        Array.from(selection.objects, ([mesh, ids]) => [mesh, new Set(ids)])
-    );
+    const objects = objectSlots(root, selection.objects);
     const groups = new Set(selection.groups);
-    const addObject = (mesh: Mesh | InstancedMesh, instanceId: number): void => {
+    const addObject = (mesh: ObjectBatch, instanceId: number): void => {
         const ids = objects.get(mesh) ?? new Set<number>();
         ids.add(instanceId);
         objects.set(mesh, ids);
@@ -526,43 +466,35 @@ export function captureVertexHistoryState(
     return before;
 }
 
-function restoreTransformState(root: Group, transform: TransformState): void {
-    for (const state of transform.objects) {
-        if ((state.mesh as InstancedMesh).isInstancedMesh) {
-            const mesh = state.mesh as InstancedMesh;
-            let offset = 0;
-            for (const { start, count } of state.instanceRanges!) {
-                mesh.instanceMatrix.array.set(state.matrices!.subarray(offset, offset + count * 16), start * 16);
-                mesh.instanceMatrix.addUpdateRange(start * 16, count * 16);
-                offset += count * 16;
-            }
-            mesh.instanceMatrix.needsUpdate = true;
-        } else {
-            state.mesh.position.copy(state.position!);
-            state.mesh.quaternion.copy(state.quaternion!);
-            state.mesh.scale.copy(state.scale!);
-            state.mesh.matrix.copy(state.matrix!);
+function restoreTransformObjects(root: Group, state: TransformObjectsState): void {
+    const rows = new Map<ObjectBatch, Array<[instanceId: number, index: number]>>();
+    state.uuids.forEach((uuid, index) => {
+        const ref = objectRef(root, uuid);
+        if (!ref) return;
+        setObjectPivot(root, uuid, state.pivots[index]?.clone());
+        setObjectIsCustomPivot(root, uuid, state.isCustomPivots[index]);
+        let list = rows.get(ref.mesh);
+        if (!list) rows.set(ref.mesh, list = []);
+        list.push([ref.instanceId, index]);
+    });
+    // Rows sorted by slot upload as contiguous spans.
+    for (const [batch, list] of rows) {
+        list.sort((a, b) => a[0] - b[0]);
+        let start = -1, end = -1;
+        for (const [id, index] of list) {
+            writeInstanceMatrix(batch, id, state.matrices, index * 16);
+            if (id === end) { end++; continue; }
+            if (start >= 0) markInstanceMatrices(batch, start, end - start);
+            start = id;
+            end = id + 1;
         }
-        let pivotMap = state.mesh.userData.customPivots as Map<number | string, Vector3> | undefined;
-        if (state.hadCustomPivots && !pivotMap) state.mesh.userData.customPivots = pivotMap = new Map();
-        if (pivotMap?.size) {
-            for (const id of state.instanceIds) {
-                pivotMap.delete(id);
-                pivotMap.delete(String(id));
-            }
-        }
-        state.customPivots.forEach(({ key, value }) => {
-            if (!pivotMap) state.mesh.userData.customPivots = pivotMap = new Map();
-            pivotMap.set(key, value.clone());
-        });
-        if (!state.hadCustomPivots && pivotMap?.size === 0) delete state.mesh.userData.customPivots;
-        if (state.hadCustomPivot) state.mesh.userData.customPivot = state.customPivot?.clone();
-        else delete state.mesh.userData.customPivot;
-        if (state.hadIsCustomPivot) state.mesh.userData.isCustomPivot = state.isCustomPivot;
-        else delete state.mesh.userData.isCustomPivot;
-        state.mesh.boundingBox = null;
-        state.mesh.boundingSphere = null;
+        if (start >= 0) markInstanceMatrices(batch, start, end - start);
+        invalidateBatchBounds(batch);
     }
+}
+
+function restoreTransformState(root: Group, transform: TransformState): void {
+    restoreTransformObjects(root, transform.objects);
     const groups = root.userData.groups as Map<string, GroupData> | undefined;
     for (const state of transform.groups) {
         const group = groups?.get(state.id) as Partial<GroupData> | undefined;
@@ -591,11 +523,7 @@ export function recordTransformChange(root: Group, before: TransformHistoryState
         window.alert(error instanceof Error ? error.message : String(error));
         return;
     }
-    const after = captureTransformState(
-        root,
-        new Map(before.transform.objects.map(state => [state.mesh, state.instanceIds])),
-        before.transform.groups.map(state => state.id)
-    );
+    const after = captureObjectTransformState(root, before.transform.objects.uuids, before.transform.groups.map(state => state.id));
     recordStateChange({
         before,
         after,
@@ -604,39 +532,30 @@ export function recordTransformChange(root: Group, before: TransformHistoryState
     });
 }
 
+function withHeadValues(root: Group, transform: TransformHistoryState): GeometryHistoryState {
+    const headValues = new Map<number, ObjectHeadValues>();
+    transform.transform.objects.uuids.forEach((uuid, index) => {
+        const values = objectHeadValues(root, uuid);
+        if (Object.keys(values).length) headValues.set(index, values);
+    });
+    return { ...transform, headValues };
+}
+
 export function captureSelectionGeometryState(
     root: Group,
-    meshToInstanceIds: Map<Mesh | InstancedMesh, Iterable<number>>,
+    meshToInstanceIds: Map<ObjectBatch, Iterable<number>>,
     groupIds: Iterable<string>
 ): GeometryHistoryState {
-    const transform = captureSelectionTransformState(root, meshToInstanceIds, groupIds);
-    const meshes = new Set(transform.transform.objects.map(state => state.mesh));
-    return {
-        ...transform,
-        geometries: [...meshes].map(mesh => ({
-            mesh,
-            geometry: mesh.geometry,
-            material: mesh.material,
-            attributes: (Object.values(mesh.geometry.attributes) as GeometryAttribute[]).map(attribute => ({
-                attribute,
-                array: attribute.array.slice() as ArrayLike<number> & { slice(): ArrayLike<number> }
-            }))
-        }))
-    };
+    return withHeadValues(root, captureSelectionTransformState(root, meshToInstanceIds, groupIds));
+}
+
+function captureObjectGeometryState(root: Group, before: GeometryHistoryState): GeometryHistoryState {
+    return withHeadValues(root, captureObjectTransformState(root, before.transform.objects.uuids, before.transform.groups.map(state => state.id)));
 }
 
 export function applyGeometryHistoryState(root: Group, state: GeometryHistoryState): void {
     restoreTransformState(root, state.transform);
-    for (const object of state.geometries) {
-        object.mesh.geometry = object.geometry;
-        object.mesh.material = object.material;
-        object.attributes.forEach(({ attribute, array }) => {
-            attribute.array.set(array);
-            attribute.needsUpdate = true;
-        });
-        object.mesh.computeBoundingBox();
-        object.mesh.computeBoundingSphere();
-    }
+    state.headValues.forEach((values, index) => setObjectHeadValues(root, state.transform.objects.uuids[index], values));
     restoreAnimationSnapshot(root, state.animation);
     restoreHistoryUiState(state.ui);
 }
@@ -649,25 +568,11 @@ export function recordGeometryChange(root: Group, before: GeometryHistoryState):
         window.alert(error instanceof Error ? error.message : String(error));
         return;
     }
-    const after = captureSelectionGeometryState(
-        root,
-        new Map(before.transform.objects.map(state => [state.mesh, state.instanceIds])),
-        before.transform.groups.map(state => state.id)
-    );
-    const meshes = new Set([...before.geometries, ...after.geometries].map(state => state.mesh));
-    const release = retainHistoryResources(
-        [...before.geometries, ...after.geometries].flatMap(state => [state.geometry, ...(Array.isArray(state.material) ? state.material : [state.material])]),
-        resource => {
-            const inUse = [...meshes].some(mesh => mesh.geometry === resource || mesh.material === resource || (Array.isArray(mesh.material) && mesh.material.includes(resource as Material)));
-            if (!inUse) (resource as { dispose?: () => void }).dispose?.();
-        }
-    );
     recordStateChange({
         before,
-        after,
+        after: captureObjectGeometryState(root, before),
         apply: state => applyGeometryHistoryState(root, state),
-        refresh: () => refreshHistory(root),
-        dispose: release
+        refresh: () => refreshHistory(root)
     });
 }
 
@@ -688,11 +593,7 @@ export function recordGeometryAndCreationChange(
         window.alert(error instanceof Error ? error.message : String(error));
         return;
     }
-    const after = captureSelectionGeometryState(
-        root,
-        new Map(before.transform.objects.map(state => [state.mesh, state.instanceIds])),
-        before.transform.groups.map(state => state.id)
-    );
+    const after = captureObjectGeometryState(root, before);
     let detached: DeletedSceneDelta | null = null;
     recordStateChange({
         before: { geometry: before, created: false },
@@ -711,16 +612,20 @@ export function recordGeometryAndCreationChange(
 export function captureGroupStructureState(
     root: Group,
     groupIds: Iterable<string>,
-    objects: Iterable<{ mesh: Mesh | InstancedMesh; instanceId: number }> = []
+    objects: Iterable<{ mesh: ObjectBatch; instanceId: number }> = []
 ): GroupStructureHistoryState {
     const groups = root.userData.groups as Map<string, GroupData> | undefined;
     const objectToGroup = root.userData.objectToGroup as Map<string, string> | undefined;
     const ids = new Set(groupIds);
-    const affectedObjects = new Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }>();
-    for (const object of objects) affectedObjects.set(`${object.mesh.uuid}_${object.instanceId}`, object);
+    const affectedObjects = new Set<string>();
+    const addObject = ({ mesh, instanceId }: { mesh: ObjectBatch; instanceId: number }): void => {
+        const uuid = objectUuidAt(root, mesh, instanceId);
+        if (uuid) affectedObjects.add(uuid);
+    };
+    for (const object of objects) addObject(object);
     for (const id of [...ids]) {
         getAllDescendantGroups(root, id).forEach(childId => ids.add(childId));
-        getAllGroupChildren(root, id).forEach(object => affectedObjects.set(`${object.mesh.uuid}_${object.instanceId}`, object));
+        getAllGroupChildren(root, id).forEach(child => affectedObjects.add(child.id));
         let parentId = groups?.get(id)?.parent;
         while (parentId) {
             ids.add(parentId);
@@ -728,10 +633,9 @@ export function captureGroupStructureState(
         }
     }
     const objectParents: ParentEntryState[] = [];
-    for (const { mesh, instanceId } of affectedObjects.values()) {
-        const key = `${mesh.uuid}_${instanceId}`;
-        const groupId = objectToGroup?.get(key);
-        objectParents.push({ key, exists: !!groupId, groupId });
+    for (const uuid of affectedObjects) {
+        const groupId = objectToGroup?.get(uuid);
+        objectParents.push({ uuid, exists: !!groupId, groupId });
         if (groupId) ids.add(groupId);
     }
     const capturePairs = (name: 'groupMirrorPairs' | 'objectMirrorPairs') => {
@@ -769,7 +673,10 @@ function restoreGroupStructureState(root: Group, state: GroupStructureHistorySta
         groups.set(entry.id, group);
     }
     const objectToGroup = root.userData.objectToGroup as Map<string, string>;
-    state.objectParents.forEach(entry => entry.exists ? objectToGroup.set(entry.key, entry.groupId!) : objectToGroup.delete(entry.key));
+    for (const entry of state.objectParents) {
+        if (entry.exists) objectToGroup.set(entry.uuid, entry.groupId!);
+        else objectToGroup.delete(entry.uuid);
+    }
     if (state.sceneOrder) root.userData.sceneOrder = state.sceneOrder.slice();
     for (const name of ['groupMirrorPairs', 'objectMirrorPairs'] as const) {
         const pairs = root.userData[name] as Map<string, string> | undefined;
@@ -786,7 +693,7 @@ export function recordGroupStructureChange(
     root: Group,
     before: GroupStructureHistoryState,
     extraGroupIds: Iterable<string> = [],
-    extraObjects: Iterable<{ mesh: Mesh | InstancedMesh; instanceId: number }> = []
+    extraObjects: Iterable<{ mesh: ObjectBatch; instanceId: number }> = []
 ): void {
     try { rebaseAnimationStructure(root, before.animation); }
     catch (error) {
@@ -798,15 +705,7 @@ export function recordGroupStructureChange(
         return;
     }
     const ids = new Set([...before.groups.map(entry => entry.id), ...extraGroupIds]);
-    const objects = [
-        ...before.objectParents.map(entry => {
-            const separator = entry.key.lastIndexOf('_');
-            const meshUuid = entry.key.slice(0, separator);
-            const mesh = root.getObjectByProperty('uuid', meshUuid) as Mesh | InstancedMesh | undefined;
-            return mesh ? { mesh, instanceId: Number(entry.key.slice(separator + 1)) } : null;
-        }).filter((entry): entry is { mesh: Mesh | InstancedMesh; instanceId: number } => !!entry),
-        ...extraObjects
-    ];
+    const objects = [...before.objectParents.flatMap(entry => objectRef(root, entry.uuid) ?? []), ...extraObjects];
     const after = captureGroupStructureState(root, ids, objects);
     // Expanding captured ancestors also finds untouched siblings, which must not become creations to undo.
     after.groups = after.groups.filter(entry => ids.has(entry.id));
@@ -824,12 +723,18 @@ export function recordGroupStructureChange(
 }
 
 if (import.meta.env.DEV) {
-    const mesh = new InstancedMesh(undefined, undefined, 2);
+    const root = new Group();
+    const mesh = new InstancedMesh(undefined, undefined, 3);
+    root.add(mesh);
+    root.userData.objectUuidToInstance = new ObjectStore([['a', { mesh, instanceId: 0 }], ['b', { mesh, instanceId: 1 }]]);
     mesh.setMatrixAt(0, new Matrix4().makeTranslation(1, 0, 0));
     mesh.setMatrixAt(1, new Matrix4().makeTranslation(2, 0, 0));
-    const selectedOnly = captureTransformObject(mesh, [0]);
-    mesh.setMatrixAt(0, new Matrix4().makeTranslation(3, 0, 0));
+    const selectedOnly = captureTransformObjects(root, ['a']);
+    // 'a' moves to slot 2 (as a delete would move it); restoring must follow the uuid.
+    mesh.setMatrixAt(2, new Matrix4().makeTranslation(3, 0, 0));
     mesh.setMatrixAt(1, new Matrix4().makeTranslation(4, 0, 0));
-    restoreTransformState(new Group(), { objects: [selectedOnly], groups: [] });
-    console.assert(mesh.getMatrixAt(0, new Matrix4()).elements[12] === 1 && mesh.getMatrixAt(1, new Matrix4()).elements[12] === 4, 'Transform history restored an unselected instance.');
+    root.userData.objectUuidToInstance.set('a', { mesh, instanceId: 2 });
+    restoreTransformObjects(root, selectedOnly);
+    const x = (id: number) => mesh.getMatrixAt(id, new Matrix4()).elements[12];
+    console.assert(x(2) === 1 && x(1) === 4, 'Transform history did not follow the object to its new slot.');
 }

@@ -1,8 +1,9 @@
-import type { Group, InstancedMesh } from 'three/webgpu';
+import type { Group } from 'three/webgpu';
 import type { AnimationPose } from './animation-state';
 import type { AnimationProperties } from './animation-data';
 import { applyAnimationPose } from './animation-state';
-import { currentLoadGen, loadedObjectGroup, setInstanceSkyBrightness } from '../load-project/display/display-instancing';
+import { currentLoadGen, loadedObjectGroup, skyBrightnessColor } from '../load-project/display/display-instancing';
+import { setInstanceColor } from '../scene-store/object-access';
 import { previewDisplayObjects, updateDisplayObjectMatrix, updateTextDisplay } from '../load-project/display/mesh-builder';
 import { trackProjectEdit } from '../save/pending-edits';
 import { yieldPreview } from './yield-preview';
@@ -52,10 +53,7 @@ export function applyAnimationProperties(root: Group, pose: AnimationPose): Set<
             : properties.brightness !== null) {
             if (properties.brightness) (data.objectBrightness ??= new Map()).set(id, { ...properties.brightness });
             else data.objectBrightness?.delete(id);
-            if ((ref.mesh as InstancedMesh).isInstancedMesh) {
-                setInstanceSkyBrightness(ref.mesh, ref.instanceId, properties.brightness ?? undefined);
-                ref.mesh.instanceColor.needsUpdate = true;
-            }
+            setInstanceColor(ref.mesh, ref.instanceId, skyBrightnessColor(properties.brightness ?? undefined));
             changed = true;
         }
         if (root !== loadedObjectGroup) continue;

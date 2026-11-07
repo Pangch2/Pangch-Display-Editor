@@ -1,29 +1,28 @@
 import {
     Matrix4,
     Vector3,
-    InstancedMesh,
     Mesh,
-    Object3D,
     Group,
     Box3,
     Quaternion
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
-import { performSelectionSwap, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
+import { isSlotSelected, toMeshMap, type SelectionState } from '../selection/select';
+import { performSelectionSwap, primarySource, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
 import { removeShearFromSelection } from '../pivot/shear-remove';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
 import { applyLinkedMirrorDelta } from '../transform/mirroring';
+import { getInstanceMatrix, setInstanceMatrix, type ObjectBatch } from '../../scene-store/object-access';
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_B = new Matrix4();
 const _TMP_INSTANCE_MATRIX = new Matrix4();
 
-type MeshType = InstancedMesh | Mesh;
 
 interface SelectedItem {
-    mesh: InstancedMesh;
+    mesh: ObjectBatch;
     instanceId: number;
 }
 
@@ -31,11 +30,7 @@ interface VertexScaleContext {
     isVertexMode: boolean;
     gizmoMode: string;
     isCtrlDown: boolean;
-    currentSelection: {
-        groups: Set<string>;
-        objects: Map<Object3D, Set<number>>;
-        primary: SelectionSource | null;
-    };
+    currentSelection: SelectionState;
     loadedObjectGroup: Group;
     selectionHelper: Mesh;
     getGizmoState: () => GizmoState;
@@ -75,14 +70,7 @@ export function processVertexScale(
 ): boolean {
     if (!isVertexMode || gizmoMode !== 'scale') return false;
 
-    const groupCount = currentSelection.groups ? currentSelection.groups.size : 0;
-    let objectIdCount = 0;
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const ids of currentSelection.objects.values()) {
-            objectIdCount += ids.size;
-        }
-    }
-    const activeSelectionCount = groupCount + objectIdCount;
+    const activeSelectionCount = currentSelection.groups.size + currentSelection.objects.size;
     const preserveSelectionOnSnap = activeSelectionCount > 1;
 
     const keys = Array.from(selectedVertexKeys);
@@ -111,12 +99,11 @@ export function processVertexScale(
     const isSrcEffectiveSelected = (() => {
         if (src.type === 'group') return currentSelection.groups.has(src.id);
         if (src.type === 'object') {
-            if (currentSelection.objects.has(src.mesh) && currentSelection.objects.get(src.mesh)!.has(src.instanceId)) return true;
+            if (isSlotSelected(src.mesh, src.instanceId, currentSelection)) return true;
 
             const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
             if (objectToGroup) {
-                const key = GroupUtils.getGroupKey(src.mesh, src.instanceId);
-                let groupId = objectToGroup.get(key);
+                let groupId = GroupUtils.getSlotGroupId(loadedObjectGroup, src.mesh, src.instanceId);
                 while (groupId) {
                     if (currentSelection.groups.has(groupId)) return true;
                     const g = getGroups().get(groupId);
@@ -150,11 +137,7 @@ export function processVertexScale(
 
     if (src.type === 'object') {
         const { mesh, instanceId } = src;
-        if ((mesh as InstancedMesh).isInstancedMesh) {
-            (mesh as InstancedMesh).getMatrixAt(instanceId, objectWorldMatrix);
-        } else {
-            objectWorldMatrix.copy(mesh.matrix);
-        }
+        getInstanceMatrix(mesh, instanceId, objectWorldMatrix);
         objectWorldMatrix.premultiply(mesh.matrixWorld);
         localBox = Overlay.getInstanceLocalBox(mesh, instanceId);
     } else if (src.type === 'group') {
@@ -174,18 +157,14 @@ export function processVertexScale(
 
         if (src.type === 'object') {
             try {
-                const items = isSrcEffectiveSelected ? getSelectedItems() : [{ mesh: src.mesh as InstancedMesh, instanceId: src.instanceId }];
+                const items = isSrcEffectiveSelected ? getSelectedItems() : [{ mesh: src.mesh, instanceId: src.instanceId }];
                 const state = getGizmoState();
                 removeShearFromSelection(
                     items, selectionHelper, currentSelection, loadedObjectGroup,
                     state.pivotMode, state.isCustomPivot, state.pivotOffset,
                     { SelectionCenter, updateHelperPosition, updateSelectionOverlay }
                 );
-                if ((src.mesh as InstancedMesh).isInstancedMesh) {
-                    (src.mesh as InstancedMesh).getMatrixAt(src.instanceId, objectWorldMatrix);
-                } else {
-                    objectWorldMatrix.copy(src.mesh.matrix);
-                }
+                getInstanceMatrix(src.mesh, src.instanceId, objectWorldMatrix);
                 objectWorldMatrix.premultiply(src.mesh.matrixWorld);
                 p1.copy(p1Local).applyMatrix4(objectWorldMatrix);
             } catch (_err) {}
@@ -263,10 +242,10 @@ export function processVertexScale(
     let transformedMultiAnchorWorld: Vector3 | null = null;
     const targets = {
         groups: new Set<string>(),
-        instances: new Map<MeshType, Set<number>>()
+        instances: new Map<ObjectBatch, Set<number>>()
     };
 
-    const addInstance = (mesh: MeshType, id: number) => {
+    const addInstance = (mesh: ObjectBatch, id: number) => {
         let set = targets.instances.get(mesh);
         if (!set) { set = new Set(); targets.instances.set(mesh, set); }
         set.add(id);
@@ -282,7 +261,7 @@ export function processVertexScale(
 
     if (isSrcEffectiveSelected) {
         currentSelection.groups?.forEach(addGroup);
-        currentSelection.objects?.forEach((ids, mesh) => ids.forEach(id => addInstance(mesh as MeshType, id)));
+        toMeshMap(currentSelection.objects).forEach((ids, mesh) => ids.forEach(id => addInstance(mesh as ObjectBatch, id)));
 
         const state = getGizmoState();
         const updates: Partial<GizmoState> = {};
@@ -308,22 +287,13 @@ export function processVertexScale(
         const localTransform = new Matrix4().multiplyMatrices(meshWorldInv, transformMatrix).multiply(mesh.matrixWorld);
 
         for (const id of ids) {
-            (mesh as InstancedMesh).getMatrixAt(id, _TMP_INSTANCE_MATRIX);
+            getInstanceMatrix(mesh, id, _TMP_INSTANCE_MATRIX);
             _TMP_INSTANCE_MATRIX.premultiply(localTransform);
 
             if (Math.abs(_TMP_INSTANCE_MATRIX.determinant()) > 1e-12) {
-                (mesh as InstancedMesh).setMatrixAt(id, _TMP_INSTANCE_MATRIX);
+                setInstanceMatrix(mesh, id, _TMP_INSTANCE_MATRIX);
 
-                if (!(mesh as InstancedMesh).isInstancedMesh) {
-                    mesh.matrixAutoUpdate = false;
-                    _TMP_INSTANCE_MATRIX.decompose(mesh.position, mesh.quaternion, mesh.scale);
-                }
             }
-        }
-        if ((mesh as InstancedMesh).isInstancedMesh) {
-            const instanceMatrix = (mesh as InstancedMesh).instanceMatrix;
-            ids.forEach(id => instanceMatrix.addUpdateRange(id * instanceMatrix.itemSize, instanceMatrix.itemSize));
-            instanceMatrix.needsUpdate = true;
         }
     }
 
@@ -366,7 +336,7 @@ export function processVertexScale(
     }
 
     // 6. Swap
-    const targetSrc: SelectionSource | null = sprite2.userData.source ?? (sprite2.userData.isCenter ? currentSelection.primary : null);
+    const targetSrc: SelectionSource | null = sprite2.userData.source ?? (sprite2.userData.isCenter ? primarySource(currentSelection) : null);
     if (targetSrc) performSelectionSwap(src, targetSrc, {
         currentSelection, getGroups, getGroupWorldMatrixWithFallback, setGizmoState, getGizmoState, setMultiAnchorInitial, updateHelperPosition, SelectionCenter, vertexQueue
     }, {

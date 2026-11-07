@@ -1,9 +1,8 @@
 import { setupGizmo } from './gizmo-setup';
-import { assertAnimationParentsInvertible } from '../../animation/animation-state';
+import { assertAnimationParentsInvertible, renderModelTransform } from '../../animation/animation-state';
 import type { GizmoLines, GizmoMaterial, GizmoPlaneDirection, GizmoPlaneName, GizmoPlanes } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import {
-    InstancedMesh,
     Mesh,
     Vector3,
     Scene,
@@ -18,9 +17,7 @@ import {
     Vector2,
     Raycaster,
     BoxGeometry,
-    MeshBasicMaterial,
-    InstancedBufferAttribute
-} from 'three/webgpu';
+    MeshBasicMaterial } from 'three/webgpu';
 import { dragDeltaMatrix, dragSelectedAttributeName } from '../../entity-material';
 import {
     blockbenchScaleMode,
@@ -99,10 +96,10 @@ import {
     toggleSmartScale,
     updateSmartScaleDuringDrag
 } from './smart-scale';
+import { getInstanceMatrix, getInstancePivot, objectUuidAt, setInstanceValue, type ObjectBatch } from '../../scene-store/object-access';
 
 // Interfaces 
 
-type PdeMesh = InstancedMesh | Mesh;
 
 interface SceneUpdatedDetail {
     skipGizmoRefresh?: boolean;
@@ -366,10 +363,11 @@ function _getPrimaryWorldMatrix(out = new Matrix4()): Matrix4 | null {
         const group = groups.get(prim.id);
         if (!group) return null;
         getGroupWorldMatrix(group, out);
-    } else if (prim.type === 'object' && prim.mesh) {
-        (prim.mesh as InstancedMesh).getMatrixAt(prim.instanceId, out);
-        out.premultiply(prim.mesh.matrixWorld);
-    } else return null;
+    } else {
+        const ref = Select.getPrimaryObjectRef();
+        if (!ref) return null;
+        Overlay.getInstanceWorldMatrix(ref.mesh, ref.instanceId, out);
+    }
     if (_dragPreviewActive) out.premultiply(dragDeltaMatrix);
     return out;
 }
@@ -442,13 +440,13 @@ function getSelectionCallbacks(): Select.SelectionCallbacks {
     };
 }
 
-function _replaceSelectionWithObjectsMap(meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string }): void {
-    Select.replaceSelectionWithObjectsMap(meshToIds, getSelectionCallbacks(), options);
+function _replaceSelectionWithObjects(objectUuids: Iterable<string>, options?: { anchorMode?: string }): void {
+    Select.replaceSelectionWithObjects(objectUuids, getSelectionCallbacks(), options);
 }
 
 function _replaceSelectionWithGroupsAndObjects(
-    groupIds: Set<string>,
-    meshToIds: Map<PdeMesh, Set<number>>,
+    groupIds: Iterable<string>,
+    objectUuids: Iterable<string>,
     options?: {
         anchorMode?: string;
         preserveAnchors?: boolean;
@@ -456,10 +454,10 @@ function _replaceSelectionWithGroupsAndObjects(
         explicitPrimary?: Select.PrimarySelection | null;
     }
 ): void {
-    Select.replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, getSelectionCallbacks(), options);
+    Select.replaceSelectionWithGroupsAndObjects(groupIds, objectUuids, getSelectionCallbacks(), options);
 }
 
-function _selectAllObjectsVisibleInScene(): Map<PdeMesh, Set<number>> {
+function _selectAllObjectsVisibleInScene(): Set<string> {
     return Select.selectAllObjectsVisibleInScene(loadedObjectGroup);
 }
 
@@ -507,7 +505,7 @@ let selectionTransformDirty = false;
 let dragHistoryBefore: TransformHistoryState | GeometryHistoryState | null = null;
 let smartScaleCreationBefore: { objectUuids: Set<string>; groupIds: Set<string> } | null = null;
 let _dragPreviewActive = false;
-let _dragSelectedIdsByMesh = new Map<InstancedMesh, Set<number>>();
+let _dragSelectedIdsByMesh = new Map<ObjectBatch, Set<number>>();
 
 function getShearPreviewRotation(): Quaternion {
     const matrix = _TMP_MAT4_A.copy(dragInitialMatrix).invert()
@@ -515,10 +513,10 @@ function getShearPreviewRotation(): Quaternion {
     return Overlay.getRotationFromMatrix(matrix);
 }
 
-function getSmartScaleCreatedSelection(): { groups: Set<string>; objects: Map<PdeMesh, Set<number>> } {
+function getSmartScaleCreatedSelection(): { groups: Set<string>; objects: Map<ObjectBatch, Set<number>> } {
     const before = smartScaleCreationBefore;
-    const objects = new Map<PdeMesh, Set<number>>();
-    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: PdeMesh; instanceId: number }> | undefined;
+    const objects = new Map<ObjectBatch, Set<number>>();
+    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined;
     refs?.forEach(({ mesh, instanceId }, uuid) => {
         if (before?.objectUuids.has(uuid)) return;
         const ids = objects.get(mesh) ?? new Set<number>();
@@ -533,9 +531,7 @@ function getSmartScaleCreatedSelection(): { groups: Set<string>; objects: Map<Pd
 
 function captureDragHistoryBefore(): void {
     if (dragHistoryBefore) return;
-    const objects = new Map<Mesh | InstancedMesh, Set<number>>(
-        Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)])
-    );
+    const objects = Select.toMeshMap(currentSelection.objects);
     const groups = new Set(currentSelection.groups);
     if (isMirrorModelingEnabled()) {
         const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
@@ -575,7 +571,15 @@ function applyRelativeDragSnap(): void {
         selectionHelper.position.copy(dragInitialPosition).add(delta);
     } else if (transformControls.mode === 'scale' && scaleDragValue !== null) {
         // The helper stores ratios; the drag setting is an increment of the actual selection scale.
-        const sourceScale = _TMP_VEC3_A.setFromMatrixScale(dragInitialSelectionMatrix);
+        const scaleMatrix = _TMP_MAT4_A.copy(dragInitialSelectionMatrix);
+        const primary = currentSelection.primary;
+        const primaryRef = Select.getPrimaryObjectRef();
+        if (primary?.type === 'object' && primaryRef) {
+            // Match property values by excluding batch and player-head rendering transforms.
+            scaleMatrix.multiply(renderModelTransform(loadedObjectGroup, primary.uuid,
+                primaryRef.mesh, primaryRef.instanceId, _TMP_MAT4_B).invert());
+        }
+        const sourceScale = _TMP_VEC3_A.setFromMatrixScale(scaleMatrix);
         const uniformScale = Math.max(sourceScale.x, sourceScale.y, sourceScale.z);
         for (const axis of ['x', 'y', 'z'] as const) {
             if (!transformControls.axis?.includes(axis.toUpperCase())) continue;
@@ -605,12 +609,11 @@ if (import.meta.env.DEV) {
     console.assert(Math.abs(snapFromStart(0.63, 0.37, 0.5) - 0.87) < 1e-9, 'Relative gizmo snapping moved the drag start value.');
 }
 function getItemUuid({ mesh, instanceId }: Select.SelectedItem): string | undefined {
-    return (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
-        ?.get(GroupUtils.getGroupKey(mesh, instanceId));
+    return objectUuidAt(loadedObjectGroup, mesh, instanceId);
 }
 
 function getDirectSelectedItems(): Select.SelectedItem[] {
-    return Array.from(currentSelection.objects, ([mesh, ids]) =>
+    return Array.from(Select.toMeshMap(currentSelection.objects), ([mesh, ids]) =>
         [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))
     ).flat();
 }
@@ -642,12 +645,10 @@ function SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset:
 }
 
 function syncDragSelectionMask(): void {
-    const nextIdsByMesh = new Map<InstancedMesh, Set<number>>();
+    const nextIdsByMesh = new Map<ObjectBatch, Set<number>>();
     for (const { mesh, instanceId } of getSelectedItems()) {
-        if (!(mesh as InstancedMesh)?.isInstancedMesh) continue;
-        const instancedMesh = mesh as InstancedMesh;
-        let ids = nextIdsByMesh.get(instancedMesh);
-        if (!ids) nextIdsByMesh.set(instancedMesh, ids = new Set<number>());
+        let ids = nextIdsByMesh.get(mesh);
+        if (!ids) nextIdsByMesh.set(mesh, ids = new Set<number>());
         ids.add(instanceId);
     }
 
@@ -656,11 +657,8 @@ function syncDragSelectionMask(): void {
         const previousIds = _dragSelectedIdsByMesh.get(mesh) ?? new Set<number>();
         const nextIds = nextIdsByMesh.get(mesh) ?? new Set<number>();
 
-        const attribute = mesh.geometry.getAttribute(dragSelectedAttributeName) as InstancedBufferAttribute | undefined;
-        if (!attribute) continue;
-        for (const id of previousIds) if (!nextIds.has(id)) attribute.setX(id, 0);
-        for (const id of nextIds) attribute.setX(id, 1);
-        attribute.needsUpdate = true;
+        for (const id of previousIds) if (!nextIds.has(id)) setInstanceValue(mesh, id, dragSelectedAttributeName, 0);
+        for (const id of nextIds) setInstanceValue(mesh, id, dragSelectedAttributeName, 1);
     }
     _dragSelectedIdsByMesh = nextIdsByMesh;
 }
@@ -784,9 +782,9 @@ function refreshAnimationPivotState(): void {
             const group = getGroups().get(primary.id);
             if (shouldUseGroupPivot(group)) pivot = normalizePivotToVector3(group.pivot);
         } else if (primary?.type === 'object') {
-            const local = (primary.mesh as InstancedMesh).isInstancedMesh
-                ? primary.mesh.userData.customPivots?.get(primary.instanceId) : primary.mesh.userData.customPivot;
-            if (local) pivot = local.clone().applyMatrix4(Overlay.getInstanceWorldMatrix(primary.mesh, primary.instanceId, _TMP_MAT4_A));
+            const ref = Select.getPrimaryObjectRef();
+            const local = ref && getInstancePivot(ref.mesh, ref.instanceId);
+            if (ref && local) pivot = local.clone().applyMatrix4(Overlay.getInstanceWorldMatrix(ref.mesh, ref.instanceId, _TMP_MAT4_A));
         }
         isCustomPivot = !!pivot;
         _multiSelectionOriginAnchorValid = !!pivot;
@@ -823,20 +821,14 @@ function updateHelperPosition(): void {
                 }
             }
         } else if (prim.type === 'object') {
-            const { mesh, instanceId } = prim;
-            if (mesh) {
-                let custom: Vector3 | null = null;
-                if ((mesh as InstancedMesh).isInstancedMesh) {
-                    if (mesh.userData.customPivots && mesh.userData.customPivots.has(instanceId)) {
-                        custom = mesh.userData.customPivots.get(instanceId);
-                    }
-                } else {
-                    if (mesh.userData.customPivot) custom = mesh.userData.customPivot;
-                }
+            const ref = Select.getPrimaryObjectRef();
+            if (ref) {
+                const { mesh, instanceId } = ref;
+                const custom = getInstancePivot(mesh, instanceId);
 
                 if (custom) {
                     const tempMat = _TMP_MAT4_A;
-                    (mesh as InstancedMesh).getMatrixAt(instanceId, tempMat);
+                    getInstanceMatrix(mesh, instanceId, tempMat);
                     tempMat.premultiply(mesh.matrixWorld);
                     primaryPivotWorld = custom.clone().applyMatrix4(tempMat);
                 } else {
@@ -904,7 +896,9 @@ function updateHelperPosition(): void {
         if (prim.type === 'group') {
             Overlay.getGroupWorldMatrixWithFallback(prim.id, tempMat);
         } else {
-            Overlay.getInstanceWorldMatrix(prim.mesh, prim.instanceId, tempMat);
+            const ref = Select.getPrimaryObjectRef();
+            if (ref) Overlay.getInstanceWorldMatrix(ref.mesh, ref.instanceId, tempMat);
+            else tempMat.identity();
         }
 
         const inv = _TMP_MAT4_B.copy(tempMat).invert();
@@ -913,7 +907,7 @@ function updateHelperPosition(): void {
 
     if (localPos && currentSelection.primary) {
         const prim = currentSelection.primary;
-        const idStr = prim.type === 'group' ? `G_${prim.id}` : `O_${prim.mesh!.uuid}_${prim.instanceId}`;
+        const idStr = prim.type === 'group' ? `G_${prim.id}` : `O_${prim.uuid}`;
         const queueKey = `QUEUE_${idStr}_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
         if (selectedVertexKeys.has(queueKey)) {
             selectedVertexKeys.delete(queueKey);
@@ -942,10 +936,11 @@ function updateHelperPosition(): void {
                 if (currentSelection.primary.type === 'group') {
                     getGroupRotationQuaternion(currentSelection.primary.id, selectionHelper!.quaternion);
                 } else if (currentSelection.primary.type === 'object') {
-                    const { mesh, instanceId } = currentSelection.primary;
-                    if (mesh) {
+                    const ref = Select.getPrimaryObjectRef();
+                    if (ref) {
+                        const { mesh, instanceId } = ref;
                         const instanceMatrix = _TMP_MAT4_A;
-                        (mesh as InstancedMesh).getMatrixAt(instanceId, instanceMatrix);
+                        getInstanceMatrix(mesh, instanceId, instanceMatrix);
                         const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                         selectionHelper!.quaternion.copy(Overlay.getRotationFromMatrix(worldMatrix));
                     }
@@ -981,9 +976,8 @@ function applySelection(mesh: Object3D | null, instanceIds: number[], groupId: s
         currentSelection.groups.add(groupId);
         currentSelection.primary = { type: 'group', id: groupId };
     } else if (mesh && Array.isArray(instanceIds) && instanceIds.length > 0) {
-        const idSet = new Set(instanceIds);
-        currentSelection.objects.set(mesh as PdeMesh, idSet);
-        currentSelection.primary = { type: 'object', mesh: mesh as PdeMesh, instanceId: instanceIds[0] };
+        currentSelection.objects = Select.toObjectUuids(new Map([[mesh as ObjectBatch, new Set(instanceIds)]]));
+        Select.setPrimaryToFirstAvailable();
     }
 
     invalidateSelectionCaches();
@@ -1074,7 +1068,7 @@ function createGroup(): string | undefined {
         const sourceGroupId = createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
         if (!sourceGroupId || (linked.objects.size === 0 && linked.groups.size === 0)) return sourceGroupId;
 
-        _replaceSelectionWithGroupsAndObjects(linked.groups, linked.objects);
+        _replaceSelectionWithGroupsAndObjects(linked.groups, Select.toObjectUuids(linked.objects));
         const mirrorGroupId = createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
         linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), sourceGroupId, mirrorGroupId);
         applySelection(null, [], sourceGroupId);
@@ -1127,13 +1121,8 @@ function deleteSelectedItems(): void {
     const delta = _runWithoutVertexQueue(() => {
         const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
         if (linked.objects.size > 0 || linked.groups.size > 0) {
-            const objects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
-            linked.objects.forEach((ids, mesh) => {
-                const selectedIds = objects.get(mesh) ?? new Set<number>();
-                ids.forEach(id => selectedIds.add(id));
-                objects.set(mesh, selectedIds);
-            });
-            _replaceSelectionWithGroupsAndObjects(new Set([...currentSelection.groups, ...linked.groups]), objects);
+            _replaceSelectionWithGroupsAndObjects([...currentSelection.groups, ...linked.groups],
+                [...currentSelection.objects, ...Select.toObjectUuids(linked.objects)]);
         }
         return deleteSelectedItemsCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
     });
@@ -1177,7 +1166,7 @@ function duplicateSelected(): void {
     _runWithoutVertexQueue(() => {
         let sourceUuids = getSelectedItems().map(getItemUuid);
         let sourceGroupIds = [...currentSelection.groups];
-        let sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+        let sourceObjects = new Set(currentSelection.objects);
         let sourcePrimary = currentSelection.primary;
         const mirrorModeling = isMirrorModelingEnabled();
         const hasMirrorPair = mirrorModeling && (
@@ -1195,7 +1184,7 @@ function duplicateSelected(): void {
         if (hasMirrorPair) {
             sourceUuids = getSelectedItems().map(getItemUuid);
             sourceGroupIds = [...currentSelection.groups];
-            sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+            sourceObjects = new Set(currentSelection.objects);
             sourcePrimary = currentSelection.primary;
             secondCreated = duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
         }
@@ -1217,10 +1206,10 @@ function duplicateSelected(): void {
             const createdGroups = new Set(hasMirrorPair
                 ? [...firstCreated.groups, ...(secondCreated?.groups ?? [])]
                 : firstCreated.groups);
-            const createdObjects = new Map<Mesh | InstancedMesh, Set<number>>();
+            const createdObjects = new Map<ObjectBatch, Set<number>>();
             if (hasMirrorPair) firstCreated.objects.forEach((ids, mesh) => createdObjects.set(mesh, new Set(ids)));
             for (const uuid of finalUuids) {
-                const ref = uuid ? (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }> | undefined)?.get(uuid) : undefined;
+                const ref = uuid ? (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined)?.get(uuid) : undefined;
                 if (!ref) continue;
                 const ids = createdObjects.get(ref.mesh) ?? new Set<number>();
                 ids.add(ref.instanceId);
@@ -1242,9 +1231,7 @@ function knifeSelected(): void {
     const y = Number(document.querySelector<HTMLInputElement>('.toolbar-dimensions input[name="y"]')?.value);
     const z = Number(document.querySelector<HTMLInputElement>('.toolbar-dimensions input[name="z"]')?.value);
     const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
-    const affectedObjects = new Map<Mesh | InstancedMesh, Set<number>>(
-        Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)])
-    );
+    const affectedObjects = Select.toMeshMap(currentSelection.objects);
     linked.objects.forEach((ids, mesh) => {
         const affectedIds = affectedObjects.get(mesh) ?? new Set<number>();
         ids.forEach(id => affectedIds.add(id));
@@ -1259,7 +1246,7 @@ function knifeSelected(): void {
         try {
             const result = knifeSelection(loadedObjectGroup, currentSelection, x, y, z, isMirrorModelingEnabled());
             if (!result.changed) return;
-            _replaceSelectionWithGroupsAndObjects(result.groups, result.objects, {
+            _replaceSelectionWithGroupsAndObjects(result.groups, Select.toObjectUuids(result.objects), {
                 anchorMode: isCustomPivot || _multiSelectionOriginAnchorValid ? _selectionAnchorMode : 'center',
                 preserveAnchors: true,
                 explicitPrimary: primary
@@ -1304,8 +1291,8 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     const captureHeadAtlases = loadedObjectGroup.userData.capturePlayerHeadAtlasState as ((uuids?: Iterable<string>) => unknown) | undefined;
     const restoreHeadAtlases = loadedObjectGroup.userData.restorePlayerHeadAtlasState as ((state: unknown) => void) | undefined;
     const beforeHeadAtlases = headUuids.length ? captureHeadAtlases?.(headUuids) : undefined;
-    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }> | undefined;
-    const affectedObjects = new Map<Mesh | InstancedMesh, Set<number>>();
+    const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined;
+    const affectedObjects = new Map<ObjectBatch, Set<number>>();
     for (const uuid of allUuids) {
         const ref = uuid ? refs?.get(uuid) : undefined;
         if (!ref) continue;
@@ -1352,7 +1339,7 @@ async function flipSelected(axis: FlipAxis): Promise<void> {
     _emitSceneUpdated();
     const replacements = [sourceResult.history, linkedResult.history].filter((history): history is NonNullable<typeof history> => !!history);
     if (replacements.length || beforeHeadAtlases !== undefined) {
-        const afterObjects = new Map<Mesh | InstancedMesh, Set<number>>();
+        const afterObjects = new Map<ObjectBatch, Set<number>>();
         for (const uuid of [...sourceResult, ...linkedResult]) {
             const ref = uuid ? refs?.get(uuid) : undefined;
             if (!ref) continue;
@@ -1431,7 +1418,7 @@ export function initGizmo({
     );
 
     if (!loadedObjectGroup.userData.groups) loadedObjectGroup.userData.groups = new Map();
-    if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map();
+    if (!loadedObjectGroup.userData.objectToGroup) loadedObjectGroup.userData.objectToGroup = new Map<string, string>();
 
     selectionHelper = new Mesh(
         new BoxGeometry(0.1, 0.1, 0.1),
@@ -1638,9 +1625,9 @@ export function initGizmo({
             const smartScaleCreated = smartScaleExtruded ? getSmartScaleCreatedSelection() : null;
             smartScaleCreationBefore = null;
             if (changed && historyBefore) {
-                if ('geometries' in historyBefore && smartScaleCreated && (smartScaleCreated.groups.size || smartScaleCreated.objects.size)) {
+                if ('headValues' in historyBefore && smartScaleCreated && (smartScaleCreated.groups.size || smartScaleCreated.objects.size)) {
                     recordGeometryAndCreationChange(loadedObjectGroup, historyBefore, smartScaleCreated);
-                } else if ('geometries' in historyBefore) recordGeometryChange(loadedObjectGroup, historyBefore);
+                } else if ('headValues' in historyBefore) recordGeometryChange(loadedObjectGroup, historyBefore);
                 else recordTransformChange(loadedObjectGroup, historyBefore);
             }
         }
@@ -1689,7 +1676,7 @@ export function initGizmo({
 
             const sourceUuids = sourceItems.map(getItemUuid);
             const sourceGroupIds = [...currentSelection.groups];
-            const sourceObjects = new Map(Array.from(currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
+            const sourceObjects = new Set(currentSelection.objects);
             const sourcePrimary = currentSelection.primary;
             duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
             const mirroredUuids = getSelectedItems().map(getItemUuid);
@@ -1719,19 +1706,13 @@ export function initGizmo({
         deleteSelectedAndRestore: (selection: Select.SelectionState) => {
             const linked = getLinkedMirrorSelection(loadedObjectGroup, getDirectSelectedItems(), currentSelection.groups);
             linked.groups.forEach(groupId => currentSelection.groups.add(groupId));
-            linked.objects.forEach((ids, mesh) => {
-                const selectedIds = currentSelection.objects.get(mesh) ?? new Set<number>();
-                ids.forEach(id => selectedIds.add(id));
-                currentSelection.objects.set(mesh, selectedIds);
-            });
+            Select.toObjectUuids(linked.objects).forEach(uuid => currentSelection.objects.add(uuid));
             deleteSelectedItemsCommand(loadedObjectGroup, currentSelection, {
                 ..._getGizmoCommandCallbacks(),
                 resetSelectionAndDeselect: _clearSelectionState,
                 emitSceneUpdated: () => {}
             });
-            currentSelection.groups = new Set(selection.groups);
-            currentSelection.objects = new Map(Array.from(selection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
-            currentSelection.primary = selection.primary;
+            Object.assign(currentSelection, Select.cloneSelection(selection));
             invalidateSelectionCaches();
             _recomputePivotStateForSelection();
             updateSelectionOverlay();
@@ -1932,7 +1913,7 @@ export function initGizmo({
         ungroupGroup,
         promoteVertexQueueBundleOnExit:           _promoteVertexQueueBundleOnExit,
         pushToVertexQueue:                        _pushToVertexQueue,
-        replaceSelectionWithObjectsMap:           _replaceSelectionWithObjectsMap,
+        replaceSelectionWithObjects:              _replaceSelectionWithObjects,
         replaceSelectionWithGroupsAndObjects:     _replaceSelectionWithGroupsAndObjects,
         selectAllObjectsVisibleInScene:           _selectAllObjectsVisibleInScene,
 
@@ -2012,12 +1993,12 @@ export function initGizmo({
     loadedObjectGroup.userData.groupSelected = () => { createGroup(); };
     loadedObjectGroup.userData.ungroupSelected = (groupId: string) => { ungroupGroup(groupId); };
     loadedObjectGroup.userData.getPivotMode = () => pivotMode;
-    loadedObjectGroup.userData.replaceSelectionWithObjectsMap = (meshToIds: Map<PdeMesh, Set<number>>, options?: { anchorMode?: string }) => {
-        _replaceSelectionWithObjectsMap(meshToIds, options);
+    loadedObjectGroup.userData.replaceSelectionWithObjects = (objectUuids: Iterable<string>, options?: { anchorMode?: string }) => {
+        _replaceSelectionWithObjects(objectUuids, options);
     };
     loadedObjectGroup.userData.replaceSelectionWithGroupsAndObjects = (
-        groupIds: Set<string>,
-        meshToIds: Map<PdeMesh, Set<number>>,
+        groupIds: Iterable<string>,
+        objectUuids: Iterable<string>,
         options?: {
             anchorMode?: string;
             preserveAnchors?: boolean;
@@ -2025,9 +2006,9 @@ export function initGizmo({
             explicitPrimary?: Select.PrimarySelection | null;
         }
     ) => {
-        _replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, options);
+        _replaceSelectionWithGroupsAndObjects(groupIds, objectUuids, options);
     };
-    loadedObjectGroup.userData.addOrToggleInSelection = (groupIds: Set<string> | null, meshToIds: Map<PdeMesh, Set<number>> | null) => {
+    loadedObjectGroup.userData.addOrToggleInSelection = (groupIds: Iterable<string> | null, objectUuids: Iterable<string> | null) => {
         _revertEphemeralPivotUndoIfAny();
 
         if (groupIds) {
@@ -2043,22 +2024,14 @@ export function initGizmo({
                 }
             }
         }
-        if (meshToIds) {
-            for (const [mesh, ids] of meshToIds) {
-                if (!mesh || !ids) continue;
-                let existing = currentSelection.objects.get(mesh);
-                for (const id of ids) {
-                    if (!existing) { existing = new Set(); currentSelection.objects.set(mesh, existing); }
-                    if (existing.has(id)) {
-                        existing.delete(id);
-                        if (existing.size === 0) currentSelection.objects.delete(mesh);
-                        if (currentSelection.primary?.type === 'object' && currentSelection.primary.mesh === mesh && currentSelection.primary.instanceId === id)
-                            currentSelection.primary = null;
-                    } else {
-                        existing.add(id);
-                        if (!currentSelection.primary) currentSelection.primary = { type: 'object', mesh, instanceId: id };
-                    }
-                }
+        for (const uuid of objectUuids ?? []) {
+            if (!uuid) continue;
+            if (currentSelection.objects.delete(uuid)) {
+                if (currentSelection.primary?.type === 'object' && currentSelection.primary.uuid === uuid)
+                    currentSelection.primary = null;
+            } else {
+                currentSelection.objects.add(uuid);
+                if (!currentSelection.primary) currentSelection.primary = { type: 'object', uuid };
             }
         }
         _commitSelectionChange();
@@ -2259,85 +2232,56 @@ export function initGizmo({
         updateSelectionOverlay();
     });
     window.addEventListener('pde:replace-object-selection', event => {
+        // Each entry moves one object to another slot; the old mesh's last slot fills the hole (swap-remove).
+        // oldUuid/uuid are set when a new object replaced the old one.
         const replacements = (event as CustomEvent<Array<{
-            oldMesh: PdeMesh;
+            oldMesh: ObjectBatch;
             oldInstanceId: number;
             oldLastInstanceId: number;
-            mesh: PdeMesh;
+            mesh: ObjectBatch;
             instanceId: number;
+            oldUuid?: string;
+            uuid?: string;
         }> & { preview?: boolean }>).detail;
+        if (replacements.preview) {
+            // The drag mask is per slot, so it follows the moved rows.
+            for (const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } of replacements) {
+                const oldSelected = _dragSelectedIdsByMesh.get(oldMesh);
+                const selected = oldSelected?.delete(oldInstanceId) ?? false;
+                const movedSelected = oldInstanceId < oldLastInstanceId && (oldSelected?.delete(oldLastInstanceId) ?? false);
+                if (movedSelected) oldSelected!.add(oldInstanceId);
+                if (!oldSelected?.size) _dragSelectedIdsByMesh.delete(oldMesh);
+                setInstanceValue(oldMesh, oldInstanceId, dragSelectedAttributeName, movedSelected ? 1 : 0);
+                if (oldInstanceId < oldLastInstanceId) setInstanceValue(oldMesh, oldLastInstanceId, dragSelectedAttributeName, 0);
+                if (selected) {
+                    const ids = _dragSelectedIdsByMesh.get(mesh) ?? new Set<number>();
+                    ids.add(instanceId); _dragSelectedIdsByMesh.set(mesh, ids);
+                    setInstanceValue(mesh, instanceId, dragSelectedAttributeName, 1);
+                }
+            }
+        }
+        invalidateSelectionCaches();
+        // Slot moves leave a uuid selection unchanged; only the overlay and anchors read slots.
+        const isSelected = (uuid: string | undefined) => !!uuid && currentSelection.objects.has(uuid);
+        const changed = replacements.some(({ oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId, oldUuid }) =>
+            isSelected(oldUuid) || Select.isSlotSelected(mesh, instanceId)
+            || (oldInstanceId < oldLastInstanceId && Select.isSlotSelected(oldMesh, oldInstanceId)));
+        if (!changed) return;
         const preservedAnchor = _isMultiSelection() && _multiSelectionOriginAnchorValid
             ? _multiSelectionOriginAnchorPosition.clone()
             : null;
+        if (preservedAnchor) _multiSelectionOriginAnchorInitialLocalValid = false;
+        if (replacements.preview) return;
         const preservedPivotState = preservedAnchor ? {
             isCustomPivot,
             pivotOffset: pivotOffset.clone(),
             explicitPivot: _multiSelectionExplicitPivot,
             anchorMode: _selectionAnchorMode
         } : null;
-        const objects = new Map(Array.from(currentSelection.objects, ([selectedMesh, ids]) => [selectedMesh, new Set(ids)]));
+        const renamed = new Map(replacements.flatMap(({ oldUuid, uuid }) => oldUuid && uuid ? [[oldUuid, uuid] as const] : []));
+        const objects = [...currentSelection.objects].map(uuid => renamed.get(uuid) ?? uuid);
         let primary = currentSelection.primary;
-        let primaryReplacement: { mesh: PdeMesh; instanceId: number } | null = null;
-        const replacedSelections: Array<{ mesh: PdeMesh; instanceId: number }> = [];
-        const dirtyMasks = new Set<InstancedMesh>();
-        let changed = false;
-        for (const { oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId } of replacements) {
-            if (replacements.preview) {
-                const oldSelected = _dragSelectedIdsByMesh.get(oldMesh as InstancedMesh);
-                const selected = oldSelected?.delete(oldInstanceId) ?? false;
-                const movedSelected = oldInstanceId < oldLastInstanceId && (oldSelected?.delete(oldLastInstanceId) ?? false);
-                if (movedSelected) oldSelected!.add(oldInstanceId);
-                if (!oldSelected?.size) _dragSelectedIdsByMesh.delete(oldMesh as InstancedMesh);
-                const oldMask = oldMesh.geometry.getAttribute(dragSelectedAttributeName);
-                if (oldMask) {
-                    oldMask.setX(oldInstanceId, movedSelected ? 1 : 0);
-                    if (oldInstanceId < oldLastInstanceId) oldMask.setX(oldLastInstanceId, 0);
-                    dirtyMasks.add(oldMesh as InstancedMesh);
-                }
-                if (selected) {
-                    const ids = _dragSelectedIdsByMesh.get(mesh as InstancedMesh) ?? new Set<number>();
-                    ids.add(instanceId); _dragSelectedIdsByMesh.set(mesh as InstancedMesh, ids);
-                    const mask = mesh.geometry.getAttribute(dragSelectedAttributeName);
-                    if (mask) { mask.setX(instanceId, 1); dirtyMasks.add(mesh as InstancedMesh); }
-                }
-            }
-            const oldIds = objects.get(oldMesh);
-            const replaced = oldIds?.delete(oldInstanceId) ?? false;
-            const moved = oldInstanceId < oldLastInstanceId && (oldIds?.delete(oldLastInstanceId) ?? false);
-            if (moved) oldIds!.add(oldInstanceId);
-            if (oldIds?.size === 0) objects.delete(oldMesh);
-            if (replaced) replacedSelections.push({ mesh, instanceId });
-            changed ||= replaced || moved;
-
-            if (primary?.type === 'object' && primary.mesh === oldMesh) {
-                if (primary.instanceId === oldInstanceId) {
-                    primary = null;
-                    primaryReplacement = { mesh, instanceId };
-                }
-                else if (moved && primary.instanceId === oldLastInstanceId) primary = { type: 'object', mesh: oldMesh, instanceId: oldInstanceId };
-            }
-        }
-        for (const mesh of dirtyMasks) mesh.geometry.getAttribute(dragSelectedAttributeName)!.needsUpdate = true;
-        if (!changed) {
-            if (replacements.preview) {
-                invalidateSelectionCaches();
-            }
-            return;
-        }
-        for (const { mesh, instanceId } of replacedSelections) {
-            const ids = objects.get(mesh) ?? new Set<number>();
-            ids.add(instanceId);
-            objects.set(mesh, ids);
-        }
-        if (primaryReplacement) primary = { type: 'object', ...primaryReplacement };
-        if (preservedAnchor) _multiSelectionOriginAnchorInitialLocalValid = false;
-        if (replacements.preview) {
-            // Logical selection is unchanged; update instance references without rebuilding the selection UI.
-            currentSelection.objects = objects;
-            currentSelection.primary = primary;
-            invalidateSelectionCaches();
-            return;
-        }
+        if (primary?.type === 'object' && renamed.has(primary.uuid)) primary = { type: 'object', uuid: renamed.get(primary.uuid)! };
         _replaceSelectionWithGroupsAndObjects(new Set(currentSelection.groups), objects, {
             preserveAnchors: true,
             explicitPrimary: primary
@@ -2413,7 +2357,7 @@ export function initGizmo({
             }
         },
         resetSelection: resetSelectionAndDeselect,
-        getSelectedObject: () => (currentSelection.primary && currentSelection.primary.type === 'object' ? currentSelection.primary.mesh : null),
+        getSelectedObject: () => Select.getPrimaryObjectRef()?.mesh ?? null,
         createGroup: createGroup,
         getGroups: getGroups,
         hasSelection: _hasAnySelection,

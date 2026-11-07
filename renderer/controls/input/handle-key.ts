@@ -1,5 +1,4 @@
 import {
-    InstancedMesh,
     Mesh,
     Vector3,
     Matrix4,
@@ -17,7 +16,7 @@ import { focusCameraOnSelection } from './camera';
 import { blockbenchScaleMode, toggleBlockbenchScaleMode } from '../gizmo/blockbench-scale';
 import { isSmartScaleEnabled } from '../gizmo/smart-scale';
 import { toggleShading } from '../../entity-material';
-import { getSelectAllSceneSelection, type SelectionState, type SelectedItem } from '../selection/select';
+import { getSelectAllSceneSelection, toMeshMap, toObjectUuids, type SelectionState, type SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 import type { QueueItem } from '../vertex/vertex-swap';
 import * as GroupUtils from '../grouping/group';
@@ -26,10 +25,10 @@ import { canRedo, canUndo, isApplying, redo, undo } from '../undo-redo/undo-redo
 import { captureSelectionTransformState, recordTransformChange } from '../undo-redo/scene-history';
 import { isShortcutPressed, matchesShortcut, type ShortcutId } from './shortcuts';
 import { copySelection, pasteSelection, isSelectionPastePending } from './selection-clipboard';
+import type { ObjectBatch } from '../../scene-store/object-access';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
-type PdeMesh = InstancedMesh | Mesh;
 
 interface OrbitControlsLike {
     enabled: boolean;
@@ -136,16 +135,16 @@ export interface HandleKeyParams {
     ungroupGroup(ids: string | readonly string[], deselect?: boolean): void;
     promoteVertexQueueBundleOnExit(): boolean;
     pushToVertexQueue(): void;
-    replaceSelectionWithObjectsMap(
-        meshToIds: Map<PdeMesh, Set<number>>,
+    replaceSelectionWithObjects(
+        objectUuids: Set<string>,
         options?: { anchorMode?: string }
     ): void;
     replaceSelectionWithGroupsAndObjects(
         groupIds: Set<string>,
-        meshToIds: Map<PdeMesh, Set<number>>,
+        objectUuids: Set<string>,
         options?: { anchorMode?: string; preserveAnchors?: boolean }
     ): void;
-    selectAllObjectsVisibleInScene(): Map<PdeMesh, Set<number>>;
+    selectAllObjectsVisibleInScene(): Set<string>;
 
     // -- Pivot callbacks --
     SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset: Vector3): Vector3;
@@ -165,12 +164,12 @@ export interface HandleKeyParams {
     normalizePivotToVector3(pivot: Vector3 | undefined, out?: Vector3): Vector3 | null;
 
     // -- Instance / overlay callbacks --
-    getInstanceCount(mesh: PdeMesh): number;
-    isInstanceValid(mesh: PdeMesh, instanceId: number): boolean;
-    getDisplayType(mesh: PdeMesh, instanceId?: number): string | undefined;
-    getInstanceLocalBoxMin(mesh: PdeMesh, instanceId: number | undefined, out: Vector3): Vector3 | null;
-    getInstanceWorldMatrixForOrigin(mesh: PdeMesh, instanceId: number | undefined, out: Matrix4): Matrix4;
-    isItemDisplayHatEnabled(mesh: PdeMesh, instanceId?: number): boolean;
+    getInstanceCount(mesh: ObjectBatch): number;
+    isInstanceValid(mesh: ObjectBatch, instanceId: number): boolean;
+    getDisplayType(mesh: ObjectBatch, instanceId?: number): string | undefined;
+    getInstanceLocalBoxMin(mesh: ObjectBatch, instanceId: number | undefined, out: Vector3): Vector3 | null;
+    getInstanceWorldMatrixForOrigin(mesh: ObjectBatch, instanceId: number | undefined, out: Matrix4): Matrix4;
+    isItemDisplayHatEnabled(mesh: ObjectBatch, instanceId?: number): boolean;
     prepareMultiSelectionDrag(selection: SelectionState): void;
 }
 
@@ -178,7 +177,7 @@ export interface HandleKeyParams {
 
 export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
     let pivotEditPreviousGizmoMode: string | null = null;
-    const getDirectSelectedItems = (): SelectedItem[] => Array.from(p.currentSelection.objects, ([mesh, ids]) =>
+    const getDirectSelectedItems = (): SelectedItem[] => Array.from(toMeshMap(p.currentSelection.objects), ([mesh, ids]) =>
         [...ids].map(instanceId => ({ type: 'object' as const, mesh, instanceId }))
     ).flat();
 
@@ -304,14 +303,9 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
                             mirrorItems.set(`${child.mesh.uuid}_${child.instanceId}`, { type: 'object', mesh: child.mesh, instanceId: child.instanceId });
                         }
                     }
-                    const mirrorSelectionObjects = new Map<PdeMesh, Set<number>>(Array.from(p.currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]));
-                    linked.objects.forEach((ids, mesh) => {
-                        const selectedIds = mirrorSelectionObjects.get(mesh) ?? new Set<number>();
-                        ids.forEach(id => selectedIds.add(id));
-                        mirrorSelectionObjects.set(mesh, selectedIds);
-                    });
+                    const mirrorSelectionObjects = new Set([...p.currentSelection.objects, ...toObjectUuids(linked.objects)]);
                     const affectedGroupIds = new Set([...p.currentSelection.groups, ...linked.groups]);
-                    const before = captureSelectionTransformState(p.loadedObjectGroup, mirrorSelectionObjects, affectedGroupIds);
+                    const before = captureSelectionTransformState(p.loadedObjectGroup, toMeshMap(mirrorSelectionObjects), affectedGroupIds);
                     removeShearFromSelection(
                         [...items, ...mirrorItems.values()],
                         p.getSelectionHelper(),
@@ -466,12 +460,7 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
         if (matchesShortcut(event, 'selectAllObjects')) {
             event.preventDefault();
             const all = p.selectAllObjectsVisibleInScene();
-
-            let totalCount = 0;
-            for (const [, ids] of all) totalCount += ids.size;
-
-            const mode = (totalCount > 1) ? 'center' : 'default';
-            p.replaceSelectionWithObjectsMap(all, { anchorMode: mode });
+            p.replaceSelectionWithObjects(all, { anchorMode: all.size > 1 ? 'center' : 'default' });
             return;
         }
 
@@ -519,15 +508,10 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
                 const resetSelection = {
                     ...p.currentSelection,
                     groups: new Set([...p.currentSelection.groups, ...linked.groups]),
-                    objects: new Map<PdeMesh, Set<number>>(Array.from(p.currentSelection.objects, ([mesh, ids]) => [mesh, new Set(ids)]))
+                    objects: new Set([...p.currentSelection.objects, ...toObjectUuids(linked.objects)])
                 };
-                linked.objects.forEach((ids, mesh) => {
-                    const selectedIds = resetSelection.objects.get(mesh) ?? new Set<number>();
-                    ids.forEach(id => selectedIds.add(id));
-                    resetSelection.objects.set(mesh, selectedIds);
-                });
                 const before = p.hasAnySelection()
-                    ? captureSelectionTransformState(p.loadedObjectGroup, resetSelection.objects, resetSelection.groups)
+                    ? captureSelectionTransformState(p.loadedObjectGroup, toMeshMap(resetSelection.objects), resetSelection.groups)
                     : null;
 
                 resetCustomPivot(

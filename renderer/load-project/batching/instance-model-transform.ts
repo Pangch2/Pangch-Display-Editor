@@ -1,9 +1,15 @@
-import { InstancedBufferAttribute, Matrix4, type InstancedMesh } from 'three/webgpu';
+import { InstancedBufferAttribute, Matrix4, type InstancedMesh, type InterleavedBufferAttribute } from 'three/webgpu';
 
 const attributeName = 'pdeModelTransform';
 
+/** Where an object's 16 values start in the attribute's array; interleaved rows have their own stride. */
+function rowStart(attribute: InstancedBufferAttribute | InterleavedBufferAttribute, instanceId: number): number {
+    const interleaved = attribute as InterleavedBufferAttribute;
+    return interleaved.isInterleavedBufferAttribute ? instanceId * interleaved.data.stride + interleaved.offset : instanceId * 16;
+}
+
 export function setInstanceModelTransform(mesh: InstancedMesh, instanceId: number, transform?: ArrayLike<number>): void {
-    let attribute = mesh.geometry.getAttribute(attributeName) as InstancedBufferAttribute | undefined;
+    let attribute = mesh.geometry.getAttribute(attributeName) as InstancedBufferAttribute | InterleavedBufferAttribute | undefined;
     if (!attribute && !transform) return;
     if (!attribute) {
         const count = mesh.instanceMatrix.count;
@@ -13,13 +19,13 @@ export function setInstanceModelTransform(mesh: InstancedMesh, instanceId: numbe
         attribute = new InstancedBufferAttribute(values, 16);
         mesh.geometry.setAttribute(attributeName, attribute);
     }
-    new Matrix4().fromArray(transform ?? new Matrix4().elements).toArray(attribute.array, instanceId * 16);
+    new Matrix4().fromArray(transform ?? new Matrix4().elements).toArray(attribute.array, rowStart(attribute, instanceId));
     attribute.needsUpdate = true;
 }
 
 export function getInstanceModelTransform(mesh: InstancedMesh, instanceId: number, out = new Matrix4()): Matrix4 {
-    const attribute = mesh.geometry.getAttribute(attributeName);
-    return attribute ? out.fromArray(attribute.array, instanceId * 16) : out.identity();
+    const attribute = mesh.geometry.getAttribute(attributeName) as InstancedBufferAttribute | InterleavedBufferAttribute | undefined;
+    return attribute ? out.fromArray(attribute.array, rowStart(attribute, instanceId)) : out.identity();
 }
 
 export function removeInstanceModelTransform(mesh: InstancedMesh, instanceId: number, matrix: Matrix4): Matrix4 {

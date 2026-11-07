@@ -30,8 +30,10 @@ import {
   sRGBTransferEOTF,
   sRGBTransferOETF,
   step,
-  time
+  time,
+  vertexStage
 } from 'three/tsl';
+import { instanceAttribute } from './gpu-draw/pool-instance';
 
 type NodeBuilderLike = {
   object?: { instanceMatrix?: { array?: unknown } };
@@ -96,10 +98,10 @@ export const dragPreviewPosition = (basePosition = positionLocal) => mix(
     .mul(dragDeltaMatrixNode)
     .mul(modelWorldMatrix)
     .mul(vec4(basePosition, 1.0)).xyz,
-  attribute(dragSelectedAttributeName, 'float')
+  instanceAttribute(dragSelectedAttributeName, 'float')
 );
 export const entityVisiblePosition = (basePosition = positionLocal) => dragPreviewPosition(basePosition).add(
-  float(1).sub(attribute(entityVisibleAttributeName, 'float')).mul(1e10)
+  float(1).sub(instanceAttribute(entityVisibleAttributeName, 'float')).mul(1e10)
 );
 export const dragPreviewPositionNode = dragPreviewPosition();
 export const entityVisiblePositionNode = entityVisiblePosition();
@@ -131,7 +133,7 @@ const lightDir1 = normalize(vec3(-0.2, 1.0, 0.7));
 const worldNormal = Fn(() => {
   // Three.js already applies the instance normal matrix to normalLocal.
   const normal = modelNormalMatrix.mul(normalLocal).toVar();
-  If(attribute(dragSelectedAttributeName, 'float').greaterThan(0), () => {
+  If(instanceAttribute(dragSelectedAttributeName, 'float').greaterThan(0), () => {
     normal.assign(dragNormalMatrixNode.mul(normal));
   });
   // Zero/invalid normals from a collapsed transform retain only ambient light.
@@ -167,20 +169,20 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   let uvTransformNode = null;
   if (useInstancedUvTransform) {
     const attributeName = uvTransformCount === 1 ? 'instancedUvTransform' : `instancedUvTransform${instancedUvTransformIndex}`;
-    uvTransformNode = attribute(attributeName, 'vec4');
+    uvTransformNode = instanceAttribute(attributeName, 'vec4');
   }
   const offsetUv = useInstancedUv
-    ? uvNode.add(attribute('instancedUvOffset', 'vec2'))
+    ? uvNode.add(instanceAttribute('instancedUvOffset', 'vec2'))
     : uvNode;
   const mirroredUv = useInstancedUv
     ? mix(
         offsetUv,
-        attribute('uvMirrorCenter', 'vec2').add(attribute('instancedUvOffset', 'vec2')).mul(2).sub(offsetUv),
-        attribute('instancedUvFlip', 'vec2')
+        attribute('uvMirrorCenter', 'vec2').add(instanceAttribute('instancedUvOffset', 'vec2')).mul(2).sub(offsetUv),
+        instanceAttribute('instancedUvFlip', 'vec2')
       )
     : uvNode;
-  const knifeScale = attribute('instancedKnifeUvScale', 'vec3');
-  const knifeOffset = attribute('instancedKnifeUvOffset', 'vec3');
+  const knifeScale = instanceAttribute('instancedKnifeUvScale', 'vec3');
+  const knifeOffset = instanceAttribute('instancedKnifeUvOffset', 'vec3');
   const faceNormal = normalGeometry.abs();
   const knifeUvScale = vec2(knifeScale.z, knifeScale.y).mul(faceNormal.x)
     .add(vec2(knifeScale.x, knifeScale.z).mul(faceNormal.y))
@@ -195,7 +197,7 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
     mix(float(1).sub(knifeOffset.x).sub(knifeScale.x), knifeOffset.x, step(0, normalGeometry.z)),
     knifeOffset.y
   ).mul(faceNormal.z));
-  const faceCenter = attribute('uvMirrorCenter', 'vec2').add(attribute('instancedUvOffset', 'vec2'));
+  const faceCenter = attribute('uvMirrorCenter', 'vec2').add(instanceAttribute('instancedUvOffset', 'vec2'));
   const faceMin = faceCenter.sub(4 / 2048);
   const knifeUv = faceMin.add(knifeUvOffset.mul(8 / 2048)).add(mirroredUv.sub(faceMin).mul(knifeUvScale));
   const headUvTransform = headUvTexture ? texture(headUvTexture, faceCenter).level(0) : null;
@@ -212,7 +214,7 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   const diffuseNode = texture(diffuseTex, varying(finalUv, 'pdeUv'));
 
   const tintVec = useVertexTint ? attribute('atlasPartTint', 'vec3')
-    : instancedTintIndex < 0 ? getTintNode(tintHex) : attribute(`instancedTint${instancedTintIndex}`, 'vec3');
+    : instancedTintIndex < 0 ? getTintNode(tintHex) : vertexStage(instanceAttribute(`instancedTint${instancedTintIndex}`, 'vec3'));
 
   const normalizedSkyLight = skyLightLevel.div(15.0);
   const lightMapColor = normalizedSkyLight.div(float(4.0).sub(normalizedSkyLight.mul(3.0)));
@@ -223,7 +225,7 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
     ? diffuseNode.xyz.mul(mix(diffuseNode.w, float(1), headLayer))
     : diffuseNode.xyz;
   const alpha = useHeadLayerVisibility
-    ? mix(float(1), diffuseNode.w, headLayer).mul(float(1).sub(headLayer.mul(float(1).sub(attribute('headLayerVisible', 'float')))))
+    ? mix(float(1), diffuseNode.w, headLayer).mul(float(1).sub(headLayer.mul(float(1).sub(vertexStage(instanceAttribute('headLayerVisible', 'float'))))))
     : diffuseNode.w;
   const unlitColor = vec4(mul(diffuseColor, tintVec), alpha);
   const litColor = vec4(

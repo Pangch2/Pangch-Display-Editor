@@ -1,20 +1,18 @@
 import { InterleavedBufferAttribute, MathUtils, Matrix4, type BufferAttribute, type InstancedMesh, type Mesh } from 'three/webgpu';
 import type { replaceDisplayObjects } from './mesh-builder';
 import type { ParsedPbdeProject } from '../scene/scene-parser';
-import type { GroupData, GroupChildObject } from '../../controls/grouping/group';
 import { loadedObjectGroup, currentLoadGen, setInstanceSkyBrightness } from './display-instancing';
 import { appendDisplayObjectPreview } from './project-renderer';
 import { getPlayerHeadTexture } from './player-head-atlas';
 import { parseDisplayProject } from '../scene/display-project-parser';
 import { deleteSelectedItems } from '../../controls/grouping/delete';
-import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-history';
 import { dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
 import { yieldPreview } from '../../animation/yield-preview';
 
 type DisplayRequest = Parameters<typeof replaceDisplayObjects>[0][number];
 type ObjectRef = { mesh: InstancedMesh; instanceId: number };
 type SelectionReplacement = { oldMesh: InstancedMesh; oldInstanceId: number; oldLastInstanceId: number; mesh: InstancedMesh; instanceId: number };
-const modelMaps = ['objectNames', 'objectBlockProps', 'objectDisplayTypes', 'objectTextDisplayOptions', 'objectTextures', 'objectLabels'] as const;
+const modelMaps = ['objectNames', 'objectBlockProps', 'objectDisplayTypes', 'objectTextDisplayOptions', 'objectTextures', 'objectLabels', 'objectDisplayKinds'] as const;
 type PooledMesh = { mesh: InstancedMesh; count: number; geometry: InstancedMesh['geometry']; material: InstancedMesh['material']; attributes: ReturnType<typeof modelAttributes> };
 type ModelPool = { valid: boolean; meshes: PooledMesh[]; models: Map<string, { ref: ObjectRef; values: unknown[]; item: boolean }> };
 type PreparedProject = { project: ParsedPbdeProject; pool?: ModelPool };
@@ -36,8 +34,8 @@ function poolUnchanged(pool: ModelPool): boolean {
 function disposeMesh(mesh: InstancedMesh): void {
     if (mesh.count) return;
     mesh.removeFromParent();
-    if (!isSceneHistoryResourceRetained(mesh)) mesh.dispose();
-    if (!isSceneHistoryResourceRetained(mesh.geometry)) mesh.geometry.dispose();
+    mesh.dispose();
+    mesh.geometry.dispose();
 }
 
 function dropPool(entry: PreparedProject): void {
@@ -121,15 +119,17 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
                 mesh.count = count; mesh.visible = false;
                 for (const name of [entityVisibleAttributeName, dragSelectedAttributeName]) {
                     const attribute = mesh.geometry.getAttribute(name);
-                    if (attribute) { attribute.array.fill(0); attribute.needsUpdate = true; }
+                    if (!attribute) continue;
+                    // Per slot: the flags can share rows with other per-object values.
+                    for (let instanceId = 0; instanceId < attribute.count; instanceId++) attribute.setX(instanceId, 0);
+                    attribute.needsUpdate = true;
                 }
                 if (mesh.parent !== loadedObjectGroup) loadedObjectGroup.add(mesh);
             }
             for (const { objectUuid, node } of replacements) {
                 const model = pool.models.get(objectUuid)!;
                 refs.set(node.uuid, model.ref);
-                data.instanceKeyToObjectUuid.set(`${model.ref.mesh.uuid}_${model.ref.instanceId}`, node.uuid);
-                modelMaps.forEach((name, index) => { if (model.values[index] !== undefined) data[name].set(node.uuid, model.values[index]); });
+                modelMaps.forEach((name, index) => { if (model.values[index] !== undefined) (data[name] ??= new Map()).set(node.uuid, model.values[index]); });
                 if (model.item) data.objectIsItemDisplay.add(node.uuid);
             }
         } else {
@@ -151,7 +151,6 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
             entry.pool = pool;
             for (const mesh of meshes) meshPools.set(mesh, pool);
         }
-        const childrenByGroup = new Map<GroupData, { children: GroupData['children']; objects: Map<string, GroupChildObject> }>();
         let activationDeadline = performance.now();
         for (let start = 0; start < requests.length; start += 128) {
             if (performance.now() >= activationDeadline) {
@@ -164,7 +163,6 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
                 const request = requests[index], { objectUuid, node } = replacements[index];
                 const old = refs.get(objectUuid), next = refs.get(node.uuid);
                 if (!old || !next || !isCurrent(request)) continue;
-                const oldKey = `${old.mesh.uuid}_${old.instanceId}`, nextKey = `${next.mesh.uuid}_${next.instanceId}`;
                 const oldVisible = old.mesh.geometry.getAttribute(entityVisibleAttributeName);
                 const visible = old.mesh.visible ? oldVisible?.getX(old.instanceId) ?? 1 : 0;
                 if (oldVisible) { oldVisible.setX(old.instanceId, 0); oldVisible.needsUpdate = true; }
@@ -173,23 +171,7 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
                 next.mesh.visible = true;
                 setInstanceSkyBrightness(next.mesh, next.instanceId, data.objectBrightness?.get(objectUuid));
                 if (next.mesh.instanceColor) next.mesh.instanceColor.needsUpdate = true;
-                const groupId = data.objectToGroup?.get(oldKey);
-                data.objectToGroup?.delete(oldKey);
-                if (groupId) {
-                    data.objectToGroup.set(nextKey, groupId);
-                    const group = data.groups?.get(groupId) as GroupData | undefined;
-                    if (group) {
-                        let entry = childrenByGroup.get(group);
-                        if (!entry || entry.children !== group.children) {
-                            entry = { children: group.children, objects: new Map(group.children.flatMap(child =>
-                                child.type === 'object' && child.id ? [[child.id, child] as const] : [])) };
-                            childrenByGroup.set(group, entry);
-                        }
-                        const child = entry.objects.get(objectUuid) ?? group.children.find(child => child.type === 'object' && child.id === objectUuid) as GroupChildObject;
-                        if (child) { child.mesh = next.mesh; child.instanceId = next.instanceId; }
-                    }
-                }
-                for (const name of ['objectNames', 'objectBlockProps', 'objectDisplayTypes', 'objectTextDisplayOptions', 'objectTextures']) {
+                for (const name of ['objectNames', 'objectBlockProps', 'objectDisplayTypes', 'objectTextDisplayOptions', 'objectTextures', 'objectDisplayKinds']) {
                     const values = data[name] as Map<string, unknown> | undefined;
                     if (values?.has(node.uuid)) { values.set(objectUuid, values.get(node.uuid)); values.delete(node.uuid); }
                     else values?.delete(objectUuid);
@@ -201,7 +183,6 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
                 data.objectNbt?.delete(node.uuid); data.objectBrightness?.delete(node.uuid);
                 // Retire the old physical slot under the temporary ID; logical IDs and ordering never change.
                 refs.set(objectUuid, next); refs.set(node.uuid, old);
-                data.instanceKeyToObjectUuid.set(nextKey, objectUuid); data.instanceKeyToObjectUuid.set(oldKey, node.uuid);
                 selection.push({ oldMesh: old.mesh, oldInstanceId: old.instanceId, oldLastInstanceId: old.instanceId, ...next });
                 ids.push(objectUuid);
             }

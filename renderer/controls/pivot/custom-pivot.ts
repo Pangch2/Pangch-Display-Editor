@@ -1,6 +1,4 @@
 import {
-    Mesh,
-    InstancedMesh,
     Box3,
     Vector3,
     Matrix4,
@@ -12,6 +10,9 @@ import { animationSession } from '../../animation/animation-state';
 import { getLinkedMirrorSelection, syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../transform/mirroring';
 // @ts-ignore
 import * as Overlay from '../selection/overlay';
+import { getInstanceIsCustomPivot, getInstanceMatrix, getInstancePivot, hasInstanceHatData, objectUuidAt, setInstanceIsCustomPivot, setInstancePivot,
+    type ObjectBatch } from '../../scene-store/object-access';
+import { toMeshMap, type SelectionState } from '../selection/select';
 
 /**
  * Interface representing an element in the selection (either a group or a specific object instance).
@@ -19,25 +20,21 @@ import * as Overlay from '../selection/overlay';
 export interface SelectionElement {
     type: 'group' | 'object';
     id?: string;
-    mesh?: Mesh | InstancedMesh;
+    mesh?: ObjectBatch;
     instanceId?: number;
 }
 
 /**
- * Interface representing the current selection state.
+ * The current selection state.
  */
-export interface CurrentSelection {
-    primary?: SelectionElement;
-    groups?: Set<string>;
-    objects?: Map<Mesh | InstancedMesh, Set<number>>;
-}
+export type CurrentSelection = Partial<SelectionState>;
 
 /**
  * Callbacks required for computing pivot states and selection centers.
  */
 export interface CustomPivotCallbacks {
     getSingleSelectedGroupId: () => string | null;
-    getSingleSelectedMeshEntry: () => { mesh: Mesh | InstancedMesh, instanceId: number } | null;
+    getSingleSelectedMeshEntry: () => { mesh: ObjectBatch, instanceId: number } | null;
     getSelectedItems: () => SelectionElement[];
     getSelectionBoundingBox: () => Box3 | null;
     calculateAvgOrigin: () => Vector3;
@@ -58,7 +55,7 @@ let _pivotEditUndoCapture: (() => void) | null = null;
 // Small shared temporaries
 const _TMP_MAT4_A = new Matrix4();
 
-export function getObjectOriginWorld(mesh: Mesh | InstancedMesh, instanceId: number, out = new Vector3()): Vector3 {
+export function getObjectOriginWorld(mesh: ObjectBatch, instanceId: number, out = new Vector3()): Vector3 {
     const displayType = getDisplayType(mesh, instanceId);
     if (displayType === 'block_display') {
         const localPivot = getInstanceLocalBoxMin(mesh, instanceId, out);
@@ -66,7 +63,7 @@ export function getObjectOriginWorld(mesh: Mesh | InstancedMesh, instanceId: num
             return localPivot.applyMatrix4(getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A));
         }
     }
-    if (displayType === 'item_display' && mesh.userData.hasHat) {
+    if (displayType === 'item_display' && hasInstanceHatData(mesh)) {
         getInstanceWorldMatrixForOrigin(mesh, instanceId, _TMP_MAT4_A);
         return out.set(0, isItemDisplayHatEnabled(mesh, instanceId) ? 0.03125 : 0, 0).applyMatrix4(_TMP_MAT4_A);
     }
@@ -111,49 +108,15 @@ export function capturePivotUndoForCurrentSelection(currentSelection: CurrentSel
     const undoFns: (() => void)[] = [];
 
     if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
+        for (const [mesh, ids] of toMeshMap(currentSelection.objects ?? [])) {
             if (!mesh || !ids || ids.size === 0) continue;
-
-            const userData = mesh.userData;
-            const hadIsCustomPivot = Object.prototype.hasOwnProperty.call(userData, 'isCustomPivot');
-            const prevIsCustomPivot = userData['isCustomPivot'];
+            const previous = [...ids].map(id => ({ id, pivot: getInstancePivot(mesh, id)?.clone(), isCustomPivot: getInstanceIsCustomPivot(mesh, id) }));
             undoFns.push(() => {
-                if (!mesh.userData) return;
-                if (hadIsCustomPivot) mesh.userData['isCustomPivot'] = prevIsCustomPivot;
-                else delete mesh.userData['isCustomPivot'];
-            });
-
-            const isInstancedLike = !!(
-                (mesh as InstancedMesh).isInstancedMesh
-            );
-            if (isInstancedLike) {
-                const hadMap = Object.prototype.hasOwnProperty.call(userData, 'customPivots') && userData.customPivots;
-                const prevById = new Map<number, Vector3 | undefined>();
-                for (const id of ids) {
-                    const prev = hadMap ? (userData.customPivots as Map<number, Vector3>).get(id) : undefined;
-                    prevById.set(id, prev ? prev.clone() : undefined);
+                for (const { id, pivot, isCustomPivot } of previous) {
+                    setInstancePivot(mesh, id, pivot?.clone());
+                    setInstanceIsCustomPivot(mesh, id, isCustomPivot);
                 }
-                undoFns.push(() => {
-                    if (!mesh.userData) return;
-                    if (!mesh.userData['customPivots']) mesh.userData['customPivots'] = new Map<number, Vector3>();
-                    const customPivots = mesh.userData['customPivots'] as Map<number, Vector3>;
-                    for (const [id, prev] of prevById) {
-                        if (prev === undefined) customPivots.delete(id);
-                        else customPivots.set(id, prev.clone());
-                    }
-                    if (!hadMap && customPivots.size === 0) {
-                        delete mesh.userData['customPivots'];
-                    }
-                });
-            } else {
-                const hadCustomPivot = Object.prototype.hasOwnProperty.call(userData, 'customPivot');
-                const prevCustomPivot = userData.customPivot ? (userData.customPivot as Vector3).clone() : undefined;
-                undoFns.push(() => {
-                    if (!mesh.userData) return;
-                    if (hadCustomPivot) mesh.userData['customPivot'] = prevCustomPivot ? prevCustomPivot.clone() : undefined;
-                    else delete mesh.userData['customPivot'];
-                });
-            }
+            });
         }
     }
 
@@ -227,17 +190,7 @@ export function recomputePivotStateForSelection(
     const instanceId = singleMeshEntry.instanceId;
     if (!mesh) return newIsCustomPivot;
 
-    let customPivot: Vector3 | null = null;
-    const userData = mesh.userData;
-    if ((
-        (mesh as InstancedMesh).isInstancedMesh
-    ) && userData['customPivots']) {
-        if ((userData['customPivots'] as Map<number, Vector3>).has(instanceId)) {
-            customPivot = (userData['customPivots'] as Map<number, Vector3>).get(instanceId) ?? null;
-        }
-    } else if (userData['customPivot']) {
-        customPivot = userData['customPivot'] as Vector3;
-    }
+    const customPivot = getInstancePivot(mesh, instanceId) ?? null;
 
     if (!customPivot) return newIsCustomPivot;
 
@@ -246,7 +199,7 @@ export function recomputePivotStateForSelection(
     const tempMat = new Matrix4();
     const baseWorld = getObjectOriginWorld(mesh, instanceId);
 
-    (mesh as InstancedMesh).getMatrixAt(instanceId, tempMat);
+    getInstanceMatrix(mesh, instanceId, tempMat);
     const worldMatrix = tempMat.premultiply(mesh.matrixWorld);
     const targetWorld = customPivot.clone().applyMatrix4(worldMatrix);
     pivotOffset.subVectors(targetWorld, baseWorld);
@@ -358,10 +311,7 @@ export interface CommitPivotEditParams {
     pivotWorldPos: Vector3;
     isMultiPivotEdit: boolean;
     singleGroupId: string | null;
-    currentSelection: {
-        primary?: { type: string; id?: string; mesh?: Mesh | InstancedMesh; instanceId?: number } | null;
-        objects?: Map<Mesh | InstancedMesh, Set<number>>;
-    };
+    currentSelection: CurrentSelection;
     loadedObjectGroup: Group;
 }
 
@@ -402,30 +352,21 @@ export function commitPivotEditFromDragEnd(params: CommitPivotEditParams): Commi
     } else if (!isMultiPivotEdit) {
         if (currentSelection.objects && currentSelection.objects.size > 0) {
             const instanceMatrix = new Matrix4();
-            for (const [mesh, ids] of currentSelection.objects) {
+            for (const [mesh, ids] of toMeshMap(currentSelection.objects ?? [])) {
                 if (!mesh || !ids || ids.size === 0) continue;
 
                 const firstId = Array.from(ids)[0];
-                if (mesh.isInstancedMesh) mesh.getMatrixAt(firstId, instanceMatrix);
-                else instanceMatrix.identity();
+                getInstanceMatrix(mesh, firstId, instanceMatrix);
                 const worldMatrix = instanceMatrix.premultiply(mesh.matrixWorld);
                 const invWorldMatrix = worldMatrix.clone().invert();
                 const localPivot = pivotWorldPos.clone().applyMatrix4(invWorldMatrix);
 
-                if (mesh.isInstancedMesh) {
-                    if (!mesh.userData.customPivots) mesh.userData.customPivots = new Map<number, Vector3>();
-                    for (const id of ids) {
-                        mesh.userData.customPivots.set(id, localPivot.clone());
-                        const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
-                            ?.get(GroupUtils.getGroupKey(mesh, id));
-                        if (uuid) syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
-                    }
-                } else {
-                    mesh.userData.customPivot = localPivot.clone();
-                    const uuid = loadedObjectGroup.userData.instanceKeyToObjectUuid?.get(GroupUtils.getGroupKey(mesh, firstId));
+                for (const id of ids) {
+                    setInstancePivot(mesh, id, localPivot.clone());
+                    const uuid = objectUuidAt(loadedObjectGroup, mesh, id);
                     if (uuid) syncLinkedMirrorPivot(loadedObjectGroup, uuid, localPivot);
                 }
-                mesh.userData.isCustomPivot = true;
+                for (const id of ids) setInstanceIsCustomPivot(mesh, id, true);
             }
         }
     } else {

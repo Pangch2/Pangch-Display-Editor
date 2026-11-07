@@ -1,27 +1,22 @@
-import {
-    Mesh,
-    InstancedMesh,
-    Group,
-    Vector3,
-    Matrix4,
-    Raycaster
-} from 'three/webgpu';
+import { Group, Vector3, Matrix4, Raycaster } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from './overlay';
 import { entityVisibleAttributeName } from '../../entity-material';
 import { getVisibleInstanceIds } from '../scene-visibility';
 import { intersectSceneInstances } from './instance-raycast';
 import { matchesPointerShortcut } from '../input/shortcuts';
+import { getInstanceValue, isObjectBatch, objectBatches, objectRef, objectSlots, objectUuidAt, type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
 
 // --- Types ---
 
-export type PrimarySelection = 
+export type PrimarySelection =
     | { type: 'group'; id: string }
-    | { type: 'object'; mesh: Mesh | InstancedMesh; instanceId: number };
+    | { type: 'object'; uuid: string };
 
 export interface SelectionState {
     groups: Set<string>;
-    objects: Map<Mesh | InstancedMesh, Set<number>>;
+    /** Selected object uuids. */
+    objects: Set<string>;
     primary: PrimarySelection | null;
 }
 
@@ -40,9 +35,10 @@ export interface SelectionCallbacks {
     onDeselect?: () => void;
 }
 
+/** A selected object's current slot. Resolved on read: slots move, uuids do not. */
 export interface SelectedItem {
     type: 'object';
-    mesh: Mesh | InstancedMesh;
+    mesh: ObjectBatch;
     instanceId: number;
 }
 
@@ -50,32 +46,33 @@ export interface SelectedItem {
 
 export const currentSelection: SelectionState = {
     groups: new Set<string>(),
-    objects: new Map<Mesh | InstancedMesh, Set<number>>(),
+    objects: new Set<string>(),
     primary: null
 };
 
 let loadedObjectGroupForSelect: Group | null = null;
 let _selectedItemsCacheKey: string | null = null;
 let _selectedItemsCache: SelectedItem[] | null = null;
+let _selectedItemsCacheUuids: (string | undefined)[] = [];
 
 // --- Internal Helpers ---
 
 function _getSelectionCacheKey(): string {
     if (!hasAnySelection()) return 'none';
+    return `g:${Array.from(currentSelection.groups).sort().join('|')};o:${Array.from(currentSelection.objects).sort().join('|')}`;
+}
 
-    const g = currentSelection.groups && currentSelection.groups.size > 0
-        ? Array.from(currentSelection.groups).sort().join('|')
-        : '';
-
-    const oParts: string[] = [];
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            oParts.push(`${mesh.uuid}:${Array.from(ids).sort().join(',')}`);
-        }
+/** Cached items stay valid only while every object is still in the slot it was resolved to. */
+function _cachedSlotsCurrent(): boolean {
+    const root = loadedObjectGroupForSelect;
+    if (!root || !_selectedItemsCache) return false;
+    for (let index = 0; index < _selectedItemsCache.length; index++) {
+        const uuid = _selectedItemsCacheUuids[index], item = _selectedItemsCache[index];
+        if (!uuid) continue;
+        const ref = objectRef(root, uuid);
+        if (ref?.mesh !== item.mesh || ref.instanceId !== item.instanceId) return false;
     }
-    oParts.sort();
-
-    return `g:${g};o:${oParts.join('|')}`;
+    return true;
 }
 
 // --- Public API ---
@@ -85,44 +82,85 @@ export function invalidateSelectionCaches(): void {
     _selectedItemsCache = null;
 }
 
+// shortcut: slot view of a uuid selection for callers still keyed by mesh; drop once they take uuids (M5-M7).
+export function toMeshMap(uuids: Iterable<string> = currentSelection.objects): Map<ObjectBatch, Set<number>> {
+    return loadedObjectGroupForSelect ? objectSlots(loadedObjectGroupForSelect, uuids) : new Map();
+}
+
+/** The uuids of the objects in the given slots. Unregistered slots are skipped. */
+export function toObjectUuids(meshToIds: Map<ObjectBatch, Set<number>> | null | undefined): Set<string> {
+    const uuids = new Set<string>();
+    const root = loadedObjectGroupForSelect;
+    if (!root || !meshToIds) return uuids;
+    for (const [mesh, ids] of meshToIds) for (const id of ids) {
+        const uuid = objectUuidAt(root, mesh, id);
+        if (uuid) uuids.add(uuid);
+    }
+    return uuids;
+}
+
+/** The uuid of the object in a slot. */
+export function slotObjectUuid(mesh: ObjectBatch, instanceId: number): string | undefined {
+    return loadedObjectGroupForSelect ? objectUuidAt(loadedObjectGroupForSelect, mesh, instanceId) : undefined;
+}
+
+/** An object's current slot. */
+export function selectedObjectRef(uuid: string): ObjectRef | undefined {
+    return loadedObjectGroupForSelect ? objectRef(loadedObjectGroupForSelect, uuid) : undefined;
+}
+
+/** The primary object's current slot; undefined when the primary is a group or missing. */
+export function getPrimaryObjectRef(selection: SelectionState = currentSelection): ObjectRef | undefined {
+    return selection.primary?.type === 'object' ? selectedObjectRef(selection.primary.uuid) : undefined;
+}
+
+export function isSlotSelected(mesh: ObjectBatch, instanceId: number, selection: SelectionState = currentSelection): boolean {
+    const uuid = slotObjectUuid(mesh, instanceId);
+    return !!uuid && selection.objects.has(uuid);
+}
+
+export function cloneSelection(selection: SelectionState): SelectionState {
+    return {
+        groups: new Set(selection.groups),
+        objects: new Set(selection.objects),
+        primary: selection.primary ? { ...selection.primary } : null
+    };
+}
+
 export function getSelectedItems(): SelectedItem[] {
     const key = _getSelectionCacheKey();
-    if (_selectedItemsCacheKey === key && _selectedItemsCache) return _selectedItemsCache;
+    if (_selectedItemsCacheKey === key && _cachedSlotsCurrent()) return _selectedItemsCache!;
 
     const items: SelectedItem[] = [];
+    const uuids: (string | undefined)[] = [];
     const seen = new Set<string>();
+    const root = loadedObjectGroupForSelect;
 
-    if (currentSelection.groups && currentSelection.groups.size > 0) {
-        if (loadedObjectGroupForSelect) {
-            for (const groupId of currentSelection.groups) {
-                const children = GroupUtils.getAllGroupChildren(loadedObjectGroupForSelect, groupId);
-                children.forEach((child) => {
-                    if (!child.mesh) return;
-                    const uniqueKey = `${child.mesh.uuid}_${child.instanceId}`;
-                    if (!seen.has(uniqueKey)) {
-                        seen.add(uniqueKey);
-                        items.push({ type: 'object', mesh: child.mesh, instanceId: child.instanceId });
-                    }
-                });
+    if (root) {
+        for (const groupId of currentSelection.groups) {
+            for (const child of GroupUtils.getAllGroupChildren(root, groupId)) {
+                if (!child.mesh) continue;
+                const uniqueKey = `${child.mesh.uuid}_${child.instanceId}`;
+                if (seen.has(uniqueKey)) continue;
+                seen.add(uniqueKey);
+                items.push({ type: 'object', mesh: child.mesh, instanceId: child.instanceId });
+                uuids.push(child.id ?? objectUuidAt(root, child.mesh, child.instanceId));
             }
         }
-    }
-
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh) continue;
-            for (const id of ids) {
-                const uniqueKey = `${mesh.uuid}_${id}`;
-                if (!seen.has(uniqueKey)) {
-                    seen.add(uniqueKey);
-                    items.push({ type: 'object', mesh, instanceId: id });
-                }
-            }
+        for (const uuid of currentSelection.objects) {
+            const ref = objectRef(root, uuid);
+            if (!ref) continue;
+            const uniqueKey = `${ref.mesh.uuid}_${ref.instanceId}`;
+            if (seen.has(uniqueKey)) continue;
+            seen.add(uniqueKey);
+            items.push({ type: 'object', mesh: ref.mesh, instanceId: ref.instanceId });
+            uuids.push(uuid);
         }
     }
 
     _selectedItemsCacheKey = key;
     _selectedItemsCache = items;
+    _selectedItemsCacheUuids = uuids;
     return items;
 }
 
@@ -149,17 +187,15 @@ export function calculateAvgOrigin(): Vector3 {
 }
 
 export function pickInstance(
-    raycaster: Raycaster, 
+    raycaster: Raycaster,
     rootGroup: Group
-): { mesh: Mesh | InstancedMesh; instanceId: number } | null {
+): ObjectRef | null {
     const hit = intersectSceneInstances(raycaster, rootGroup, isInstanceRendered);
-    return hit?.object instanceof InstancedMesh && hit.instanceId !== undefined
-        ? { mesh: hit.object, instanceId: hit.instanceId }
-        : null;
+    return isObjectBatch(hit?.object) && hit.instanceId !== undefined ? { mesh: hit.object, instanceId: hit.instanceId } : null;
 }
 
-export function isInstanceRendered(mesh: Mesh | InstancedMesh, instanceId: number): boolean {
-    return mesh.geometry.getAttribute(entityVisibleAttributeName)?.getX(instanceId) !== 0;
+export function isInstanceRendered(mesh: ObjectBatch, instanceId: number): boolean {
+    return getInstanceValue(mesh, instanceId, entityVisibleAttributeName) !== 0;
 }
 
 export function getSingleSelectedGroupId(): string | null {
@@ -168,15 +204,10 @@ export function getSingleSelectedGroupId(): string | null {
     return Array.from(currentSelection.groups)[0] || null;
 }
 
-export function getSingleSelectedMeshEntry(): { mesh: Mesh | InstancedMesh; instanceId: number } | null {
-    if (currentSelection.groups && currentSelection.groups.size > 0) return null;
-    if (!currentSelection.objects || currentSelection.objects.size !== 1) return null;
-    
-    const entry = currentSelection.objects.entries().next().value;
-    if (!entry) return null;
-    
-    const [mesh, ids] = entry as [Mesh | InstancedMesh, Set<number>];
-    return (mesh && ids && ids.size === 1) ? { mesh, instanceId: Array.from(ids)[0] as number } : null;
+export function getSingleSelectedMeshEntry(): ObjectRef | null {
+    if (currentSelection.groups.size > 0 || currentSelection.objects.size !== 1) return null;
+    const [uuid] = currentSelection.objects;
+    return selectedObjectRef(uuid) ?? null;
 }
 
 export function hasAnySelection(): boolean {
@@ -187,7 +218,7 @@ export function clearSelectionState(callbacks?: SelectionCallbacks): void {
     if (callbacks && callbacks.pushToVertexQueue) {
         callbacks.pushToVertexQueue();
     }
-    
+
     currentSelection.groups.clear();
     currentSelection.objects.clear();
     currentSelection.primary = null;
@@ -195,14 +226,14 @@ export function clearSelectionState(callbacks?: SelectionCallbacks): void {
 }
 
 export function beginSelectionReplace(
-    callbacks: SelectionCallbacks, 
+    callbacks: SelectionCallbacks,
     { anchorMode = 'default', detachTransform = false, preserveAnchors = false } = {}
 ): void {
     if (callbacks.revertEphemeralPivotUndoIfAny) callbacks.revertEphemeralPivotUndoIfAny();
     if (detachTransform && callbacks.detachTransformControls) callbacks.detachTransformControls();
-    
+
     clearSelectionState(callbacks);
-    
+
     if (!preserveAnchors && callbacks.clearGizmoAnchor) callbacks.clearGizmoAnchor();
     if (callbacks.setSelectionAnchorMode) callbacks.setSelectionAnchorMode(anchorMode);
     if (callbacks.resetPivotState) callbacks.resetPivotState();
@@ -220,39 +251,28 @@ export function resetSelectionAndDeselect(callbacks: SelectionCallbacks): void {
 }
 
 export function setPrimaryToFirstAvailable(): void {
-    if (currentSelection.groups.size > 0) {
-        const id = Array.from(currentSelection.groups)[0];
-        currentSelection.primary = id ? { type: 'group', id } : null;
+    const [groupId] = currentSelection.groups;
+    if (groupId) {
+        currentSelection.primary = { type: 'group', id: groupId };
         return;
     }
-    if (currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (ids.size > 0) {
-                 const firstId = Array.from(ids)[0] as number;
-                 currentSelection.primary = { type: 'object', mesh, instanceId: firstId };
-                 return;
-            }
-        }
-    }
-    currentSelection.primary = null;
+    const [uuid] = currentSelection.objects;
+    currentSelection.primary = uuid ? { type: 'object', uuid } : null;
 }
 
-export function replaceSelectionWithObjectsMap(
-    meshToIds: Map<Mesh | InstancedMesh, Set<number>>, 
-    callbacks: SelectionCallbacks, 
+export function replaceSelectionWithObjects(
+    objectUuids: Iterable<string>,
+    callbacks: SelectionCallbacks,
     { anchorMode = 'default' } = {}
 ): void {
-    if (!meshToIds || meshToIds.size === 0) {
+    const uuids = new Set(objectUuids);
+    if (uuids.size === 0) {
         resetSelectionAndDeselect(callbacks);
         return;
     }
 
     beginSelectionReplace(callbacks, { anchorMode, detachTransform: true });
-
-    for (const [mesh, ids] of meshToIds) {
-        if (!mesh || !ids || ids.size === 0) continue;
-        currentSelection.objects.set(mesh, new Set(ids));
-    }
+    for (const uuid of uuids) currentSelection.objects.add(uuid);
 
     if (callbacks.recomputePivotState) callbacks.recomputePivotState();
     if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
@@ -260,9 +280,9 @@ export function replaceSelectionWithObjectsMap(
 }
 
 export function replaceSelectionWithGroupsAndObjects(
-    groupIds: Set<string>, 
-    meshToIds: Map<Mesh | InstancedMesh, Set<number>>, 
-    callbacks: SelectionCallbacks, 
+    groupIds: Iterable<string> | null | undefined,
+    objectUuids: Iterable<string> | null | undefined,
+    callbacks: SelectionCallbacks,
     {
         anchorMode = 'default',
         primaryIsRangeStart = false,
@@ -277,55 +297,27 @@ export function replaceSelectionWithGroupsAndObjects(
         detachTransform?: boolean;
     } = {}
 ): void {
-    const hasGroups = groupIds && groupIds.size > 0;
-    const hasObjects = meshToIds && meshToIds.size > 0;
-    if (!hasGroups && !hasObjects) {
+    const groups = [...groupIds ?? []].filter(Boolean);
+    const objects = [...objectUuids ?? []].filter(Boolean);
+    if (groups.length === 0 && objects.length === 0) {
         resetSelectionAndDeselect(callbacks);
         return;
     }
 
     beginSelectionReplace(callbacks, { anchorMode, detachTransform, preserveAnchors });
-
-    let firstGroupId: string | null = null;
-    let firstObjectMesh: Mesh | InstancedMesh | null = null;
-    let firstObjectInstanceId: number | null = null;
-
-    if (hasGroups) {
-        for (const gid of groupIds) {
-            if (gid) {
-                currentSelection.groups.add(gid);
-                if (!firstGroupId) firstGroupId = gid;
-            }
-        }
-    }
-    if (hasObjects) {
-        for (const [mesh, ids] of meshToIds) {
-            if (!mesh || !ids || ids.size === 0) continue;
-            currentSelection.objects.set(mesh, new Set(ids));
-            if (!firstObjectMesh) {
-                firstObjectMesh = mesh;
-                firstObjectInstanceId = Array.from(ids)[0] as number;
-            }
-        }
-    }
+    for (const gid of groups) currentSelection.groups.add(gid);
+    for (const uuid of objects) currentSelection.objects.add(uuid);
 
     const isExplicitPrimaryValid = !!explicitPrimary && (
         (explicitPrimary.type === 'group' && currentSelection.groups.has(explicitPrimary.id)) ||
-        (explicitPrimary.type === 'object' && !!currentSelection.objects.get(explicitPrimary.mesh)?.has(explicitPrimary.instanceId))
+        (explicitPrimary.type === 'object' && currentSelection.objects.has(explicitPrimary.uuid))
     );
 
     if (isExplicitPrimaryValid && explicitPrimary) {
-        if (explicitPrimary.type === 'group') {
-            currentSelection.primary = { type: 'group', id: explicitPrimary.id };
-        } else {
-            currentSelection.primary = { type: 'object', mesh: explicitPrimary.mesh, instanceId: explicitPrimary.instanceId };
-        }
+        currentSelection.primary = { ...explicitPrimary };
     } else if (primaryIsRangeStart) {
-        if (firstGroupId) {
-            currentSelection.primary = { type: 'group', id: firstGroupId };
-        } else if (firstObjectMesh && firstObjectInstanceId !== null) {
-            currentSelection.primary = { type: 'object', mesh: firstObjectMesh, instanceId: firstObjectInstanceId };
-        }
+        if (groups[0]) currentSelection.primary = { type: 'group', id: groups[0] };
+        else if (objects[0]) currentSelection.primary = { type: 'object', uuid: objects[0] };
     }
 
     if (callbacks.recomputePivotState) callbacks.recomputePivotState();
@@ -334,69 +326,52 @@ export function replaceSelectionWithGroupsAndObjects(
 }
 
 export function getSelectAllSceneSelection(loadedObjectGroup: Group): {
-    groups: Set<string>; objects: Map<Mesh | InstancedMesh, Set<number>>; anchorMode: 'default' | 'center';
+    groups: Set<string>; objects: Set<string>; anchorMode: 'default' | 'center';
 } {
-    const groups = new Set<string>(), objects = new Map<Mesh | InstancedMesh, Set<number>>();
+    const groups = new Set<string>(), objects = new Set<string>();
     if (loadedObjectGroup) {
         const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
-        loadedObjectGroup.traverse(obj => {
-            const mesh = obj as InstancedMesh;
-            if (!mesh.isInstancedMesh || mesh.visible === false) return;
+        for (const mesh of objectBatches(loadedObjectGroup)) {
+            if (mesh.visible === false) continue;
             const count = Overlay.getInstanceCount(mesh);
             for (let id = 0; id < count; id++) {
                 if (!Overlay.isInstanceValid(mesh, id) || !isInstanceRendered(mesh, id)) continue;
-                const groupId = objectToGroup.get(GroupUtils.getGroupKey(mesh, id));
+                const uuid = objectUuidAt(loadedObjectGroup, mesh, id);
+                if (!uuid) continue;
+                const groupId = objectToGroup.get(uuid);
                 if (groupId) {
                     const chain = GroupUtils.getGroupChain(loadedObjectGroup, groupId);
                     groups.add(chain[0] ?? groupId);
-                } else {
-                    if (!objects.has(mesh)) objects.set(mesh, new Set());
-                    objects.get(mesh)!.add(id);
-                }
+                } else objects.add(uuid);
             }
-        });
+        }
     }
-    let count = groups.size;
-    for (const ids of objects.values()) count += ids.size;
-    return { groups, objects, anchorMode: count > 1 ? 'center' : 'default' };
+    return { groups, objects, anchorMode: groups.size + objects.size > 1 ? 'center' : 'default' };
 }
 
-export function selectAllObjectsVisibleInScene(loadedObjectGroup: Group): Map<Mesh | InstancedMesh, Set<number>> {
-    const meshToIds = new Map<Mesh | InstancedMesh, Set<number>>();
-    if (!loadedObjectGroup) return meshToIds;
+export function selectAllObjectsVisibleInScene(loadedObjectGroup: Group): Set<string> {
+    const uuids = new Set<string>();
+    if (!loadedObjectGroup) return uuids;
 
-    loadedObjectGroup.traverse((obj) => {
-        if (!obj || !('isInstancedMesh' in obj)) return;
-        if (obj.visible === false) return;
-
-        const mesh = obj as InstancedMesh;
-        const instanceCount = Overlay.getInstanceCount(mesh);
-        if (instanceCount <= 0) return;
-
-        const ids = new Set(getVisibleInstanceIds(mesh));
-        if (ids.size > 0) {
-            meshToIds.set(mesh, ids);
+    for (const mesh of objectBatches(loadedObjectGroup)) {
+        if (mesh.visible === false || Overlay.getInstanceCount(mesh) <= 0) continue;
+        for (const id of getVisibleInstanceIds(mesh)) {
+            const uuid = objectUuidAt(loadedObjectGroup, mesh, id);
+            if (uuid) uuids.add(uuid);
         }
-    });
+    }
 
-    return meshToIds;
+    return uuids;
 }
 
 export function isMultiSelection(): boolean {
-    const groupCount = currentSelection.groups.size;
-    
-    let objectIdCount = 0;
-    for (const ids of currentSelection.objects.values()) {
-        objectIdCount += ids.size;
-    }
-    
-    return (groupCount + objectIdCount) > 1;
+    return currentSelection.groups.size + currentSelection.objects.size > 1;
 }
 
 export function commitSelectionChange(callbacks: SelectionCallbacks): void {
     invalidateSelectionCaches();
     if (hasAnySelection()) {
-        if (!currentSelection.primary) { 
+        if (!currentSelection.primary) {
             setPrimaryToFirstAvailable();
         }
     } else {
@@ -404,10 +379,15 @@ export function commitSelectionChange(callbacks: SelectionCallbacks): void {
         if (callbacks.clearGizmoAnchor) callbacks.clearGizmoAnchor();
         if (callbacks.resetPivotState) callbacks.resetPivotState();
     }
-    
+
     if (callbacks.recomputePivotState) callbacks.recomputePivotState();
     if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
     if (callbacks.updateSelectionOverlay) callbacks.updateSelectionOverlay();
+}
+
+function clearPrimaryIf(type: 'group' | 'object', id: string): void {
+    const primary = currentSelection.primary;
+    if (primary && primary.type === type && (primary.type === 'group' ? primary.id : primary.uuid) === id) currentSelection.primary = null;
 }
 
 export function handleSelectionClick(
@@ -417,9 +397,10 @@ export function handleSelectionClick(
     callbacks: SelectionCallbacks
 ): void {
     const picked = pickInstance(raycaster, loadedObjectGroup);
+    const pickedUuid = picked ? objectUuidAt(loadedObjectGroup, picked.mesh, picked.instanceId) : undefined;
     const additive = matchesPointerShortcut(event, 'multiSelect');
-    
-    if (!picked) {
+
+    if (!picked || !pickedUuid) {
         if (!additive) {
             if (callbacks.onDeselect) {
                 callbacks.onDeselect();
@@ -430,19 +411,11 @@ export function handleSelectionClick(
         return;
     }
 
-    const object = picked.mesh;
-    const instanceId = picked.instanceId;
-    const idsToSelect = [instanceId];
-
-    const key = GroupUtils.getGroupKey(object, idsToSelect[0]);
-    const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
-    const immediateGroupId = objectToGroup ? objectToGroup.get(key) : null;
+    const immediateGroupId = GroupUtils.getObjectToGroup(loadedObjectGroup).get(pickedUuid);
 
     const bypassGroupSelection = matchesPointerShortcut(event, 'boxSelect');
 
-    let target: { type: 'object'; mesh: Mesh | InstancedMesh; ids: number[] } | { type: 'group'; id: string } = { 
-        type: 'object', mesh: object, ids: idsToSelect 
-    };
+    let target: { type: 'object'; uuid: string } | { type: 'group'; id: string } = { type: 'object', uuid: pickedUuid };
     let groupToDeselect: string | null = null;
 
     if (!bypassGroupSelection && immediateGroupId) {
@@ -477,77 +450,35 @@ export function handleSelectionClick(
     }
 
     if (additive) {
-        if (groupToDeselect) {
-            if (currentSelection.groups.has(groupToDeselect)) {
-                currentSelection.groups.delete(groupToDeselect);
-                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
-                    currentSelection.primary = null;
-                }
-            }
-        }
+        if (groupToDeselect && currentSelection.groups.delete(groupToDeselect)) clearPrimaryIf('group', groupToDeselect);
 
         if (target.type === 'group') {
             const gid = target.id;
-            if (currentSelection.groups.has(gid)) {
-                currentSelection.groups.delete(gid);
-                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === gid) {
-                    currentSelection.primary = null;
-                }
+            if (currentSelection.groups.delete(gid)) {
+                clearPrimaryIf('group', gid);
             } else {
                 currentSelection.groups.add(gid);
-                if (!currentSelection.primary) {
-                    currentSelection.primary = { type: 'group', id: gid };
-                }
+                if (!currentSelection.primary) currentSelection.primary = { type: 'group', id: gid };
             }
+        } else if (currentSelection.objects.delete(target.uuid)) {
+            clearPrimaryIf('object', target.uuid);
         } else {
-            let existingSet = currentSelection.objects.get(target.mesh);
-            if (!existingSet) {
-                existingSet = new Set<number>();
-                currentSelection.objects.set(target.mesh, existingSet);
-            }
-
-            const firstId = target.ids[0];
-            const isSelected = existingSet.has(firstId);
-
-            if (isSelected) {
-                for (const id of target.ids) existingSet.delete(id);
-                if (existingSet.size === 0) currentSelection.objects.delete(target.mesh);
-                
-                if (currentSelection.primary && 
-                    currentSelection.primary.type === 'object' && 
-                    currentSelection.primary.mesh === target.mesh && 
-                    target.ids.includes(currentSelection.primary.instanceId)) {
-                    currentSelection.primary = null;
-                }
-            } else {
-                for (const id of target.ids) existingSet.add(id);
-                if (!currentSelection.primary) {
-                    currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: firstId };
-                }
-            }
+            currentSelection.objects.add(target.uuid);
+            if (!currentSelection.primary) currentSelection.primary = { type: 'object', uuid: target.uuid };
         }
     } else {
         let performedSurgicalUpdate = false;
 
-        const isTargetAlreadySelected = target.type === 'group' 
-            ? currentSelection.groups.has(target.id) 
-            : !!currentSelection.objects.get(target.mesh)?.has(target.ids[0]);
+        const isTargetAlreadySelected = target.type === 'group'
+            ? currentSelection.groups.has(target.id)
+            : currentSelection.objects.has(target.uuid);
 
         if (callbacks.isVertexMode && target.type !== 'group' && (groupToDeselect || isTargetAlreadySelected)) {
-            if (groupToDeselect && currentSelection.groups.has(groupToDeselect)) {
-                currentSelection.groups.delete(groupToDeselect);
-                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
-                    currentSelection.primary = null;
-                }
+            if (groupToDeselect && currentSelection.groups.delete(groupToDeselect)) {
+                clearPrimaryIf('group', groupToDeselect);
             } else if (isTargetAlreadySelected) {
-                const set = currentSelection.objects.get(target.mesh);
-                if (set) {
-                    for (const id of target.ids) set.delete(id);
-                    if (set.size === 0) currentSelection.objects.delete(target.mesh);
-                    if (currentSelection.primary && currentSelection.primary.type === 'object' && currentSelection.primary.mesh === target.mesh && target.ids.includes(currentSelection.primary.instanceId)) {
-                        currentSelection.primary = null;
-                    }
-                }
+                currentSelection.objects.delete(target.uuid);
+                clearPrimaryIf('object', target.uuid);
             }
 
             invalidateSelectionCaches();
@@ -555,33 +486,20 @@ export function handleSelectionClick(
             if (callbacks.updateHelperPosition) callbacks.updateHelperPosition();
 
             beginSelectionReplace(callbacks, { detachTransform: true });
-            
-            const set = new Set(target.ids);
-            currentSelection.objects.set(target.mesh, set);
-            currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+
+            currentSelection.objects.add(target.uuid);
+            currentSelection.primary = { type: 'object', uuid: target.uuid };
 
             performedSurgicalUpdate = true;
         } else if (groupToDeselect) {
-            if (currentSelection.groups.has(groupToDeselect)) {
-                currentSelection.groups.delete(groupToDeselect);
-                if (currentSelection.primary && currentSelection.primary.type === 'group' && currentSelection.primary.id === groupToDeselect) {
-                    currentSelection.primary = null;
-                }
-            }
-            
+            if (currentSelection.groups.delete(groupToDeselect)) clearPrimaryIf('group', groupToDeselect);
+
             if (target.type === 'group') {
                 currentSelection.groups.add(target.id);
                 if (!currentSelection.primary) currentSelection.primary = { type: 'group', id: target.id };
             } else {
-                let set = currentSelection.objects.get(target.mesh);
-                if (!set) {
-                    set = new Set<number>();
-                    currentSelection.objects.set(target.mesh, set);
-                }
-                for (const id of target.ids) set.add(id);
-                if (!currentSelection.primary) {
-                    currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
-                }
+                currentSelection.objects.add(target.uuid);
+                if (!currentSelection.primary) currentSelection.primary = { type: 'object', uuid: target.uuid };
             }
 
             performedSurgicalUpdate = true;
@@ -590,14 +508,13 @@ export function handleSelectionClick(
 
         if (!performedSurgicalUpdate) {
             beginSelectionReplace(callbacks, { detachTransform: true });
-            
+
             if (target.type === 'group') {
                 currentSelection.groups.add(target.id);
                 currentSelection.primary = { type: 'group', id: target.id };
             } else {
-                const set = new Set(target.ids);
-                currentSelection.objects.set(target.mesh, set);
-                currentSelection.primary = { type: 'object', mesh: target.mesh, instanceId: target.ids[0] };
+                currentSelection.objects.add(target.uuid);
+                currentSelection.primary = { type: 'object', uuid: target.uuid };
             }
         }
     }

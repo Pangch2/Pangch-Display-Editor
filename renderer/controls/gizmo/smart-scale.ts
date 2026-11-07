@@ -3,7 +3,7 @@ import type { Mesh } from 'three/webgpu';
 import { applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds, type InstanceIdRange } from '../selection/instance-ranges';
 import * as Overlay from '../selection/overlay';
-import type { SelectedItem, SelectionState } from '../selection/select';
+import { cloneSelection, type SelectedItem, type SelectionState } from '../selection/select';
 import { getScaleFrame } from './scale-frame';
 
 type Axis = 'x' | 'y' | 'z';
@@ -131,19 +131,6 @@ function getRebasedScaleState(
     return { sourceBox, baseScaleRatio };
 }
 
-function cloneSelectionState(selection: SelectionState): SelectionState {
-    const primary = selection.primary;
-    return {
-        groups: new Set(selection.groups),
-        objects: new Map(Array.from(selection.objects, ([mesh, ids]) => [mesh, new Set(ids)])),
-        primary: primary?.type === 'group'
-            ? { type: 'group', id: primary.id }
-            : primary
-                ? { type: 'object', mesh: primary.mesh, instanceId: primary.instanceId }
-                : null
-    };
-}
-
 function trackCurrentSegment(
     currentDrag: ScaleExtrudeDrag,
     clones: SelectedItem[],
@@ -153,7 +140,7 @@ function trackCurrentSegment(
     currentDrag.selectionKey = getSelectionKey(clones);
     currentDrag.cloneRanges = getInstanceRanges(clones);
     currentDrag.segments.push({
-        selection: cloneSelectionState(selection),
+        selection: cloneSelection(selection),
         selectionKey: currentDrag.selectionKey,
         cloneRanges: currentDrag.cloneRanges,
         appliedDelta: currentDrag.appliedDelta.clone(),
@@ -459,7 +446,7 @@ export function updateSmartScaleDuringDrag(
             return false;
         }
         callbacks.cancelPreview();
-        drag.sourceSelection ??= cloneSelectionState(currentSelection);
+        drag.sourceSelection ??= cloneSelection(currentSelection);
         const clones = callbacks.duplicateSelected();
         trackCurrentSegment(drag, clones, currentSelection, extrudingAxes);
         drag.changed = true;

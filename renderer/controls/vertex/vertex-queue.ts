@@ -1,5 +1,4 @@
 import {
-    InstancedMesh,
     Mesh,
     Matrix4,
     Vector3,
@@ -7,10 +6,10 @@ import {
     Quaternion
 } from 'three/webgpu';
 import * as Overlay from '../selection/overlay';
-import type { SelectionState } from '../selection/select';
+import { slotObjectUuid, toMeshMap, type SelectionState } from '../selection/select';
+import type { ObjectBatch } from '../../scene-store/object-access';
 import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 
-type PdeMesh = InstancedMesh | Mesh;
 
 // ─── Shared temporaries ──────────────────────────────────────────────────────
 
@@ -109,14 +108,14 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
         selectedVertexKeys.delete(centerKey);
     }
 
-    const itemsToAdd: Array<{ type: 'group' | 'object'; id?: string; mesh?: PdeMesh; instanceId?: number }> = [];
+    const itemsToAdd: Array<{ type: 'group' | 'object'; id?: string; mesh?: ObjectBatch; instanceId?: number }> = [];
     if (currentSelection.groups.size > 0) {
         for (const gid of currentSelection.groups) {
             itemsToAdd.push({ type: 'group', id: gid });
         }
     }
     if (currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
+        for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
             for (const id of ids) {
                 itemsToAdd.push({ type: 'object', mesh, instanceId: id });
             }
@@ -161,7 +160,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
         if (currentPrimary) {
             const isPrimary =
                 (item.type === 'group' && currentPrimary.type === 'group' && currentPrimary.id === item.id) ||
-                (item.type === 'object' && currentPrimary.type === 'object' && currentPrimary.mesh === item.mesh && currentPrimary.instanceId === item.instanceId);
+                (item.type === 'object' && currentPrimary.type === 'object' && currentPrimary.uuid === Overlay.slotKeyUuid(item.mesh!, item.instanceId!));
             if (isPrimary) {
                 bundleItems[bundleItems.length - 1].isPrimary = true;
             }
@@ -170,7 +169,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
         if (isCenterSelected && localPos && !isBundleCenterAlreadySelected) {
             const idStr = item.type === 'group'
                 ? `G_${item.id}`
-                : `O_${item.mesh!.uuid}_${item.instanceId}`;
+                : `O_${Overlay.slotKeyUuid(item.mesh!, item.instanceId!)}`;
             const qKey = `QUEUE_${idStr}_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
             selectedVertexKeys.add(qKey);
             isBundleCenterAlreadySelected = true; // Only add the first one so selectedVertexKeys.size remains 1
@@ -206,7 +205,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
         const removeKeysForSubItem = (sub: QueueEntry) => {
             const idStr = sub.type === 'group'
                 ? `G_${sub.id}`
-                : `O_${sub.mesh!.uuid}_${sub.instanceId}`;
+                : `O_${Overlay.slotKeyUuid(sub.mesh!, sub.instanceId!)}`;
             const prefix = `QUEUE_${idStr}_`;
 
             for (const key of selectedVertexKeys) {
@@ -272,7 +271,7 @@ export interface PromoteVertexQueueParams {
     vertexQueue: QueueItem[];
     replaceSelectionWithGroupsAndObjects(
         groupIds: Set<string>,
-        meshToIds: Map<PdeMesh, Set<number>>,
+        objectUuids: Set<string>,
         options?: {
             anchorMode?: string;
             preserveAnchors?: boolean;
@@ -297,7 +296,10 @@ export function promoteVertexQueueBundleOnExit(params: PromoteVertexQueueParams)
     if (queuedItems.length === 0) return false;
 
     const groupIds = new Set<string>();
-    const meshToIds = new Map<PdeMesh, Set<number>>();
+    const objectUuids = new Set<string>();
+    const subUuid = (sub: QueueEntry): string | undefined =>
+        sub.type === 'object' && sub.mesh && Number.isInteger(sub.instanceId) && Overlay.isInstanceValid(sub.mesh, sub.instanceId!)
+            ? slotObjectUuid(sub.mesh, sub.instanceId!) : undefined;
 
     for (const sub of queuedItems) {
         if (!sub) continue;
@@ -305,36 +307,24 @@ export function promoteVertexQueueBundleOnExit(params: PromoteVertexQueueParams)
             groupIds.add(sub.id);
             continue;
         }
-        if (sub.type === 'object' && sub.mesh && Number.isInteger(sub.instanceId) && Overlay.isInstanceValid(sub.mesh, sub.instanceId!)) {
-            let ids = meshToIds.get(sub.mesh);
-            if (!ids) {
-                ids = new Set();
-                meshToIds.set(sub.mesh, ids);
-            }
-            ids.add(sub.instanceId!);
-        }
+        const uuid = subUuid(sub);
+        if (uuid) objectUuids.add(uuid);
     }
 
-    let total = groupIds.size;
-    for (const ids of meshToIds.values()) total += ids.size;
-    if (total === 0) return false;
+    if (groupIds.size + objectUuids.size === 0) return false;
 
     let explicitPrimary: SelectionState['primary'] | null = null;
     const primarySub = queuedItems.find((sub) => sub.isPrimary === true);
     if (primarySub) {
+        const primaryUuid = subUuid(primarySub);
         if (primarySub.type === 'group' && primarySub.id && groupIds.has(primarySub.id)) {
             explicitPrimary = { type: 'group', id: primarySub.id };
-        } else if (
-            primarySub.type === 'object' &&
-            primarySub.mesh &&
-            Number.isInteger(primarySub.instanceId) &&
-            !!meshToIds.get(primarySub.mesh)?.has(primarySub.instanceId!)
-        ) {
-            explicitPrimary = { type: 'object', mesh: primarySub.mesh, instanceId: primarySub.instanceId! };
+        } else if (primaryUuid) {
+            explicitPrimary = { type: 'object', uuid: primaryUuid };
         }
     }
 
-    replaceSelectionWithGroupsAndObjects(groupIds, meshToIds, {
+    replaceSelectionWithGroupsAndObjects(groupIds, objectUuids, {
         anchorMode: 'default',
         preserveAnchors: true,
         primaryIsRangeStart: !explicitPrimary,

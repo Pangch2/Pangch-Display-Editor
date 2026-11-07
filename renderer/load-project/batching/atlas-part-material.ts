@@ -1,9 +1,9 @@
 import { InterleavedBuffer, InterleavedBufferAttribute, type BufferGeometry, type InstancedMesh, type Material } from 'three/webgpu';
+import { cloneBatchGeometry } from '../../scene-store/object-access';
 import { getTintComponents } from '../../entity-material';
 import { getBlockMaterial, getMaterialKey, sharedPlaceholderMaterial } from '../display/block-render-resources';
 import type { GeometryMeta } from '../pbde/pbde-types';
 import type { planUvTransforms } from './geometry-batching';
-import { isSceneHistoryResourceRetained } from '../../controls/undo-redo/scene-history';
 
 type UvPlan = ReturnType<typeof planUvTransforms>;
 const originalPartMaterials = new WeakMap<object, { materials: Material[]; groups: BufferGeometry['groups'] }>();
@@ -68,7 +68,7 @@ export function restoreAtlasPartMaterials(mesh: InstancedMesh): void {
     const original = originalPartMaterials.get(mesh.geometry.userData.atlasPartFallback);
     if (!original) return;
     const oldGeometry = mesh.geometry;
-    const geometry = oldGeometry.clone();
+    const geometry = cloneBatchGeometry(oldGeometry);
     geometry.userData = { ...geometry.userData };
     delete geometry.userData.atlasPartFallback;
     geometry.deleteAttribute('atlasPartTint');
@@ -76,5 +76,5 @@ export function restoreAtlasPartMaterials(mesh: InstancedMesh): void {
     geometry.groups = original.groups.map(group => ({ ...group }));
     mesh.geometry = geometry;
     mesh.material = [...original.materials];
-    if (!isSceneHistoryResourceRetained(oldGeometry)) oldGeometry.dispose();
+    oldGeometry.dispose();
 }

@@ -1,7 +1,5 @@
 import {
     Group,
-    InstancedMesh,
-    Mesh,
     Object3D,
     Vector3
 } from 'three/webgpu';
@@ -13,7 +11,7 @@ import * as Select from '../selection/select';
 import type { SelectionState, SelectedItem } from '../selection/select';
 import type { GroupData } from '../grouping/group';
 
-type PdeMesh = InstancedMesh | Mesh;
+import type { ObjectBatch } from '../../scene-store/object-access';
 
 export interface GizmoCommandCallbacks {
     getSelectedItems(): SelectedItem[];
@@ -41,6 +39,10 @@ export interface DuplicateCommandCallbacks {
     restoreCustomPivotState(state: { isCustomPivot: boolean; pivotOffset: Vector3 }): void;
 }
 
+function slotList(uuids: Set<string>): Array<{ mesh: ObjectBatch; instanceId: number }> {
+    return [...uuids].flatMap(uuid => Select.selectedObjectRef(uuid) ?? []);
+}
+
 export function createGroupCommand(
     loadedObjectGroup: Group,
     currentSelection: SelectionState,
@@ -63,26 +65,9 @@ export function createGroupCommand(
     }
 
     const selectedGroupIds = currentSelection.groups ? Array.from(currentSelection.groups).filter(Boolean) : [];
-    const selectedObjects: Array<{ mesh: PdeMesh; instanceId: number }> = [];
-    if (currentSelection.objects && currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            if (!mesh || !ids) continue;
-            for (const id of ids) {
-                selectedObjects.push({ mesh, instanceId: id });
-            }
-        }
-    }
-
-    let primaryId: string | null = null;
-    if (currentSelection.primary) {
-        if (currentSelection.primary.type === 'group') {
-            primaryId = currentSelection.primary.id;
-        } else {
-            const key = callbacks.getGroupKey(currentSelection.primary.mesh, currentSelection.primary.instanceId);
-            const keyToUuid = loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined;
-            primaryId = keyToUuid?.get(key) || null;
-        }
-    }
+    const selectedObjects = slotList(currentSelection.objects);
+    const primary = currentSelection.primary;
+    const primaryId = primary ? (primary.type === 'group' ? primary.id : primary.uuid) : null;
 
     let newGroupId: string;
     try { newGroupId = GroupUtils.createGroupStructure(loadedObjectGroup, selectedGroupIds, selectedObjects, initialPosition, primaryId); }
@@ -132,7 +117,7 @@ export function deleteSelectedItemsCommand(
 ): DeletedSceneDelta | null {
     if (!callbacks.hasAnySelection()) return null;
 
-    const delta = Delete.deleteSelectedItems(loadedObjectGroup, currentSelection, {
+    const delta = Delete.deleteSelectedItems(loadedObjectGroup, { groups: currentSelection.groups, objects: Select.toMeshMap(currentSelection.objects) }, {
         resetSelectionAndDeselect: callbacks.resetSelectionAndDeselect
     });
     callbacks.emitSceneUpdated();
@@ -144,26 +129,21 @@ export function duplicateSelectedCommand(
     currentSelection: SelectionState,
     selectionAnchorMode: 'default' | 'center',
     callbacks: DuplicateCommandCallbacks
-): { groups: Set<string>; objects: Map<PdeMesh, Set<number>> } | null {
+): { groups: Set<string>; objects: Map<ObjectBatch, Set<number>> } | null {
     if (!callbacks.hasAnySelection()) return null;
 
     const savedPivotState = callbacks.getCustomPivotState();
     const hadPrimary = !!currentSelection.primary;
 
     const selectedGroupIds = currentSelection.groups;
-    const selectedObjects: Array<{ mesh: PdeMesh; instanceId: number }> = [];
-    if (currentSelection.objects) {
-        for (const [mesh, ids] of currentSelection.objects) {
-            for (const id of ids) selectedObjects.push({ mesh, instanceId: id });
-        }
-    }
+    const selectedObjects = slotList(currentSelection.objects);
 
     const newSel = Duplicate.duplicateGroupsAndObjects(loadedObjectGroup, selectedGroupIds, selectedObjects);
 
     const preserveAnchors = callbacks.isMultiSelection();
     callbacks.beginSelectionReplace({ anchorMode: selectionAnchorMode, detachTransform: false, preserveAnchors });
     currentSelection.groups = newSel.groups;
-    currentSelection.objects = newSel.objects;
+    currentSelection.objects = Select.toObjectUuids(newSel.objects);
 
     if (hadPrimary || !callbacks.isMultiSelection()) {
         callbacks.setPrimaryToFirstAvailable();

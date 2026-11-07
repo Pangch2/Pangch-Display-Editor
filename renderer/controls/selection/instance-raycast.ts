@@ -19,6 +19,8 @@ import {
     type Intersection,
     type Object3D
 } from 'three/webgpu';
+import { getBatchMatrixVersion, getInstanceCount, getInstanceMatrix, getInstanceValue, getInstanceValueVersion, instanceValueSize, isObjectBatch,
+    type ObjectBatch } from '../../scene-store/object-access';
 
 type BoundsNode = {
     box: Box3;
@@ -40,7 +42,7 @@ type HeadTriangle = { offset: number; a: number; b: number; c: number; va: Vecto
 export type PreparedFace = { mesh: Mesh; instanceId?: number; matrix: Matrix4; inverse: Matrix4; geometry: BufferGeometry; start: number; count: number; triangles?: HeadTriangle[] };
 
 const leafSize = 12;
-const boundsTrees = new WeakMap<InstancedMesh, BoundsTree>();
+const boundsTrees = new WeakMap<ObjectBatch, BoundsTree>();
 const raycastObjectBounds = new WeakMap<Mesh[], {
     bounds: number[]; root?: BoundsNode; faces: PreparedFace[];
     grid?: { axis: number; size: number; columns: Map<number, Map<number, number[]>> };
@@ -129,24 +131,34 @@ function buildNode(bounds: ArrayLike<number>, instanceIds: number[]): BoundsNode
     };
 }
 
-function getBoundsTree(mesh: InstancedMesh): BoundsTree | null {
-    const textLayout = mesh.geometry.getAttribute('textDisplayLayout');
+/** The text box of a text batch's object: [left, right, height, width], or null for other batches. */
+function textLayoutAt(batch: ObjectBatch, instanceId: number, out: number[]): number[] | null {
+    if (instanceValueSize(batch, 'textDisplayLayout') !== 4) return null;
+    for (let component = 0; component < 4; component++) out[component] = getInstanceValue(batch, instanceId, 'textDisplayLayout', component)!;
+    return out;
+}
+const layoutValues: number[] = [];
+
+function getBoundsTree(mesh: ObjectBatch): BoundsTree | null {
+    const count = getInstanceCount(mesh);
     const cached = boundsTrees.get(mesh);
     if (
-        cached?.count === mesh.count
+        cached?.count === count
         && cached.geometry === mesh.geometry
-        && cached.matrixVersion === mesh.instanceMatrix.version
-        && cached.layoutVersion === (textLayout?.version ?? -1)
+        && cached.matrixVersion === getBatchMatrixVersion(mesh)
+        && cached.layoutVersion === getInstanceValueVersion(mesh, 'textDisplayLayout')
     ) return cached;
 
     if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-    if (!mesh.geometry.boundingBox || mesh.count === 0) return null;
-    const bounds = new Float32Array(mesh.count * 6);
-    for (let instanceId = 0; instanceId < mesh.count; instanceId++) {
-        mesh.getMatrixAt(instanceId, localMatrix);
-        if (textLayout && instanceId < textLayout.count && !mesh.geometry.userData.textDisplayGeometryKey) {
-            localBox.min.set(textLayout.getX(instanceId), 0, mesh.geometry.boundingBox.min.z);
-            localBox.max.set(textLayout.getY(instanceId), textLayout.getZ(instanceId), mesh.geometry.boundingBox.max.z);
+    if (!mesh.geometry.boundingBox || count === 0) return null;
+    const bounds = new Float32Array(count * 6);
+    const glyphShape = !!mesh.geometry.userData.textDisplayGeometryKey;
+    for (let instanceId = 0; instanceId < count; instanceId++) {
+        getInstanceMatrix(mesh, instanceId, localMatrix);
+        const layout = glyphShape ? null : textLayoutAt(mesh, instanceId, layoutValues);
+        if (layout) {
+            localBox.min.set(layout[0], 0, mesh.geometry.boundingBox.min.z);
+            localBox.max.set(layout[1], layout[2], mesh.geometry.boundingBox.max.z);
         } else {
             localBox.copy(mesh.geometry.boundingBox);
         }
@@ -160,12 +172,12 @@ function getBoundsTree(mesh: InstancedMesh): BoundsTree | null {
         bounds[offset + 5] = localBox.max.z;
     }
     const tree = {
-        count: mesh.count,
+        count,
         geometry: mesh.geometry,
-        matrixVersion: mesh.instanceMatrix.version,
-        layoutVersion: textLayout?.version ?? -1,
+        matrixVersion: getBatchMatrixVersion(mesh),
+        layoutVersion: getInstanceValueVersion(mesh, 'textDisplayLayout'),
         bounds,
-        root: buildNode(bounds, Array.from({ length: mesh.count }, (_, instanceId) => instanceId))
+        root: buildNode(bounds, Array.from({ length: count }, (_, instanceId) => instanceId))
     };
     boundsTrees.set(mesh, tree);
     return tree;
@@ -192,7 +204,7 @@ function collectCandidates(node: BoundsNode, bounds: ArrayLike<number>, ray: Ray
     if (node.right) collectCandidates(node.right, bounds, ray, target, maxDistance);
 }
 
-function isTextDisplayPixelVisible(mesh: InstancedMesh, instanceId: number, hit: Intersection): boolean {
+function isTextDisplayPixelVisible(mesh: ObjectBatch, instanceId: number, hit: Intersection): boolean {
     const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as MeshBasicMaterial;
     if (!material.visible) return false;
     const canvas = material.map?.image;
@@ -207,7 +219,8 @@ function isTextDisplayPixelVisible(mesh: InstancedMesh, instanceId: number, hit:
         1
     ).data[3] / 255;
     const cutoff = material.alphaTest;
-    const uvBounds = mesh.geometry.getAttribute('textDisplayUvBounds');
+    const uvBounds = instanceValueSize(mesh, 'textDisplayUvBounds') === 4
+        ? [0, 1, 2, 3].map(component => getInstanceValue(mesh, instanceId, 'textDisplayUvBounds', component)!) : null;
     if (uvBounds && mesh.geometry.userData.textDisplayGeometryKey) {
         const positions = mesh.geometry.getAttribute('position');
         const coordinates = mesh.geometry.getAttribute('uv');
@@ -223,21 +236,16 @@ function isTextDisplayPixelVisible(mesh: InstancedMesh, instanceId: number, hit:
             if (barycoord.x < 0 || barycoord.y < 0 || barycoord.z < 0) continue;
             const u = coordinates.getX(ia) * barycoord.x + coordinates.getX(ib) * barycoord.y + coordinates.getX(ic) * barycoord.z;
             const v = coordinates.getY(ia) * barycoord.x + coordinates.getY(ib) * barycoord.y + coordinates.getY(ic) * barycoord.z;
-            if (alphaAt(uvBounds.getX(instanceId) + (uvBounds.getY(instanceId) - uvBounds.getX(instanceId)) * u,
-                uvBounds.getZ(instanceId) + (uvBounds.getW(instanceId) - uvBounds.getZ(instanceId)) * v) > cutoff) return true;
+            if (alphaAt(uvBounds[0] + (uvBounds[1] - uvBounds[0]) * u, uvBounds[2] + (uvBounds[3] - uvBounds[2]) * v) > cutoff) return true;
         }
-    } else if (uvBounds && alphaAt(
-        uvBounds.getX(instanceId) + (uvBounds.getY(instanceId) - uvBounds.getX(instanceId)) * uv.x,
-        uvBounds.getZ(instanceId) + (uvBounds.getW(instanceId) - uvBounds.getZ(instanceId)) * uv.y
-    ) > cutoff) return true;
+    } else if (uvBounds && alphaAt(uvBounds[0] + (uvBounds[1] - uvBounds[0]) * uv.x, uvBounds[2] + (uvBounds[3] - uvBounds[2]) * uv.y) > cutoff) return true;
 
-    const layout = mesh.geometry.getAttribute('textDisplayLayout');
-    const backgroundUv = mesh.geometry.getAttribute('textDisplayBackgroundUv');
-    if (!layout || !backgroundUv) return false;
-    const x = layout.getX(instanceId) + (layout.getY(instanceId) - layout.getX(instanceId)) * uv.x;
-    const center = (layout.getX(instanceId) + layout.getY(instanceId)) * 0.5;
-    return uv.y >= 0 && uv.y <= 1 && Math.abs(x - center) <= layout.getW(instanceId) * 0.5
-        && alphaAt(backgroundUv.getX(instanceId), backgroundUv.getY(instanceId)) > cutoff;
+    const layout = textLayoutAt(mesh, instanceId, []);
+    if (!layout || instanceValueSize(mesh, 'textDisplayBackgroundUv') < 2) return false;
+    const x = layout[0] + (layout[1] - layout[0]) * uv.x;
+    const center = (layout[0] + layout[1]) * 0.5;
+    return uv.y >= 0 && uv.y <= 1 && Math.abs(x - center) <= layout[3] * 0.5
+        && alphaAt(getInstanceValue(mesh, instanceId, 'textDisplayBackgroundUv', 0)!, getInstanceValue(mesh, instanceId, 'textDisplayBackgroundUv', 1)!) > cutoff;
 }
 
 function getHeadFaceBounds(geometry: BufferGeometry): { boxes: Box3[]; triangles: HeadTriangle[][] } | null {
@@ -295,21 +303,21 @@ function collectBoxCandidates(node: BoundsNode, bounds: ArrayLike<number>, regio
 export function intersectSceneInstances(
     raycaster: Raycaster,
     root: Group,
-    acceptInstance?: (mesh: InstancedMesh, instanceId: number) => boolean,
+    acceptInstance?: (mesh: ObjectBatch, instanceId: number) => boolean,
     objects?: Mesh[]
 ): Intersection | null {
     let nearest: Intersection | null = null;
     const intersect = (object: Object3D) => {
         if (!(object as Mesh).isMesh || object.visible === false || !object.layers.test(raycaster.layers)) return;
-        if (!(object as InstancedMesh).isInstancedMesh) {
+        if (!isObjectBatch(object)) {
             intersections.length = 0;
             (object as Mesh).raycast(raycaster, intersections);
             for (const hit of intersections) if (!nearest || hit.distance < nearest.distance) nearest = hit;
             return;
         }
 
-        const mesh = object as InstancedMesh;
-        const textLayout = mesh.geometry.getAttribute('textDisplayLayout');
+        const mesh = object;
+        const textLayout = instanceValueSize(mesh, 'textDisplayLayout') === 4;
         const tree = getBoundsTree(mesh);
         if (!tree) return;
         localRay.copy(raycaster.ray).applyMatrix4(inverseWorldMatrix.copy(mesh.matrixWorld).invert());
@@ -323,15 +331,12 @@ export function intersectSceneInstances(
         pickMesh.material = mesh.material;
         for (const instanceId of candidates) {
             if (acceptInstance && !acceptInstance(mesh, instanceId)) continue;
-            mesh.getMatrixAt(instanceId, localMatrix);
+            getInstanceMatrix(mesh, instanceId, localMatrix);
             pickMesh.matrixWorld.multiplyMatrices(mesh.matrixWorld, localMatrix);
-            if (textLayout && instanceId < textLayout.count) {
-                shapeMatrix.makeScale(
-                    textLayout.getY(instanceId) - textLayout.getX(instanceId),
-                    textLayout.getZ(instanceId),
-                    1
-                );
-                shapeMatrix.setPosition(textLayout.getX(instanceId), 0, 0);
+            const layout = textLayout ? textLayoutAt(mesh, instanceId, layoutValues) : null;
+            if (layout) {
+                shapeMatrix.makeScale(layout[1] - layout[0], layout[2], 1);
+                shapeMatrix.setPosition(layout[0], 0, 0);
                 pickMesh.matrixWorld.multiply(shapeMatrix);
             }
             intersections.length = 0;
@@ -376,7 +381,7 @@ export function intersectSceneInstances(
             const face = objectBounds.faces[index];
             const mesh = face.mesh;
             if (!mesh.visible || !mesh.layers.test(raycaster.layers)) continue;
-            if (face.instanceId !== undefined && acceptInstance && !acceptInstance(mesh as InstancedMesh, face.instanceId)) continue;
+            if (face.instanceId !== undefined && acceptInstance && !acceptInstance(mesh as unknown as ObjectBatch, face.instanceId)) continue;
             if (face.triangles) {
                 localRay.copy(raycaster.ray).applyMatrix4(face.inverse);
                 const uv = face.geometry.getAttribute('uv');
@@ -426,9 +431,9 @@ export function intersectSceneInstances(
             } finally {
                 face.geometry.setDrawRange(start, count);
             }
-            const textLayout = mesh.geometry.getAttribute('textDisplayLayout');
+            const textLayout = isObjectBatch(mesh) && instanceValueSize(mesh, 'textDisplayLayout') === 4;
             for (const hit of intersections) {
-                if (face.instanceId !== undefined && textLayout && !isTextDisplayPixelVisible(mesh as InstancedMesh, face.instanceId, hit)) continue;
+                if (face.instanceId !== undefined && textLayout && !isTextDisplayPixelVisible(mesh as unknown as ObjectBatch, face.instanceId, hit)) continue;
                 if (nearest && (face.instanceId === undefined ? hit.distance >= nearest.distance : hit.distance > nearest.distance)) continue;
                 hit.object = mesh;
                 if (face.instanceId !== undefined) hit.instanceId = face.instanceId;
@@ -473,8 +478,8 @@ export function getSceneRaycastObjects(root: Group, region?: Box3, grid?: { axis
     root.traverse(object => {
         const mesh = object as Mesh;
         if (!mesh.isMesh || !mesh.visible) return;
-        if ((mesh as InstancedMesh).isInstancedMesh) {
-            const tree = getBoundsTree(mesh as InstancedMesh);
+        if (isObjectBatch(mesh)) {
+            const tree = getBoundsTree(mesh);
             if (!tree) return;
             box.copy(tree.root.box);
         } else {
@@ -484,25 +489,25 @@ export function getSceneRaycastObjects(root: Group, region?: Box3, grid?: { axis
         }
         if (region && !box.applyMatrix4(mesh.matrixWorld).intersectsBox(region)) return;
         objects.push(mesh);
-        if (!(mesh as InstancedMesh).isInstancedMesh) {
+        if (!isObjectBatch(mesh)) {
             addFaces(mesh, mesh.geometry, mesh.matrixWorld.clone());
             return;
         }
-        const instanceMesh = mesh as InstancedMesh;
-        const tree = getBoundsTree(instanceMesh)!;
+        const tree = getBoundsTree(mesh)!;
         const localRegion = region ? region.clone().applyMatrix4(inverseWorldMatrix.copy(mesh.matrixWorld).invert()) : tree.root.box;
         const ids: number[] = [];
         collectBoxCandidates(tree.root, tree.bounds, localRegion, ids);
-        const layout = mesh.geometry.getAttribute('textDisplayLayout');
+        const textLayout = instanceValueSize(mesh, 'textDisplayLayout') === 4;
         for (const id of ids) {
-            instanceMesh.getMatrixAt(id, localMatrix);
+            getInstanceMatrix(mesh, id, localMatrix);
             const matrix = new Matrix4().multiplyMatrices(mesh.matrixWorld, localMatrix);
-            if (layout && id < layout.count) {
-                shapeMatrix.makeScale(layout.getY(id) - layout.getX(id), layout.getZ(id), 1);
-                shapeMatrix.setPosition(layout.getX(id), 0, 0);
+            const layout = textLayout ? textLayoutAt(mesh, id, layoutValues) : null;
+            if (layout) {
+                shapeMatrix.makeScale(layout[1] - layout[0], layout[2], 1);
+                shapeMatrix.setPosition(layout[0], 0, 0);
                 matrix.multiply(shapeMatrix);
             }
-            addFaces(mesh, layout ? getTextDisplayPickGeometry(mesh.geometry) : mesh.geometry, matrix, id);
+            addFaces(mesh as unknown as Mesh, textLayout ? getTextDisplayPickGeometry(mesh.geometry) : mesh.geometry, matrix, id);
         }
     });
     // Prepare world-space instances/faces once; cell rays skip repeated transforms and full-head tests.

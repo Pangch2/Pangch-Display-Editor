@@ -24,6 +24,7 @@ import {
 } from 'three/webgpu';
 import { initAssets } from './asset-manager';
 import { stabilizeInstancedMatrixBindingNames } from './entity-material';
+import { installGpuDraw } from './gpu-draw/gpu-draw-pipeline';
 import { initSceneColorCapture } from './ui/common/scene-color-capture';
 import { precompileDisplayModels } from './load-project/display/display-model-precompile';
 import { getItemIconAtlas } from './ui/toolbar/item-icon-atlas';
@@ -541,6 +542,7 @@ async function initScene(): Promise<void> {
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
     await renderer.init();
     stabilizeInstancedMatrixBindingNames(renderer);
+    if (!installGpuDraw(renderer)) console.warn('indirect-first-instance is unavailable; drawing meshes without GPU culling.');
     loadedObjectGroup.userData.precompileDisplayModels = (meshes, current) => precompileDisplayModels(renderer, scene, camera, meshes, current);
     initSceneColorCapture(renderer, scene, () => camera);
 

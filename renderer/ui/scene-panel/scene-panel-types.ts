@@ -3,8 +3,6 @@ import type { Matrix4, Object3D, Quaternion, Vector3 } from 'three/webgpu';
 export interface GroupChild {
     type: 'group' | 'object';
     id: string;
-    mesh?: Object3D;
-    instanceId?: number;
 }
 
 export interface GroupData {
@@ -67,11 +65,7 @@ export interface SceneMoveEntry {
     location: SceneItemLocation;
 }
 
-export interface ScenePanelSelectionState {
-    groups: Set<string>;
-    objects: Map<Object3D, Set<number>>;
-    primary: { type: 'group'; id: string } | { type: 'object'; mesh: Object3D; instanceId: number } | null;
-}
+export type { SelectionState as ScenePanelSelectionState } from '../../controls/selection/select';
 
 export interface ScenePanelRow {
     type: SceneDragItemType;
@@ -83,7 +77,6 @@ export interface ScenePanelRow {
 
 export interface LoadedObjectUserData {
     objectUuidToInstance?: Map<string, { mesh: Object3D; instanceId: number }>;
-    instanceKeyToObjectUuid?: Map<string, string>;
     objectNames?: Map<string, string>;
     objectLabels?: Map<string, string>;
     objectIsItemDisplay?: Set<string>;
@@ -98,12 +91,12 @@ export interface LoadedObjectUserData {
     hiddenGroupIds?: Set<string>;
     replaceSelectionWithGroupsAndObjects?: (
         groupIds: Set<string>,
-        meshToIds: Map<Object3D, Set<number>>,
+        objectUuids: Set<string>,
         opts?: { anchorMode?: string; primaryIsRangeStart?: boolean }
     ) => void;
     addOrToggleInSelection?: (
         groupIds: Set<string> | null,
-        meshToIds: Map<Object3D, Set<number>> | null
+        objectUuids: Set<string> | null
     ) => void;
     resetSelection?: () => void;
     deleteSelected?: () => void;

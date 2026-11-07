@@ -87,7 +87,6 @@ overlay.innerHTML = `
           <fieldset>
             <legend>현재 프로젝트</legend>
             <div class="settings-row"><span>프로젝트 이름</span><output id="scene-project-name">-</output></div>
-            <div class="settings-row"><span>메쉬</span><output id="scene-mesh-count">0</output></div>
             <div class="settings-row"><span>총 오브젝트 수</span><output id="scene-object-count">0</output></div>
             <div class="settings-row"><span>그룹</span><output id="scene-group-count">0</output></div>
             <div class="settings-row"><span>블록</span><output id="scene-block-count">0</output></div>
@@ -415,18 +414,19 @@ async function refreshSceneStatus(): Promise<void> {
   const objects = data.objectUuidToInstance as Map<string, { mesh: { userData: { displayType?: string } } }> | undefined;
   const items = data.objectIsItemDisplay as Set<string> | undefined;
   const names = data.objectNames as Map<string, string> | undefined;
-  const textIds = new Set([...objects ?? []]
-    .filter(([, object]) => object.mesh.userData.displayType === 'text_display')
-    .map(([uuid]) => uuid));
+  // Every text display has an options entry; walking all objects instead stalls large scenes.
+  const textIds = new Set([...(data.objectTextDisplayOptions as Map<string, unknown> | undefined)?.keys() ?? []]
+    .filter(uuid => objects?.get(uuid)?.mesh.userData.displayType === 'text_display'));
+  const labels = new Map<string, string>();
   const objectTypes = new Map<string, number>();
   for (const [uuid, name] of names ?? []) {
-    const type = cleanLabel(textIds.has(uuid) ? 'text_display' : name);
+    const raw = textIds.has(uuid) ? 'text_display' : name;
+    let type = labels.get(raw);
+    if (type === undefined) labels.set(raw, type = cleanLabel(raw));
     if (type) objectTypes.set(type, (objectTypes.get(type) ?? 0) + 1);
   }
-  const meshCount = loadedObjectGroup.children.filter(object => 'isMesh' in object && object.isMesh).length;
 
   overlay.querySelector<HTMLOutputElement>('#scene-project-name')!.value = data.projectDetails?.name || '새 프로젝트';
-  overlay.querySelector<HTMLOutputElement>('#scene-mesh-count')!.value = String(meshCount);
   overlay.querySelector<HTMLOutputElement>('#scene-object-count')!.value = String(objects?.size ?? 0);
   overlay.querySelector<HTMLOutputElement>('#scene-group-count')!.value = String(data.groups?.size ?? 0);
   overlay.querySelector<HTMLOutputElement>('#scene-item-count')!.value = String(items?.size ?? 0);
@@ -436,10 +436,16 @@ async function refreshSceneStatus(): Promise<void> {
   overlay.querySelector<HTMLUListElement>('#scene-object-types')!.replaceChildren(...[...objectTypes]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, count]) => Object.assign(document.createElement('li'), { textContent: `${name} (${count})` })));
+  if (import.meta.env.DEV) console.assert(overlay.querySelector('#scene-object-types')!.childElementCount === Number(overlay.querySelector<HTMLOutputElement>('#scene-object-type-count')!.value), 'Scene object types are incomplete.');
+  await refreshSceneMemory();
+}
+
+async function refreshSceneMemory(): Promise<void> {
   const bytes = await window.ipcApi.getPdeMemoryUsage().catch(() => 0);
   overlay.querySelector<HTMLOutputElement>('#scene-memory')!.value = bytes ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : '-';
-  if (import.meta.env.DEV) console.assert(overlay.querySelector('#scene-object-types')!.childElementCount === Number(overlay.querySelector<HTMLOutputElement>('#scene-object-type-count')!.value), 'Scene object types are incomplete.');
 }
+
+const sceneStatusVisible = () => !overlay.hidden && !overlay.querySelector<HTMLElement>('[data-settings-content="scene"]')!.hidden;
 
 toolbarPosition.value = localStorage.getItem('pdeToolbarPosition') === 'bottom' ? 'bottom' : 'top';
 cameraType.value = localStorage.getItem('pdeCameraType') === 'orthographic' ? 'orthographic' : 'perspective';
@@ -512,12 +518,15 @@ overlay.querySelectorAll<HTMLButtonElement>('[data-settings-page]').forEach(butt
   });
 });
 
-window.addEventListener('pde:scene-updated', () => { if (!overlay.hidden) void refreshSceneStatus(); });
+window.addEventListener('pde:scene-updated', event => {
+  if (sceneStatusVisible() && !(event as CustomEvent<{ texturesOnly?: boolean } | null>).detail?.texturesOnly) void refreshSceneStatus();
+});
 window.addEventListener('pde:project-name-changed', event => {
   overlay.querySelector<HTMLOutputElement>('#scene-project-name')!.value = (event as CustomEvent<string>).detail || '새 프로젝트';
 });
+// Counts change only with the scene (pde:scene-updated); polling them re-walks every object.
 setInterval(() => {
-  if (!overlay.hidden && !overlay.querySelector<HTMLElement>('[data-settings-content="scene"]')!.hidden) void refreshSceneStatus();
+  if (sceneStatusVisible() && !openedFromWelcome) void refreshSceneMemory();
 }, 1000);
 
 toolbarPosition.addEventListener('change', () => {
@@ -645,7 +654,7 @@ overlay.querySelector<HTMLButtonElement>('#force-gc')!.addEventListener('click',
   status.hidden = true;
   try {
     const result = await window.ipcApi.forceGarbageCollection();
-    await refreshSceneStatus();
+    await refreshSceneMemory();
     status.textContent = result.success ? '메모리 정리를 완료했습니다.' : `메모리를 정리하지 못했습니다: ${result.error ?? '알 수 없는 오류'}`;
   } catch (error) {
     status.textContent = `메모리를 정리하지 못했습니다: ${String(error)}`;

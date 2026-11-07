@@ -1,6 +1,6 @@
-import { Matrix4, type Group, type InstancedMesh, type Mesh } from 'three/webgpu';
+import { Matrix4, type Group } from 'three/webgpu';
 import type { GroupData } from '../controls/grouping/group';
-import { getInstanceModelTransform } from '../load-project/batching/instance-model-transform';
+import { getDisplayType, getInstanceMatrix, objectModelTransform, type ObjectRef } from '../scene-store/object-access';
 import { getPlayerHeadRenderMatrix } from '../load-project/display/player-head-atlas';
 import type { TextDisplayOptions } from '../load-project/display/text-display';
 import { getBedItemDisplayModelMatrix, getSkullBlockModelMatrix } from '../load-project/scene/scene-parser';
@@ -206,7 +206,7 @@ type NbtChunks = Generator<string | undefined>;
 function* createSummonCommands(project: Group, limit: number, separate = false): NbtChunks {
   const summonPrefix = separate ? '' : getSummonPrefix(project);
   const data = project.userData;
-  const refs = data.objectUuidToInstance as Map<string, { mesh: Mesh | InstancedMesh; instanceId: number }> | undefined;
+  const refs = data.objectUuidToInstance as Map<string, ObjectRef> | undefined;
   const groups = data.groups as Map<string, GroupData> | undefined;
   const names = data.objectNames as Map<string, string> | undefined;
   const root = readNbt(data.projectDetails?.mainNBT, '프로젝트 mainNBT');
@@ -233,7 +233,7 @@ function* createSummonCommands(project: Group, limit: number, separate = false):
     const ownNbt = readNbt(data.objectNbt?.get(uuid), target);
     const customNbt = mergeNbt(inheritedNbt, mergeNbt(ownNbt, defaults));
     const mesh = ref.mesh;
-    const meshType = mesh.userData.displayTypes?.get(ref.instanceId) ?? mesh.userData.displayType;
+    const meshType = getDisplayType(mesh, ref.instanceId);
     const type = data.objectTextDisplayOptions?.has(uuid) || meshType === 'text_display' ? 'text_display'
       : (data.objectIsItemDisplay ? data.objectIsItemDisplay.has(uuid) : meshType === 'item_display') ? 'item_display' : 'block_display';
     const entity: Compound = { id: type };
@@ -275,14 +275,12 @@ function* createSummonCommands(project: Group, limit: number, separate = false):
       entity.item = item;
     }
     editorModel.identity();
-    if ((mesh as InstancedMesh).isInstancedMesh) {
-      (mesh as InstancedMesh).getMatrixAt(ref.instanceId, matrix);
-      const instanceModel = getInstanceModelTransform(mesh as InstancedMesh, ref.instanceId);
-      editorModel.copy(instanceModel);
-      if (mesh.userData.pbdeModelMatrix) editorModel.multiply(transform.fromArray(mesh.userData.pbdeModelMatrix));
-      matrix.multiply(instanceModel.invert());
-      if (type === 'item_display' && itemId === 'player_head') matrix.multiply(getPlayerHeadRenderMatrix(display).invert());
-    } else matrix.identity();
+    getInstanceMatrix(mesh, ref.instanceId, matrix);
+    const instanceModel = objectModelTransform(project, uuid);
+    editorModel.copy(instanceModel);
+    if (mesh.userData.pbdeModelMatrix) editorModel.multiply(transform.fromArray(mesh.userData.pbdeModelMatrix));
+    matrix.multiply(instanceModel.invert());
+    if (type === 'item_display' && itemId === 'player_head') matrix.multiply(getPlayerHeadRenderMatrix(display).invert());
     // Minecraft adds a Y half-turn to item displays. Player heads already use that frame in the editor.
     if (type === 'item_display') {
       try { matrix.multiply(itemExportCorrection(itemId, name, display, editorModel)); }
@@ -348,7 +346,7 @@ function* createSummonCommands(project: Group, limit: number, separate = false):
     const passengers = function* (childLimit: number): NbtChunks {
       for (const child of group.children) {
         if (child.type === 'group') yield* exportGroup(child.id, childLimit, groupNbt);
-        else yield* exportObjects(child.id ?? data.instanceKeyToObjectUuid?.get(`${child.mesh.uuid}_${child.instanceId}`), childLimit, groupNbt);
+        else yield* exportObjects(child.id, childLimit, groupNbt);
       }
     };
     // Display passengers share the summon origin; group transforms are already in the object matrices.

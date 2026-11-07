@@ -1,4 +1,5 @@
 import { Color, Mesh, SRGBColorSpace, type Intersection, type Texture } from 'three/webgpu';
+import { getInstanceValues, isObjectBatch } from '../../scene-store/object-access';
 
 let pixelContext: CanvasRenderingContext2D | null = null;
 
@@ -12,9 +13,15 @@ export function readTextureColor(hit: Intersection): [number, number, number, nu
   const settings = material.userData.textureColorPick;
   const uv = hit.uv.clone();
   const attributeIndex = settings?.useVertexTint ? hit.face.a : hit.instanceId ?? 0;
-  const transform = settings?.uvAttribute ? mesh.geometry.getAttribute(settings.uvAttribute) : undefined;
-  if (transform) uv.set(uv.x * transform.getX(attributeIndex) + transform.getZ(attributeIndex),
-    uv.y * transform.getY(attributeIndex) + transform.getW(attributeIndex));
+  // Vertex tints live in the shape; otherwise the values are per object.
+  const valuesOf = (name?: string): number[] | undefined => {
+    if (!name) return undefined;
+    if (!settings.useVertexTint && isObjectBatch(mesh)) return getInstanceValues(mesh, attributeIndex, name);
+    const attribute = mesh.geometry.getAttribute(name);
+    return attribute && Array.from({ length: attribute.itemSize }, (_, component) => attribute.getComponent(attributeIndex, component));
+  };
+  const transform = valuesOf(settings?.uvAttribute);
+  if (transform) uv.set(uv.x * transform[0] + transform[2], uv.y * transform[1] + transform[3]);
   if (map.matrixAutoUpdate) map.updateMatrix();
   map.transformUv(uv);
   const x = Math.max(0, Math.min(image.width - 1, Math.floor(uv.x * image.width)));
@@ -29,8 +36,8 @@ export function readTextureColor(hit: Intersection): [number, number, number, nu
   pixelContext.drawImage(image, x, y, 1, 1, 0, 0, 1, 1);
   const rgba = pixelContext.getImageData(0, 0, 1, 1).data;
   const color = new Color().setRGB(rgba[0] / 255, rgba[1] / 255, rgba[2] / 255, SRGBColorSpace);
-  const tint = settings?.tintAttribute ? mesh.geometry.getAttribute(settings.tintAttribute) : undefined;
-  color.multiply(tint ? new Color().setRGB(tint.getX(attributeIndex), tint.getY(attributeIndex), tint.getZ(attributeIndex))
+  const tint = valuesOf(settings?.tintAttribute);
+  color.multiply(tint ? new Color().setRGB(tint[0], tint[1], tint[2])
     : new Color(settings?.tintHex ?? 0xffffff));
   color.convertLinearToSRGB();
   return [Math.round(color.r * 255), Math.round(color.g * 255), Math.round(color.b * 255), rgba[3]];

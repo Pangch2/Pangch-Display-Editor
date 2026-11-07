@@ -2,7 +2,6 @@ import {
   Box2,
   Box3,
   Camera,
-  InstancedMesh,
   Mesh,
   Matrix3,
   Matrix4,
@@ -44,6 +43,8 @@ import { dragDeltaMatrix, dragSelectedAttributeName } from '../../entity-materia
 import { oklchToRgb, openColorPicker, rgbToOklch } from '../common/color-picker';
 import { closeWithAnimation, openWithAnimation } from '../common/ui-open-close.js';
 import { isSceneObjectVisible } from '../../controls/scene-visibility';
+import { getBatchMatrixVersion, getInstanceHasHat, getInstanceValue, getInstanceValues, getInstanceWorldMatrix as getBatchInstanceWorldMatrix, instanceValueSize,
+    isObjectBatch, objectUuidAt, setInstanceValues, type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
 import { getSceneRaycastFaces, getSceneRaycastObjects, intersectSceneInstances } from '../../controls/selection/instance-raycast';
 import {
   createHeadPainterGpuPreview, disposeHeadPainterGpuPreview, headPainterPixelEpsilon, updateHeadPainterGpuPreviewData,
@@ -78,7 +79,7 @@ type PainterContext = {
   suspendCameraControls: () => () => void;
 };
 type PaintHit = {
-  mesh: InstancedMesh;
+  mesh: ObjectBatch;
   instanceId: number;
   surface: PlayerHeadPaintSurface;
   face: number;
@@ -310,11 +311,11 @@ const knifePixel = (pixel: number, scale: number, offset: number): number => Mat
   Math.floor((offset + pixel / partSize * scale) * partSize)));
 
 function expandKnifePaintSurface(surface: PlayerHeadPaintSurface, image: ImageData): boolean {
-  const scales = surface.mesh.geometry.getAttribute('instancedKnifeUvScale');
-  const offsets = surface.mesh.geometry.getAttribute('instancedKnifeUvOffset');
+  const scales = getInstanceValues(surface.mesh, surface.instanceId, 'instancedKnifeUvScale');
+  const offsets = getInstanceValues(surface.mesh, surface.instanceId, 'instancedKnifeUvOffset');
   if (!scales || !offsets) return false;
-  const scale = new Vector3(scales.getX(surface.instanceId), scales.getY(surface.instanceId), scales.getZ(surface.instanceId));
-  const offset = new Vector3(offsets.getX(surface.instanceId), offsets.getY(surface.instanceId), offsets.getZ(surface.instanceId));
+  const scale = new Vector3().fromArray(scales);
+  const offset = new Vector3().fromArray(offsets);
   if (scale.equals(new Vector3(1, 1, 1)) && offset.equals(new Vector3())) return false;
   const source = cloneImage(image);
   for (let face = 0; face < 6; face++) {
@@ -327,10 +328,8 @@ function expandKnifePaintSurface(surface: PlayerHeadPaintSurface, image: ImageDa
       }
     }
   }
-  scales.setXYZ(surface.instanceId, 1, 1, 1);
-  offsets.setXYZ(surface.instanceId, 0, 0, 0);
-  scales.needsUpdate = true;
-  offsets.needsUpdate = true;
+  setInstanceValues(surface.mesh, surface.instanceId, 'instancedKnifeUvScale', [1, 1, 1]);
+  setInstanceValues(surface.mesh, surface.instanceId, 'instancedKnifeUvOffset', [0, 0, 0]);
   return true;
 }
 
@@ -402,21 +401,20 @@ function sourceOver(destination: Rgba, source: Rgba, coverage: number): Rgba {
 
 function getPainterIntersection(objects?: Mesh[]) {
   return intersectSceneInstances(raycaster, loadedObjectGroup, (mesh, instanceId) => {
-    const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)
-      ?.get(`${mesh.uuid}_${instanceId}`);
+    const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId);
     return !uuid || isSceneObjectVisible(loadedObjectGroup, uuid);
   }, objects);
 }
 
-function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, objects?: Mesh[], faceHits?: Map<InstancedMesh, Map<number, PaintHit[]>>, sampleTexture = false): PaintHit | null {
+function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, objects?: Mesh[], faceHits?: Map<ObjectBatch, Map<number, PaintHit[]>>, sampleTexture = false): PaintHit | null {
   if (!painterContext) return null;
   const intersection = getPainterIntersection(objects);
   if (!intersection) {
     if (deselectOnMiss) (loadedObjectGroup.userData.resetSelection as (() => void) | undefined)?.();
     return null;
   }
-  if (!(intersection.object as InstancedMesh).isInstancedMesh || intersection.instanceId === undefined || !intersection.uv || intersection.faceIndex === undefined) return null;
-  const mesh = intersection.object as InstancedMesh;
+  if (!isObjectBatch(intersection.object) || intersection.instanceId === undefined || !intersection.uv || intersection.faceIndex === undefined) return null;
+  const mesh = intersection.object;
   const imageLayer = mesh.userData.imageHeadLayer as 0 | 1 | undefined;
   const imageOverlay = imageLayer !== undefined && intersection.faceIndex >= 24;
   const triangle = intersection.faceIndex % 24;
@@ -508,7 +506,7 @@ function getWork(hit: PaintHit): WorkSurface {
     if (isMirrorModelingEnabled()) {
       const partnerUuid = getLinkedMirrorUuid(loadedObjectGroup, surface.objectUuid);
       const partner = partnerUuid
-        ? (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(partnerUuid)
+        ? (loadedObjectGroup.userData.objectUuidToInstance as Map<string, ObjectRef> | undefined)?.get(partnerUuid)
         : undefined;
       const partnerBefore = partnerUuid ? capturePlayerHeadAtlasState([partnerUuid]) : [];
       const partnerSurface = partner && !stroke.has(partnerUuid!) ? getPlayerHeadPaintSurface(partner.mesh, partner.instanceId, true, strokePaintUsage) : null;
@@ -639,9 +637,9 @@ function finishStroke(): void {
       return false;
     }).flatMap(face => face.surfaces.map(surface => [surface.objectUuid, surface] as const))).values()] : [work.surface];
     for (const surface of surfaces) {
-      const previousHat = surface.mesh.userData.hasHat[surface.instanceId];
+      const previousHat = getInstanceHasHat(surface.mesh, surface.instanceId);
       commitPlayerHeadPaint(surface, work.atlas ? undefined : work.image);
-      layerChanged ||= previousHat !== surface.mesh.userData.hasHat[surface.instanceId];
+      layerChanged ||= previousHat !== getInstanceHasHat(surface.mesh, surface.instanceId);
     }
   }
   flushPaintTextures(true);
@@ -730,7 +728,7 @@ function createAdjacentBrushHit(hit: PaintHit, width: number, height: number, ca
       columnCache.set(planeKey, columns = new Map());
     }
   }
-  const faceHits = new Map<InstancedMesh, Map<number, PaintHit[]>>();
+  const faceHits = new Map<ObjectBatch, Map<number, PaintHit[]>>();
   let objects: Mesh[] | undefined;
   return (x, y) => {
     if (x >= 0 && x < hit.columns && y >= 0 && y < hit.rows) return { ...hit, x, y };
@@ -1103,11 +1101,11 @@ function pickColor(event: PointerEvent): void {
   }
   const image = images.get(hit.surface.objectUuid) ?? readPlayerHeadPaint(hit.surface);
   let { x, y } = hit;
-  const scales = hit.mesh.geometry.getAttribute('instancedKnifeUvScale');
-  const offsets = hit.mesh.geometry.getAttribute('instancedKnifeUvOffset');
+  const scales = getInstanceValues(hit.mesh, hit.instanceId, 'instancedKnifeUvScale');
+  const offsets = getInstanceValues(hit.mesh, hit.instanceId, 'instancedKnifeUvOffset');
   if (scales && offsets) {
-    const scale = new Vector3(scales.getX(hit.instanceId), scales.getY(hit.instanceId), scales.getZ(hit.instanceId));
-    const offset = new Vector3(offsets.getX(hit.instanceId), offsets.getY(hit.instanceId), offsets.getZ(hit.instanceId));
+    const scale = new Vector3().fromArray(scales);
+    const offset = new Vector3().fromArray(offsets);
     const [scaleX, scaleY, offsetX, offsetY] = knifePaintTransform(scale, offset, faceNormals[hit.face]);
     x = knifePixel(x + 0.5, scaleX, offsetX);
     y = knifePixel(y + 0.5, scaleY, offsetY);
@@ -1245,7 +1243,7 @@ function prepareGpuPaintPreview(hit: PaintHit): HeadPainterGpuPreviewData | null
   const triangles: number[] = [], records: number[] = [], matrices: number[] = [], grids: number[] = [];
   const recordIndices = new Map<string, number>();
   const instanceWorlds = new Map<string, { matrix: Matrix4; index: number }>();
-  const getWorld = (mesh: InstancedMesh, instanceId: number) => {
+  const getWorld = (mesh: ObjectBatch, instanceId: number) => {
     const key = `${mesh.uuid}_${instanceId}`;
     let world = instanceWorlds.get(key);
     if (!world) {
@@ -1259,7 +1257,7 @@ function prepareGpuPaintPreview(hit: PaintHit): HeadPainterGpuPreviewData | null
   const surfaces = new Map<string, PlayerHeadPaintSurface | null>();
   const worldBounds = new Box3();
   let scaleSum = 0, scaleCount = 0;
-  const addRecord = (mesh: InstancedMesh, instanceId: number, face: number, columns: number, rows: number, rule: number,
+  const addRecord = (mesh: ObjectBatch, instanceId: number, face: number, columns: number, rows: number, rule: number,
     surface?: PlayerHeadPaintSurface): number => {
     const key = `${mesh.uuid}_${instanceId}:${face}:${rule}`;
     const cached = recordIndices.get(key);
@@ -1288,15 +1286,15 @@ function prepareGpuPaintPreview(hit: PaintHit): HeadPainterGpuPreviewData | null
   const a = new Vector3(), b = new Vector3(), c = new Vector3();
   for (const prepared of faces) {
     if (prepared.instanceId === undefined || prepared.geometry.morphAttributes.position?.length
-      || prepared.mesh.geometry.getAttribute('textDisplayLayout') || prepared.start % 3
+      || !isObjectBatch(prepared.mesh) || instanceValueSize(prepared.mesh, 'textDisplayLayout') || prepared.start % 3
       || (Number.isFinite(prepared.count) && prepared.count % 3)) {
       unsupportedBounds.push(prepared.geometry.boundingBox.clone().applyMatrix4(prepared.matrix));
       continue;
     }
-    const mesh = prepared.mesh as InstancedMesh, instanceId = prepared.instanceId!;
+    const mesh = prepared.mesh as unknown as ObjectBatch, instanceId = prepared.instanceId!;
     if (!mesh.layers.test(raycaster.layers)) continue;
     const instanceKey = `${mesh.uuid}_${instanceId}`;
-    const uuid = (loadedObjectGroup.userData.instanceKeyToObjectUuid as Map<string, string> | undefined)?.get(instanceKey);
+    const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId);
     if (uuid && !isSceneObjectVisible(loadedObjectGroup, uuid)) continue;
     let surface = surfaces.get(instanceKey);
     if (surface === undefined) {
@@ -1513,7 +1511,7 @@ function updatePaintPreview(hit: PaintHit | null): void {
   }
   updateHeadAtlasPaintPreview();
   // World-ray results are reusable across meshes; local cells remain scoped to their source.
-  const surfaceKey = [hit.mesh.instanceMatrix.version, hit.face, hit.layer, hit.columns, hit.rows,
+  const surfaceKey = [getBatchMatrixVersion(hit.mesh), hit.face, hit.layer, hit.columns, hit.rows,
     ...hit.mesh.matrixWorld.elements, ...dragDeltaMatrix.elements, lastTool, copy, brushShape, brushWidth, brushHeight, brushStrength,
     selectedBrushName, stampWidth, stampHeight, paintAdjacentHeads, layerMode, gridHorizontal, gridVertical, smartGrid].join('|');
   const sourceKey = `${hit.mesh.uuid}:${hit.instanceId}|${surfaceKey}`;
@@ -1610,10 +1608,10 @@ function smartCounts(configuredHorizontal: number, configuredVertical: number, h
   return [count(configuredHorizontal, horizontalSize), count(configuredVertical, verticalSize)];
 }
 
-function getInstanceWorldMatrix(mesh: InstancedMesh, instanceId: number, target: Matrix4): Matrix4 {
-  mesh.getMatrixAt(instanceId, target);
-  target.premultiply(mesh.matrixWorld);
-  if (mesh.geometry.getAttribute(dragSelectedAttributeName)?.getX(instanceId)) target.premultiply(dragDeltaMatrix);
+/** The object's world matrix as drawn: a dragged object includes the drag preview. */
+function getInstanceWorldMatrix(mesh: ObjectBatch, instanceId: number, target: Matrix4): Matrix4 {
+  getBatchInstanceWorldMatrix(mesh, instanceId, target);
+  if (getInstanceValue(mesh, instanceId, dragSelectedAttributeName)) target.premultiply(dragDeltaMatrix);
   return target;
 }
 
@@ -1629,7 +1627,7 @@ function getFaceGridCounts(objectUuid: string, face: number, worldMatrix: Matrix
     configuredVertical,
     axis.setFromMatrixColumn(worldMatrix, horizontalAxis).length(),
     axis.setFromMatrixColumn(worldMatrix, verticalAxis).length());
-  const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+  const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, ObjectRef> | undefined)?.get(objectUuid);
   const surface = ref && getPlayerHeadPaintSurface(ref.mesh, ref.instanceId);
   if (!surface) return [...counts, partSize, partSize];
   const part = facePartIndexes[face] + (layer ?? surface.denseLayer ?? (layerMode === 'layer' ? 1 : 0)) * 6;
@@ -2494,7 +2492,7 @@ function initPlayerGenerator(): void {
     const groupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
     recordCreationChange(loadedObjectGroup, {
       groups: groupIds,
-      objects: new Map([...objects].filter(([mesh]) => (mesh as InstancedMesh).isInstancedMesh)) as Map<InstancedMesh, Set<number>>
+      objects: new Map([...objects].filter(([mesh]) => isObjectBatch(mesh))) as unknown as Map<ObjectBatch, Set<number>>
     }, beforeUi);
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     status.textContent = message;

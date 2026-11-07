@@ -18,9 +18,8 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 #animation-panel:focus-visible, .animation-resizer:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
 .animation-resizer { touch-action: none; user-select: none; }
 .animation-header { flex: none; max-height: calc(var(--animation-panel-height, 360px) - 74px); overflow: auto; scrollbar-width: thin; }
-.animation-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 6px 12px; flex: none; border-bottom: 1px solid #3a3a3e; }
+.animation-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 4px 10px; flex: none; border-bottom: 1px solid #414149; background: #29292e; }
 .animation-actions, .animation-timing { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
-.animation-timing { justify-self: end; justify-content: flex-end; }
 :is(.animation-controls, .animation-tools) label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .animation-controls input { width: 62px; font-variant-numeric: tabular-nums; }
 :is(.animation-controls, .animation-tools) button { color: inherit; background: var(--ui-control-bg); border: 1px solid var(--ui-control-border); border-radius: var(--ui-control-radius); padding: 4px 8px; cursor: pointer; font: inherit; }
@@ -71,6 +70,8 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-zoom output { min-width: 42px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; color: #aaaab5; }
 .animation-zoom button { white-space: nowrap; }
 #animation-add { color: #9fd5f7; }
+.animation-camera-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding-left: 8px; border-left: 1px solid #48484e; }
+#animation-camera-add { color: #9fd5f7; }
 .animation-scroll { overflow-x: scroll; overflow-y: auto; min-width: 0; min-height: 28px; flex: 1; contain: paint; color-scheme: dark; }
 .animation-ruler, .animation-row { display: grid; grid-template-columns: 220px var(--animation-timeline-width, 618px); width: max-content; }
 .animation-ruler { height: 28px; position: sticky; top: 0; background: #2c2c30; z-index: 2; }
@@ -125,8 +126,8 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-end-marker { position: absolute; bottom: 0; width: 6px; height: 8px; border-right: 2px solid #70c7ff; border-bottom: 2px solid #70c7ff; transform: translateX(-100%); }
 .animation-empty { position: sticky; left: 0; width: fit-content; max-width: calc(100% - 32px); margin: 14px 16px; color: #a3a3af; font-size: 11px; }
 @container (max-width: 720px) {
-  .animation-controls { grid-template-columns: 1fr auto; gap: 6px; padding: 4px 8px; }
-  .animation-clip-controls { grid-column: 1 / -1; }
+  .animation-controls { gap: 4px 8px; padding: 4px 8px; }
+  .animation-clip-controls { flex: 1 0 100%; }
   .animation-clip-controls > label { flex: 1; }
   .animation-clip-controls > label select { flex: 1; }
   .animation-controls input { width: 48px; }

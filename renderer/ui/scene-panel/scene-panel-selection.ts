@@ -1,4 +1,3 @@
-import type { Object3D } from 'three/webgpu';
 import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
 import type { ScenePanelRow, ScenePanelSelectionState, LoadedObjectUserData } from './scene-panel-types';
 import { scenePanelState } from './scene-panel-state';
@@ -30,8 +29,7 @@ function expandGroupAncestors(groupId: string, ud: LoadedObjectUserData, visited
 }
 
 function findObjectParentGroupId(uuid: string, ud: LoadedObjectUserData): string | null {
-    const inst = ud.objectUuidToInstance?.get(uuid);
-    if (inst && ud.objectToGroup) return ud.objectToGroup.get(`${inst.mesh.uuid}_${inst.instanceId}`) ?? null;
+    if (ud.objectToGroup) return ud.objectToGroup.get(uuid) ?? null;
 
     const groups = ud.groups;
     if (!groups) return null;
@@ -40,10 +38,6 @@ function findObjectParentGroupId(uuid: string, ud: LoadedObjectUserData): string
         for (const child of group.children || []) {
             if (child.type !== 'object') continue;
             if (child.id === uuid) return group.id;
-            if (child.mesh && typeof child.instanceId === 'number') {
-                const childUuid = ud.instanceKeyToObjectUuid?.get(`${child.mesh.uuid}_${child.instanceId}`);
-                if (childUuid === uuid) return group.id;
-            }
         }
     }
 
@@ -60,35 +54,19 @@ function expandSelectionAncestors(sel: ScenePanelSelectionState, ud: LoadedObjec
         }
     }
 
-    if (sel.objects) {
-        const keyToUuid = ud.instanceKeyToObjectUuid;
-        if (keyToUuid) {
-            for (const [mesh, ids] of sel.objects) {
-                for (const instanceId of ids) {
-                    const key = `${mesh.uuid}_${instanceId}`;
-                    let parentGroupId: string | null | undefined;
-                    if (ud.objectToGroup) parentGroupId = ud.objectToGroup.get(key);
-                    else {
-                        const uuid = keyToUuid.get(key);
-                        parentGroupId = uuid ? findObjectParentGroupId(uuid, ud) : null;
-                    }
-                    if (parentGroupId) {
-                        changed = expandGroupAncestors(parentGroupId, ud, visited, true) || changed;
-                    }
-                }
-            }
+    for (const uuid of sel.objects ?? []) {
+        const parentGroupId = findObjectParentGroupId(uuid, ud);
+        if (parentGroupId) {
+            changed = expandGroupAncestors(parentGroupId, ud, visited, true) || changed;
         }
     }
 
     if (sel.primary?.type === 'group') {
         changed = expandGroupAncestors(sel.primary.id, ud, visited) || changed;
     } else if (sel.primary?.type === 'object') {
-        const uuid = ud.instanceKeyToObjectUuid?.get(`${sel.primary.mesh.uuid}_${sel.primary.instanceId}`);
-        if (uuid) {
-            const parentGroupId = findObjectParentGroupId(uuid, ud);
-            if (parentGroupId) {
-                changed = expandGroupAncestors(parentGroupId, ud, visited, true) || changed;
-            }
+        const parentGroupId = findObjectParentGroupId(sel.primary.uuid, ud);
+        if (parentGroupId) {
+            changed = expandGroupAncestors(parentGroupId, ud, visited, true) || changed;
         }
     }
 
@@ -119,7 +97,7 @@ export function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
             const end = Math.max(idx1, idx2);
 
             const rangeGroups = new Set<string>();
-            const rangeObjects = new Map<Object3D, Set<number>>();
+            const rangeObjects = new Set<string>();
             const uuidToInstance = ud.objectUuidToInstance;
 
             const selectedNodes = scenePanelState.scenePanelList?.querySelectorAll('.selected') as NodeListOf<HTMLElement> | undefined;
@@ -129,15 +107,7 @@ export function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
                     if (gId) rangeGroups.add(gId);
                 } else if (node.dataset.uuid) {
                     const uuid = node.dataset.uuid;
-                    if (uuid && uuidToInstance) {
-                        const inst = uuidToInstance.get(uuid);
-                        if (inst) {
-                            if (!rangeObjects.has(inst.mesh)) {
-                                rangeObjects.set(inst.mesh, new Set());
-                            }
-                            rangeObjects.get(inst.mesh)!.add(inst.instanceId);
-                        }
-                    }
+                    if (uuidToInstance?.has(uuid)) rangeObjects.add(uuid);
                 }
             });
 
@@ -149,37 +119,21 @@ export function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
                     continue;
                 }
 
-                if (uuidToInstance) {
-                    const inst = uuidToInstance.get(row.id);
-                    if (inst) {
-                        if (!rangeObjects.has(inst.mesh)) rangeObjects.set(inst.mesh, new Set());
-                        rangeObjects.get(inst.mesh)!.add(inst.instanceId);
-                    }
-                }
+                if (uuidToInstance?.has(row.id)) rangeObjects.add(row.id);
             }
 
             const sortedRangeGroups = new Set<string>();
-            const sortedRangeObjects = new Map<Object3D, Set<number>>();
+            const sortedRangeObjects = new Set<string>();
 
+            // The range start comes first so it becomes the primary.
             if (scenePanelState.lastClickedItem.type === 'group') {
                 sortedRangeGroups.add(scenePanelState.lastClickedItem.id);
-            } else {
-                if (uuidToInstance) {
-                    const inst = uuidToInstance.get(scenePanelState.lastClickedItem.id);
-                    if (inst) {
-                        sortedRangeObjects.set(inst.mesh, new Set([inst.instanceId]));
-                    }
-                }
+            } else if (uuidToInstance?.has(scenePanelState.lastClickedItem.id)) {
+                sortedRangeObjects.add(scenePanelState.lastClickedItem.id);
             }
 
             rangeGroups.forEach(g => sortedRangeGroups.add(g));
-            rangeObjects.forEach((ids, mesh) => {
-                if (!sortedRangeObjects.has(mesh)) {
-                    sortedRangeObjects.set(mesh, new Set());
-                }
-                const set = sortedRangeObjects.get(mesh)!;
-                ids.forEach(id => set.add(id));
-            });
+            rangeObjects.forEach(uuid => sortedRangeObjects.add(uuid));
 
             ud.replaceSelectionWithGroupsAndObjects?.(sortedRangeGroups, sortedRangeObjects, {
                 anchorMode: 'default',
@@ -192,26 +146,20 @@ export function handleSceneItemClick(e: MouseEvent, el: HTMLElement): void {
     scenePanelState.lastClickedItem = clickedRow;
 
     let groupIds: Set<string> | null = null;
-    let meshToIds: Map<Object3D, Set<number>> | null = null;
+    let objectUuids: Set<string> | null = null;
 
     if (el.dataset.displayType === 'group') {
         const groupId = el.dataset.groupId;
         if (groupId) groupIds = new Set([groupId]);
     } else {
-        const uuidToInstance = ud.objectUuidToInstance;
         const uuid = el.dataset.uuid;
-        if (uuidToInstance && uuid) {
-            const inst = uuidToInstance.get(uuid);
-            if (inst) {
-                meshToIds = new Map([[inst.mesh, new Set([inst.instanceId])]]);
-            }
-        }
+        if (uuid && ud.objectUuidToInstance?.has(uuid)) objectUuids = new Set([uuid]);
     }
 
     if (additive || boxSelect) {
-        ud.addOrToggleInSelection?.(groupIds, meshToIds);
+        ud.addOrToggleInSelection?.(groupIds, objectUuids);
     } else {
-        ud.replaceSelectionWithGroupsAndObjects?.(groupIds || new Set(), meshToIds || new Map(), {
+        ud.replaceSelectionWithGroupsAndObjects?.(groupIds || new Set(), objectUuids || new Set(), {
             anchorMode: 'default',
             primaryIsRangeStart: true
         });
@@ -242,10 +190,8 @@ export function syncScenePanelSelection(sel: ScenePanelSelectionState | null, ex
             if (sel.groups?.has(row.id)) el.classList.add('selected');
             if (sel.primary?.type === 'group' && sel.primary.id === row.id) newPrimaryEl = el;
         } else {
-            const instance = ud.objectUuidToInstance?.get(row.id);
-            if (!instance) continue;
-            if (sel.objects?.get(instance.mesh)?.has(instance.instanceId)) el.classList.add('selected');
-            if (sel.primary?.type === 'object' && sel.primary.mesh === instance.mesh && sel.primary.instanceId === instance.instanceId) newPrimaryEl = el;
+            if (sel.objects?.has(row.id)) el.classList.add('selected');
+            if (sel.primary?.type === 'object' && sel.primary.uuid === row.id) newPrimaryEl = el;
         }
     }
 

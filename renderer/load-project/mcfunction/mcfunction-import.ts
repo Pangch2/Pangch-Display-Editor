@@ -215,7 +215,7 @@ export async function prepareMcfunctionFiles(files: File[]): Promise<PreparedSce
         if (result.project.children.length) imports.push({
             // Import transport keeps precision; save-time rounding applies only when the user saves.
             file: new File([gzipSync(encodeProjectArchive(strToU8(JSON.stringify([result.project]))))], 'mcfunction.pbde'),
-            expectedObjects: result.project.children[0].children.length
+            expectedObjects: result.objectCount
         });
     }
     if (issues.length) window.alert('가져오기에서 제외한 summon:\n' + issues.join('\n'));
@@ -307,7 +307,40 @@ async function displayNode(type: string, nbt: Compound): Promise<PdeNode | undef
     return node;
 }
 
-export async function parseMcfunction(source: string, name = 'mcfunction'): Promise<{ project: PdeProject; issues: McfunctionIssue[] }> {
+function groupTaggedNodes(nodes: PdeNode[]): PdeNode[] {
+    const entries = nodes.map(node => {
+        const nbt = parseSnbt(node.nbt || '{}') as Compound;
+        const tags = new Set(Array.isArray(nbt.Tags) && nbt.Tags.every(tag => typeof tag === 'string') ? nbt.Tags as string[] : []);
+        return { node, nbt, tags };
+    });
+    const byTag = new Map<string, typeof entries>();
+    for (const entry of entries) for (const tag of entry.tags) {
+        if (!byTag.has(tag)) byTag.set(tag, []);
+        byTag.get(tag)!.push(entry);
+    }
+    const grouped = new Map<PdeNode, PdeNode>(), assigned = new Set<PdeNode>();
+    // Each object has one parent; larger shared tag sets form the outer groups.
+    for (const tagged of [...byTag.values()].sort((a, b) => b.length - a.length)) {
+        const members = tagged.filter(({ node }) => !assigned.has(node));
+        if (members.length < 2) continue;
+        const commonTags = [...members[0].tags].filter(tag => members.every(entry => entry.tags.has(tag)));
+        for (const { node, nbt } of members) {
+            const remaining = (nbt.Tags as string[]).filter(tag => !commonTags.includes(tag));
+            if (remaining.length) nbt.Tags = remaining;
+            else delete nbt.Tags;
+            node.nbt = Object.keys(nbt).length ? stringifySnbt(nbt) : '';
+            assigned.add(node);
+        }
+        grouped.set(members[0].node, {
+            uuid: MathUtils.generateUUID(), name: commonTags.join(', ') || 'Tags', isCollection: true,
+            transforms: new Matrix4().toArray(), nbt: stringifySnbt({ Tags: commonTags }),
+            children: groupTaggedNodes(members.map(({ node }) => node))
+        });
+    }
+    return nodes.flatMap(node => grouped.has(node) ? [grouped.get(node)!] : assigned.has(node) ? [] : [node]);
+}
+
+export async function parseMcfunction(source: string, name = 'mcfunction'): Promise<{ project: PdeProject; issues: McfunctionIssue[]; objectCount: number }> {
     const children: PdeNode[] = [], issues: McfunctionIssue[] = [];
     const lines = source.replace(/^\uFEFF/, '').split(/\r?\n/);
     for (let index = 0; index < lines.length; index++) {
@@ -352,6 +385,6 @@ export async function parseMcfunction(source: string, name = 'mcfunction'): Prom
         } catch (error) { issues.push({ line, message: error instanceof Error ? error.message : String(error) }); }
     }
     return { project: { pdeFormatVersion: 1, name, mainNBT: '', nbt: '', children: children.length ? [{
-        uuid: MathUtils.generateUUID(), name, isCollection: true, transforms: new Matrix4().toArray(), children
-    }] : [], editorState: { version: 1, objects: [], groups: [], hiddenObjectUuids: [], hiddenGroupIds: [], objectMirrorPairs: [], groupMirrorPairs: [] } }, issues };
+        uuid: MathUtils.generateUUID(), name, isCollection: true, transforms: new Matrix4().toArray(), children: groupTaggedNodes(children)
+    }] : [], editorState: { version: 1, objects: [], groups: [], hiddenObjectUuids: [], hiddenGroupIds: [], objectMirrorPairs: [], groupMirrorPairs: [] } }, issues, objectCount: children.length };
 }

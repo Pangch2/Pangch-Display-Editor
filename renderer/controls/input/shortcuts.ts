@@ -49,6 +49,8 @@ export const shortcutDefinitions = [
   { id: 'animationNextTick', category: '애니메이션', label: '1틱 앞으로 이동', defaults: ['ArrowRight'] },
   { id: 'animationPreviousKey', category: '애니메이션', label: '이전 키프레임', defaults: ['Ctrl+ArrowLeft'] },
   { id: 'animationNextKey', category: '애니메이션', label: '다음 키프레임', defaults: ['Ctrl+ArrowRight'] },
+  { id: 'animationCameraKey', category: '애니메이션', label: '현재 구도로 카메라 키 추가', defaults: ['Shift+C'] },
+  { id: 'animationCameraEdit', category: '애니메이션', label: '미리보기 구도에서 카메라 편집', defaults: ['Shift+V'] },
 ] as const;
 
 export type ShortcutId = typeof shortcutDefinitions[number]['id'];
