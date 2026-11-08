@@ -1,4 +1,5 @@
-import { InstancedBufferAttribute, Matrix4, type InstancedMesh, type InterleavedBufferAttribute } from 'three/webgpu';
+import { InstancedBufferAttribute, Matrix4, type InterleavedBufferAttribute } from 'three/webgpu';
+import type { ObjectBatch } from '../../scene-store/object-batch';
 
 const attributeName = 'pdeModelTransform';
 
@@ -8,7 +9,7 @@ function rowStart(attribute: InstancedBufferAttribute | InterleavedBufferAttribu
     return interleaved.isInterleavedBufferAttribute ? instanceId * interleaved.data.stride + interleaved.offset : instanceId * 16;
 }
 
-export function setInstanceModelTransform(mesh: InstancedMesh, instanceId: number, transform?: ArrayLike<number>): void {
+export function setInstanceModelTransform(mesh: ObjectBatch, instanceId: number, transform?: ArrayLike<number>): void {
     let attribute = mesh.geometry.getAttribute(attributeName) as InstancedBufferAttribute | InterleavedBufferAttribute | undefined;
     if (!attribute && !transform) return;
     if (!attribute) {
@@ -23,16 +24,16 @@ export function setInstanceModelTransform(mesh: InstancedMesh, instanceId: numbe
     attribute.needsUpdate = true;
 }
 
-export function getInstanceModelTransform(mesh: InstancedMesh, instanceId: number, out = new Matrix4()): Matrix4 {
+export function getInstanceModelTransform(mesh: ObjectBatch, instanceId: number, out = new Matrix4()): Matrix4 {
     const attribute = mesh.geometry.getAttribute(attributeName) as InstancedBufferAttribute | InterleavedBufferAttribute | undefined;
     return attribute ? out.fromArray(attribute.array, rowStart(attribute, instanceId)) : out.identity();
 }
 
-export function removeInstanceModelTransform(mesh: InstancedMesh, instanceId: number, matrix: Matrix4): Matrix4 {
+export function removeInstanceModelTransform(mesh: ObjectBatch, instanceId: number, matrix: Matrix4): Matrix4 {
     return matrix.multiply(getInstanceModelTransform(mesh, instanceId).invert());
 }
 
-export function changeInstanceModelTransform(mesh: InstancedMesh, instanceId: number, matrix: Matrix4, oldModel: Matrix4, newModel: Matrix4): void {
+export function changeInstanceModelTransform(mesh: ObjectBatch, instanceId: number, matrix: Matrix4, oldModel: Matrix4, newModel: Matrix4): void {
     const base = new Matrix4().fromArray(mesh.userData.pbdeModelMatrix ?? oldModel.elements);
     const delta = base.clone().multiply(oldModel.clone().invert()).multiply(newModel).multiply(base.clone().invert());
     matrix.multiply(delta);

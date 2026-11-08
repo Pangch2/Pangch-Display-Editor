@@ -1,40 +1,25 @@
-import { BufferAttribute, BufferGeometry, Frustum, IndirectStorageBufferAttribute, InstancedInterleavedBuffer, InterleavedBufferAttribute, Matrix4, Mesh, Sphere,
-    StorageBufferAttribute, Vector3, Vector4 } from 'three/webgpu';
-import type { Box3, Camera, InstancedMesh, Material, WebGPURenderer } from 'three/webgpu';
-import { dragDeltaMatrix, dragSelectedAttributeName, entityVisibleAttributeName } from '../entity-material';
+import { BufferAttribute, BufferGeometry, Frustum, IndirectStorageBufferAttribute, Matrix4, Mesh, Sphere, StorageBufferAttribute, Vector3, Vector4 } from 'three/webgpu';
+import type { Box3, Camera, Material, WebGPURenderer } from 'three/webgpu';
+import type { ObjectBatch } from '../scene-store/object-batch';
+import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
 import { buildDrawRanges, cullBucketCount, drawRangesOf, shapeKeyOf, type DrawRange, type DrawRecord } from './cull-geometry';
 import { createCullKernels, cullWorkgroupSize, noMember, type CullKernels } from './cull-compute';
 import type { PooledLayout } from './pool-instance';
-import { rowViewBuffers, takeInstanceRows } from '../scene-store/object-access';
+import { takeInstanceRows } from '../scene-store/object-access';
+import { sealBatch, type RowLayout, type RowRange } from '../scene-store/row-store';
 
-/** A per-instance source buffer: an instanced attribute, an instanced interleaved buffer, the matrix or the color. */
-type InstanceSource = { array: Float32Array; version: number; updateRanges: { start: number; count: number }[]; clearUpdateRanges(): void };
-type RowSource = { source: InstanceSource; stride: number; rowOffset: number; version: number };
-type LayoutDesc = { key: string; vertex: [string, number][]; sources: Omit<RowSource, 'version'>[]; offsets: Map<string, number>; rowStride: number };
 /** Pooled vertices and bucket-sorted indices of one geometry content, shared by every member drawing it. */
 type Shape = { key: string; refs: number; vertexStart: number; vertexCount: number; indexStart: number; indexCount: number; records: DrawRecord[]; bucketMask: number };
 type Member = {
-    mesh: InstancedMesh; layout: Layout; id: number; slotStart: number; capacity: number; sources: RowSource[];
-    slotKey: string; shapeStamp: string; shape: Shape;
+    batch: ObjectBatch; layout: Layout; id: number; range: RowRange;
+    shapeStamp: string; shape: Shape;
     materials: Material[]; ranges: Map<Material, number[]>; call: number;
-    /** Every source spans the full capacity, so the rows can hold all of its data. */
-    adoptable: boolean;
-    adoption?: Adoption;
-};
-/**
- * A member whose per-instance data lives only in the pool rows: its matrix, color and instanced attributes are
- * views (one interleaved buffer over its slots) and the original sources' arrays are dropped until it is released.
- */
-type Adoption = {
-    view: InstancedInterleavedBuffer; version: number; geometry: BufferGeometry;
-    instanceMatrix: InstancedMesh['instanceMatrix']; instanceColor: InstancedMesh['instanceColor'];
-    attributes: Map<string, BufferAttribute | InterleavedBufferAttribute>;
-    sources: { source: InstanceSource; stride: number; rowOffset: number; items: number }[];
+    /** Row view version uploaded last; -1 uploads the whole range. */
+    viewVersion: number;
 };
 type Proxy = Mesh & { pdeLayout: Layout; instanceColor: unknown };
 export type Batch = { material: Material; proxy: Proxy; offsets: number[]; call: number; groupOrder: number; renderOrder: number; clippingContext: unknown };
 
-const rowColorOffset = 16;
 const sweepInterval = 120;
 const projectionView = new Matrix4();
 const frustum = new Frustum();
@@ -42,78 +27,21 @@ const sphere = new Sphere();
 const cameraVector = new Vector4();
 const cameraAxis = new Vector3();
 
-/** Mesh-local [dragSelected, entityVisible] views as setEntityStateAttributes lays them out. */
-function entityStateOf(geometry: InstancedMesh['geometry']) {
-    const visible = geometry.getAttribute(entityVisibleAttributeName);
-    return visible?.isInterleavedBufferAttribute && visible.data.stride === 2 && visible.offset === 1 ? visible : null;
-}
-
-const isInstanced = (attribute): boolean => attribute.isInstancedBufferAttribute === true || attribute.data?.isInstancedInterleavedBuffer === true;
-const materialsOf = (mesh: InstancedMesh): Material[] => Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-const attached = (object): boolean => {
-    while (object.parent) object = object.parent;
-    return object.isScene === true;
-};
-
-/** What decides the member's slots and row layout; a change re-registers the mesh. */
-function slotKeyOf(mesh: InstancedMesh): string {
-    let key = `${mesh.instanceMatrix.id}:${mesh.instanceMatrix.count}|${mesh.instanceColor?.id ?? '-'}`;
-    for (const name in mesh.geometry.attributes) {
-        const attribute = mesh.geometry.attributes[name];
-        key += `|${name}:${!isInstanced(attribute) ? attribute.itemSize : attribute.isInterleavedBufferAttribute ? `${attribute.data.uuid}@${attribute.offset}` : attribute.id}`;
-    }
-    return key;
-}
+const materialsOf = (batch: ObjectBatch): Material[] => Array.isArray(batch.material) ? batch.material : [batch.material];
 
 /** What decides the member's shape (pooled vertices and sorted indices); a change swaps the shape only. */
-function shapeStampOf(mesh: InstancedMesh): string {
-    const { geometry } = mesh;
+function shapeStampOf(batch: ObjectBatch): string {
+    const { geometry } = batch;
     let key = `${geometry.id}|${geometry.index.id}:${geometry.index.version}|`;
     for (const group of geometry.groups) key += `${group.start},${group.count},${group.materialIndex};`;
-    for (const material of materialsOf(mesh)) key += material ? `|${material.side}${material.transparent ? 1 : 0}` : '|-';
+    for (const material of materialsOf(batch)) key += material ? `|${material.side}${material.transparent ? 1 : 0}` : '|-';
     for (const name in geometry.attributes) {
         const attribute = geometry.attributes[name];
-        if (!isInstanced(attribute)) key += `|${attribute.isInterleavedBufferAttribute ? attribute.data.uuid : attribute.id}@${(attribute.data ?? attribute).version}`;
+        if (!attribute.data?.isInstancedInterleavedBuffer && !attribute.isInstancedBufferAttribute) {
+            key += `|${attribute.isInterleavedBufferAttribute ? attribute.data.uuid : attribute.id}@${(attribute.data ?? attribute).version}`;
+        }
     }
     return key;
-}
-
-/** Row = instance matrix (16) + color (3, white without one) + each instanced buffer whole; null if it can't be pooled. */
-function describe(mesh: InstancedMesh): LayoutDesc | null {
-    const { geometry, instanceMatrix, instanceColor } = mesh;
-    if (!(instanceMatrix.array instanceof Float32Array) || (instanceColor && !(instanceColor.array instanceof Float32Array))) return null;
-    if (geometry.getAttribute('position')?.itemSize !== 3) return null;
-    const vertex: [string, number][] = [];
-    const buffers = new Map<InstanceSource, { stride: number; views: [string, number, number][] }>();
-    for (const name of Object.keys(geometry.attributes).sort()) {
-        const attribute = geometry.attributes[name];
-        if (!isInstanced(attribute)) {
-            vertex.push([name, attribute.itemSize]);
-            continue;
-        }
-        const interleaved = attribute.isInterleavedBufferAttribute === true;
-        const source = interleaved ? attribute.data : attribute;
-        if (!(source.array instanceof Float32Array) || attribute.normalized) return null;
-        let entry = buffers.get(source);
-        if (!entry) buffers.set(source, entry = { stride: interleaved ? source.stride : attribute.itemSize, views: [] });
-        entry.views.push([name, interleaved ? attribute.offset : 0, attribute.itemSize]);
-    }
-    const sources: LayoutDesc['sources'] = [{ source: instanceMatrix, stride: 16, rowOffset: 0 }];
-    if (instanceColor) sources.push({ source: instanceColor, stride: 3, rowOffset: rowColorOffset });
-    const offsets = new Map<string, number>();
-    let rowStride = rowColorOffset + 3;
-    let key = vertex.map(([name, size]) => `${name}:${size}`).join(',') + '|';
-    for (const [source, { stride, views }] of buffers) {
-        sources.push({ source, stride, rowOffset: rowStride });
-        for (const [name, offset, size] of views) {
-            offsets.set(name, rowStride + offset);
-            key += `${name}@${offset}:${size},`;
-        }
-        key += `/${stride}|`;
-        rowStride += stride;
-    }
-    if (offsets.get(dragSelectedAttributeName) !== offsets.get(entityVisibleAttributeName)! - 1) return null;
-    return { key, vertex, sources, offsets, rowStride };
 }
 
 /** A larger copy of `old` (contents kept); the old GPU buffer is released. */
@@ -130,9 +58,12 @@ function grown<T extends Float32Array | Uint32Array>(old: BufferAttribute | null
 
 const growth = (needed: number, current: number) => Math.max(needed, current * 2);
 
-/** Instances, vertices and draws of every member sharing one vertex and row layout. */
+/**
+ * The GPU side of one row layout: its rows uploaded as they are, the slot table, pooled vertices, cull buffers
+ * and draws of every member.
+ */
 class Layout implements PooledLayout {
-    readonly key: string;
+    readonly rowLayout: RowLayout;
     readonly vertex: [string, number][];
     readonly rowStride: number;
     readonly offsets: Map<string, number>;
@@ -144,57 +75,34 @@ class Layout implements PooledLayout {
     index: BufferAttribute | null = null;
     vertexCapacity = 0; vertexEnd = 0; vertexFreed = 0;
     indexCapacity = 0; indexEnd = 0;
-    slotCapacity = 0; slotEnd = 0; slotFreed = 0;
+    slotCapacity = 0;
     memberCapacity = 0;
-    rows: BufferAttribute; slotMember: BufferAttribute; masks: BufferAttribute; blockCounts: BufferAttribute; visibleIds: BufferAttribute;
+    rows: BufferAttribute | null = null;
+    slotMember: BufferAttribute | null = null; masks: BufferAttribute | null = null; blockCounts: BufferAttribute | null = null; visibleIds: BufferAttribute | null = null;
     memberInfo: BufferAttribute; memberBounds: BufferAttribute; memberWorld: BufferAttribute; segments: BufferAttribute;
     records: BufferAttribute = new StorageBufferAttribute(new Uint32Array(4), 4);
     args: BufferAttribute = new IndirectStorageBufferAttribute(new Uint32Array(5), 5);
     recordCount = 0;
-    recordsDirty = true; geometryDirty = false; compact = false; grewSlots = false;
+    recordsDirty = true; geometryDirty = false;
+    /** Members came or went: the slot table is rewritten. */
+    slotsDirty = true;
+    private rowVersion = -1;
     /** Bumped by every change the cull pass reads. */
     version = 0;
     frameKey = '';
     call = -1;
 
-    constructor(desc: LayoutDesc) {
-        this.key = desc.key;
-        this.vertex = desc.vertex;
-        this.rowStride = desc.rowStride;
-        this.offsets = desc.offsets;
-        this.entityOffset = desc.offsets.get(dragSelectedAttributeName)!;
-        this.growSlots(cullWorkgroupSize);
+    constructor(rowLayout: RowLayout) {
+        this.rowLayout = rowLayout;
+        this.vertex = rowLayout.vertex;
+        this.rowStride = rowLayout.rowStride;
+        this.offsets = rowLayout.offsets;
+        this.entityOffset = rowLayout.offsets.get(dragSelectedAttributeName)!;
         this.growMembers(8);
     }
 
-    private growSlots(capacity: number): void {
-        this.rows = grown(this.rows, Float32Array, capacity, this.rowStride);
-        this.slotMember = grown(this.slotMember, Uint32Array, capacity, 1, StorageBufferAttribute, noMember);
-        this.slotCapacity = capacity;
-        // Adopted members read and write the rows through views: point them at the new array.
-        for (const member of this.members) if (member?.adoption) member.adoption.view.array = this.rowsOf(member.slotStart, member.capacity);
-    }
-
-    rowsOf(slotStart: number, capacity: number): Float32Array {
-        return (this.rows.array as Float32Array).subarray(slotStart * this.rowStride, (slotStart + capacity) * this.rowStride);
-    }
-
-    /**
-     * After a call's registrations, before anything uploads: trims the doubling slack to 1/8 and sizes the
-     * GPU-only cull buffers (written by every cull run, so nothing to keep).
-     */
-    fitSlots(): void {
-        if (this.grewSlots) {
-            this.grewSlots = false;
-            const fitted = Math.ceil(Math.max(this.slotEnd * 9 / 8, 1) / cullWorkgroupSize) * cullWorkgroupSize;
-            if (fitted < this.slotCapacity) this.growSlots(fitted);
-            this.version++;
-        }
-        if (this.masks?.count === this.slotCapacity) return;
-        for (const buffer of [this.masks, this.visibleIds, this.blockCounts]) buffer?.dispose();
-        this.masks = new StorageBufferAttribute(new Uint32Array(this.slotCapacity), 1);
-        this.visibleIds = new StorageBufferAttribute(new Uint32Array(this.slotCapacity * cullBucketCount), 1);
-        this.blockCounts = new StorageBufferAttribute(new Uint32Array(this.slotCapacity / cullWorkgroupSize * cullBucketCount), 1);
+    get slotEnd(): number {
+        return this.rowLayout.end;
     }
 
     private growMembers(capacity: number): void {
@@ -206,75 +114,93 @@ class Layout implements PooledLayout {
         this.memberCapacity = capacity;
     }
 
-    /** First slot of `count` new slots, or null past the storage binding limit. */
-    allocateSlots(count: number, maxBindingSize: number): number | null {
-        const end = this.slotEnd + count;
-        if (end > this.slotCapacity) {
-            const bytes = (slots: number) => slots * Math.max(this.rowStride, cullBucketCount) * 4;
-            const round = (slots: number) => Math.ceil(slots / cullWorkgroupSize) * cullWorkgroupSize;
-            let capacity = round(growth(end, this.slotCapacity));
-            if (bytes(capacity) > maxBindingSize) capacity = round(end);
-            if (bytes(capacity) > maxBindingSize) return null;
-            this.growSlots(capacity);
-            this.grewSlots = true;
-        }
-        const start = this.slotEnd;
-        this.slotEnd = end;
-        return start;
-    }
-
     addMember(member: Omit<Member, 'id'>): Member {
         let id = this.members.indexOf(null);
         if (id < 0) id = this.members.length;
         if (id >= this.memberCapacity) this.growMembers(this.memberCapacity * 2);
         const added = { ...member, id } as Member;
         this.members[id] = added;
-        const { slotStart, capacity } = added;
-        (this.slotMember.array as Uint32Array).fill(id, slotStart, slotStart + capacity);
-        this.slotMember.addUpdateRange(slotStart, capacity);
-        this.slotMember.needsUpdate = true;
-        if (!added.mesh.instanceColor) {
-            const rows = this.rows.array as Float32Array;
-            for (let slot = slotStart; slot < slotStart + capacity; slot++) rows.fill(1, slot * this.rowStride + rowColorOffset, slot * this.rowStride + rowColorOffset + 3);
-            this.markRows(slotStart * this.rowStride, capacity * this.rowStride);
-        }
-        (this.memberInfo.array as Uint32Array).set([slotStart, capacity, 0, 0], id * 4);
-        this.memberInfo.needsUpdate = true;
-        this.recordsDirty = true;
+        this.slotsDirty = this.recordsDirty = true;
         this.version++;
         return added;
     }
 
     removeMember(member: Member): void {
         this.members[member.id] = null;
-        const { slotStart, capacity } = member;
-        (this.slotMember.array as Uint32Array).fill(noMember, slotStart, slotStart + capacity);
-        this.slotMember.addUpdateRange(slotStart, capacity);
-        this.slotMember.needsUpdate = true;
         (this.memberInfo.array as Uint32Array).fill(0, member.id * 4, member.id * 4 + 4);
         this.memberInfo.needsUpdate = true;
-        if (slotStart + capacity === this.slotEnd) this.slotEnd = slotStart;
-        else this.slotFreed += capacity;
         this.releaseShape(member.shape);
-        this.recordsDirty = true;
+        this.slotsDirty = this.recordsDirty = true;
         this.version++;
-        if (this.slotFreed * 2 > this.slotEnd || this.vertexFreed * 2 > this.vertexEnd) this.compact = true;
     }
 
+    /**
+     * Before anything uploads: follows the row store (array replaced, slots allocated, freed or moved) and
+     * rewrites the slot table and member slots when they changed.
+     */
+    sync(): void {
+        const { rowLayout } = this;
+        rowLayout.fit();
+        const moved = this.rows?.array !== rowLayout.rows;
+        if (moved) {
+            // A new attribute uploads the whole array.
+            this.rows?.dispose();
+            this.rows = new StorageBufferAttribute(rowLayout.rows, this.rowStride);
+        }
+        if (!moved && !this.slotsDirty && this.rowVersion === rowLayout.version) return;
+        this.slotsDirty = false;
+        this.rowVersion = rowLayout.version;
+        const capacity = Math.ceil(Math.max(rowLayout.capacity, 1) / cullWorkgroupSize) * cullWorkgroupSize;
+        if (capacity !== this.slotCapacity) {
+            for (const buffer of [this.slotMember, this.masks, this.visibleIds, this.blockCounts]) buffer?.dispose();
+            this.slotMember = new StorageBufferAttribute(new Uint32Array(capacity), 1);
+            // GPU-only cull buffers: written by every cull run, so nothing to keep.
+            this.masks = new StorageBufferAttribute(new Uint32Array(capacity), 1);
+            this.visibleIds = new StorageBufferAttribute(new Uint32Array(capacity * cullBucketCount), 1);
+            this.blockCounts = new StorageBufferAttribute(new Uint32Array(capacity / cullWorkgroupSize * cullBucketCount), 1);
+            this.slotCapacity = capacity;
+        }
+        const slots = this.slotMember!.array as Uint32Array;
+        const info = this.memberInfo.array as Uint32Array;
+        slots.fill(noMember);
+        for (const member of this.members) {
+            if (!member) continue;
+            const { start, capacity: count } = member.range;
+            slots.fill(member.id, start, start + count);
+            info[member.id * 4] = start;
+            info[member.id * 4 + 1] = count;
+        }
+        this.slotMember!.needsUpdate = true;
+        this.memberInfo.needsUpdate = true;
+        // Compaction moves rows in place: upload them whole.
+        if (!moved && rowLayout.moves !== this.moves) {
+            this.rows!.clearUpdateRanges();
+            this.rows!.needsUpdate = true;
+        }
+        this.moves = rowLayout.moves;
+        this.recordsDirty = true;
+        this.version++;
+    }
+
+    private moves = -1;
+
+    /** Uploads rows [start, start + count) (floats) of the store array; a replaced array uploads whole anyway. */
     markRows(start: number, count: number): void {
-        const ranges = this.rows.updateRanges;
+        const rows = this.rows;
+        if (rows?.array !== this.rowLayout.rows) return;
+        const ranges = rows.updateRanges;
         // Past a few dozen ranges one covering write is cheaper than many small ones.
         if (ranges.length >= 64) {
             const first = Math.min(start, ...ranges.map(range => range.start));
             const last = Math.max(start + count, ...ranges.map(range => range.start + range.count));
-            this.rows.clearUpdateRanges();
-            this.rows.addUpdateRange(first, last - first);
-        } else this.rows.addUpdateRange(start, count);
-        this.rows.needsUpdate = true;
+            rows.clearUpdateRanges();
+            rows.addUpdateRange(first, last - first);
+        } else rows.addUpdateRange(start, count);
+        rows.needsUpdate = true;
         this.version++;
     }
 
-    addShape(geometry: InstancedMesh['geometry'], ranges: DrawRange[]): Shape {
+    addShape(geometry: BufferGeometry, ranges: DrawRange[]): Shape {
         const key = shapeKeyOf(geometry, ranges, this.vertex.map(([name]) => name));
         const existing = this.shapes.get(key);
         if (existing) {
@@ -351,12 +277,12 @@ class Layout implements PooledLayout {
 
     /**
      * One draw record per (run, range, bucket). A run is a stretch of slot-adjacent members drawing the same
-     * shape and range, so chunks of one model draw once: its instances are the visible slots between the run's
+     * shape and range, so batches of one model draw once: its instances are the visible slots between the run's
      * first member start and last member end.
      */
     buildRecords(): void {
         this.recordsDirty = false;
-        const ordered = this.members.filter((member): member is Member => member !== null).sort((a, b) => a.slotStart - b.slotStart);
+        const ordered = this.members.filter((member): member is Member => member !== null).sort((a, b) => a.range.start - b.range.start);
         const previous = new Map(ordered.map((member, index) => [member, ordered[index - 1]]));
         const args: number[] = [], records: number[] = [];
         for (const batch of this.batches.values()) {
@@ -403,247 +329,116 @@ class Layout implements PooledLayout {
 }
 
 /**
- * Content InstancedMeshes registered as members of layout pools. A member's per-instance data is copied into
- * its rows once; after that the mesh is adopted and reads and writes the rows directly (see Adoption).
+ * Draws content batches: each is sealed into the row store on its first draw and becomes a member of the GPU
+ * layout of its row layout. Rows are uploaded from the store's arrays; the pool keeps no copy of them.
  */
 export class DrawPool {
-    readonly members = new Map<InstancedMesh, Member>();
-    readonly layouts = new Map<string, Layout>();
-    private readonly rejected = new WeakMap<InstancedMesh, string>();
+    readonly members = new Map<ObjectBatch, Member>();
+    readonly layouts = new Map<RowLayout, Layout>();
+    private readonly rejected = new WeakSet<ObjectBatch>();
     private readonly hooked = new WeakSet<object>();
-    /** A geometry shared by two meshes is never adopted: its attribute views would belong to one of them. */
-    private readonly geometryOwners = new WeakMap<BufferGeometry, InstancedMesh>();
-    private readonly sharedGeometries = new WeakSet<BufferGeometry>();
     private kernels: CullKernels | null = null;
     private call = 0;
-
-    private readonly maxBindingSize: number;
-
-    constructor(maxBindingSize: number) {
-        this.maxBindingSize = maxBindingSize;
-    }
 
     /** Starts a render (or compile) call. */
     beginCall(): void {
         this.call++;
-        for (const layout of [...this.layouts.values()]) if (layout.compact) this.dropLayout(layout);
+        // Fragmented vertex pools are rebuilt: the layout's members join a new one on their next push.
+        for (const layout of [...this.layouts.values()]) if (layout.vertexFreed * 2 > layout.vertexEnd) this.dropLayout(layout);
         if (this.call % sweepInterval) return;
+        // Batches no longer drawn (removed, other tabs, freed) leave; their rows stay in the store.
         for (const member of [...this.members.values()]) {
-            if (member.call < this.call - sweepInterval && !attached(member.mesh)) this.release(member, true);
+            if (member.call < this.call - sweepInterval) this.removeMember(member);
         }
     }
 
-    /** Takes a render item of a content mesh; false leaves it to the regular pipeline. */
-    push(object, geometry, material: Material, groupOrder: number, clippingContext): boolean {
-        const mesh = object as InstancedMesh;
-        if (mesh.isInstancedMesh !== true || material.wireframe || !geometry.index) return false;
-        if (!this.members.get(mesh)?.adoption && !entityStateOf(geometry)) return false;
-        if (geometry.drawRange.start !== 0 || geometry.drawRange.count !== Infinity) return false;
-        if (clippingContext.unionPlanes?.length || clippingContext.intersectionPlanes?.length) return false;
-        let member = this.members.get(mesh);
-        if (member?.call !== this.call) {
-            member = this.update(mesh, member);
-            if (!member) return false;
+    /** Draws a content batch in this call; false when it cannot be pooled (nothing else draws it). */
+    push(batch: ObjectBatch, groupOrder: number, clippingContext): boolean {
+        const { geometry } = batch;
+        if (batch.disposed || !geometry.index || geometry.drawRange.start !== 0 || geometry.drawRange.count !== Infinity) return false;
+        const range = sealBatch(batch);
+        if (!range) {
+            if (!this.rejected.has(batch)) console.warn('[draw-pool] A content batch could not be stored in rows and is not drawn.', batch.uuid);
+            this.rejected.add(batch);
+            return false;
         }
-        const layout = member.layout;
+        let member = this.members.get(batch);
+        if (member && member.range !== range) {
+            this.removeMember(member);
+            member = undefined;
+        }
+        member ??= this.addMember(batch, range);
+        if (member.call !== this.call) this.update(member);
+        const { layout } = member;
         layout.call = this.call;
-        const batch = layout.batches.get(material) ?? this.createBatch(layout, material);
-        if (batch.call !== this.call) {
-            batch.call = this.call;
-            batch.groupOrder = groupOrder;
-            batch.clippingContext = clippingContext;
-            batch.renderOrder = mesh.renderOrder;
-        } else batch.renderOrder = Math.max(batch.renderOrder, mesh.renderOrder);
+        for (const material of member.materials) {
+            if (!material?.visible) continue;
+            const entry = layout.batches.get(material) ?? this.createBatch(layout, material);
+            if (entry.call !== this.call) {
+                entry.call = this.call;
+                entry.groupOrder = groupOrder;
+                entry.clippingContext = clippingContext;
+                entry.renderOrder = batch.renderOrder;
+            } else entry.renderOrder = Math.max(entry.renderOrder, batch.renderOrder);
+        }
         return true;
     }
 
-    /** First push of the mesh in this call: (re)register on structural changes, then copy changed rows. */
-    private update(mesh: InstancedMesh, member: Member | undefined): Member | null {
-        const slotKey = slotKeyOf(mesh);
-        if (member && (member.slotKey !== slotKey || mesh.count > member.capacity)) {
-            this.release(member, true);
-            member = undefined;
-        }
-        if (!member) {
-            if (this.rejected.get(mesh) === slotKey) return null;
-            member = this.register(mesh, slotKey) ?? undefined;
-            if (!member) {
-                this.rejected.set(mesh, slotKey);
-                return null;
-            }
-        }
-        const { layout } = member;
-        const shapeStamp = shapeStampOf(mesh);
-        if (member.shapeStamp !== shapeStamp) {
-            // Vertex edits, group or material-side changes: same slots, new pooled shape.
-            const shape = layout.addShape(mesh.geometry, drawRangesOf(mesh.geometry, mesh.material));
-            layout.releaseShape(member.shape);
-            member.shape = shape;
-            member.shapeStamp = shapeStamp;
-        }
-        const materials = materialsOf(mesh);
-        if (materials.length !== member.materials.length || materials.some((material, index) => material !== member.materials[index])) {
-            member.materials = [...materials];
-            member.ranges = new Map();
-            drawRangesOf(mesh.geometry, mesh.material).forEach((range, index) => {
-                if (!range.material) return;
-                const ranges = member.ranges.get(range.material) ?? [];
-                member.ranges.set(range.material, [...ranges, index]);
-            });
-            layout.recordsDirty = true;
-        }
-        member.call = this.call;
-        if (member.adoption) this.markAdoptedRows(member);
-        else {
-            this.copyRows(member);
-            if (member.adoptable) this.adopt(member);
-        }
+    private addMember(batch: ObjectBatch, range: RowRange): Member {
+        let layout = this.layouts.get(range.layout);
+        if (!layout) this.layouts.set(range.layout, layout = new Layout(range.layout));
+        const shape = layout.addShape(batch.geometry, drawRangesOf(batch.geometry, batch.material));
+        const member = layout.addMember({ batch, layout, range, shapeStamp: shapeStampOf(batch), shape, materials: [], ranges: new Map(), call: -1, viewVersion: -1 });
+        this.members.set(batch, member);
         return member;
     }
 
-    private register(mesh: InstancedMesh, slotKey: string): Member | null {
-        const desc = describe(mesh);
-        if (!desc) return null;
-        const owner = this.geometryOwners.get(mesh.geometry);
-        if (owner && owner !== mesh) {
-            this.sharedGeometries.add(mesh.geometry);
-            const adopted = this.members.get(owner);
-            if (adopted?.adoption) this.release(adopted, true);
-        } else this.geometryOwners.set(mesh.geometry, mesh);
-        // Adopted meshes keep their whole capacity in rows: their own arrays go away. Others keep 1/8 room to
-        // append and re-register when they outgrow it.
-        const adoptable = !this.sharedGeometries.has(mesh.geometry)
-            && desc.sources.every(({ source, stride }) => source.array.length / stride === mesh.instanceMatrix.count);
-        const capacity = adoptable ? mesh.instanceMatrix.count
-            : Math.min(mesh.instanceMatrix.count, mesh.count + Math.max(16, Math.ceil(mesh.count / 8)));
-        if (!capacity) return null;
-        let layout = this.layouts.get(desc.key);
-        if (!layout) this.layouts.set(desc.key, layout = new Layout(desc));
-        const slotStart = layout.allocateSlots(capacity, this.maxBindingSize);
-        if (slotStart === null) {
-            if (!layout.members.some(Boolean)) this.dropLayout(layout);
-            return null;
-        }
-        const shape = layout.addShape(mesh.geometry, drawRangesOf(mesh.geometry, mesh.material));
-        const member = layout.addMember({
-            mesh, layout, slotStart, capacity, slotKey, shapeStamp: shapeStampOf(mesh), shape, adoptable,
-            sources: desc.sources.map(source => ({ ...source, version: -1 })), materials: [], ranges: new Map(), call: -1
-        });
-        this.members.set(mesh, member);
-        if (!this.hooked.has(mesh)) {
-            this.hooked.add(mesh);
-            mesh.addEventListener('dispose', () => {
-                const current = this.members.get(mesh);
-                if (current) this.release(current, false);
-            });
-        }
-        return member;
-    }
-
-    /** Frees the member's slots; `keepData` copies an adopted member's data back into its own arrays (not on dispose). */
-    private release(member: Member, keepData: boolean): void {
-        this.detach(member, keepData);
-        this.members.delete(member.mesh);
+    private removeMember(member: Member): void {
+        this.members.delete(member.batch);
         const { layout } = member;
         layout.removeMember(member);
         if (!layout.members.some(Boolean)) this.dropLayout(layout);
     }
 
-    /** Releases a layout's GPU data; its live members register again on their next push (compaction). */
+    /** Releases a layout's GPU data; its live members join a new one on their next push. */
     private dropLayout(layout: Layout): void {
-        for (const member of layout.members) if (member) {
-            this.detach(member, true);
-            this.members.delete(member.mesh);
-        }
+        for (const member of layout.members) if (member) this.members.delete(member.batch);
         layout.dispose();
-        this.layouts.delete(layout.key);
+        this.layouts.delete(layout.rowLayout);
     }
 
-    /** Copies the per-instance sources whose version changed into the member's rows. */
-    private copyRows(member: Member): void {
-        const { layout, slotStart, capacity } = member;
-        const rows = layout.rows.array as Float32Array;
-        const rowStride = layout.rowStride;
-        for (const entry of member.sources) {
-            const { source, stride, rowOffset } = entry;
-            if (source.version === entry.version) continue;
-            const items = Math.min(capacity, Math.floor(source.array.length / stride));
-            const marked = takeInstanceRows(source);
-            const spans = entry.version < 0 || !marked ? [[0, items]] : marked.map(([from, to]) => [from, Math.min(items, to)]);
-            const array = source.array;
-            for (const [from, to] of spans) {
-                if (to <= from) continue;
-                for (let item = from; item < to; item++) {
-                    const target = (slotStart + item) * rowStride + rowOffset;
-                    const start = item * stride;
-                    for (let component = 0; component < stride; component++) rows[target + component] = array[start + component];
-                }
-                layout.markRows((slotStart + from) * rowStride, (to - from) * rowStride);
-            }
-            // three never uploads pooled sources; drop ranges other writers left.
-            source.clearUpdateRanges();
-            entry.version = source.version;
+    /** First push of the member in this call: shape and material changes, then the rows written since the last upload. */
+    private update(member: Member): void {
+        const { batch, layout, range } = member;
+        const shapeStamp = shapeStampOf(batch);
+        if (member.shapeStamp !== shapeStamp) {
+            // Vertex edits, group or material-side changes: same slots, new pooled shape.
+            const shape = layout.addShape(batch.geometry, drawRangesOf(batch.geometry, batch.material));
+            layout.releaseShape(member.shape);
+            member.shape = shape;
+            member.shapeStamp = shapeStamp;
         }
-    }
-
-    /** Replaces the member's per-instance sources with views into its rows and drops their arrays. */
-    private adopt(member: Member): void {
-        const { mesh, layout } = member;
-        const { geometry } = mesh;
-        const view = new InstancedInterleavedBuffer(layout.rowsOf(member.slotStart, member.capacity), layout.rowStride, 1);
-        rowViewBuffers.add(view);
-        const attributes = new Map<string, BufferAttribute | InterleavedBufferAttribute>();
-        for (const name in geometry.attributes) {
-            const attribute = geometry.attributes[name];
-            if (!isInstanced(attribute)) continue;
-            attributes.set(name, attribute);
-            geometry.attributes[name] = new InterleavedBufferAttribute(view, attribute.itemSize, layout.offsets.get(name)!, attribute.normalized);
+        const materials = materialsOf(batch);
+        if (materials.length !== member.materials.length || materials.some((material, index) => material !== member.materials[index])) {
+            member.materials = [...materials];
+            member.ranges = new Map();
+            drawRangesOf(batch.geometry, batch.material).forEach((entry, index) => {
+                if (!entry.material) return;
+                member.ranges.set(entry.material, [...member.ranges.get(entry.material) ?? [], index]);
+            });
+            layout.recordsDirty = true;
         }
-        member.adoption = {
-            view, version: view.version, geometry, instanceMatrix: mesh.instanceMatrix, instanceColor: mesh.instanceColor, attributes,
-            sources: member.sources.map(({ source, stride, rowOffset }) => ({ source, stride, rowOffset, items: source.array.length / stride }))
-        };
-        mesh.instanceMatrix = new InterleavedBufferAttribute(view, 16, 0) as unknown as InstancedMesh['instanceMatrix'];
-        if (mesh.instanceColor) mesh.instanceColor = new InterleavedBufferAttribute(view, 3, rowColorOffset) as unknown as InstancedMesh['instanceColor'];
-        for (const { source } of member.adoption.sources) source.array = new Float32Array(0);
-        member.slotKey = slotKeyOf(mesh);
-    }
-
-    /** Restores an adopted member's original sources; with `copyData` their arrays are refilled from the rows. */
-    private detach(member: Member, copyData: boolean): void {
-        const { adoption, mesh, layout, slotStart } = member;
-        if (!adoption) return;
-        member.adoption = undefined;
-        const rows = layout.rows.array as Float32Array;
-        for (const { source, stride, rowOffset, items } of copyData ? adoption.sources : []) {
-            const array = new Float32Array(items * stride);
-            for (let item = 0; item < Math.min(items, member.capacity); item++) {
-                const from = (slotStart + item) * layout.rowStride + rowOffset;
-                array.set(rows.subarray(from, from + stride), item * stride);
-            }
-            source.array = array;
-            (source as unknown as { needsUpdate: boolean }).needsUpdate = true;
-        }
-        const isView = (attribute: unknown) => (attribute as InterleavedBufferAttribute | null)?.data === adoption.view;
-        if (isView(mesh.instanceMatrix)) mesh.instanceMatrix = adoption.instanceMatrix;
-        if (isView(mesh.instanceColor)) mesh.instanceColor = adoption.instanceColor;
-        // Attributes replaced since adoption stay; their views' values are superseded.
-        for (const [name, attribute] of adoption.attributes) {
-            if (isView(adoption.geometry.attributes[name])) adoption.geometry.attributes[name] = attribute;
-        }
-    }
-
-    /** Turns writes to an adopted member's rows into upload ranges: marked rows, or all of them after an unmarked change. */
-    private markAdoptedRows(member: Member): void {
-        const { layout, slotStart, capacity, adoption } = member;
-        const { view } = adoption!;
-        if (view.version === adoption!.version) return;
-        for (const [from, to] of takeInstanceRows(view) ?? [[0, capacity]]) {
-            const end = Math.min(capacity, to);
-            if (end > from) layout.markRows((slotStart + from) * layout.rowStride, (end - from) * layout.rowStride);
+        member.call = this.call;
+        const { view } = range;
+        if (view.version === member.viewVersion) return;
+        // A new member uploads its whole range; later only the marked rows (all of them after an unmarked write).
+        const marked = takeInstanceRows(view);
+        for (const [from, to] of member.viewVersion < 0 || !marked ? [[0, range.capacity]] : marked) {
+            const end = Math.min(range.capacity, to);
+            if (end > from) layout.markRows((range.start + from) * layout.rowStride, (end - from) * layout.rowStride);
         }
         view.clearUpdateRanges();
-        adoption!.version = view.version;
+        member.viewVersion = view.version;
     }
 
     private createBatch(layout: Layout, material: Material): Batch {
@@ -675,15 +470,15 @@ export class DrawPool {
         let infoChanged = false, boundsChanged = false, worldChanged = false;
         for (const member of layout.members) {
             if (!member) continue;
-            const { mesh, id } = member;
-            const count = Math.min(mesh.count, member.capacity);
+            const { batch, id } = member;
+            const count = Math.min(batch.count, member.range.capacity);
             const flags = (member.call === this.call ? 1 : 0) | member.shape.bucketMask << 1;
             if (info[id * 4 + 2] !== count || info[id * 4 + 3] !== flags) {
                 info[id * 4 + 2] = count;
                 info[id * 4 + 3] = flags;
                 infoChanged = true;
             }
-            const elements = mesh.matrixWorld.elements;
+            const elements = batch.matrixWorld.elements;
             for (let index = 0; index < 16; index++) {
                 if (world[id * 16 + index] !== elements[index]) {
                     world.set(elements, id * 16);
@@ -691,7 +486,7 @@ export class DrawPool {
                     break;
                 }
             }
-            const box = (mesh.geometry.boundingBox ?? (mesh.geometry.computeBoundingBox(), mesh.geometry.boundingBox)) as Box3;
+            const box = (batch.geometry.boundingBox ?? (batch.geometry.computeBoundingBox(), batch.geometry.boundingBox)) as Box3;
             box.getBoundingSphere(sphere);
             const values = [sphere.center.x, sphere.center.y, sphere.center.z, sphere.radius, box.min.x, box.min.y, box.min.z, 0, box.max.x, box.max.y, box.max.z, 0];
             if (values.some((value, index) => bounds[id * 12 + index] !== Math.fround(value))) {
@@ -735,11 +530,13 @@ export class DrawPool {
 
     /** Uploads this call's member state, culls every layout whose inputs changed, and returns the batches to draw. */
     finish(renderer: WebGPURenderer, camera: Camera): Batch[] {
+        // Freed rows (disposed batches) can be reused at once: their members leave before the slot table is rewritten.
+        for (const member of [...this.members.values()]) if (member.range.released) this.removeMember(member);
         const drawn: Batch[] = [];
         let cameraKey: string | null = null;
         for (const layout of this.layouts.values()) {
             if (layout.call !== this.call) continue;
-            layout.fitSlots();
+            layout.sync();
             this.updateMembers(layout);
             if (layout.geometryDirty) layout.refreshProxies();
             if (layout.recordsDirty) layout.buildRecords();

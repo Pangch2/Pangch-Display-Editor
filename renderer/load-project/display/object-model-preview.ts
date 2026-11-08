@@ -1,4 +1,5 @@
-import { InterleavedBufferAttribute, MathUtils, Matrix4, type BufferAttribute, type InstancedMesh, type Mesh } from 'three/webgpu';
+import { InterleavedBufferAttribute, MathUtils, Matrix4, type BufferAttribute } from 'three/webgpu';
+import type { ObjectBatch } from '../../scene-store/object-batch';
 import type { replaceDisplayObjects } from './mesh-builder';
 import type { ParsedPbdeProject } from '../scene/scene-parser';
 import { loadedObjectGroup, currentLoadGen, setInstanceSkyBrightness } from './display-instancing';
@@ -10,16 +11,16 @@ import { dragSelectedAttributeName, entityVisibleAttributeName } from '../../ent
 import { yieldPreview } from '../../animation/yield-preview';
 
 type DisplayRequest = Parameters<typeof replaceDisplayObjects>[0][number];
-type ObjectRef = { mesh: InstancedMesh; instanceId: number };
-type SelectionReplacement = { oldMesh: InstancedMesh; oldInstanceId: number; oldLastInstanceId: number; mesh: InstancedMesh; instanceId: number };
+type ObjectRef = { mesh: ObjectBatch; instanceId: number };
+type SelectionReplacement = { oldMesh: ObjectBatch; oldInstanceId: number; oldLastInstanceId: number; mesh: ObjectBatch; instanceId: number };
 const modelMaps = ['objectNames', 'objectBlockProps', 'objectDisplayTypes', 'objectTextDisplayOptions', 'objectTextures', 'objectLabels', 'objectDisplayKinds'] as const;
-type PooledMesh = { mesh: InstancedMesh; count: number; geometry: InstancedMesh['geometry']; material: InstancedMesh['material']; attributes: ReturnType<typeof modelAttributes> };
+type PooledMesh = { mesh: ObjectBatch; count: number; geometry: ObjectBatch['geometry']; material: ObjectBatch['material']; attributes: ReturnType<typeof modelAttributes> };
 type ModelPool = { valid: boolean; meshes: PooledMesh[]; models: Map<string, { ref: ObjectRef; values: unknown[]; item: boolean }> };
 type PreparedProject = { project: ParsedPbdeProject; pool?: ModelPool };
 let preparedProjects = new WeakMap<object, Map<string, PreparedProject>>();
-const meshPools = new WeakMap<InstancedMesh, ModelPool>();
+const meshPools = new WeakMap<ObjectBatch, ModelPool>();
 
-function modelAttributes(mesh: InstancedMesh) {
+function modelAttributes(mesh: ObjectBatch) {
     return Object.entries(mesh.geometry.attributes as Record<string, BufferAttribute | InterleavedBufferAttribute>)
         .filter(([name]) => name !== entityVisibleAttributeName && name !== dragSelectedAttributeName)
         .map(([name, attribute]) => ({ name, attribute, version: attribute instanceof InterleavedBufferAttribute ? attribute.data.version : attribute.version }));
@@ -31,7 +32,7 @@ function poolUnchanged(pool: ModelPool): boolean {
             && (attribute instanceof InterleavedBufferAttribute ? attribute.data.version : attribute.version) === version));
 }
 
-function disposeMesh(mesh: InstancedMesh): void {
+function disposeMesh(mesh: ObjectBatch): void {
     if (mesh.count) return;
     mesh.removeFromParent();
     mesh.dispose();
@@ -108,7 +109,7 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
     const staged = data.animationPreviewObjectIds ??= new Set<string>();
     for (const id of temporaryIds) staged.add(id);
     const initialMeshes = new Set(loadedObjectGroup.children);
-    const ownedMeshes = new Set<InstancedMesh>();
+    const ownedMeshes = new Set<ObjectBatch>();
     try {
         // Build each complete model batch once. Activation below never rebuilds geometry or atlas layouts.
         let pool = entry.pool;
@@ -191,7 +192,7 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
         }
     } finally {
         if (sameScene()) {
-            const objects = new Map<Mesh, Set<number>>();
+            const objects = new Map<ObjectBatch, Set<number>>();
             for (const id of temporaryIds) {
                 const ref = refs.get(id);
                 if (!ref) continue;
@@ -201,16 +202,16 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
             }
             const moved: SelectionReplacement[] = [];
             for (const [mesh, ids] of objects) {
-                const pool = meshPools.get(mesh as InstancedMesh);
-                if (pool && (!poolUnchanged(pool) || ids.size !== (mesh as InstancedMesh).count)) pool.valid = false;
-                let last = (mesh as InstancedMesh).count - 1;
-                for (const instanceId of [...ids].sort((a, b) => b - a)) moved.push({ oldMesh: mesh as InstancedMesh,
-                    oldInstanceId: instanceId, oldLastInstanceId: last--, mesh: mesh as InstancedMesh, instanceId });
+                const pool = meshPools.get(mesh as ObjectBatch);
+                if (pool && (!poolUnchanged(pool) || ids.size !== (mesh as ObjectBatch).count)) pool.valid = false;
+                let last = (mesh as ObjectBatch).count - 1;
+                for (const instanceId of [...ids].sort((a, b) => b - a)) moved.push({ oldMesh: mesh as ObjectBatch,
+                    oldInstanceId: instanceId, oldLastInstanceId: last--, mesh: mesh as ObjectBatch, instanceId });
             }
             if (objects.size) deleteSelectedItems(loadedObjectGroup, { groups: new Set(), objects },
                 { resetSelectionAndDeselect: () => {}, preserveAnimation: true, undoable: false })?.dispose();
             notifySelection(moved);
-            for (const mesh of objects.keys() as Iterable<InstancedMesh>) {
+            for (const mesh of objects.keys() as Iterable<ObjectBatch>) {
                 const pool = meshPools.get(mesh);
                 if (pool?.valid && mesh.count === 0) {
                     const state = pool.meshes.find(state => state.mesh === mesh)!;

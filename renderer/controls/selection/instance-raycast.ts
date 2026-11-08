@@ -7,7 +7,6 @@ import {
     FrontSide,
     Group,
     InstancedBufferAttribute,
-    InstancedMesh,
     Matrix4,
     Mesh,
     MeshBasicMaterial,
@@ -19,8 +18,9 @@ import {
     type Intersection,
     type Object3D
 } from 'three/webgpu';
-import { getBatchMatrixVersion, getInstanceCount, getInstanceMatrix, getInstanceValue, getInstanceValueVersion, instanceValueSize, isObjectBatch,
-    type ObjectBatch } from '../../scene-store/object-access';
+import { getBatchMatrixVersion, getInstanceCount, getInstanceMatrix, getInstanceValue, getInstanceValueVersion, hashInstanceRows, instanceValueSize,
+    isObjectBatch } from '../../scene-store/object-access';
+import { ObjectBatch } from '../../scene-store/object-batch';
 
 type BoundsNode = {
     box: Box3;
@@ -29,12 +29,17 @@ type BoundsNode = {
     instanceIds?: number[];
 };
 
+/** Instance bounds of one block of slots, rebuilt only when a hash of its rows changes. */
+type BoundsBlock = { end: number; hash: number; root: BoundsNode };
+
 type BoundsTree = {
     count: number;
     geometry: BufferGeometry;
+    geometryBox: string;
     matrixVersion: number;
     layoutVersion: number;
     bounds: Float32Array;
+    blocks: BoundsBlock[];
     root: BoundsNode;
 };
 
@@ -42,6 +47,8 @@ type HeadTriangle = { offset: number; a: number; b: number; c: number; va: Vecto
 export type PreparedFace = { mesh: Mesh; instanceId?: number; matrix: Matrix4; inverse: Matrix4; geometry: BufferGeometry; start: number; count: number; triangles?: HeadTriangle[] };
 
 const leafSize = 12;
+// Large batches would otherwise re-sort every instance after a single edit.
+const blockSize = 4096;
 const boundsTrees = new WeakMap<ObjectBatch, BoundsTree>();
 const raycastObjectBounds = new WeakMap<Mesh[], {
     bounds: number[]; root?: BoundsNode; faces: PreparedFace[];
@@ -142,45 +149,60 @@ const layoutValues: number[] = [];
 function getBoundsTree(mesh: ObjectBatch): BoundsTree | null {
     const count = getInstanceCount(mesh);
     const cached = boundsTrees.get(mesh);
-    if (
-        cached?.count === count
-        && cached.geometry === mesh.geometry
-        && cached.matrixVersion === getBatchMatrixVersion(mesh)
-        && cached.layoutVersion === getInstanceValueVersion(mesh, 'textDisplayLayout')
-    ) return cached;
+    const matrixVersion = getBatchMatrixVersion(mesh);
+    const layoutVersion = getInstanceValueVersion(mesh, 'textDisplayLayout');
+    if (cached?.count === count && cached.geometry === mesh.geometry && cached.matrixVersion === matrixVersion && cached.layoutVersion === layoutVersion) return cached;
 
     if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
     if (!mesh.geometry.boundingBox || count === 0) return null;
-    const bounds = new Float32Array(count * 6);
+    const shapeBox = mesh.geometry.boundingBox;
+    const geometryBox = [...shapeBox.min.toArray(), ...shapeBox.max.toArray()].join();
     const glyphShape = !!mesh.geometry.userData.textDisplayGeometryKey;
-    for (let instanceId = 0; instanceId < count; instanceId++) {
-        getInstanceMatrix(mesh, instanceId, localMatrix);
-        const layout = glyphShape ? null : textLayoutAt(mesh, instanceId, layoutValues);
-        if (layout) {
-            localBox.min.set(layout[0], 0, mesh.geometry.boundingBox.min.z);
-            localBox.max.set(layout[1], layout[2], mesh.geometry.boundingBox.max.z);
-        } else {
-            localBox.copy(mesh.geometry.boundingBox);
+    const textLayout = !glyphShape && instanceValueSize(mesh, 'textDisplayLayout') === 4;
+    // Blocks whose rows hash the same keep their bounds and subtree.
+    const reuse = cached && cached.geometry === mesh.geometry && cached.geometryBox === geometryBox ? cached : null;
+    const bounds = reuse?.bounds.length === count * 6 ? reuse.bounds : new Float32Array(count * 6);
+    const blocks: BoundsBlock[] = [];
+    for (let first = 0; first < count; first += blockSize) {
+        const end = Math.min(count, first + blockSize);
+        const hash = hashInstanceRows(mesh, first, end, textLayout ? ['textDisplayLayout'] : []);
+        const old = reuse?.blocks[first / blockSize];
+        if (old?.end === end && old.hash === hash) {
+            if (bounds !== reuse!.bounds) bounds.set(reuse!.bounds.subarray(first * 6, end * 6), first * 6);
+            blocks.push(old);
+            continue;
         }
-        localBox.applyMatrix4(localMatrix);
-        const offset = instanceId * 6;
-        bounds[offset] = localBox.min.x;
-        bounds[offset + 1] = localBox.min.y;
-        bounds[offset + 2] = localBox.min.z;
-        bounds[offset + 3] = localBox.max.x;
-        bounds[offset + 4] = localBox.max.y;
-        bounds[offset + 5] = localBox.max.z;
+        for (let instanceId = first; instanceId < end; instanceId++) {
+            getInstanceMatrix(mesh, instanceId, localMatrix);
+            const layout = textLayout ? textLayoutAt(mesh, instanceId, layoutValues) : null;
+            if (layout) {
+                localBox.min.set(layout[0], 0, shapeBox.min.z);
+                localBox.max.set(layout[1], layout[2], shapeBox.max.z);
+            } else {
+                localBox.copy(shapeBox);
+            }
+            localBox.applyMatrix4(localMatrix);
+            const offset = instanceId * 6;
+            bounds[offset] = localBox.min.x;
+            bounds[offset + 1] = localBox.min.y;
+            bounds[offset + 2] = localBox.min.z;
+            bounds[offset + 3] = localBox.max.x;
+            bounds[offset + 4] = localBox.max.y;
+            bounds[offset + 5] = localBox.max.z;
+        }
+        blocks.push({ end, hash, root: buildNode(bounds, Array.from({ length: end - first }, (_, index) => first + index)) });
     }
-    const tree = {
-        count,
-        geometry: mesh.geometry,
-        matrixVersion: getBatchMatrixVersion(mesh),
-        layoutVersion: getInstanceValueVersion(mesh, 'textDisplayLayout'),
-        bounds,
-        root: buildNode(bounds, Array.from({ length: count }, (_, instanceId) => instanceId))
-    };
+    const tree = { count, geometry: mesh.geometry, geometryBox, matrixVersion, layoutVersion, bounds, blocks, root: joinNodes(blocks.map(block => block.root)) };
     boundsTrees.set(mesh, tree);
     return tree;
+}
+
+/** A balanced node over subtrees (the per-block roots). */
+function joinNodes(nodes: BoundsNode[]): BoundsNode {
+    if (nodes.length === 1) return nodes[0];
+    const middle = nodes.length >> 1;
+    const left = joinNodes(nodes.slice(0, middle)), right = joinNodes(nodes.slice(middle));
+    return { box: left.box.clone().union(right.box), left, right };
 }
 
 function intersectsRayRange(ray: Ray, box: Box3, maxDistance: number): boolean {
@@ -308,7 +330,7 @@ export function intersectSceneInstances(
 ): Intersection | null {
     let nearest: Intersection | null = null;
     const intersect = (object: Object3D) => {
-        if (!(object as Mesh).isMesh || object.visible === false || !object.layers.test(raycaster.layers)) return;
+        if ((!(object as Mesh).isMesh && !isObjectBatch(object)) || object.visible === false || !object.layers.test(raycaster.layers)) return;
         if (!isObjectBatch(object)) {
             intersections.length = 0;
             (object as Mesh).raycast(raycaster, intersections);
@@ -477,7 +499,7 @@ export function getSceneRaycastObjects(root: Group, region?: Box3, grid?: { axis
     };
     root.traverse(object => {
         const mesh = object as Mesh;
-        if (!mesh.isMesh || !mesh.visible) return;
+        if ((!mesh.isMesh && !isObjectBatch(mesh)) || !mesh.visible) return;
         if (isObjectBatch(mesh)) {
             const tree = getBoundsTree(mesh);
             if (!tree) return;
@@ -552,7 +574,7 @@ if (import.meta.env.DEV) {
     const geometry = new BufferGeometry();
     geometry.boundingBox = new Box3(new Vector3(-1, 0, -0.01), new Vector3(3, 2, 0));
     geometry.setAttribute('textDisplayLayout', new InstancedBufferAttribute(new Float32Array([-1, 3, 2, 2]), 4));
-    const mesh = new InstancedMesh(geometry, undefined, 1);
+    const mesh = new ObjectBatch(geometry, undefined, 1);
     const tree = getBoundsTree(mesh);
     console.assert(
         tree?.bounds[0] === -1 && tree.bounds[3] === 3 && tree.bounds[4] === 2,
@@ -577,7 +599,7 @@ if (import.meta.env.DEV) {
     pickingCanvas.height = 1;
     pickingCanvas.getContext('2d', { willReadFrequently: true })!.fillRect(3, 0, 1, 1);
     const pickingMaterial = new MeshBasicMaterial({ map: new CanvasTexture(pickingCanvas), alphaTest: 0.1 });
-    const pickingMesh = new InstancedMesh(pickingGeometry, pickingMaterial, 2);
+    const pickingMesh = new ObjectBatch(pickingGeometry, pickingMaterial, 2);
     pickingMesh.setMatrixAt(0, new Matrix4());
     pickingMesh.setMatrixAt(1, new Matrix4().makeTranslation(10, 0, 0));
     const root = new Group();

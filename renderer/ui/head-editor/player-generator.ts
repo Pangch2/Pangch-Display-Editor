@@ -1,12 +1,12 @@
 import { compressSync, strToU8 } from 'fflate';
 import {
-  InstancedMesh,
   Quaternion,
   Vector3
 } from 'three/webgpu';
 import { createImageHeadAtlasMeshes, deferredPlayerHeadTexture, loadedObjectGroup } from '../../load-project/display/mesh-builder';
 import type { GroupData } from '../../load-project/pbde/pbde-types';
 import { ObjectStore } from '../../scene-store/object-store';
+import type { ObjectBatch } from '../../scene-store/object-batch';
 
 export type PlayerModel = 'default' | 'animation';
 export type SkinModel = 'classic' | 'slim';
@@ -179,7 +179,7 @@ export function createHeadProject(source: HTMLCanvasElement): File {
 export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupName: string): {
   count: number;
   groupId: string;
-  objects: Map<InstancedMesh, Set<number>>;
+  objects: Map<ObjectBatch, Set<number>>;
 } {
   const width = 'width' in source ? Number(source.width) : 0;
   const height = 'height' in source ? Number(source.height) : 0;
@@ -204,7 +204,7 @@ export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupN
   const userData = loadedObjectGroup.userData;
   const groups = (userData.groups as Map<string, GroupData> | undefined) ?? (userData.groups = new Map());
   const objectToGroup = (userData.objectToGroup as Map<string, string> | undefined) ?? (userData.objectToGroup = new Map<string, string>());
-  const uuidToInstance = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined) ?? (userData.objectUuidToInstance = new ObjectStore());
+  const uuidToInstance = (userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined) ?? (userData.objectUuidToInstance = new ObjectStore());
   const objectNames = (userData.objectNames as Map<string, string> | undefined) ?? (userData.objectNames = new Map());
   const objectNbt = (userData.objectNbt as Map<string, string> | undefined) ?? (userData.objectNbt = new Map());
   userData.objectBrightness ??= new Map<string, { sky?: number; block?: number }>();
@@ -212,7 +212,7 @@ export function addImageHeadGrid(source: CanvasImageSource, layer: 0 | 1, groupN
   const itemDisplays = (userData.objectIsItemDisplay as Set<string> | undefined) ?? (userData.objectIsItemDisplay = new Set());
   const displayTypes = (userData.objectDisplayTypes as Map<string, string> | undefined) ?? (userData.objectDisplayTypes = new Map());
   const total = columns * rows;
-  const objects = new Map<InstancedMesh, Set<number>>();
+  const objects = new Map<ObjectBatch, Set<number>>();
 
   for (const mesh of createImageHeadAtlasMeshes(canvas, columns, rows, layer)) {
     objects.set(mesh, new Set(Array.from({ length: mesh.count }, (_, instanceId) => instanceId)));

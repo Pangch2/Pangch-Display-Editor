@@ -332,7 +332,7 @@ export function getGroupChain(loadedObjectGroup: Group, startGroupId: string): s
     return chain;
 }
 
-// shortcut: resolves every descendant object to its current slot for callers that still work on slots; drop with the store (M7).
+/** Every descendant object with its current slot, for one operation; slots move when objects are removed, so callers keep ids. */
 export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): GroupObjectSlot[] {
     const groups = getGroups(loadedObjectGroup);
     const group = groups.get(groupId);

@@ -13,6 +13,12 @@ interface History {
 const histories = new Map<string, History>();
 let context = 'default';
 let applying = false;
+let changes = 0;
+
+/** Counts recorded, undone and redone edits; a reader spread over time compares it to see the scene changed under it. */
+export function historyChangeCount(): number {
+    return changes;
+}
 
 function getHistory(): History {
     let history = histories.get(context);
@@ -24,6 +30,7 @@ function getHistory(): History {
 }
 
 export function record(command: UndoRedoCommand): void {
+    changes++;
     const { undoStack, redoStack } = getHistory();
     undoStack.push(command);
     if (undoStack.length > maxHistory) undoStack.shift()?.dispose?.();
@@ -47,6 +54,7 @@ export async function undo(): Promise<boolean> {
         const { undoStack, redoStack } = getHistory();
         const command = undoStack[undoStack.length - 1];
         if (!command) return false;
+        changes++;
         await command.undo();
         undoStack.pop();
         redoStack.push(command);
@@ -67,6 +75,7 @@ export async function redo(): Promise<boolean> {
         const { undoStack, redoStack } = getHistory();
         const command = redoStack[redoStack.length - 1];
         if (!command) return false;
+        changes++;
         await command.redo();
         redoStack.pop();
         undoStack.push(command);

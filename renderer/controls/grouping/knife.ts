@@ -1,11 +1,12 @@
-import { Box3, Group, InstancedMesh, Matrix4, Vector3 } from 'three/webgpu';
+import { Box3, Group, Matrix4, Vector3 } from 'three/webgpu';
 import { duplicateGroupsAndObjects, type DuplicationSelection } from './duplicate';
 import * as GroupUtils from './group';
 import * as Overlay from '../selection/overlay';
 import { toMeshMap, type SelectionState, type SelectedItem } from '../selection/select';
 import { getLinkedMirrorSelection, getMirrorPairs, linkMirrorPair } from '../transform/mirroring';
-import { batchOf, getInstanceMatrix, getInstanceValue, invalidateBatchBounds, instanceValueSize, objectUuidAt, setInstanceMatrix, setInstanceValue,
-    type ObjectBatch } from '../../scene-store/object-access';
+import { copyMirrorPlane } from '../transform/mirror-planes';
+import { getInstanceMatrix, getInstanceValue, invalidateBatchBounds, instanceValueSize, objectUuidAt, setInstanceMatrix, setInstanceValue } from '../../scene-store/object-access';
+import { ObjectBatch } from '../../scene-store/object-batch';
 
 type KnifeItem = { mesh: ObjectBatch; instanceId: number };
 
@@ -179,6 +180,7 @@ export function knifeSelection(
             linked.add(pairKey);
             for (let index = 1; index < pieceCount; index++) {
                 linkMirrorPair(pairs, copies[index], partnerCopies[index]);
+                if (copies[index] && partnerCopies[index]) copyMirrorPlane(loadedObjectGroup, uuid, partnerUuid, copies[index]!, partnerCopies[index]!);
             }
         }
     }
@@ -192,6 +194,6 @@ if (import.meta.env.DEV) {
     const union = new Box3();
     for (let index = 0; index < 8; index++) union.union(bounds.clone().applyMatrix4(getCellMatrix(bounds, 2, 2, 2, index)));
     console.assert(union.min.equals(bounds.min) && union.max.equals(bounds.max), 'Knife cells must preserve the original bounds.');
-    const mesh = batchOf(new InstancedMesh(undefined, undefined, 2));
+    const mesh = new ObjectBatch(undefined, undefined, 2);
     console.assert(groupItemsByMesh([{ mesh, instanceId: 0 }, { mesh, instanceId: 1 }]).get(mesh)?.length === 2, 'Knife copies from one mesh must stay in one batch.');
 }

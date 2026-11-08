@@ -1,5 +1,6 @@
-import { Color, InstancedBufferAttribute, Matrix4, type InstancedMesh } from 'three/webgpu';
-import { cloneBatchGeometry } from '../../scene-store/object-access';
+import { Color, InstancedBufferAttribute, Matrix4 } from 'three/webgpu';
+import type { ObjectBatch } from '../../scene-store/object-batch';
+import { cloneBatchGeometry } from '../../scene-store/row-store';
 import { applyModelTransform, planUvTransforms, relativeModelTransform, relativeUvTransform, type UvTransform } from './geometry-batching';
 import type { GeometryInstanceMeta, GeometryMeta } from '../pbde/pbde-types';
 
@@ -22,7 +23,7 @@ export function getTintParts(parts: AtlasPart[], instances: GeometryInstanceMeta
     ) ? [index] : []);
 }
 
-export function setAtlasBatchState(mesh: InstancedMesh, parts: AtlasPart[], uvPlan: AtlasBatchState['uvPlan'], tintParts: number[]): void {
+export function setAtlasBatchState(mesh: ObjectBatch, parts: AtlasPart[], uvPlan: AtlasBatchState['uvPlan'], tintParts: number[]): void {
     const atlasBatch = {
         parts: parts.map(part => ({ texPath: part.texPath, uvTransform: part.uvTransform?.slice(), tintHex: part.tintHex, modelMatrix: part.modelMatrix.slice() })),
         uvPlan: { slots: [...uvPlan.slots], sourceParts: [...uvPlan.sourceParts] },
@@ -46,7 +47,7 @@ export function rebaseAtlasInstances(source: AtlasPart[], target: AtlasPart[], i
     }));
 }
 
-export function planAtlasAppend(mesh: InstancedMesh, source: AtlasPart[], incoming: GeometryInstanceMeta[]) {
+export function planAtlasAppend(mesh: ObjectBatch, source: AtlasPart[], incoming: GeometryInstanceMeta[]) {
     const state = mesh.geometry.userData.atlasBatch as AtlasBatchState;
     const existing: GeometryInstanceMeta[] = [];
     const color = new Color();
@@ -72,7 +73,7 @@ export function planAtlasAppend(mesh: InstancedMesh, source: AtlasPart[], incomi
     return { parts: state.parts, instances, allInstances, uvPlan: planUvTransforms(state.parts, allInstances), tintParts: getTintParts(state.parts, allInstances) };
 }
 
-export function applyAtlasAppend(mesh: InstancedMesh, plan: ReturnType<typeof planAtlasAppend>) {
+export function applyAtlasAppend(mesh: ObjectBatch, plan: ReturnType<typeof planAtlasAppend>) {
     const oldGeometry = mesh.geometry;
     const geometry = cloneBatchGeometry(oldGeometry);
     const capacity = mesh.instanceMatrix.count;

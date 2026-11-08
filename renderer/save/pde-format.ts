@@ -33,6 +33,8 @@ export type PdeEditorState = {
     hiddenGroupIds: string[];
     objectMirrorPairs: [string, string][];
     groupMirrorPairs: [string, string][];
+    /** Mirror planes that moved off world X=0, as [node id, column-major matrix]. */
+    mirrorPlanes?: [string, number[]][];
     globalBrightness?: { enabled: boolean; sky: number; block: number };
     animation?: AnimationData;
 };
@@ -94,7 +96,7 @@ const brightnessDefaults = { sky: 15, block: 0 };
 const globalBrightnessDefaults = { enabled: false, ...brightnessDefaults };
 const objectDefaults = { uvFlip: [0, 0], knifeUvScale: [1, 1, 1], knifeUvOffset: [0, 0, 0], headLayerVisible: 1 };
 const groupDefaults = { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1], isCustomPivot: false };
-const stateDefaults = { objects: [], groups: [], hiddenObjectIds: [], hiddenGroupIds: [], objectMirrorPairs: [], groupMirrorPairs: [] };
+const stateDefaults = { objects: [], groups: [], hiddenObjectIds: [], hiddenGroupIds: [], objectMirrorPairs: [], groupMirrorPairs: [], mirrorPlanes: [] };
 const objectEditorKeys = ['label', 'pivot', 'customPivot', 'isCustomPivot', ...Object.keys(objectDefaults), 'hasHat', 'imageHeadLayer'];
 const groupEditorKeys = [...Object.keys(groupDefaults), 'matrix', 'pivot'];
 // Versions 3/4/5 share fixed defaults even if the editor's new-object defaults change.
@@ -105,10 +107,16 @@ const textDefaults: Required<TextDisplayOptions> = {
     pages: [], pageColors: [], pageAlphas: [], pageShadowColors: [], pageShadowAlphas: [], pageEffects: [], pageAligns: [],
     pageTypes: [], pageAtlases: [], pageHats: [], pageTypeValues: [], pageExtraValues: []
 };
-const omitDefaults = (value: object, defaults: Record<string, unknown>): Record<string, any> => Object.fromEntries(
-    Object.entries(value).filter(([key, entry]) => entry !== undefined && !(Array.isArray(defaults[key])
-        ? Array.isArray(entry) && entry.length === (defaults[key] as unknown[]).length && entry.every((item, i) => item === defaults[key][i])
-        : entry === defaults[key])));
+const omitDefaults = (value: object, defaults: Record<string, unknown>): Record<string, any> => {
+    const result: Record<string, any> = {};
+    for (const key of Object.keys(value)) {
+        const entry = (value as Record<string, unknown>)[key], fallback = defaults[key];
+        if (entry !== undefined && !(Array.isArray(fallback)
+            ? Array.isArray(entry) && entry.length === fallback.length && entry.every((item, i) => item === fallback[i])
+            : entry === fallback)) result[key] = entry;
+    }
+    return result;
+};
 const nonempty = (value: Record<string, any>) => Object.keys(value).length ? value : undefined;
 
 export function validateTextDisplayOptions(value: unknown, name: string, defaults = defaultTextDisplayOptions): TextDisplayOptions {
@@ -124,7 +132,23 @@ export function validateTextDisplayOptions(value: unknown, name: string, default
     return { ...structuredClone(defaults), ...value, pages: value.pages ?? [name] };
 }
 
+/** Runs a stepwise job (a generator that yields between pieces of work) to the end in one go. */
+export function runSteps<T>(steps: Iterator<unknown, T>): T {
+    for (;;) {
+        const step = steps.next();
+        if (step.done) return step.value;
+    }
+}
+
+// Stepwise jobs yield after this many nodes, so a caller can let the page run between pieces.
+const stepSize = 1024;
+
 export function validatePdeProject(project: any): asserts project is PdeProject {
+    runSteps(validatePdeProjectSteps(project));
+}
+
+export function* validatePdeProjectSteps(project: any): Generator<void, void> {
+    let work = 0;
     if (!record(project)) throw new Error('잘못된 프로젝트입니다.');
     if (project.pdeFormatVersion === undefined) return;
     if (project.pdeFormatVersion !== 1) throw new Error(`지원하지 않는 PDE 버전: ${project.pdeFormatVersion}`);
@@ -147,7 +171,7 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
     }
     if (compact) for (const key of ['name', 'mainNBT', 'nbt']) if (project[key] === undefined) project[key] = '';
     const nodeIds = new Map<number, string>();
-    const visit = (nodes: unknown, depth = 0) => {
+    const visit = function* (nodes: unknown, depth = 0): Generator<void, void> {
         if (!Array.isArray(nodes) || depth > 128) throw new Error('잘못된 PDE 계층입니다.');
         for (const node of nodes) {
             if (!record(node)) throw new Error('잘못된 PDE 노드입니다.');
@@ -174,19 +198,22 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
             if (inline && node.editorState !== undefined) {
                 const editor = node.editorState;
                 const keys = node.isCollection ? groupEditorKeys : objectEditorKeys;
-                if (!record(editor) || Object.keys(editor).some(key => !keys.includes(key) && !['hidden', 'mirrorId'].includes(key))
-                    || (editor.hidden !== undefined && !boolean(editor.hidden))) throw new Error('잘못된 PDE 노드 편집 값입니다.');
-                const { hidden, mirrorId, ...values } = editor;
+                if (!record(editor) || Object.keys(editor).some(key => !keys.includes(key) && !['hidden', 'mirrorId', 'mirrorPlane'].includes(key))
+                    || (editor.hidden !== undefined && !boolean(editor.hidden))
+                    || (editor.mirrorPlane !== undefined && !vector(editor.mirrorPlane, 16))) throw new Error('잘못된 PDE 노드 편집 값입니다.');
+                const { hidden, mirrorId, mirrorPlane, ...values } = editor;
                 const id = nodeIds.size - 1;
                 if (Object.keys(values).length) state[node.isCollection ? 'groups' : 'objects'].push({ id, ...values });
                 if (hidden) state[node.isCollection ? 'hiddenGroupIds' : 'hiddenObjectIds'].push(id);
                 if (mirrorId !== undefined) state[node.isCollection ? 'groupMirrorPairs' : 'objectMirrorPairs'].push([id, mirrorId]);
+                if (mirrorPlane !== undefined) state.mirrorPlanes.push([id, mirrorPlane]);
                 delete node.editorState;
             }
-            if (node.children !== undefined) visit(node.children, depth + 1);
+            if (node.children !== undefined) yield* visit(node.children, depth + 1);
+            if (++work % stepSize === 0) yield;
         }
     };
-    visit(project.children);
+    yield* visit(project.children);
     if (compact) {
         for (const key of Object.keys(stateDefaults)) if (state[key] === undefined) state[key] = [];
         if (record(state.globalBrightness)) state.globalBrightness = { ...globalBrightnessDefaults, ...state.globalBrightness };
@@ -201,6 +228,7 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
             if (!record(object) || object.uuid !== undefined) throw new Error('잘못된 PDE 오브젝트 참조입니다.');
             object.uuid = resolve(object.id);
             delete object.id;
+            if (++work % stepSize === 0) yield;
         }
         for (const group of state.groups) {
             if (!record(group)) throw new Error('잘못된 PDE 그룹 참조입니다.');
@@ -216,6 +244,10 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
         for (const key of ['objectMirrorPairs', 'groupMirrorPairs']) {
             if (!Array.isArray(state[key]) || !state[key].every(pair => Array.isArray(pair) && pair.length === 2)) throw new Error(`잘못된 PDE 참조: ${key}`);
             state[key] = state[key].map(pair => pair.map(resolve));
+        }
+        if (state.mirrorPlanes !== undefined) {
+            if (!Array.isArray(state.mirrorPlanes) || !state.mirrorPlanes.every(entry => Array.isArray(entry) && entry.length === 2)) throw new Error('잘못된 PDE 참조: mirrorPlanes');
+            state.mirrorPlanes = state.mirrorPlanes.map(([id, plane]) => [resolve(id), plane]);
         }
         state.version = 1;
         if (state.animation !== undefined) {
@@ -251,6 +283,7 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
             || (object.headLayerVisible !== undefined && !alpha(object.headLayerVisible))
             || (object.hasHat !== undefined && !boolean(object.hasHat)) || (object.isCustomPivot !== undefined && !boolean(object.isCustomPivot))
             || (object.imageHeadLayer !== undefined && ![0, 1].includes(object.imageHeadLayer))) throw new Error('잘못된 PDE 오브젝트 편집 값입니다.');
+        if (++work % stepSize === 0) yield;
     }
     const seenGroups = new Set<string>();
     for (const group of state.groups) {
@@ -265,21 +298,30 @@ export function validatePdeProject(project: any): asserts project is PdeProject 
     for (const [key, ids] of [['objectMirrorPairs', objectIds], ['groupMirrorPairs', groupIds]] as const) {
         if (!Array.isArray(state[key]) || !state[key].every(pair => Array.isArray(pair) && pair.length === 2 && pair.every(id => ids.has(id)))) throw new Error(`잘못된 PDE 참조: ${key}`);
     }
+    if (state.mirrorPlanes !== undefined && (!Array.isArray(state.mirrorPlanes) || !state.mirrorPlanes.every(entry => Array.isArray(entry)
+        && entry.length === 2 && (objectIds.has(entry[0]) || groupIds.has(entry[0])) && vector(entry[1], 16)))) throw new Error('잘못된 PDE 미러 기준면입니다.');
     if (state.globalBrightness !== undefined && (!record(state.globalBrightness) || !boolean(state.globalBrightness.enabled)
         || ![state.globalBrightness.sky, state.globalBrightness.block].every(value => Number.isInteger(value) && value >= 0 && value <= 15))) throw new Error('잘못된 PDE 전역 밝기입니다.');
 }
 
 export function encodePdeProject(project: PdeProject): Uint8Array {
+    return runSteps(encodePdeProjectSteps(project));
+}
+
+export function* encodePdeProjectSteps(project: PdeProject): Generator<void, Uint8Array> {
+    let work = 0;
     const counts = new Map<string, number>();
     const nodeIds = new Map<string, number>();
     const indexed = project.pdeFormatVersion === 1;
     const editors = new Map<string, Record<string, any>>();
     const hidden = new Set<string>();
     const mirrors = new Map<string, string>();
+    const mirrorPlanes = new Map<string, number[]>();
     if (indexed) {
         for (const { uuid, ...editor } of project.editorState.objects) {
             if (editors.has(uuid)) throw new Error(`중복 PDE 편집 참조: ${uuid}`);
             editors.set(uuid, editor);
+            if (++work % stepSize === 0) yield;
         }
         for (const { id, ...editor } of project.editorState.groups) {
             if (editors.has(id)) throw new Error(`중복 PDE 편집 참조: ${id}`);
@@ -287,23 +329,31 @@ export function encodePdeProject(project: PdeProject): Uint8Array {
         }
         for (const id of [...project.editorState.hiddenObjectUuids, ...project.editorState.hiddenGroupIds]) hidden.add(id);
         for (const [id, partner] of [...project.editorState.objectMirrorPairs, ...project.editorState.groupMirrorPairs]) mirrors.set(id, partner);
+        for (const [id, plane] of project.editorState.mirrorPlanes ?? []) mirrorPlanes.set(id, plane);
     }
-    const collectNodes = (nodes: PdeNode[]): Record<string, any>[] => nodes.map(({ uuid, ...node }) => {
-        if (nodeIds.has(uuid)) throw new Error(`중복 PDE UUID: ${uuid}`);
-        nodeIds.set(uuid, nodeIds.size);
-        if (typeof node.paintTexture === 'string') counts.set(node.paintTexture, (counts.get(node.paintTexture) ?? 0) + 1);
-        const options = node.isTextDisplay && node.options ? omitDefaults(node.options, textDefaults) : node.options;
-        // Empty pages are content, not an omitted option's fallback to the node name.
-        if (node.isTextDisplay && node.options?.pages !== undefined && options) options.pages = node.options.pages;
-        return omitDefaults({ ...node,
-            brightness: node.brightness ? nonempty(omitDefaults(node.brightness, brightnessDefaults)) : undefined,
-            options: options ? nonempty(options) : undefined,
-            editorState: nonempty(omitDefaults({ ...editors.get(uuid), hidden: hidden.has(uuid) ? true : undefined, mirrorId: mirrors.get(uuid) },
-                node.isCollection ? groupDefaults : objectDefaults)),
-            children: node.children ? collectNodes(node.children) : undefined
-        }, { transforms: identityMatrix, nbt: '', children: [] });
-    });
-    const children = indexed ? collectNodes(project.children) : project.children;
+    const collectNodes = function* (nodes: PdeNode[]): Generator<void, Record<string, any>[]> {
+        const collected: Record<string, any>[] = [];
+        for (const { uuid, ...node } of nodes) {
+            if (nodeIds.has(uuid)) throw new Error(`중복 PDE UUID: ${uuid}`);
+            nodeIds.set(uuid, nodeIds.size);
+            if (typeof node.paintTexture === 'string') counts.set(node.paintTexture, (counts.get(node.paintTexture) ?? 0) + 1);
+            const options = node.isTextDisplay && node.options ? omitDefaults(node.options, textDefaults) : node.options;
+            // Empty pages are content, not an omitted option's fallback to the node name.
+            if (node.isTextDisplay && node.options?.pages !== undefined && options) options.pages = node.options.pages;
+            const children = node.children ? yield* collectNodes(node.children) : undefined;
+            collected.push(omitDefaults({ ...node,
+                brightness: node.brightness ? nonempty(omitDefaults(node.brightness, brightnessDefaults)) : undefined,
+                options: options ? nonempty(options) : undefined,
+                editorState: nonempty(omitDefaults({ ...editors.get(uuid), hidden: hidden.has(uuid) ? true : undefined, mirrorId: mirrors.get(uuid),
+                    mirrorPlane: mirrorPlanes.get(uuid) },
+                    node.isCollection ? groupDefaults : objectDefaults)),
+                children
+            }, { transforms: identityMatrix, nbt: '', children: [] }));
+            if (++work % stepSize === 0) yield;
+        }
+        return collected;
+    };
+    const children = indexed ? yield* collectNodes(project.children) : project.children;
     const textures = [...counts].filter(([, count]) => count > 1).map(([texture]) => texture);
     const textureIds = new Map(textures.map((texture, index) => [texture, index]));
     const reference = (uuid: string): number => {
@@ -311,7 +361,10 @@ export function encodePdeProject(project: PdeProject): Uint8Array {
         if (id === undefined) throw new Error(`잘못된 PDE 노드 참조: ${uuid}`);
         return id;
     };
-    for (const id of editors.keys()) reference(id);
+    for (const id of editors.keys()) {
+        reference(id);
+        if (++work % stepSize === 0) yield;
+    }
     for (const id of hidden) reference(id);
     for (const [id, partner] of mirrors) { reference(id); reference(partner); }
     const animation = project.editorState?.animation;
@@ -324,10 +377,65 @@ export function encodePdeProject(project: PdeProject): Uint8Array {
         animation: savedAnimation,
         globalBrightness: project.editorState.globalBrightness ? nonempty(omitDefaults(project.editorState.globalBrightness, globalBrightnessDefaults)) : undefined
     }, {}), ...(textures.length ? { refs: { paintTextures: textures } } : {}) }, { name: '', mainNBT: '', nbt: '' }) : project;
-    const json = strToU8(JSON.stringify([saved], (key, value) =>
+    const replace = (key: string, value: unknown) =>
         indexed && key === 'uuid' ? undefined : indexed && key === 'mirrorId' && typeof value === 'string' ? reference(value)
             : key === 'paintTexture' && typeof value === 'string' ? textureIds.get(value) ?? value
-                : typeof value === 'number' ? Number(value.toFixed(8)) : value));
+                // Integers skip toFixed: same value, and big scenes are mostly integer block positions.
+                : typeof value === 'number' ? Number.isInteger(value) ? value : Number(value.toFixed(8)) : value;
+    // Applies replace like a JSON.stringify replacer would, without the replacer's slow path (seconds on large scenes).
+    const prepare = (key: string, value: unknown): unknown => {
+        value = replace(key, value);
+        if (Array.isArray(value)) return value.map(item => prepare('', item));
+        if (!value || typeof value !== 'object') return value;
+        const result: Record<string, unknown> = {};
+        for (const entryKey of Object.keys(value)) result[entryKey] = prepare(entryKey, (value as Record<string, unknown>)[entryKey]);
+        return result;
+    };
+    // Same text as JSON.stringify([prepare('', saved)]), written node by node so the work can pause.
+    const pieces: string[] = [];
+    const writeObject = function* (value: Record<string, unknown>): Generator<void, void> {
+        let first = true;
+        pieces.push('{');
+        for (const key of Object.keys(value)) {
+            const entry = key === 'children' && Array.isArray(value[key]) ? value[key] : prepare(key, value[key]);
+            if (entry === undefined || typeof entry === 'function' || typeof entry === 'symbol') continue;
+            pieces.push(`${first ? '' : ','}${JSON.stringify(key)}:`);
+            first = false;
+            if (key === 'children' && Array.isArray(entry)) yield* writeNodes(entry);
+            else pieces.push(JSON.stringify(entry));
+        }
+        pieces.push('}');
+    };
+    const writeNodes = function* (nodes: unknown[]): Generator<void, void> {
+        pieces.push('[');
+        for (let index = 0; index < nodes.length; index++) {
+            if (index) pieces.push(',');
+            const node = nodes[index] as Record<string, unknown> | undefined;
+            if (node !== null && typeof node === 'object' && Array.isArray(node.children)) yield* writeObject(node);
+            else pieces.push(JSON.stringify(prepare('', node)) ?? 'null');
+            if (++work % stepSize === 0) yield;
+        }
+        pieces.push(']');
+    };
+    yield* writeNodes([saved]);
+    // Pieces are whole JSON tokens, so encoding them in batches gives the same bytes as one string.
+    const parts: Uint8Array[] = [];
+    let batch = 0, length = 0;
+    for (let index = 0; index <= pieces.length; index++) {
+        if (index < pieces.length && (length += pieces[index].length) < 1 << 20) continue;
+        parts.push(strToU8(pieces.slice(batch, index + 1).join('')));
+        batch = index + 1;
+        length = 0;
+        yield;
+    }
+    const json = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+    let offset = 0;
+    for (const part of parts) {
+        json.set(part, offset);
+        offset += part.length;
+        if (++work % 16 === 0) yield;
+    }
+    yield;
     return encodeProjectArchive(json);
 }
 

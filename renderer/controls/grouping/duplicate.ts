@@ -1,6 +1,5 @@
 import {
     Group,
-    InstancedMesh,
     MathUtils,
     Object3D } from 'three/webgpu';
 import * as GroupUtils from './group';
@@ -63,7 +62,6 @@ interface CloneResult {
 interface DuplicateTimingStats {
     attrsMs: number;
     metadataMs: number;
-    chunks: number;
 }
 
 
@@ -293,11 +291,10 @@ function cloneInstancedBatch(
     timings?: DuplicateTimingStats
 ): CloneResult[] {
     const attrsStart = timings ? performance.now() : 0;
-    const slots = appendInstanceCopies(loadedObjectGroup, sourceMesh, jobs.map(job => job.instanceId));
+    const slots = appendInstanceCopies(sourceMesh, jobs.map(job => job.instanceId));
     if (slots.length !== jobs.length) return [];
     if (timings) {
         timings.attrsMs += performance.now() - attrsStart;
-        timings.chunks += new Set(slots.map(slot => slot.mesh).filter(mesh => mesh !== sourceMesh)).size;
     }
     const metadataStart = timings ? performance.now() : 0;
     const results = jobs.map((job, index) => {
@@ -316,7 +313,7 @@ function addSelection(selection: DuplicationSelection, result: CloneResult): voi
     selection.objects.get(result.mesh)!.add(result.instanceId);
 }
 
-export function flushPendingHeadClones(_loadedObjectGroup?: Group, _ctx?: unknown): Array<{ mesh: InstancedMesh, instanceId: number, targetGroupId: string | null, coveredByGroup: boolean }> {
+export function flushPendingHeadClones(_loadedObjectGroup?: Group, _ctx?: unknown): Array<{ mesh: ObjectBatch, instanceId: number, targetGroupId: string | null, coveredByGroup: boolean }> {
     return [];
 }
 
@@ -327,7 +324,7 @@ export function duplicateGroupsAndObjects(
 ): DuplicationSelection {
     const logTimings = isPbdeLogEnabled(pbdeLogNames.duplicateTimings);
     const totalStart = logTimings ? performance.now() : 0;
-    const timings: DuplicateTimingStats | undefined = logTimings ? { attrsMs: 0, metadataMs: 0, chunks: 0 } : undefined;
+    const timings: DuplicateTimingStats | undefined = logTimings ? { attrsMs: 0, metadataMs: 0 } : undefined;
     let groupCloneMs = 0;
     let collectMs = 0;
     let instancedCloneMs = 0;
@@ -403,7 +400,7 @@ export function duplicateGroupsAndObjects(
         console.log(
             `[PBDE] Duplicate timings: total=${(performance.now() - totalStart).toFixed(2)}ms ` +
             `jobs=${jobs.length} ` +
-            `groups=${newSelection.groups.size} batches=${instancedJobs.size} chunks=${timings.chunks} ` +
+            `groups=${newSelection.groups.size} batches=${instancedJobs.size} ` +
             `groupClone=${groupCloneMs.toFixed(2)}ms collect=${collectMs.toFixed(2)}ms ` +
             `instancedClone=${instancedCloneMs.toFixed(2)}ms ` +
             `attrs=${timings.attrsMs.toFixed(2)}ms metadata=${timings.metadataMs.toFixed(2)}ms`

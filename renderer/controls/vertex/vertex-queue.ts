@@ -6,9 +6,8 @@ import {
     Quaternion
 } from 'three/webgpu';
 import * as Overlay from '../selection/overlay';
-import { slotObjectUuid, toMeshMap, type SelectionState } from '../selection/select';
-import type { ObjectBatch } from '../../scene-store/object-access';
-import type { QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
+import { selectedObjectRef, type SelectionState } from '../selection/select';
+import { queuedSlot, type QueueItem, type QueueBundle, type QueueEntry } from './vertex-swap';
 
 
 // ─── Shared temporaries ──────────────────────────────────────────────────────
@@ -108,18 +107,14 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
         selectedVertexKeys.delete(centerKey);
     }
 
-    const itemsToAdd: Array<{ type: 'group' | 'object'; id?: string; mesh?: ObjectBatch; instanceId?: number }> = [];
+    const itemsToAdd: Array<{ type: 'group' | 'object'; id: string }> = [];
     if (currentSelection.groups.size > 0) {
         for (const gid of currentSelection.groups) {
             itemsToAdd.push({ type: 'group', id: gid });
         }
     }
     if (currentSelection.objects.size > 0) {
-        for (const [mesh, ids] of toMeshMap(currentSelection.objects)) {
-            for (const id of ids) {
-                itemsToAdd.push({ type: 'object', mesh, instanceId: id });
-            }
-        }
+        for (const uuid of currentSelection.objects) if (selectedObjectRef(uuid)) itemsToAdd.push({ type: 'object', id: uuid });
     }
 
     const tempMat = _TMP_MAT4_A;
@@ -134,9 +129,10 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
 
         if (currentGizmoPos) {
             if (item.type === 'group') {
-                Overlay.getGroupWorldMatrixWithFallback(item.id!, tempMat);
+                Overlay.getGroupWorldMatrixWithFallback(item.id, tempMat);
             } else {
-                Overlay.getInstanceWorldMatrix(item.mesh, item.instanceId, tempMat);
+                const ref = selectedObjectRef(item.id)!;
+                Overlay.getInstanceWorldMatrix(ref.mesh, ref.instanceId, tempMat);
             }
 
             tempInv.copy(tempMat).invert();
@@ -160,7 +156,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
         if (currentPrimary) {
             const isPrimary =
                 (item.type === 'group' && currentPrimary.type === 'group' && currentPrimary.id === item.id) ||
-                (item.type === 'object' && currentPrimary.type === 'object' && currentPrimary.uuid === Overlay.slotKeyUuid(item.mesh!, item.instanceId!));
+                (item.type === 'object' && currentPrimary.type === 'object' && currentPrimary.uuid === item.id);
             if (isPrimary) {
                 bundleItems[bundleItems.length - 1].isPrimary = true;
             }
@@ -169,7 +165,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
         if (isCenterSelected && localPos && !isBundleCenterAlreadySelected) {
             const idStr = item.type === 'group'
                 ? `G_${item.id}`
-                : `O_${Overlay.slotKeyUuid(item.mesh!, item.instanceId!)}`;
+                : `O_${item.id}`;
             const qKey = `QUEUE_${idStr}_${localPos.x.toFixed(4)}_${localPos.y.toFixed(4)}_${localPos.z.toFixed(4)}`;
             selectedVertexKeys.add(qKey);
             isBundleCenterAlreadySelected = true; // Only add the first one so selectedVertexKeys.size remains 1
@@ -205,7 +201,7 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
         const removeKeysForSubItem = (sub: QueueEntry) => {
             const idStr = sub.type === 'group'
                 ? `G_${sub.id}`
-                : `O_${Overlay.slotKeyUuid(sub.mesh!, sub.instanceId!)}`;
+                : `O_${sub.id}`;
             const prefix = `QUEUE_${idStr}_`;
 
             for (const key of selectedVertexKeys) {
@@ -229,8 +225,8 @@ export function pushToVertexQueue(params: PushVertexQueueParams): void {
                     matrix.scale(tempSize);
                 }
             } else if (sub.type === 'object') {
-                const { mesh, instanceId } = sub;
-                if (Overlay.isInstanceValid(mesh, instanceId)) {
+                const { mesh, instanceId } = queuedSlot(sub) ?? {};
+                if (mesh && Overlay.isInstanceValid(mesh, instanceId!)) {
                     const localBox = Overlay.getInstanceLocalBox(mesh, instanceId);
                     if (localBox) {
                         localBox.getSize(tempSize);
@@ -298,8 +294,7 @@ export function promoteVertexQueueBundleOnExit(params: PromoteVertexQueueParams)
     const groupIds = new Set<string>();
     const objectUuids = new Set<string>();
     const subUuid = (sub: QueueEntry): string | undefined =>
-        sub.type === 'object' && sub.mesh && Number.isInteger(sub.instanceId) && Overlay.isInstanceValid(sub.mesh, sub.instanceId!)
-            ? slotObjectUuid(sub.mesh, sub.instanceId!) : undefined;
+        queuedSlot(sub) ? sub.id : undefined;
 
     for (const sub of queuedItems) {
         if (!sub) continue;

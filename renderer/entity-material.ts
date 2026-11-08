@@ -158,7 +158,7 @@ export function suspendShading(): () => void {
   return () => { shadingEnabled.value = previous; };
 }
 
-export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false, headUvTexture?: Texture, instancedTintIndex = -1, useVertexTint = false) {
+export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, useInstancedUv = false, useInstancedUvTransform = false, instancedUvTransformCount = 1, instancedUvTransformIndex = 0, useHeadLayerVisibility = false, useEntityVisibility = false, headUvTexture?: Texture, instancedTintIndex = -1) {
   const blockLightLevel = uniform(0.0);
   const skyLightLevel = uniform(15.0);
 
@@ -204,17 +204,15 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   const headUv = headUvTransform
     ? faceMin.add(knifeUv.sub(faceMin).mul(headUvTransform.xy.add(1))).add(headUvTransform.zw)
     : knifeUv;
-  const partUvTransform = useVertexTint ? attribute('atlasPartUvTransform', 'vec4') : uvTransformNode;
-  const finalUv = useVertexTint || useInstancedUvTransform
-    ? uvNode.mul(partUvTransform.xy).add(partUvTransform.zw)
+  const finalUv = useInstancedUvTransform
+    ? uvNode.mul(uvTransformNode.xy).add(uvTransformNode.zw)
     : useInstancedUv
       ? headUv
       : uvNode;
   // Atlas and head UV transforms are affine per face; interpolate the result from the vertex stage.
   const diffuseNode = texture(diffuseTex, varying(finalUv, 'pdeUv'));
 
-  const tintVec = useVertexTint ? attribute('atlasPartTint', 'vec3')
-    : instancedTintIndex < 0 ? getTintNode(tintHex) : vertexStage(instanceAttribute(`instancedTint${instancedTintIndex}`, 'vec3'));
+  const tintVec = instancedTintIndex < 0 ? getTintNode(tintHex) : vertexStage(instanceAttribute(`instancedTint${instancedTintIndex}`, 'vec3'));
 
   const normalizedSkyLight = skyLightLevel.div(15.0);
   const lightMapColor = normalizedSkyLight.div(float(4.0).sub(normalizedSkyLight.mul(3.0)));
@@ -238,11 +236,10 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
   material.colorNode = mix(unlitColor, litColor, shadingEnabled);
   material.map = diffuseTex;
   material.userData.textureColorPick = {
-    uvAttribute: useVertexTint ? 'atlasPartUvTransform' : useInstancedUvTransform
+    uvAttribute: useInstancedUvTransform
       ? uvTransformCount === 1 ? 'instancedUvTransform' : `instancedUvTransform${instancedUvTransformIndex}` : null,
-    tintAttribute: useVertexTint ? 'atlasPartTint' : instancedTintIndex >= 0 ? `instancedTint${instancedTintIndex}` : null,
-    tintHex,
-    useVertexTint
+    tintAttribute: instancedTintIndex >= 0 ? `instancedTint${instancedTintIndex}` : null,
+    tintHex
   };
   material.transparent = true;
   material.fog = false;

@@ -1,8 +1,9 @@
 import { Matrix4, Vector3, Quaternion, type Group } from 'three/webgpu';
 import { getPlayerHeadTexture } from '../load-project/display/player-head-atlas';
 import { applySceneVisibility } from '../controls/scene-visibility';
+import { getMirrorPlane, setMirrorPlane, worldXReflection } from '../controls/transform/mirror-planes';
 import type { GroupData } from '../controls/grouping/group';
-import { validatePdeProject, type PdeEditorState, type PdeNode, type PdeProject, type ObjectEditorState } from './pde-format';
+import { runSteps, validatePdeProject, type PdeEditorState, type PdeNode, type PdeProject, type ObjectEditorState } from './pde-format';
 import { animationSession, serializeAnimation, importAnimation, renderModelTransform } from '../animation/animation-state';
 import { getDisplayType, getInstanceHasHat, getInstanceMatrix, hasInstanceHatData, objectHeadValues, objectIsCustomPivot, objectPivot, setInstanceHasHat,
     setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, type ObjectRef } from '../scene-store/object-access';
@@ -10,6 +11,14 @@ import { getDisplayType, getInstanceHasHat, getInstanceMatrix, hasInstanceHatDat
 export type ProjectSelection = { groups: Iterable<string>; objectUuids: Iterable<string> };
 
 export function serializeProject(root: Group, selection?: ProjectSelection): PdeProject {
+    const project = runSteps(serializeProjectSteps(root, selection));
+    validatePdeProject(project);
+    return project;
+}
+
+/** Reads the project stepwise (yields every few thousand objects); the result is not validated yet. */
+export function* serializeProjectSteps(root: Group, selection?: ProjectSelection): Generator<void, PdeProject> {
+    let work = 0;
     const data = root.userData;
     const refs = (data.objectUuidToInstance ?? new Map()) as Map<string, ObjectRef>;
     const groups = (data.groups ?? new Map()) as Map<string, GroupData>;
@@ -63,9 +72,8 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
                 : isItem ? { isItemDisplay: true, paintTexture } : { isBlockDisplay: true })
         };
     };
-    const saveEntry = (entry: { type: string; id: string }): PdeNode | undefined => {
-        const { id } = entry;
-        if (entry.type === 'object') return saveObject(id);
+    // Objects are saved directly; only groups step, so a big scene doesn't make a generator per object.
+    const saveGroup = function* (id: string): Generator<void, PdeNode | undefined> {
         if (groupStack.has(id)) throw new Error('순환 그룹은 저장할 수 없습니다.');
         const group = groups.get(id);
         if (!group || seenGroups.has(id)) return undefined;
@@ -85,7 +93,12 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
                 : group.pivot ? Array.isArray(group.pivot) ? [...group.pivot] : group.pivot.toArray() : undefined,
             isCustomPivot: group.isCustomPivot
         });
-        const children = group.children.map(saveEntry).filter((node): node is PdeNode => !!node);
+        const children: PdeNode[] = [];
+        for (const child of group.children) {
+            const node = child.type === 'object' ? saveObject(child.id) : yield* saveGroup(child.id);
+            if (node) children.push(node);
+            if (++work % 1024 === 0) yield;
+        }
         groupStack.delete(id);
         return { uuid: id, name: group.name, isCollection: true, transforms: new Matrix4().toArray(),
             nbt: (session.enabled ? session.base.get(id)?.properties?.nbt : undefined) ?? group.nbt ?? '', children };
@@ -102,19 +115,29 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
         }
         return false;
     };
-    for (const entry of [...(data.sceneOrder ?? []), ...[...groups.values()].filter(group => !group.parent).map(group => ({ type: 'group', id: group.id })),
-        ...[...groups.keys()].map(id => ({ type: 'group', id })), ...[...refs.keys()].map(id => ({ type: 'object', id }))]) {
+    // Scene order first, then anything it missed; listed lazily so a big scene isn't copied up front.
+    const entries = function* (): Generator<{ type: string; id: string }> {
+        yield* (data.sceneOrder ?? []) as { type: string; id: string }[];
+        for (const group of groups.values()) if (!group.parent) yield { type: 'group', id: group.id };
+        for (const id of groups.keys()) yield { type: 'group', id };
+        for (const id of refs.keys()) yield { type: 'object', id };
+    };
+    for (const entry of entries()) {
         if (selection) {
             const parent = entry.type === 'group' ? groups.get(entry.id)?.parent : data.objectToGroup?.get(entry.id);
             if (!(entry.type === 'group' ? selectedGroups : selectedObjects).has(entry.id) || coveredBySelection(parent)) continue;
         }
-        const node = saveEntry(entry);
+        const node = entry.type === 'object' ? saveObject(entry.id) : yield* saveGroup(entry.id);
         if (node) children.push(node);
+        if (++work % 1024 === 0) yield;
     }
     state.hiddenObjectUuids = state.hiddenObjectUuids.filter(id => seenObjects.has(id));
     state.hiddenGroupIds = state.hiddenGroupIds.filter(id => seenGroups.has(id));
     state.objectMirrorPairs = state.objectMirrorPairs.filter(([a, b]) => seenObjects.has(a) && seenObjects.has(b));
     state.groupMirrorPairs = state.groupMirrorPairs.filter(([a, b]) => seenGroups.has(a) && seenGroups.has(b));
+    state.mirrorPlanes = [...state.objectMirrorPairs, ...state.groupMirrorPairs].filter(([a, b]) => a < b)
+        .map(([a, b]) => [a, getMirrorPlane(root, a, b)] as [string, Matrix4])
+        .filter(([, plane]) => plane !== worldXReflection).map(([id, plane]) => [id, plane.toArray()]);
     state.animation = serializeAnimation(root, seenObjects, seenGroups, !!selection);
     const project: PdeProject = {
         pdeFormatVersion: 1, name: data.projectDetails?.name ?? '', mainNBT: data.projectDetails?.mainNBT ?? '',
@@ -123,7 +146,6 @@ export function serializeProject(root: Group, selection?: ProjectSelection): Pde
         summonPosition: data.projectDetails?.summonPosition ?? '~ ~ ~',
         children, editorState: state
     };
-    validatePdeProject(project);
     return project;
 }
 
@@ -165,6 +187,12 @@ export function restoreEditorState(root: Group, state: PdeEditorState | undefine
         const values = isMerge ? data[key] ?? new Map<string, string>() : new Map<string, string>();
         state[key].forEach(([a, b]) => values.set(remap(a), remap(b)));
         data[key] = values;
+    }
+    if (!isMerge) data.mirrorPlanes = new Map();
+    for (const [id, plane] of state.mirrorPlanes ?? []) {
+        const a = objectIds.get(id) ?? groupIds.get(id) ?? id;
+        const b = data.objectMirrorPairs.get(a) ?? data.groupMirrorPairs.get(a);
+        if (b) setMirrorPlane(root, a, b, new Matrix4().fromArray(plane));
     }
     if (!isMerge) data.globalBrightness = state.globalBrightness;
     importAnimation(root, state.animation, isMerge, objectIds, groupIds);

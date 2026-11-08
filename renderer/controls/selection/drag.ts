@@ -14,7 +14,8 @@ import { getVisibleInstanceIds } from '../scene-visibility';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import type { InstanceIdRange } from './instance-ranges';
 import { matchesPointerShortcut } from '../input/shortcuts';
-import { invalidateBatchBounds, objectBatches, transformInstanceMatrices, type ObjectBatch } from '../../scene-store/object-access';
+import { invalidateBatchBounds, objectBatches, objectRef, transformInstanceMatrices, type ObjectBatch } from '../../scene-store/object-access';
+import { transformJointMirrorPlanes } from '../transform/mirror-planes';
 
 interface OrbitControlsLike {
     enabled: boolean;
@@ -130,9 +131,9 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
         invalidateBatchBounds(mesh);
     }
 
+    const toUpdate = new Set<string>();
     if (selectedGroupIds && selectedGroupIds.size > 0) {
         const groups = GroupUtils.getGroups(loadedObjectGroup);
-        const toUpdate = new Set<string>();
 
         for (const rootId of selectedGroupIds) {
             if (!rootId) continue;
@@ -163,6 +164,11 @@ export function applyDeltaToSelection(params: ApplyDeltaParams): void {
             g.matrix.decompose(g.position, g.quaternion, g.scale);
         }
     }
+
+    transformJointMirrorPlanes(loadedObjectGroup, deltaMatrix, uuid => {
+        const ref = objectRef(loadedObjectGroup, uuid);
+        return !!ref && !!meshToRanges.get(ref.mesh)?.some(({ start, count }) => ref.instanceId >= start && ref.instanceId < start + count);
+    }, id => toUpdate.has(id));
 }
 
 /**

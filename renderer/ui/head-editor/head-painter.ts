@@ -1127,7 +1127,7 @@ function promoteImageHeadAndPaint(event: PointerEvent, hit: PaintHit): boolean {
     ?? 'player_head[display=none]';
   void replaceDisplayObjects([{ objectUuid: hit.surface.objectUuid, name }], false).then(result => {
     if (result.history) recordReplacementChange(
-      loadedObjectGroup, result.history.removed, result.history.created, beforeUi
+      loadedObjectGroup, result.history, beforeUi
     );
     const promotedHit = getHit(event, true);
     if (promotedHit) {

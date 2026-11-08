@@ -1,11 +1,12 @@
-import { Color, Matrix4, Group, InstancedMesh, BufferGeometry, InstancedBufferAttribute, Quaternion, Vector3 } from 'three/webgpu';
+import { Color, Matrix4, Group, BufferGeometry, InstancedBufferAttribute, Quaternion, Vector3 } from 'three/webgpu';
 import * as GroupUtils from './group';
 import type { GroupData, GroupChild } from './group';
-import { batchOf, objectRef, objectUuidAt, type ObjectBatch } from '../../scene-store/object-access';
+import { objectRef, objectUuidAt } from '../../scene-store/object-access';
 import { captureBatchRemoval, disposeRemovedBatch, removeInstances, restoreBatchRemoval, type BatchRemovalState } from '../../scene-store/object-batches';
 import { ObjectStore } from '../../scene-store/object-store';
 
 import { removeAnimationTargets } from '../../animation/animation-state';
+import { ObjectBatch } from '../../scene-store/object-batch';
 
 interface SceneOrderEntry {
     type: 'group' | 'object';
@@ -299,17 +300,17 @@ export function deleteSelectedItems(
 
 if (import.meta.env.DEV) {
     const root = new Group();
-    const instanced = new InstancedMesh(undefined, undefined, 1);
+    const instanced = new ObjectBatch(undefined, undefined, 1);
     instanced.count = 1;
     root.add(instanced);
-    removeInstances(root, batchOf(instanced), [0]);
+    removeInstances(root, instanced, [0]);
     console.assert(root.children.length === 0, 'An emptied batch must leave the scene.');
 
     const deltaRoot = new Group();
     const geometry = new BufferGeometry();
     const custom = new InstancedBufferAttribute(new Float32Array([10, 11, 12, 13, 14]), 1);
     geometry.setAttribute('customInstanceValue', custom);
-    const deltaMesh = new InstancedMesh(geometry, undefined, 5);
+    const deltaMesh = new ObjectBatch(geometry, undefined, 5);
     for (let instanceId = 0; instanceId < 5; instanceId++) {
         deltaMesh.setMatrixAt(instanceId, new Matrix4().makeTranslation(instanceId, 0, 0));
         deltaMesh.setColorAt(instanceId, new Color(instanceId / 5, 0, 0));
@@ -321,7 +322,7 @@ if (import.meta.env.DEV) {
         position: new Vector3(), quaternion: new Quaternion(), scale: new Vector3(1, 1, 1)
     }]]);
     deltaRoot.userData.objectToGroup = new Map(children.map(child => [child.id, 'group']));
-    deltaRoot.userData.objectUuidToInstance = new ObjectStore(children.map((child, instanceId) => [child.id, { mesh: batchOf(deltaMesh), instanceId }]));
+    deltaRoot.userData.objectUuidToInstance = new ObjectStore(children.map((child, instanceId) => [child.id, { mesh: deltaMesh, instanceId }]));
     deltaRoot.userData.objectNames = new Map(children.map(child => [child.id, child.id]));
     deltaRoot.userData.sceneOrder = children.map(child => ({ type: 'object', id: child.id }));
     let atlasCleanupCount = 0;
@@ -330,7 +331,7 @@ if (import.meta.env.DEV) {
     deltaRoot.userData.cleanupUnusedPlayerHeadAtlasSlots = () => { atlasCleanupCount++; };
     deltaRoot.userData.restorePlayerHeadAtlasState = () => { atlasRestored = true; };
     const delta = deleteSelectedItems(deltaRoot, {
-        groups: new Set(), objects: new Map([[batchOf(deltaMesh), new Set([0, 2, 4])]])
+        groups: new Set(), objects: new Map([[deltaMesh, new Set([0, 2, 4])]])
     }, { resetSelectionAndDeselect: () => {} })!;
     console.assert(deltaMesh.count === 2 && atlasCleanupCount === 1, 'Partial deletion or atlas cleanup failed.');
     delta.undo();

@@ -1,11 +1,12 @@
-import { BufferAttribute, BufferGeometry, Cache, Color, InstancedBufferAttribute, InstancedInterleavedBuffer, InstancedMesh, InterleavedBufferAttribute, Material, MathUtils, Matrix4, Object3D, Quaternion, StorageInstancedBufferAttribute, Texture, Vector3 } from 'three/webgpu';
+import { BufferAttribute, BufferGeometry, Cache, Color, InstancedBufferAttribute, InstancedInterleavedBuffer, InterleavedBufferAttribute, Material, MathUtils, Matrix4, Object3D, Quaternion, StorageInstancedBufferAttribute, Texture, Vector3 } from 'three/webgpu';
 import { gunzipSync } from 'fflate';
 import pLimit from 'p-limit';
-import { objectUuidAt } from '../../scene-store/object-access';
+import { hasHatAttributeName, isObjectBatch, objectUuidAt } from '../../scene-store/object-access';
+import { ObjectBatch } from '../../scene-store/object-batch';
 import { loadedObjectGroup, type LoadedSelection, currentLoadGen, beginPbdeLoadGeneration } from './display-instancing';
 import { headGeometries, PLAYER_HEAD_ATLAS_SIZE, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT, PLAYER_HEAD_BLOCKS_PER_ROW, type PlayerHeadSkin, type PlayerHeadAtlas, getPlayerHeadRenderMatrix, clearImageHeadBlackMaterial, mergeIndexedGeometries, createHeadGeometries, createPlayerHeadAtlasGeometry, loadPlayerHeadBitmap, drawPlayerHeadSlot, getProjectPlayerHeadAtlases, notifyPlayerHeadAtlasesChanged, getOrCreatePlayerHeadAtlas, createPlayerHeadAtlas, takePlayerHeadSlot } from './player-head-atlas';
 import { type GroupData, type GeometryInstanceBatch, type GeometryInstanceMeta, type GeometryMeta, type OtherItem, type WorkerMetadata } from '../pbde/pbde-types';
-import { INITIAL_INSTANCES_PER_INSTANCED_MESH, type Brightness, type SignatureGroup, type MaterialUpdate, setInstanceSkyBrightness, addLoadedInstance, addTextDisplayItems, getInstancedCapacity, buildPartHashKeys, getGeometryBufferKey, getInstancePartUvTransform, getInstanceDisplayType, getAppendableInstanceCapacity } from './display-instancing';
+import { type Brightness, type SignatureGroup, type MaterialUpdate, setInstanceSkyBrightness, addLoadedInstance, addTextDisplayItems, getInstancedCapacity, buildPartHashKeys, getGeometryBufferKey, getInstancePartUvTransform, getInstanceDisplayType, getAppendableInstanceCapacity } from './display-instancing';
 import { getMaterialKey, addProjectBlockAtlas, remapBlockAtlasMetadata, clearBlockRenderResources, clearBlockMaterialPromises, sharedPlaceholderMaterial, ensureSharedPlaceholder, getBlockMaterial } from './block-render-resources';
 import { dragSelectedAttributeName, entityVisibleAttributeName, setEntityStateAttributes } from '../../entity-material';
 import { parsePbdeProject, type ParsedPbdeProject } from '../scene/scene-parser';
@@ -15,7 +16,7 @@ import { resetTextDisplayAtlases, type TextDisplayOptions } from './text-display
 import { applyModelTransform, planUvTransforms, relativeUvTransform as getRelativeUvTransform } from '../batching/geometry-batching';
 import { setInstanceModelTransform } from '../batching/instance-model-transform';
 import { applyAtlasAppend, atlasBatchSignature, getTintParts, planAtlasAppend, rebaseAtlasInstances, setAtlasBatchState } from '../batching/atlas-instance-batch';
-import { getAtlasPartMaterial, setAtlasPartMaterial } from '../batching/atlas-part-material';
+import { setAtlasPartMaterial } from '../batching/atlas-part-material';
 import { appendPlayerHeadEntries, findAppendablePlayerHeadMesh } from '../batching/player-head-batch';
 import { restoreEditorState } from '../../save/project-state';
 import { trackProjectEdit } from '../../save/pending-edits';
@@ -35,7 +36,9 @@ function _clearSceneAndCaches(): void {
     const disposedMaterials = new Set<Material>();
     const disposedTextures = new Set<Texture>();
     loadedObjectGroup.traverse(object => {
-        if (object.isMesh) {
+        // Batches give their rows back to the store.
+        if (isObjectBatch(object)) object.dispose();
+        if (object.isMesh || isObjectBatch(object)) {
             // 최적화: 재사용되는 지오메트리는 dispose하지 않도록 예외 처리
             if (object.geometry && !disposedGeometries.has(object.geometry) && object.geometry !== headGeometries?.base && object.geometry !== headGeometries?.layer && object.geometry !== headGeometries?.merged) {
                 object.geometry.dispose();
@@ -107,9 +110,9 @@ export function performSelection(newlyAddedSelectableMeshes: LoadedSelection, an
 
         for (const [mesh, instanceIds] of newlyAddedSelectableMeshes) {
             if (!mesh) continue;
-            const instancedMesh = mesh as InstancedMesh;
+            const instancedMesh = mesh as ObjectBatch;
 
-            if (!instancedMesh.isInstancedMesh) continue;
+            if (!isObjectBatch(instancedMesh)) continue;
 
             if (instanceIds.size === 0) continue;
 
@@ -214,7 +217,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
             _clearSceneAndCaches();
             resetTextDisplayAtlases();
             loadedObjectGroup.userData.blockAtlasTextures = [];
-            for (const key of ['hiddenObjectUuids', 'hiddenGroupIds', 'objectMirrorPairs', 'groupMirrorPairs', 'globalBrightness', 'animation', 'animationSession', 'animationPreviewObjectIds', 'objectPivots', 'objectIsCustomPivot', 'objectDisplayKinds']) delete loadedObjectGroup.userData[key];
+            for (const key of ['hiddenObjectUuids', 'hiddenGroupIds', 'objectMirrorPairs', 'groupMirrorPairs', 'mirrorPlanes', 'globalBrightness', 'animation', 'animationSession', 'animationPreviewObjectIds', 'objectPivots', 'objectIsCustomPivot', 'objectDisplayKinds']) delete loadedObjectGroup.userData[key];
             loadedObjectGroup.userData.objectNbt = new Map<string, string>();
         } else {
             clearBlockMaterialPromises();
@@ -337,7 +340,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
 
                 function registerObject(mesh: Object3D, instanceId: number, uuid: string, groupId: string) {
                     if (preview) {
-                        const visible = (mesh as InstancedMesh).geometry?.getAttribute(entityVisibleAttributeName);
+                        const visible = (mesh as ObjectBatch).geometry?.getAttribute(entityVisibleAttributeName);
                         if (visible) { visible.setX(instanceId, 0); visible.needsUpdate = true; }
                     }
                     // The store keeps both uuid → slot and slot → uuid.
@@ -348,7 +351,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                     if (groupId && incomingGroups) objectToGroup.set(uuid, groupIdRemap.get(groupId) ?? groupId);
                 }
 
-                function populateInstances(mesh: InstancedMesh, instances: GeometryInstanceMeta[], sourceStart: number, targetStart: number, count: number, firstPart: GeometryMeta): void {
+                function populateInstances(mesh: ObjectBatch, instances: GeometryInstanceMeta[], sourceStart: number, targetStart: number, count: number, firstPart: GeometryMeta): void {
                     const displayKinds = (loadedObjectGroup.userData.objectDisplayKinds ??= new Map<string, string>()) as Map<string, string>;
                     const matrix = new Matrix4();
                     const selected = mesh.geometry.getAttribute(dragSelectedAttributeName);
@@ -622,11 +625,11 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                 }
                 const signatureElapsedMs = performance.now() - signatureStartMs;
 
-                const reusableMeshes = new Map<string, InstancedMesh[]>();
+                const reusableMeshes = new Map<string, ObjectBatch[]>();
                 if (isMerge && !preview) {
                     for (const child of loadedObjectGroup.children) {
-                        const mesh = child as InstancedMesh;
-                        const signature = mesh.isInstancedMesh ? mesh.userData.pbdeSignature as string | undefined : undefined;
+                        const mesh = child as ObjectBatch;
+                        const signature = isObjectBatch(mesh) ? mesh.userData.pbdeSignature as string | undefined : undefined;
                         if (!signature) continue;
                         const meshes = reusableMeshes.get(signature) ?? [];
                         meshes.push(mesh);
@@ -658,7 +661,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                 }
                 let materialAwaitElapsedMs = performance.now() - materialAwaitStartMs;
 
-                // Create InstancedMesh for each signature group
+                // Create ObjectBatch for each signature group
                 const meshBuildStartMs = performance.now();
                 let previewDeadline = performance.now() + 8;
                 for (const [signature, group] of signatureGroups) {
@@ -690,10 +693,8 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                             appendPlan.tintParts.includes(partIndex) ? partIndex : -1);
                                     }));
                                     if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
-                                    const atlasMaterial = await getAtlasPartMaterial(representativeParts, appendPlan.uvPlan, appendPlan.tintParts, myGen, instancedMesh.count + appendCount);
-                                    if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
                                     const oldGeometry = applyAtlasAppend(instancedMesh, appendPlan);
-                                    instancedMesh.material = setAtlasPartMaterial(instancedMesh.geometry, representativeParts, appendPlan.uvPlan, appendPlan.tintParts, nextMaterials, instancedMesh.count + appendCount, atlasMaterial);
+                                    instancedMesh.material = setAtlasPartMaterial(instancedMesh.geometry, representativeParts, nextMaterials);
                                     oldGeometry.dispose();
                                 }
                                 populateInstances(instancedMesh, appendPlan?.instances ?? instances, appendPlan ? 0 : transformStart,
@@ -766,20 +767,19 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                         }
 
                         if (mergedGeo) {
-                            const atlasMaterial = pendingMaterialSlots.length ? undefined
-                                : await getAtlasPartMaterial(representativeParts, group.uvPlan!, group.tintParts!, myGen, instances.length - transformStart);
-                            if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
-                            for (let chunkStart = transformStart; chunkStart < instances.length; chunkStart += INITIAL_INSTANCES_PER_INSTANCED_MESH) {
-                                const chunkCount = Math.min(INITIAL_INSTANCES_PER_INSTANCED_MESH, instances.length - chunkStart);
-                                const chunkCapacity = getAppendableInstanceCapacity(chunkCount);
+                            // One batch per signature group: it holds every remaining instance.
+                            if (transformStart < instances.length) {
+                                const batchStart = transformStart;
+                                const batchCount = instances.length - batchStart;
+                                const batchCapacity = getAppendableInstanceCapacity(batchCount);
                                 const meshGeometry = mergedGeo.clone();
                                 if (usesAtlasUvTransform) {
                                     for (let slot = 0; slot < instancedUvTransformCount; slot++) {
                                         const partIndex = group.uvPlan!.sourceParts[slot];
                                         const baseUvTransform = representativeParts[partIndex]?.uvTransform ?? representativeParts[0]?.uvTransform;
-                                        const uvTransforms = new Float32Array(chunkCapacity * 4);
-                                        for (let i = 0; i < chunkCount; i++) {
-                                            const sourceIndex = chunkStart + i;
+                                        const uvTransforms = new Float32Array(batchCapacity * 4);
+                                        for (let i = 0; i < batchCount; i++) {
+                                            const sourceIndex = batchStart + i;
                                             const currentUvTransform = getInstancePartUvTransform(instances[sourceIndex], partIndex);
                                             const relativeUvTransform = getRelativeUvTransform(baseUvTransform, currentUvTransform);
                                             uvTransforms.set(relativeUvTransform, i * 4);
@@ -790,22 +790,22 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                         meshGeometry.setAttribute(attributeName, new InstancedBufferAttribute(uvTransforms, 4));
                                     }
                                 }
-                                setEntityStateAttributes(meshGeometry, chunkCapacity);
+                                setEntityStateAttributes(meshGeometry, batchCapacity);
                                 for (const partIndex of group.tintParts!) {
-                                    const values = new Float32Array(chunkCapacity * 3).fill(1);
-                                    for (let i = 0; i < chunkCount; i++) {
-                                        new Color(instances[chunkStart + i].partTints?.[partIndex] ?? representativeParts[partIndex].tintHex ?? 0xffffff).toArray(values, i * 3);
+                                    const values = new Float32Array(batchCapacity * 3).fill(1);
+                                    for (let i = 0; i < batchCount; i++) {
+                                        new Color(instances[batchStart + i].partTints?.[partIndex] ?? representativeParts[partIndex].tintHex ?? 0xffffff).toArray(values, i * 3);
                                     }
                                     meshGeometry.setAttribute(`instancedTint${partIndex}`, new InstancedBufferAttribute(values, 3));
                                 }
-                                const meshMaterial = setAtlasPartMaterial(meshGeometry, representativeParts, group.uvPlan!, group.tintParts!, materials, chunkCount, atlasMaterial);
+                                const meshMaterial = setAtlasPartMaterial(meshGeometry, representativeParts, materials);
                                 // The storage buffer below replaces the constructor's matrix buffer.
-                                const instancedMesh = new InstancedMesh(meshGeometry, meshMaterial, 0);
+                                const instancedMesh = new ObjectBatch(meshGeometry, meshMaterial, 0);
                                 if (preview) { instancedMesh.visible = false; instancedMesh.userData.animationPreviewMesh = true; }
-                                instancedMesh.instanceMatrix = new StorageInstancedBufferAttribute(chunkCapacity, 16);
-                                instancedMesh.count = chunkCount;
+                                instancedMesh.instanceMatrix = new StorageInstancedBufferAttribute(batchCapacity, 16);
+                                instancedMesh.count = batchCount;
                                 
-                                instancedMesh.userData.displayType = getInstanceDisplayType(instances[chunkStart], representativeParts[0]);
+                                instancedMesh.userData.displayType = getInstanceDisplayType(instances[batchStart], representativeParts[0]);
                                 instancedMesh.userData.mixedDisplayKinds = true;
                                 instancedMesh.userData.pbdeModelMatrix = representativeParts[0].modelMatrix.slice();
                                 if (hasReusableSignature) instancedMesh.userData.pbdeSignature = signature;
@@ -813,7 +813,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                 
                                 instancedMesh.frustumCulled = false;
 
-                                populateInstances(instancedMesh, instances, chunkStart, 0, chunkCount, representativeParts[0]);
+                                populateInstances(instancedMesh, instances, batchStart, 0, batchCount, representativeParts[0]);
                                 instancedMesh.instanceMatrix.needsUpdate = true;
                                 if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
                                 instancedMesh.computeBoundingSphere();
@@ -939,7 +939,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                 const knifeUvScales = new InterleavedBufferAttribute(interleavedUvData, 3, 4);
                                 const knifeUvOffsets = new InterleavedBufferAttribute(interleavedUvData, 3, 7);
                                 const headLayerVisible = new InterleavedBufferAttribute(interleavedUvData, 1, 10);
-                                const hasHatArray = new Array(totalInstances).fill(false);
+                                const hasHat = new Float32Array(headCapacity).fill(-1);
 
                                 for (let index = 0; index < headCapacity; index++) {
                                     knifeUvScales.setXYZ(index, 1, 1, 1);
@@ -953,7 +953,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                     const x = (skin.slot % PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_WIDTH;
                                     const y = Math.floor(skin.slot / PLAYER_HEAD_BLOCKS_PER_ROW) * PLAYER_HEAD_BLOCK_HEIGHT;
                                     uvOffsets.setXY(index, x / PLAYER_HEAD_ATLAS_SIZE, 1 - (y + PLAYER_HEAD_BLOCK_HEIGHT) / PLAYER_HEAD_ATLAS_SIZE);
-                                    hasHatArray[index] = skin.hasHat;
+                                    hasHat[index] = Number(!!skin.hasHat);
                                 });
 
                                 geometry.setAttribute('instancedUvOffset', uvOffsets);
@@ -961,15 +961,15 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                 geometry.setAttribute('headLayerVisible', headLayerVisible);
                                 geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
                                 geometry.setAttribute('instancedKnifeUvOffset', knifeUvOffsets);
+                                geometry.setAttribute(hasHatAttributeName, new InstancedBufferAttribute(hasHat, 1));
                                 setEntityStateAttributes(geometry, headCapacity);
 
-                                const instancedMesh = new InstancedMesh(geometry, layer === undefined ? atlas.material : getImageHeadAtlasMaterial(atlas), headCapacity);
+                                const instancedMesh = new ObjectBatch(geometry, layer === undefined ? atlas.material : getImageHeadAtlasMaterial(atlas), headCapacity);
                                 if (preview) { instancedMesh.visible = false; instancedMesh.userData.animationPreviewMesh = true; }
                                 instancedMesh.instanceMatrix = new StorageInstancedBufferAttribute(matrices, 16);
                                 instancedMesh.count = totalInstances;
                                 instancedMesh.userData.displayType = 'item_display';
                                 instancedMesh.userData.playerHeadBatch = true;
-                                instancedMesh.userData.hasHat = hasHatArray;
                                 if (layer !== undefined) instancedMesh.userData.imageHeadLayer = layer;
                                 instancedMesh.instanceMatrix.needsUpdate = true;
                                 instancedMesh.frustumCulled = false;
@@ -1000,7 +1000,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                 await addTextDisplayItems(textItems, registerObject, newlyAddedSelectableMeshes, myGen);
                 if (myGen !== currentLoadGen) return newlyAddedSelectableMeshes;
                 restoreEditorState(loadedObjectGroup, metadataPayload.editorState, isMerge, objectIdRemap, groupIdRemap);
-                if (!preview) for (const [uuid, ref] of loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }>) {
+                if (!preview) for (const [uuid, ref] of loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }>) {
                     setInstanceSkyBrightness(ref.mesh, ref.instanceId, objectBrightness.get(uuid) as Brightness | undefined);
                 }
                 const playerHeadElapsedMs = performance.now() - playerHeadStartMs;

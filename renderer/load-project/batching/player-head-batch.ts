@@ -1,41 +1,42 @@
-import { Box3, InstancedMesh, Matrix4, type BufferGeometry, type Group, type Material } from 'three/webgpu';
+import { Box3, Matrix4, type BufferGeometry, type Group, type Material } from 'three/webgpu';
+import { getInstanceHasHat, isObjectBatch, setInstanceHasHat, type ObjectBatch } from '../../scene-store/object-access';
 import { dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
 import { getInstancedCapacity, setInstanceSkyBrightness } from '../display/display-instancing';
 import { getPlayerHeadRenderMatrix, PLAYER_HEAD_ATLAS_SIZE, PLAYER_HEAD_BLOCKS_PER_ROW, PLAYER_HEAD_BLOCK_WIDTH, PLAYER_HEAD_BLOCK_HEIGHT, type PlayerHeadSkin } from '../display/player-head-atlas';
 import type { OtherItem } from '../pbde/pbde-types';
 
-export function findAppendablePlayerHeadMesh(root: Group, material: Material, geometry: BufferGeometry): InstancedMesh | undefined {
+export function findAppendablePlayerHeadMesh(root: Group, material: Material, geometry: BufferGeometry): ObjectBatch | undefined {
     geometry.computeBoundingSphere();
     const identity = new Matrix4();
-    let last: InstancedMesh | undefined;
+    let last: ObjectBatch | undefined;
     for (const child of root.children) {
-        const mesh = child as InstancedMesh;
-        if (!mesh.isMesh) return;
+        const mesh = child as ObjectBatch;
+        if (!isObjectBatch(mesh)) return undefined;
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         if (mesh.renderOrder !== 0 || !materials.some(material => material.transparent)) continue;
         // Appending must preserve the entire transparent draw sequence for
         // every camera. Different sort centers or object transforms fall back.
         if (mesh.matrixAutoUpdate) mesh.updateMatrix();
-        if (!mesh.matrix.equals(identity)) return;
+        if (!mesh.matrix.equals(identity)) return undefined;
         mesh.geometry.computeBoundingSphere();
-        if (!mesh.geometry.boundingSphere!.center.equals(geometry.boundingSphere!.center)) return;
+        if (!mesh.geometry.boundingSphere!.center.equals(geometry.boundingSphere!.center)) return undefined;
         if (!last || mesh.id > last.id) last = mesh;
     }
-    if (!last?.userData.playerHeadBatch || last.material !== material || getInstancedCapacity(last) <= last.count) return;
-    if (last.userData.hasHat?.slice(0, last.count).some(Boolean)) return;
+    if (!last?.userData.playerHeadBatch || last.material !== material || getInstancedCapacity(last) <= last.count) return undefined;
+    for (let instanceId = 0; instanceId < last.count; instanceId++) if (getInstanceHasHat(last, instanceId)) return undefined;
     for (const name of ['position', 'normal', 'uv', 'uvMirrorCenter', 'headLayer']) {
         const current = last.geometry.getAttribute(name), expected = geometry.getAttribute(name);
-        if (!current || current.count !== expected.count || current.itemSize !== expected.itemSize) return;
+        if (!current || current.count !== expected.count || current.itemSize !== expected.itemSize) return undefined;
         for (let vertex = 0; vertex < expected.count; vertex++) for (let component = 0; component < expected.itemSize; component++) {
-            if (current.getComponent(vertex, component) !== expected.getComponent(vertex, component)) return;
+            if (current.getComponent(vertex, component) !== expected.getComponent(vertex, component)) return undefined;
         }
     }
     const current = last.geometry.getIndex(), expected = geometry.getIndex();
-    if (!current || !expected || current.count !== expected.count || current.array.some((value, index) => value !== expected.array[index])) return;
+    if (!current || !expected || current.count !== expected.count || current.array.some((value, index) => value !== expected.array[index])) return undefined;
     return last;
 }
 
-export function appendPlayerHeadEntries(mesh: InstancedMesh, entries: Array<{ item: OtherItem; skin: PlayerHeadSkin }>, register: (item: OtherItem, instanceId: number) => void): number {
+export function appendPlayerHeadEntries(mesh: ObjectBatch, entries: Array<{ item: OtherItem; skin: PlayerHeadSkin }>, register: (item: OtherItem, instanceId: number) => void): number {
     const count = Math.min(entries.length, getInstancedCapacity(mesh) - mesh.count);
     if (entries.slice(0, count).some(entry => entry.skin.hasHat)) return 0;
     // Double-sided transparent head materials draw back faces before front
@@ -79,7 +80,7 @@ export function appendPlayerHeadEntries(mesh: InstancedMesh, entries: Array<{ it
         attributes.headLayerVisible.setX(instanceId, 1);
         attributes[dragSelectedAttributeName].setX(instanceId, 0);
         attributes[entityVisibleAttributeName].setX(instanceId, 1);
-        mesh.userData.hasHat[instanceId] = skin.hasHat;
+        setInstanceHasHat(mesh, instanceId, skin.hasHat);
         setInstanceSkyBrightness(mesh, instanceId, item.brightness);
         register(item, instanceId);
     }

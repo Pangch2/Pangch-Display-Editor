@@ -1,19 +1,18 @@
-import { Group, InstancedMesh, Matrix4, Vector3 } from 'three/webgpu';
+import { Group, Matrix4, Vector3 } from 'three/webgpu';
 import { applyDeltaToSelection } from '../selection/drag';
 import { mergeInstanceIds } from '../selection/instance-ranges';
 import * as GroupUtils from '../grouping/group';
-import * as Overlay from '../selection/overlay';
 import type { SelectedItem } from '../selection/select';
-import { batchOf, objectPivot, objectUuidAt, objectWorldMatrix, setObjectIsCustomPivot, setObjectPivot, type ObjectBatch } from '../../scene-store/object-access';
+import { objectPivot, objectUuidAt, setInstanceHasHat, objectWorldMatrix, setObjectIsCustomPivot, setObjectPivot } from '../../scene-store/object-access';
 import { ObjectStore } from '../../scene-store/object-store';
+import { ObjectBatch } from '../../scene-store/object-batch';
+import { copyMirrorPlane, getMirrorPlane, setMirrorPlane, worldXReflection } from './mirror-planes';
 
 type MirrorPairKey = 'objectMirrorPairs' | 'groupMirrorPairs';
 
-const worldXReflection = new Matrix4().makeScale(-1, 1, 1).setPosition(-1, 0, 0);
-const centeredXReflection = new Matrix4().makeScale(-1, 1, 1);
 let mirrorModeling = false;
 
-export const mirrorModelingPivot = new Vector3(-0.5, 0.5, 0.5);
+export const mirrorModelingPivot = new Vector3();
 
 export function setMirrorModeling(enabled: boolean): void {
     mirrorModeling = enabled;
@@ -52,8 +51,11 @@ export function linkMirrorGroupPair(loadedObjectGroup: Group, a?: string, b?: st
     if (children.filter(child => !pairs.has(child.id)).length !== unpairedPartners.length) return;
     let partnerIndex = 0;
     for (const child of children) {
-        const partnerId = pairs.get(child.id) ?? unpairedPartners[partnerIndex++]?.id;
-        if (partnerIds.has(partnerId)) linkMirrorGroupPair(loadedObjectGroup, child.id, partnerId);
+        const pairedId = pairs.get(child.id);
+        const partnerId = pairedId ?? unpairedPartners[partnerIndex++]?.id;
+        if (!partnerIds.has(partnerId)) continue;
+        if (!pairedId) copyMirrorPlane(loadedObjectGroup, a!, b!, child.id, partnerId);
+        linkMirrorGroupPair(loadedObjectGroup, child.id, partnerId);
     }
 }
 
@@ -74,24 +76,8 @@ function getLinkedMirrorGroupId(loadedObjectGroup: Group, groupId: string): stri
     return undefined;
 }
 
-export function replaceMirrorUuid(loadedObjectGroup: Group, oldUuid: string, newUuid: string): void {
-    const pairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
-    const partner = pairs.get(oldUuid);
-    pairs.delete(oldUuid);
-    if (!partner) return;
-    pairs.set(partner, newUuid);
-    pairs.set(newUuid, partner);
-}
-
 export function getLinkedMirrorUuid(loadedObjectGroup: Group, uuid: string): string | undefined {
     return getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs').get(uuid);
-}
-
-function getObjectReflection(mesh: ObjectBatch, instanceId: number): Matrix4 {
-    const displayType = Overlay.getDisplayType(mesh, instanceId);
-    return (displayType === 'block_display' || displayType === 'item_display' || displayType === 'text_display')
-        ? centeredXReflection
-        : worldXReflection;
 }
 
 export function syncLinkedMirrorPivot(loadedObjectGroup: Group, uuid: string, localPivot: Vector3): void {
@@ -106,7 +92,7 @@ export function syncLinkedMirrorPivot(loadedObjectGroup: Group, uuid: string, lo
     const partnerMatrix = objectWorldMatrix(loadedObjectGroup, partnerUuid!, new Matrix4())!;
     const mirroredPivot = localPivot.clone()
         .applyMatrix4(sourceMatrix)
-        .applyMatrix4(getObjectReflection(source.mesh, source.instanceId))
+        .applyMatrix4(getMirrorPlane(loadedObjectGroup, uuid, partnerUuid))
         .applyMatrix4(partnerMatrix.invert());
     setObjectPivot(loadedObjectGroup, partnerUuid!, mirroredPivot);
     setObjectIsCustomPivot(loadedObjectGroup, partnerUuid!, true);
@@ -118,7 +104,7 @@ export function syncLinkedMirrorGroupPivot(loadedObjectGroup: Group, groupId: st
     const groups = GroupUtils.getGroups(loadedObjectGroup);
     const partner = partnerId ? groups.get(partnerId) : undefined;
     if (!groups.has(groupId) || !partner) return;
-    partner.pivot = worldPivot.clone().setX(-worldPivot.x);
+    partner.pivot = worldPivot.clone().applyMatrix4(getMirrorPlane(loadedObjectGroup, groupId, partnerId));
     partner.isCustomPivot = true;
 }
 
@@ -137,9 +123,20 @@ export function getLinkedMirrorSelection(loadedObjectGroup: Group, items: Select
     const selectedUuids = new Set(items.map(item => getItemUuid(loadedObjectGroup, item)).filter((uuid): uuid is string => !!uuid));
     const objectPairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
     const refs = loadedObjectGroup.userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined;
+    const allGroups = GroupUtils.getGroups(loadedObjectGroup);
+    const objectToGroup = GroupUtils.getObjectToGroup(loadedObjectGroup);
+    // A partner inside a selected group already moves with that group; mirroring it too would move it twice.
+    const insideSelectedGroup = (groupId: string | undefined): boolean => {
+        for (const seen = new Set<string>(); groupId && !seen.has(groupId); groupId = allGroups.get(groupId)?.parent ?? undefined) {
+            if (groupIds.has(groupId)) return true;
+            seen.add(groupId);
+        }
+        return false;
+    };
     for (const uuid of selectedUuids) {
         const partnerUuid = objectPairs.get(uuid);
-        const partner = partnerUuid && !selectedUuids.has(partnerUuid) ? refs?.get(partnerUuid) : undefined;
+        const partner = partnerUuid && !selectedUuids.has(partnerUuid) && !insideSelectedGroup(objectToGroup.get(partnerUuid))
+            ? refs?.get(partnerUuid) : undefined;
         if (!partner) continue;
         const ids = objects.get(partner.mesh) ?? new Set<number>();
         ids.add(partner.instanceId);
@@ -148,15 +145,15 @@ export function getLinkedMirrorSelection(loadedObjectGroup: Group, items: Select
 
     for (const groupId of groupIds) {
         const partnerId = getLinkedMirrorGroupId(loadedObjectGroup, groupId);
-        if (partnerId && !groupIds.has(partnerId)) groups.add(partnerId);
+        if (partnerId && !insideSelectedGroup(partnerId)) groups.add(partnerId);
     }
     return { objects, groups };
 }
 
 if (import.meta.env.DEV) {
     const testGroup = new Group();
-    const source = new InstancedMesh(undefined!, undefined!, 1);
-    const partner = new InstancedMesh(undefined!, undefined!, 1);
+    const source = new ObjectBatch(undefined!, undefined!, 1);
+    const partner = new ObjectBatch(undefined!, undefined!, 1);
     partner.position.x = -1;
     partner.updateMatrixWorld(true);
     testGroup.userData.objectUuidToInstance = new ObjectStore([
@@ -164,10 +161,7 @@ if (import.meta.env.DEV) {
         ['partner', { mesh: partner, instanceId: 0 }]
     ]);
     linkMirrorPair(getMirrorPairs(testGroup, 'objectMirrorPairs'), 'source', 'partner');
-    replaceMirrorUuid(testGroup, 'source', 'replacement');
-    console.assert(getLinkedMirrorUuid(testGroup, 'replacement') === 'partner' && getLinkedMirrorUuid(testGroup, 'partner') === 'replacement', 'Mirror UUID replacement broke the pair.');
-    replaceMirrorUuid(testGroup, 'replacement', 'source');
-    const groupChild = new InstancedMesh(undefined!, undefined!, 1);
+    const groupChild = new ObjectBatch(undefined!, undefined!, 1);
     groupChild.setMatrixAt(0, new Matrix4());
     testGroup.userData.objectUuidToInstance.set('groupChild', { mesh: groupChild, instanceId: 0 });
     testGroup.userData.groups = new Map([
@@ -180,23 +174,23 @@ if (import.meta.env.DEV) {
     linkMirrorPair(getMirrorPairs(testGroup, 'groupMirrorPairs'), 'sourceGroup', 'partnerGroup');
     const previous = mirrorModeling;
     mirrorModeling = true;
-    console.assert(getLinkedMirrorSelection(testGroup, [{ type: 'object', mesh: batchOf(source), instanceId: 0 }], new Set()).objects.get(batchOf(partner))?.has(0), 'Mirror partner selection failed.');
+    console.assert(getLinkedMirrorSelection(testGroup, [{ type: 'object', mesh: source, instanceId: 0 }], new Set()).objects.get(partner)?.has(0), 'Mirror partner selection failed.');
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(1, 2, 3));
     syncLinkedMirrorGroupPivot(testGroup, 'sourceGroup', new Vector3(1, 2, 3));
-    console.assert(objectPivot(testGroup, 'partner')!.equals(new Vector3(-1, 2, 3)), 'Object custom pivot X was not mirrored.');
+    console.assert(objectPivot(testGroup, 'partner')!.equals(new Vector3(0, 2, 3)), 'Object custom pivot X was not mirrored across X=0.');
     source.userData.displayType = 'block_display';
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(1.046789, 0, 0));
     console.assert(Math.abs(objectPivot(testGroup, 'partner')!.x + 0.046789) < 1e-9, 'Block display pivot did not mirror around X=0.5.');
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(0, 0, 0));
     console.assert(Math.abs(objectPivot(testGroup, 'partner')!.x - 1) < 1e-9, 'Block display origin pivot did not mirror to X=1.');
     source.userData.displayType = 'item_display';
-    source.userData.hasHat = [true];
+    setInstanceHasHat(source, 0, true);
     partner.userData.displayType = 'item_display';
     partner.position.set(0, 0, 0);
     partner.updateMatrixWorld(true);
     syncLinkedMirrorPivot(testGroup, 'source', new Vector3(0.279198, 0, 0));
     console.assert(Math.abs(objectPivot(testGroup, 'partner')!.x + 0.279198) < 1e-9, 'Centered item pivot used the block reflection plane.');
-    const centeredRotation = getObjectReflection(batchOf(source), 0).clone().multiply(new Matrix4().makeRotationZ(Math.PI / 2)).multiply(getObjectReflection(batchOf(source), 0));
+    const centeredRotation = worldXReflection.clone().multiply(new Matrix4().makeRotationZ(Math.PI / 2)).multiply(worldXReflection);
     console.assert(Math.abs(centeredRotation.elements[13]) < 1e-9, 'Player head rotation added a Y offset.');
     delete source.userData.displayType;
     delete partner.userData.displayType;
@@ -209,13 +203,26 @@ if (import.meta.env.DEV) {
     const childMatrix = new Matrix4();
     groupChild.getMatrixAt(0, childMatrix);
     console.assert(childMatrix.elements[12] === -1, 'Mirrored group children must update with the group.');
-    groupChild.setMatrixAt(0, new Matrix4().makeTranslation(-3, 0, 0));
+    groupChild.setMatrixAt(0, new Matrix4().makeTranslation(-2, 0, 0));
     const pivotDelta = new Matrix4().makeTranslation(2, 0, 0)
         .multiply(new Matrix4().makeRotationZ(Math.PI / 2))
         .multiply(new Matrix4().makeTranslation(-2, 0, 0));
     applyLinkedMirrorDelta(testGroup, pivotDelta, [], new Set(['sourceGroup']));
     groupChild.getMatrixAt(0, childMatrix);
-    console.assert(new Vector3().setFromMatrixPosition(childMatrix).distanceTo(new Vector3(-3, 0, 0)) < 1e-9, 'Mirrored group transform ignored the reflected custom pivot.');
+    console.assert(new Vector3().setFromMatrixPosition(childMatrix).distanceTo(new Vector3(-2, 0, 0)) < 1e-9, 'Mirrored group transform ignored the reflected custom pivot.');
+    source.setMatrixAt(0, new Matrix4().makeTranslation(1, 0, 0));
+    partner.setMatrixAt(0, new Matrix4().makeTranslation(-1, 0, 0));
+    applyDeltaToSelection({
+        deltaMatrix: new Matrix4().makeRotationY(Math.PI / 2),
+        meshToInstanceRanges: new Map([[source, [{ start: 0, count: 1 }]], [partner, [{ start: 0, count: 1 }]]]),
+        loadedObjectGroup: testGroup
+    });
+    const turnedPlane = new Matrix4().makeScale(1, 1, -1).elements;
+    console.assert(getMirrorPlane(testGroup, 'source', 'partner').elements.every((value, index) => Math.abs(value - turnedPlane[index]) < 1e-9),
+        'Rotating both mirror sides together did not turn their mirror plane.');
+    applyLinkedMirrorDelta(testGroup, new Matrix4().makeTranslation(0, 0, -1), [{ type: 'object', mesh: source, instanceId: 0 }], new Set());
+    partner.getMatrixAt(0, childMatrix);
+    console.assert(new Vector3().setFromMatrixPosition(childMatrix).distanceTo(new Vector3(0, 0, 2)) < 1e-9, 'Mirror delta ignored the turned mirror plane.');
     mirrorModeling = previous;
     const point = new Vector3(3, 2, 1);
     console.assert(point.clone().applyMatrix4(worldXReflection).applyMatrix4(worldXReflection).equals(point), 'Mirror reflection must be reversible.');
@@ -230,41 +237,57 @@ export function applyLinkedMirrorDelta(
     const linked = getLinkedMirrorSelection(loadedObjectGroup, items, groupIds);
     if (linked.objects.size === 0 && linked.groups.size === 0) return;
 
-    const groupedObjects = new Map<ObjectBatch, Set<number>>();
+    // Partners are batched by their pair's mirror plane, so each side reflects across its own plane.
+    const batches = new Map<string, { plane: Matrix4; objects: Map<ObjectBatch, Set<number>>; groups: Set<string> }>();
+    const batchFor = (id: string, partnerId: string | undefined) => {
+        const plane = getMirrorPlane(loadedObjectGroup, id, partnerId);
+        const key = plane.elements.join();
+        let batch = batches.get(key);
+        if (!batch) batches.set(key, batch = { plane, objects: new Map(), groups: new Set() });
+        return batch;
+    };
+    const covered = new Map<ObjectBatch, Set<number>>();
+    const add = (target: Map<ObjectBatch, Set<number>>, mesh: ObjectBatch, instanceId: number): void => {
+        const ids = target.get(mesh) ?? new Set<number>();
+        ids.add(instanceId);
+        target.set(mesh, ids);
+    };
+    const groupPairs = getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs');
     for (const groupId of linked.groups) {
+        const batch = batchFor(groupId, groupPairs.get(groupId));
+        batch.groups.add(groupId);
         for (const child of GroupUtils.getAllGroupChildren(loadedObjectGroup, groupId)) {
-            const ids = linked.objects.get(child.mesh) ?? new Set<number>();
-            ids.add(child.instanceId);
-            linked.objects.set(child.mesh, ids);
-            const groupedIds = groupedObjects.get(child.mesh) ?? new Set<number>();
-            groupedIds.add(child.instanceId);
-            groupedObjects.set(child.mesh, groupedIds);
+            add(batch.objects, child.mesh, child.instanceId);
+            add(covered, child.mesh, child.instanceId);
         }
     }
-
-    for (const [mesh, ids] of linked.objects) {
-        const byReflection = new Map<Matrix4, number[]>();
-        for (const instanceId of ids) {
-            const reflection = groupedObjects.get(mesh)?.has(instanceId)
-                ? worldXReflection
-                : getObjectReflection(mesh, instanceId);
-            const reflectionIds = byReflection.get(reflection) ?? [];
-            reflectionIds.push(instanceId);
-            byReflection.set(reflection, reflectionIds);
-        }
-        for (const [reflection, instanceIds] of byReflection) {
-            applyDeltaToSelection({
-                deltaMatrix: reflection.clone().multiply(deltaMatrix).multiply(reflection),
-                meshToInstanceRanges: new Map([[mesh, mergeInstanceIds(instanceIds)]]),
-                loadedObjectGroup
-            });
-        }
-    }
-    if (linked.groups.size > 0) {
+    const objectPairs = getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs');
+    linked.objects.forEach((ids, mesh) => ids.forEach(instanceId => {
+        if (covered.get(mesh)?.has(instanceId)) return;
+        const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId)!;
+        add(batchFor(uuid, objectPairs.get(uuid)).objects, mesh, instanceId);
+    }));
+    for (const { plane, objects, groups } of batches.values()) {
         applyDeltaToSelection({
-            deltaMatrix: worldXReflection.clone().multiply(deltaMatrix).multiply(worldXReflection),
-            selectedGroupIds: linked.groups,
+            deltaMatrix: plane.clone().multiply(deltaMatrix).multiply(plane.clone().invert()),
+            meshToInstanceRanges: new Map(Array.from(objects, ([mesh, ids]) => [mesh, mergeInstanceIds([...ids])])),
+            selectedGroupIds: groups,
             loadedObjectGroup
         });
     }
+}
+
+/** A group pair made around existing mirror pairs mirrors across the same plane as its contents. */
+export function inheritLinkedMirrorPlane(
+    loadedObjectGroup: Group,
+    linked: { objects: Map<ObjectBatch, Set<number>>; groups: Set<string> },
+    a: string,
+    b: string
+): void {
+    const [mesh, ids] = linked.objects.entries().next().value ?? [];
+    const uuid = mesh ? objectUuidAt(loadedObjectGroup, mesh, ids!.values().next().value!) : undefined;
+    const groupId = linked.groups.values().next().value;
+    const [source, partner] = uuid ? [uuid, getLinkedMirrorUuid(loadedObjectGroup, uuid)]
+        : groupId ? [groupId, getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').get(groupId)] : [];
+    setMirrorPlane(loadedObjectGroup, a, b, source && partner ? getMirrorPlane(loadedObjectGroup, source, partner) : undefined);
 }

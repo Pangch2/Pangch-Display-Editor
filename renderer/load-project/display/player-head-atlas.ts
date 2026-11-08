@@ -1,16 +1,16 @@
-import { BoxGeometry, BufferAttribute, BufferGeometry, DoubleSide, InstancedInterleavedBuffer, InstancedMesh, InterleavedBufferAttribute, Material, Matrix4, NearestFilter, SRGBColorSpace, StorageInstancedBufferAttribute, Texture } from 'three/webgpu';
+import { BoxGeometry, BufferAttribute, BufferGeometry, DoubleSide, InstancedBufferAttribute, InstancedInterleavedBuffer, InterleavedBufferAttribute, Material, Matrix4, NearestFilter, SRGBColorSpace, StorageInstancedBufferAttribute, Texture } from 'three/webgpu';
 import { type HeadUvEntry, resetHeadAtlasUvs, createHeadAtlasUvTexture, captureHeadAtlasUvs, setHeadAtlasUvRect, readHeadAtlasRegion, copyHeadAtlasRegion, getHeadAtlasUvRect } from '../../ui/head-editor/head-atlas-uv';
 import { getPlayerHeadDisplayMatrix } from '../scene/scene-parser';
 import { type HeadGeometrySet, type TypedArrayConstructor } from '../pbde/pbde-types';
 import { createEntityMaterial, setEntityStateAttributes } from '../../entity-material';
 import { loadedObjectGroup } from './display-instancing';
-import { MAX_INSTANCES_PER_INSTANCED_MESH } from './display-instancing';
 import { isApplying } from '../../controls/undo-redo/undo-redo';
 import { trackProjectEdit } from '../../save/pending-edits';
 import { animationClips, type AnimationData } from '../../animation/animation-data';
 import { getInstanceCount, getInstanceHasHat, getInstanceTile, getInstanceValue, getInstanceValues, hasInstanceHatData, hasInstanceTiles, instanceValueSize,
-    objectBatches, objectUuidAt, setInstanceHasHat, setInstanceTile, setInstanceValue, setInstanceValues, type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
+    headTileAttributeName, hasHatAttributeName, objectBatches, objectUuidAt, setInstanceHasHat, setInstanceTile, setInstanceValue, setInstanceValues, type ObjectRef } from '../../scene-store/object-access';
 import type { ObjectStore } from '../../scene-store/object-store';
+import { ObjectBatch } from '../../scene-store/object-batch';
 
 export const PLAYER_HEAD_ATLAS_SIZE = 2048;
 const PLAYER_HEAD_PART_SIZE = 8;
@@ -580,8 +580,8 @@ export function createImageHeadAtlasMeshes(
     columns: number,
     rows: number,
     layer: 0 | 1
-): InstancedMesh[] {
-    const meshes: InstancedMesh[] = [];
+): ObjectBatch[] {
+    const meshes: ObjectBatch[] = [];
     const total = columns * rows;
     const spacing = layer ? 0.5 * PLAYER_HEAD_LAYER_SCALE : 0.5;
     const tilesPerRow = PLAYER_HEAD_ATLAS_SIZE / PLAYER_HEAD_PART_SIZE;
@@ -676,64 +676,61 @@ export function createImageHeadAtlasMeshes(
             atlas.context.fillRect(PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE, 0, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
             blackMaterial = getImageHeadBlackMaterial(atlas.texture);
         }
-        for (let start = 0; start < entries.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
-            const chunk = entries.slice(start, start + MAX_INSTANCES_PER_INSTANCED_MESH);
-            const count = chunk.length;
-            const tilePositions = chunk.map(({ tile }) => [
-                tile % tilesPerRow * PLAYER_HEAD_PART_SIZE,
-                Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE
-            ] as [number, number]);
-            const geometry = createImageHeadAtlasGeometry(layer);
-            const uvData = new Float32Array(count * 11);
-            const interleaved = new InstancedInterleavedBuffer(uvData, 11);
-            const uvOffsets = new InterleavedBufferAttribute(interleaved, 2, 0);
-            geometry.setAttribute('instancedUvOffset', uvOffsets);
-            geometry.setAttribute('instancedUvFlip', new InterleavedBufferAttribute(interleaved, 2, 2));
-            const knifeUvScales = new InterleavedBufferAttribute(interleaved, 3, 4);
-            geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
-            geometry.setAttribute('instancedKnifeUvOffset', new InterleavedBufferAttribute(interleaved, 3, 7));
-            const layerVisible = new InterleavedBufferAttribute(interleaved, 1, 10);
-            geometry.setAttribute('headLayerVisible', layerVisible);
-            setEntityStateAttributes(geometry, count);
+        const count = entries.length;
+        const tilePositions = entries.map(({ tile }) => [
+            tile % tilesPerRow * PLAYER_HEAD_PART_SIZE,
+            Math.floor(tile / tilesPerRow) * PLAYER_HEAD_PART_SIZE
+        ] as [number, number]);
+        const geometry = createImageHeadAtlasGeometry(layer);
+        const uvData = new Float32Array(count * 11);
+        const interleaved = new InstancedInterleavedBuffer(uvData, 11);
+        const uvOffsets = new InterleavedBufferAttribute(interleaved, 2, 0);
+        geometry.setAttribute('instancedUvOffset', uvOffsets);
+        geometry.setAttribute('instancedUvFlip', new InterleavedBufferAttribute(interleaved, 2, 2));
+        const knifeUvScales = new InterleavedBufferAttribute(interleaved, 3, 4);
+        geometry.setAttribute('instancedKnifeUvScale', knifeUvScales);
+        geometry.setAttribute('instancedKnifeUvOffset', new InterleavedBufferAttribute(interleaved, 3, 7));
+        const layerVisible = new InterleavedBufferAttribute(interleaved, 1, 10);
+        geometry.setAttribute('headLayerVisible', layerVisible);
+        geometry.setAttribute(hasHatAttributeName, new InstancedBufferAttribute(new Float32Array(count).fill(Number(layer === 1)), 1));
+        geometry.setAttribute(headTileAttributeName, new InstancedBufferAttribute(new Float32Array(tilePositions.flat()), 2));
+        setEntityStateAttributes(geometry, count);
 
-            const matrices = new Float32Array(count * 16);
-            for (let localIndex = 0; localIndex < count; localIndex++) {
-                const index = chunk[localIndex].index;
-                const x = index % columns;
-                const y = Math.floor(index / columns);
-                const [tileX, tileY] = tilePositions[localIndex];
-                const partY = layer ? 24 : 8;
-                uvOffsets.setXY(localIndex,
-                    (tileX - 8) / PLAYER_HEAD_ATLAS_SIZE,
-                    1 - (tileY + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
-                );
-                knifeUvScales.setXYZ(localIndex, 1, 1, 1);
-                layerVisible.setX(localIndex, layer);
-                matrix.makeTranslation(x * spacing, (rows - y) * spacing, 0)
-                    .multiply(getPlayerHeadRenderMatrix('none')).toArray(matrices, localIndex * 16);
-            }
-            atlas.texture.needsUpdate = true;
-
-            const mesh = new InstancedMesh(geometry, [atlas.material, blackMaterial], count);
-            mesh.instanceMatrix = new StorageInstancedBufferAttribute(matrices, 16);
-            mesh.name = 'player_head[display=none]';
-            mesh.userData.displayType = 'item_display';
-            mesh.userData.hasHat = new Array(count).fill(layer === 1);
-            mesh.userData.imageHeadLayer = layer;
-            mesh.userData.imageHeadTilePositions = tilePositions;
-            mesh.instanceMatrix.needsUpdate = true;
-            mesh.frustumCulled = false;
-            mesh.layers.enable(2);
-            mesh.computeBoundingBox();
-            mesh.computeBoundingSphere();
-            meshes.push(mesh);
-            if (import.meta.env.DEV) console.assert(tilePositions.every(([x, y]) =>
-                !(x === PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE && y === 0)
-                && (x >= PLAYER_HEAD_BLOCKS_PER_ROW * PLAYER_HEAD_BLOCK_WIDTH
-                    || Math.floor(y / PLAYER_HEAD_BLOCK_HEIGHT) * PLAYER_HEAD_BLOCKS_PER_ROW
-                        + Math.floor(x / PLAYER_HEAD_BLOCK_WIDTH) >= atlas.imageHeadReservedSlots!)
-            ), 'Image heads overlapped reserved player head atlas slots.');
+        const matrices = new Float32Array(count * 16);
+        for (let localIndex = 0; localIndex < count; localIndex++) {
+            const index = entries[localIndex].index;
+            const x = index % columns;
+            const y = Math.floor(index / columns);
+            const [tileX, tileY] = tilePositions[localIndex];
+            const partY = layer ? 24 : 8;
+            uvOffsets.setXY(localIndex,
+                (tileX - 8) / PLAYER_HEAD_ATLAS_SIZE,
+                1 - (tileY + 8) / PLAYER_HEAD_ATLAS_SIZE - (PLAYER_HEAD_BLOCK_HEIGHT - partY - 8) / PLAYER_HEAD_ATLAS_SIZE
+            );
+            knifeUvScales.setXYZ(localIndex, 1, 1, 1);
+            layerVisible.setX(localIndex, layer);
+            matrix.makeTranslation(x * spacing, (rows - y) * spacing, 0)
+                .multiply(getPlayerHeadRenderMatrix('none')).toArray(matrices, localIndex * 16);
         }
+        atlas.texture.needsUpdate = true;
+
+        const mesh = new ObjectBatch(geometry, [atlas.material, blackMaterial], count);
+        mesh.instanceMatrix = new StorageInstancedBufferAttribute(matrices, 16);
+        mesh.name = 'player_head[display=none]';
+        mesh.userData.displayType = 'item_display';
+        mesh.userData.imageHeadLayer = layer;
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.frustumCulled = false;
+        mesh.layers.enable(2);
+        mesh.computeBoundingBox();
+        mesh.computeBoundingSphere();
+        meshes.push(mesh);
+        if (import.meta.env.DEV) console.assert(tilePositions.every(([x, y]) =>
+            !(x === PLAYER_HEAD_ATLAS_SIZE - PLAYER_HEAD_PART_SIZE && y === 0)
+            && (x >= PLAYER_HEAD_BLOCKS_PER_ROW * PLAYER_HEAD_BLOCK_WIDTH
+                || Math.floor(y / PLAYER_HEAD_BLOCK_HEIGHT) * PLAYER_HEAD_BLOCKS_PER_ROW
+                    + Math.floor(x / PLAYER_HEAD_BLOCK_WIDTH) >= atlas.imageHeadReservedSlots!)
+        ), 'Image heads overlapped reserved player head atlas slots.');
     }
 
     notifyPlayerHeadAtlasesChanged();

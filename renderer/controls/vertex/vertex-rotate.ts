@@ -8,8 +8,8 @@ import {
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
-import { isSlotSelected, toMeshMap, type SelectionState } from '../selection/select';
-import { performSelectionSwap, primarySource, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
+import { isSlotSelected, slotObjectUuid, toMeshMap, type SelectionState } from '../selection/select';
+import { performSelectionSwap, primarySource, queuedSlot, SelectionSource, QueueItem, QueueBundle } from './vertex-swap';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
 import { applyLinkedMirrorDelta } from '../transform/mirroring';
@@ -229,7 +229,7 @@ export function processVertexRotate(
             targets.isBundleMove = true;
             for (const item of bundle.items) {
                 if (item.type === 'group') addGroup(item.id!);
-                else if (item.type === 'object') addInstance(item.mesh!, item.instanceId!);
+                else if (item.type === 'object') { const ref = queuedSlot(item); if (ref) addInstance(ref.mesh, ref.instanceId); }
             }
         };
 
@@ -240,7 +240,7 @@ export function processVertexRotate(
                 if (qItem.type === 'bundle' && (qItem as QueueBundle).items) {
                     const found = (qItem as QueueBundle).items.find(sub => {
                         if (src.type === 'group' && sub.type === 'group') return sub.id === src.id;
-                        if (src.type === 'object' && sub.type === 'object') return sub.mesh === src.mesh && sub.instanceId === src.instanceId;
+                        if (src.type === 'object' && sub.type === 'object') return sub.id === slotObjectUuid(src.mesh, src.instanceId);
                         return false;
                     });
                     if (found) {

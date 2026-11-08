@@ -1686,10 +1686,11 @@ async function buildItemModelTemplate(baseName: string, displayType: string | nu
         modelMatrix.multiply(new Matrix4().makeTranslation(-0.5, -0.5, -0.5));
         if (part && !resolved.fromHardcoded) modelMatrix.multiply(part.transform);
     } else {
-        // 평면 아이템은 중심만 이동하고 좌우 반전으로 UV와 노멀 방향을 일치시킨다.
+        // 평면 아이템 지오메트리는 음수 스케일용 인덱스 순서로 감겨 있다.
+        // X가 아닌 Z를 반전해야 앞뒤 면만 바뀌고 텍스처가 마인크래프트처럼 좌우반전 없이 보인다.
         const translateCenter = new Matrix4().makeTranslation(-0.5, -0.5, 0);
         modelMatrix.multiply(translateCenter);
-        modelMatrix.premultiply(new Matrix4().makeScale(-1, 1, 1));
+        modelMatrix.premultiply(new Matrix4().makeScale(1, 1, -1));
     }
 
     await Promise.all(itemDisplayTypes.map(async type => {

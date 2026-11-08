@@ -8,8 +8,8 @@ import * as Overlay from '../selection/overlay';
 import * as GroupUtils from '../grouping/group';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
-import { getInstanceMatrix, getInstancePivot, type ObjectBatch } from '../../scene-store/object-access';
-import { getPrimaryObjectRef, isSlotSelected, slotObjectUuid, toMeshMap, type PrimarySelection, type SelectionState } from '../selection/select';
+import { getInstanceMatrix, getInstancePivot, type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
+import { getPrimaryObjectRef, isSlotSelected, selectedObjectRef, slotObjectUuid, toMeshMap, type PrimarySelection, type SelectionState } from '../selection/select';
 
 const _TMP_MAT4_A = new Matrix4();
 const _ZERO_VEC3 = new Vector3(0, 0, 0);
@@ -18,11 +18,10 @@ export type SelectionSource =
     | { type: 'group'; id: string }
     | { type: 'object'; mesh: ObjectBatch; instanceId: number };
 
+/** A queued group or object, kept by id (an object's uuid): slots move when objects are removed. */
 export interface QueueEntry {
     type: 'group' | 'object';
     id?: string;
-    mesh?: ObjectBatch;
-    instanceId?: number;
     gizmoLocalPosition: Vector3;
     gizmoLocalQuaternion: Quaternion;
     promoteOnExit?: boolean;
@@ -56,6 +55,11 @@ export interface SwapContext {
 export interface SwapOptions {
     preserveSelection?: boolean;
     targetAnchorWorld?: Vector3;
+}
+
+/** A queued object's current slot; undefined for groups and for objects that are gone. */
+export function queuedSlot(entry: QueueEntry): ObjectRef | undefined {
+    return entry.type === 'object' && entry.id ? selectedObjectRef(entry.id) : undefined;
 }
 
 interface PivotSnapshot {
@@ -97,16 +101,18 @@ export function performSelectionSwap(
     const matchesSource = (a: QueueEntry | SelectionSource | null | undefined, b: SelectionSource): boolean => {
         if (!a || !b || a.type !== b.type) return false;
         if (a.type === 'group') return (a as { type: 'group'; id?: string }).id === (b.type === 'group' ? b.id : undefined);
-        return a.type === 'object' && b.type === 'object'
-            && (a as { type: 'object'; mesh?: ObjectBatch }).mesh === b.mesh
-            && (a as { type: 'object'; instanceId?: number }).instanceId === b.instanceId;
+        if (a.type !== 'object' || b.type !== 'object') return false;
+        // Queue entries name objects by uuid, picked sources by slot.
+        const uuid = 'mesh' in a ? slotObjectUuid(a.mesh, a.instanceId) : a.id;
+        return !!uuid && uuid === slotObjectUuid(b.mesh, b.instanceId);
     };
 
-    const toSelectionSourceFromEntry = (entry: QueueEntry): SelectionSource => {
+    const toSelectionSourceFromEntry = (entry: QueueEntry): SelectionSource | null => {
         if (entry.type === 'group') {
             return { type: 'group', id: entry.id! };
         }
-        return { type: 'object', mesh: entry.mesh!, instanceId: entry.instanceId! };
+        const ref = queuedSlot(entry);
+        return ref ? { type: 'object', mesh: ref.mesh, instanceId: ref.instanceId } : null;
     };
 
     const getCurrentPrimary = (): SelectionSource | null => primarySource(currentSelection);
@@ -207,10 +213,8 @@ export function performSelectionSwap(
     const getQueueEntryAnchorWorld = (entry: QueueEntry | null | undefined): Vector3 | null => {
         if (!entry || !entry.gizmoLocalPosition) return null;
 
-        const source: SelectionSource = entry.type === 'group'
-            ? { type: 'group', id: entry.id! }
-            : { type: 'object', mesh: entry.mesh!, instanceId: entry.instanceId! };
-
+        const source = toSelectionSourceFromEntry(entry);
+        if (!source) return null;
         return entry.gizmoLocalPosition.clone().applyMatrix4(getSourceWorldMatrix(source, _TMP_MAT4_A));
     };
 
@@ -322,9 +326,7 @@ export function performSelectionSwap(
 
         return {
             type: source.type,
-            id: source.type === 'group' ? source.id : undefined,
-            mesh: source.type === 'object' ? source.mesh : undefined,
-            instanceId: source.type === 'object' ? source.instanceId : undefined,
+            id: source.type === 'group' ? source.id : slotObjectUuid(source.mesh, source.instanceId),
             gizmoLocalPosition: targetLocalPivot,
             gizmoLocalQuaternion: new Quaternion(),
             promoteOnExit,
@@ -440,7 +442,7 @@ export function performSelectionSwap(
             //);
             const queuedAnchorEntry = queuedEntries[queuedLocation.subIndex ?? 0] ?? queuedEntries[0];
             const queuedAnchorWorld = getQueueEntryAnchorWorld(queuedAnchorEntry);
-            const itemsToSelect: SelectionSource[] = queuedEntries.map((item) => toSelectionSourceFromEntry(item));
+            const itemsToSelect: SelectionSource[] = queuedEntries.map((item) => toSelectionSourceFromEntry(item)).filter((item): item is SelectionSource => item !== null);
             const previousPrimary = getCurrentPrimary();
 
             const queuedPrimaryEntry = queuedEntries.find((item) => item.isPrimary === true) ?? null;

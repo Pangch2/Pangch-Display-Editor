@@ -1,29 +1,20 @@
-import { Box3, BufferGeometry, InstancedBufferAttribute, InstancedMesh, Matrix4, Vector3, type BufferAttribute, type Color, type Group, type InterleavedBufferAttribute, type Material, type Object3D } from 'three/webgpu';
+import { Box3, BufferGeometry, InstancedBufferAttribute, Matrix4, Vector3, type BufferAttribute, type Color, type Group, type InterleavedBufferAttribute, type Object3D } from 'three/webgpu';
 import { getInstanceModelTransform } from '../load-project/batching/instance-model-transform';
 import type { ObjectStore } from './object-store';
-import { dragSelectedAttributeName, entityVisibleAttributeName, setEntityStateAttributes } from '../entity-material';
+import { entityVisibleAttributeName, setEntityStateAttributes } from '../entity-material';
 import { transformInstanceRange } from '../controls/selection/instance-ranges';
+import { ObjectBatch, rowOf } from './object-batch';
 
 /**
  * Object access. The slot functions read one object of a batch; the object functions address the same data
  * by uuid. Code reads per-object data (matrices, colors, per-instance values, count) only through here, so the
- * batch behind a handle can change from a content InstancedMesh to a store batch without touching the callers.
+ * storage behind a batch can change without touching the callers.
  */
-declare const objectBatchBrand: unique symbol;
-/**
- * A batch of objects: a child of the project root. Public: its Object3D side (matrixWorld, visible, userData
- * flags), its shape (geometry: vertex attributes, index, groups) and materials. Per-instance attributes are not.
- */
-export type ObjectBatch = Object3D & { readonly geometry: BufferGeometry; readonly material: Material | Material[]; readonly [objectBatchBrand]: true };
+export type { ObjectBatch };
 
 /** True for a project's content batch (as opposed to overlays, helpers and plain meshes). */
-export const isObjectBatch = (object: Object3D | null | undefined): object is ObjectBatch => (object as InstancedMesh | undefined)?.isInstancedMesh === true;
+export const isObjectBatch = (object: Object3D | null | undefined): object is ObjectBatch => (object as ObjectBatch | undefined)?.isObjectBatch === true;
 export type ObjectRef = { mesh: ObjectBatch; instanceId: number };
-
-// shortcut: batches are still content InstancedMeshes (their data lives in pool rows once adopted); these two
-// casts go if the batch becomes a class of its own (M7e). Code outside the store must not use batchMesh.
-export const batchOf = (mesh: InstancedMesh): ObjectBatch => mesh as unknown as ObjectBatch;
-export const batchMesh = (batch: ObjectBatch): InstancedMesh => batch as unknown as InstancedMesh;
 
 // --- Slots: (batch, instanceId) ---
 
@@ -31,7 +22,7 @@ type ObjectData = { objectPivots?: Map<string, Vector3>; objectIsCustomPivot?: M
 
 /** The project root's data and the slot's object uuid. Content meshes are direct children of the project root. */
 function slotOwner(batch: ObjectBatch, instanceId: number): { data: ObjectData; uuid: string } | undefined {
-    const root = batchMesh(batch).parent as Group | null;
+    const root = batch.parent as Group | null;
     const uuid = root && objectUuidAt(root, batch, instanceId);
     if (uuid) return { data: root.userData as ObjectData, uuid };
     return undefined;
@@ -39,18 +30,18 @@ function slotOwner(batch: ObjectBatch, instanceId: number): { data: ObjectData; 
 
 /** The project's content batches. */
 export function objectBatches(root: Group): ObjectBatch[] {
-    return root.children.filter(child => (child as InstancedMesh).isInstancedMesh) as unknown as ObjectBatch[];
+    return root.children.filter(isObjectBatch);
 }
 
 /** One per-object value (a component of a per-instance attribute), or undefined when the batch has none. */
 export function getInstanceValue(batch: ObjectBatch, instanceId: number, name: string, component = 0): number | undefined {
-    const attribute = batchMesh(batch).geometry.getAttribute(name);
+    const attribute = batch.geometry.getAttribute(name);
     return attribute ? attribute.getComponent(instanceId, component) : undefined;
 }
 
 /** Writes one per-object value and marks its row; false when the batch has no such value. */
 export function setInstanceValue(batch: ObjectBatch, instanceId: number, name: string, value: number, component = 0): boolean {
-    const attribute = batchMesh(batch).geometry.getAttribute(name);
+    const attribute = batch.geometry.getAttribute(name);
     if (!attribute) return false;
     attribute.setComponent(instanceId, component, value);
     markInstanceRows(attribute, instanceId);
@@ -63,7 +54,7 @@ const visibleSlots = new WeakMap<ObjectBatch, VisibleSlots>();
 
 /** The slots whose entityVisible value is not 0. */
 export function getVisibleInstanceIds(batch: ObjectBatch): readonly number[] {
-    const mesh = batchMesh(batch);
+    const mesh = batch;
     const attribute = mesh.geometry.getAttribute(entityVisibleAttributeName);
     const cached = visibleSlots.get(batch);
     if (cached && cached.attribute === attribute && cached.count === mesh.count) return cached.snapshot ??= [...cached.ids];
@@ -76,7 +67,7 @@ export function getVisibleInstanceIds(batch: ObjectBatch): readonly number[] {
 
 /** Sets one object's entityVisible value; true when it changed. */
 export function setInstanceVisible(batch: ObjectBatch, instanceId: number, visible: boolean): boolean {
-    const mesh = batchMesh(batch);
+    const mesh = batch;
     if (!mesh.geometry.getAttribute(entityVisibleAttributeName)) setEntityStateAttributes(mesh.geometry, mesh.instanceMatrix.count);
     if (getInstanceValue(batch, instanceId, entityVisibleAttributeName) === Number(visible)) return false;
     setInstanceValue(batch, instanceId, entityVisibleAttributeName, Number(visible));
@@ -91,44 +82,60 @@ export function setInstanceVisible(batch: ObjectBatch, instanceId: number, visib
 
 /** All components of one per-object value, or undefined when the batch has none. */
 export function getInstanceValues(batch: ObjectBatch, instanceId: number, name: string): number[] | undefined {
-    const attribute = batchMesh(batch).geometry.getAttribute(name);
+    const attribute = batch.geometry.getAttribute(name);
     return attribute && Array.from({ length: attribute.itemSize }, (_, component) => attribute.getComponent(instanceId, component));
 }
 
 /** Writes the leading components of one per-object value and marks its row; false when the batch has none. */
 export function setInstanceValues(batch: ObjectBatch, instanceId: number, name: string, values: ArrayLike<number>): boolean {
-    const attribute = batchMesh(batch).geometry.getAttribute(name);
+    const attribute = batch.geometry.getAttribute(name);
     if (!attribute) return false;
     for (let component = 0; component < values.length; component++) attribute.setComponent(instanceId, component, values[component]);
     markInstanceRows(attribute, instanceId);
     return true;
 }
 
+// Head values are per-object values like any other, so they live in the rows and follow slot moves.
+/** Hat flag: 1 hat, 0 none, -1 unknown. */
+export const hasHatAttributeName = 'instanceHasHat';
+/** Image-head atlas tile [x, y]; -1 for none. */
+export const headTileAttributeName = 'instanceHeadTile';
+
+/** The batch's per-object value `name`, added filled with `empty` when it kept none (it re-seals on its next draw). */
+function ensureInstanceValue(batch: ObjectBatch, name: string, itemSize: number, empty: number): BufferAttribute | InterleavedBufferAttribute {
+    let attribute = batch.geometry.getAttribute(name);
+    if (!attribute) batch.geometry.setAttribute(name, attribute = new InstancedBufferAttribute(new Float32Array(batch.instanceMatrix.count * itemSize).fill(empty), itemSize));
+    return attribute;
+}
+
 /** The atlas tile [x, y] of an image-head object, undefined for others. */
 export function getInstanceTile(batch: ObjectBatch, instanceId: number): [number, number] | undefined {
-    return batchMesh(batch).userData.imageHeadTilePositions?.[instanceId];
+    const attribute = batch.geometry.getAttribute(headTileAttributeName);
+    return attribute && attribute.getX(instanceId) >= 0 ? [attribute.getX(instanceId), attribute.getY(instanceId)] : undefined;
 }
 
 export function setInstanceTile(batch: ObjectBatch, instanceId: number, tile: [number, number]): void {
-    (batchMesh(batch).userData.imageHeadTilePositions ??= [])[instanceId] = tile;
+    const attribute = ensureInstanceValue(batch, headTileAttributeName, 2, -1);
+    attribute.setXY(instanceId, tile[0], tile[1]);
+    markInstanceRows(attribute, instanceId);
 }
 
 /** True when the batch keeps an atlas tile per object (image heads). */
 export function hasInstanceTiles(batch: ObjectBatch): boolean {
-    return !!batchMesh(batch).userData.imageHeadTilePositions;
+    return !!batch.geometry.getAttribute(headTileAttributeName);
 }
 
 /** The number of components of a per-object value, 0 when the batch has none. */
 export function instanceValueSize(batch: ObjectBatch, name: string): number {
-    return batchMesh(batch).geometry.getAttribute(name)?.itemSize ?? 0;
+    return batch.geometry.getAttribute(name)?.itemSize ?? 0;
 }
 
 export function getInstanceCount(batch: ObjectBatch): number {
-    return batch ? batchMesh(batch).count : 0;
+    return batch ? batch.count : 0;
 }
 
 export function isInstanceValid(batch: ObjectBatch, instanceId: number): boolean {
-    return !!batch && instanceId < batchMesh(batch).count;
+    return !!batch && instanceId < batch.count;
 }
 
 /**
@@ -137,7 +144,7 @@ export function isInstanceValid(batch: ObjectBatch, instanceId: number): boolean
  */
 export function getDisplayType(batch: ObjectBatch, instanceId: number): string | undefined {
     if (!batch) return undefined;
-    const { userData } = batchMesh(batch);
+    const { userData } = batch;
     if (userData.mixedDisplayKinds) {
         const owner = slotOwner(batch, instanceId);
         const kind = owner && owner.data.objectDisplayKinds?.get(owner.uuid);
@@ -148,27 +155,30 @@ export function getDisplayType(batch: ObjectBatch, instanceId: number): string |
 
 /** The object's hat flag, undefined when the batch keeps none or has none for the slot. */
 export function getInstanceHasHat(batch: ObjectBatch, instanceId: number): boolean | undefined {
-    return batchMesh(batch).userData.hasHat?.[instanceId];
+    const value = batch.geometry.getAttribute(hasHatAttributeName)?.getX(instanceId);
+    return value === undefined || value < 0 ? undefined : value > 0;
 }
 
 /** Sets the object's hat flag; the batch starts keeping hat flags if it had none. */
 export function setInstanceHasHat(batch: ObjectBatch, instanceId: number, hasHat: boolean | undefined): void {
-    (batchMesh(batch).userData.hasHat ??= [])[instanceId] = hasHat;
+    const attribute = ensureInstanceValue(batch, hasHatAttributeName, 1, -1);
+    attribute.setX(instanceId, hasHat === undefined ? -1 : Number(hasHat));
+    markInstanceRows(attribute, instanceId);
 }
 
 /** True when the batch keeps a hat flag per object (player heads). */
 export function hasInstanceHatData(batch: ObjectBatch): boolean {
-    return !!batchMesh(batch).userData.hasHat;
+    return !!batch.geometry.getAttribute(hasHatAttributeName);
 }
 
 export function isItemDisplayHatEnabled(batch: ObjectBatch, instanceId: number): boolean {
-    return getDisplayType(batch, instanceId) === 'item_display' && !!batchMesh(batch).userData.hasHat?.[instanceId];
+    return getDisplayType(batch, instanceId) === 'item_display' && !!getInstanceHasHat(batch, instanceId);
 }
 
 export function getInstanceLocalOriginOffset(batch: ObjectBatch, instanceId: number, out = new Vector3()): Vector3 {
     out.set(0, isItemDisplayHatEnabled(batch, instanceId) ? 0.03125 : 0, 0);
     if (getDisplayType(batch, instanceId) === 'block_display') {
-        out.applyMatrix4(getInstanceModelTransform(batchMesh(batch), instanceId).invert());
+        out.applyMatrix4(getInstanceModelTransform(batch, instanceId).invert());
     }
     if (getDisplayType(batch, instanceId) === 'text_display') {
         const box = getInstanceLocalBox(batch, instanceId);
@@ -180,7 +190,7 @@ export function getInstanceLocalOriginOffset(batch: ObjectBatch, instanceId: num
 export function getInstanceLocalBoxMin(batch: ObjectBatch, instanceId: number, out = new Vector3()): Vector3 | null {
     const box = getInstanceLocalBox(batch, instanceId);
     if (!box) return null;
-    const modelTransform = getInstanceModelTransform(batchMesh(batch), instanceId);
+    const modelTransform = getInstanceModelTransform(batch, instanceId);
     // Find the display-space corner before converting back to batch coordinates.
     out.copy(box.applyMatrix4(modelTransform).min);
     return out.applyMatrix4(modelTransform.invert());
@@ -192,7 +202,7 @@ export function getInstanceWorldMatrixForOrigin(batch: ObjectBatch, instanceId: 
 
 export function getInstanceLocalBox(batch: ObjectBatch, instanceId: number): Box3 | null {
     if (!batch) return null;
-    const { geometry, userData } = batchMesh(batch);
+    const { geometry } = batch;
     if (!geometry) return null;
     if (!geometry.boundingBox) geometry.computeBoundingBox();
     if (!geometry.boundingBox) return null;
@@ -206,7 +216,7 @@ export function getInstanceLocalBox(batch: ObjectBatch, instanceId: number): Box
         box.max.set(centerX + halfWidth, textLayout.getZ(instanceId), geometry.boundingBox.max.z);
     }
 
-    if (getDisplayType(batch, instanceId) === 'item_display' && userData.hasHat && !userData.hasHat[instanceId]) {
+    if (getDisplayType(batch, instanceId) === 'item_display' && hasInstanceHatData(batch) && !getInstanceHasHat(batch, instanceId)) {
         const center = new Vector3();
         box.getCenter(center);
         box = new Box3().setFromCenterAndSize(center, new Vector3(1, 1, 1));
@@ -217,85 +227,24 @@ export function getInstanceLocalBox(batch: ObjectBatch, instanceId: number): Box
 
 /** The batch-local matrix of one object. */
 export function getInstanceMatrix(batch: ObjectBatch, instanceId: number, out: Matrix4): Matrix4 {
-    batchMesh(batch).getMatrixAt(instanceId, out);
+    batch.getMatrixAt(instanceId, out);
     return out;
 }
 
-// --- Rows: per-instance data may sit in the draw pool's interleaved rows ---
-// Once the pool adopts a batch, its instanceMatrix, instanceColor and instanced attributes are views into one
-// row buffer (stride = row size). Matrices are read and written through rowOf so both layouts work.
+// --- Rows: per-instance data sits in the row store once a batch is sealed ---
+// Its instanceMatrix, instanceColor and instanced attributes are then views of one row buffer (stride = row size). Matrices are read and written through rowOf so both layouts work.
 
-type InstanceArray = { array: ArrayLike<number> & { [index: number]: number }; offset?: number; data?: { array: Float32Array; stride: number }; itemSize: number };
-
-/** Where an object's values start in the array behind a per-instance attribute (plain or interleaved). */
-export function rowOf(attribute: InstanceArray, instanceId: number): number {
-    return attribute.data ? instanceId * attribute.data.stride + attribute.offset! : instanceId * attribute.itemSize;
-}
-
-/** Row buffers the draw pool hands out as batch attribute views (it registers them when it adopts a batch). */
-export const rowViewBuffers = new WeakSet<object>();
-
-/** A copy of a batch geometry whose per-instance attributes own their arrays again: row views are copied out. */
-export function cloneBatchGeometry(geometry: BufferGeometry): BufferGeometry {
-    const clone = geometry.clone();
-    let capacity = -1;
-    for (const [name, attribute] of Object.entries(geometry.attributes) as Array<[string, InterleavedBufferAttribute]>) {
-        if (!attribute.isInterleavedBufferAttribute || !rowViewBuffers.has(attribute.data)) continue;
-        capacity = attribute.count;
-        if (name === entityVisibleAttributeName || name === dragSelectedAttributeName) continue;
-        const values = new Float32Array(capacity * attribute.itemSize);
-        for (let id = 0; id < capacity; id++) for (let component = 0; component < attribute.itemSize; component++) {
-            values[id * attribute.itemSize + component] = attribute.getComponent(id, component);
-        }
-        clone.setAttribute(name, new InstancedBufferAttribute(values, attribute.itemSize, attribute.normalized));
-    }
-    // The pool reads the drag/visible pair from a stride-2 buffer of its own; this copies the values into one.
-    if (capacity >= 0 && clone.getAttribute(entityVisibleAttributeName)) setEntityStateAttributes(clone, capacity);
-    return clone;
-}
-
-const matrixWrites = new WeakMap<object, number>();
-const bumpMatrixWrites = (mesh: object): void => { matrixWrites.set(mesh, (matrixWrites.get(mesh) ?? 0) + 1); };
-
-let rowAccessorsInstalled = false;
-
-/**
- * Lets InstancedMesh read and write matrices and colors that are interleaved row views; plain attributes behave
- * as before. Matrix writes also bump the batch's matrix version (the shared row version moves on any write).
- */
-export function installInstanceRowAccessors(): void {
-    if (rowAccessorsInstalled) return;
-    rowAccessorsInstalled = true;
-    const proto = InstancedMesh.prototype;
-    proto.getMatrixAt = function (this: InstancedMesh, index: number, matrix: Matrix4) {
-        return matrix.fromArray(this.instanceMatrix.array, rowOf(this.instanceMatrix as unknown as InstanceArray, index));
-    };
-    proto.setMatrixAt = function (this: InstancedMesh, index: number, matrix: Matrix4) {
-        matrix.toArray(this.instanceMatrix.array, rowOf(this.instanceMatrix as unknown as InstanceArray, index));
-        bumpMatrixWrites(this);
-        return this;
-    };
-    const setColorAt = proto.setColorAt;
-    proto.getColorAt = function (this: InstancedMesh, index: number, color: Color) {
-        return color.fromArray(this.instanceColor!.array, rowOf(this.instanceColor as unknown as InstanceArray, index));
-    };
-    proto.setColorAt = function (this: InstancedMesh, index: number, color: Color) {
-        // A batch without colors gets three's own white-filled attribute first.
-        if (this.instanceColor === null) return setColorAt.call(this, index, color);
-        color.toArray(this.instanceColor.array, rowOf(this.instanceColor as unknown as InstanceArray, index));
-        return this;
-    };
-}
+type InstanceArray = Parameters<typeof rowOf>[0];
 
 /** The batch's world matrix (the project root's): instance matrices are relative to it. */
 export function getBatchWorldMatrix(batch: ObjectBatch): Matrix4 {
-    return batchMesh(batch).matrixWorld;
+    return batch.matrixWorld;
 }
 
 export function getInstanceWorldMatrix(batch: ObjectBatch, instanceId: number, outMatrix: Matrix4): Matrix4 {
     outMatrix.identity();
     if (!batch) return outMatrix;
-    const mesh = batchMesh(batch);
+    const mesh = batch;
     mesh.getMatrixAt(instanceId, outMatrix);
     return outMatrix.premultiply(mesh.matrixWorld);
 }
@@ -303,9 +252,9 @@ export function getInstanceWorldMatrix(batch: ObjectBatch, instanceId: number, o
 if (import.meta.env.DEV) {
     const geometry = new BufferGeometry();
     geometry.boundingBox = new Box3(new Vector3(-1, 0, 0), new Vector3(3, 1, 0));
-    const mesh = new InstancedMesh(geometry, undefined, 1);
+    const mesh = new ObjectBatch(geometry, undefined, 1);
     mesh.userData.displayType = 'text_display';
-    console.assert(getInstanceLocalOriginOffset(batchOf(mesh), 0).equals(new Vector3(1, 0, 0)), 'Text display origin must stay horizontally centered.');
+    console.assert(getInstanceLocalOriginOffset(mesh, 0).equals(new Vector3(1, 0, 0)), 'Text display origin must stay horizontally centered.');
 }
 
 // --- Pivots: one local pivot and one custom-pivot flag per object ---
@@ -393,68 +342,89 @@ export function takeInstanceRows(source: object): Array<[number, number]> | null
 
 /** Sets one object's batch-local matrix. */
 export function setInstanceMatrix(batch: ObjectBatch, instanceId: number, matrix: Matrix4): void {
-    const mesh = batchMesh(batch);
+    const mesh = batch;
     mesh.setMatrixAt(instanceId, matrix);
     markInstanceRows(mesh.instanceMatrix, instanceId);
 }
 
 /** Sets one object's instance color (its lighting) and marks the row. */
 export function setInstanceColor(batch: ObjectBatch, instanceId: number, color: Color): void {
-    const mesh = batchMesh(batch);
+    const mesh = batch;
     mesh.setColorAt(instanceId, color);
     markInstanceRows(mesh.instanceColor!, instanceId);
 }
 
 /** Bumped by every write to a per-instance value of the batch; -1 when the batch has none. */
 export function getInstanceValueVersion(batch: ObjectBatch, name: string): number {
-    const attribute = batchMesh(batch).geometry.getAttribute(name) as BufferAttribute | InterleavedBufferAttribute | undefined;
+    const attribute = batch.geometry.getAttribute(name) as BufferAttribute | InterleavedBufferAttribute | undefined;
     return attribute ? ((attribute as InterleavedBufferAttribute).isInterleavedBufferAttribute ? (attribute as InterleavedBufferAttribute).data : attribute as BufferAttribute).version : -1;
 }
 
 /** Bumped by every change to the batch's matrices; equal versions mean no matrix moved. */
 export function getBatchMatrixVersion(batch: ObjectBatch): number {
-    const { instanceMatrix } = batchMesh(batch);
+    const { instanceMatrix } = batch;
     // Plain matrices keep their own version; a row view shares one with every other per-instance value.
-    return ((instanceMatrix as unknown as InstanceArray).data ? 0 : instanceMatrix.version) + (matrixWrites.get(batch) ?? 0);
+    return ((instanceMatrix as unknown as InstanceArray).data ? 0 : instanceMatrix.version) + batch.matrixWrites;
 }
 
 /** The object's model transform: the display-space offset between its logical and batch matrices. */
 export function getInstanceModelMatrix(batch: ObjectBatch, instanceId: number, out = new Matrix4()): Matrix4 {
-    return getInstanceModelTransform(batchMesh(batch), instanceId, out);
+    return getInstanceModelTransform(batch, instanceId, out);
+}
+
+const hashFloat = new Float32Array(1);
+const hashWord = new Uint32Array(hashFloat.buffer);
+
+/** A hash of the matrices and named per-object values of slots [start, end): a different hash means a changed row. */
+export function hashInstanceRows(batch: ObjectBatch, start: number, end: number, names: readonly string[] = []): number {
+    const { instanceMatrix } = batch;
+    const array = instanceMatrix.array as Float32Array;
+    const words = new Uint32Array(array.buffer, array.byteOffset, array.length);
+    const values = names.map(name => batch.geometry.getAttribute(name)).filter(Boolean);
+    let hash = 2166136261;
+    for (let instanceId = start; instanceId < end; instanceId++) {
+        const at = rowOf(instanceMatrix as unknown as InstanceArray, instanceId);
+        for (let element = 0; element < 16; element++) hash = Math.imul(hash ^ words[at + element], 16777619);
+        for (const attribute of values) for (let component = 0; component < attribute.itemSize; component++) {
+            hashFloat[0] = attribute.getComponent(instanceId, component);
+            hash = Math.imul(hash ^ hashWord[0], 16777619);
+        }
+    }
+    return hash >>> 0;
 }
 
 /** Copies one object's batch-local matrix (16 floats, column-major) into `target` at `offset`. */
 export function readInstanceMatrix(batch: ObjectBatch, instanceId: number, target: Float32Array, offset = 0): void {
-    const { instanceMatrix } = batchMesh(batch);
+    const { instanceMatrix } = batch;
     const start = rowOf(instanceMatrix as unknown as InstanceArray, instanceId);
     target.set((instanceMatrix.array as Float32Array).subarray(start, start + 16), offset);
 }
 
 /** Writes 16 floats of `source` from `offset` as one object's matrix. Unmarked: call markInstanceMatrices after a run of writes. */
 export function writeInstanceMatrix(batch: ObjectBatch, instanceId: number, source: Float32Array, offset = 0): void {
-    const { instanceMatrix } = batchMesh(batch);
+    const { instanceMatrix } = batch;
     (instanceMatrix.array as Float32Array).set(source.subarray(offset, offset + 16), rowOf(instanceMatrix as unknown as InstanceArray, instanceId));
-    bumpMatrixWrites(batch);
+    batch.matrixWrites++;
 }
 
 /** Premultiplies the batch-local matrices of slots [start, start + count) by `delta` and marks them. */
 export function transformInstanceMatrices(batch: ObjectBatch, delta: Matrix4, start: number, count: number): void {
-    const { instanceMatrix } = batchMesh(batch);
+    const { instanceMatrix } = batch;
     const view = instanceMatrix as unknown as InstanceArray;
     transformInstanceRange(instanceMatrix.array as Float32Array, delta, start, count, view.data?.stride ?? 16, view.data ? view.offset! : 0);
     markInstanceRows(instanceMatrix, start, count);
-    bumpMatrixWrites(batch);
+    batch.matrixWrites++;
 }
 
 /** Records that the matrices of slots [start, start + count) changed. */
 export function markInstanceMatrices(batch: ObjectBatch, start: number, count = 1): void {
-    markInstanceRows(batchMesh(batch).instanceMatrix, start, count);
-    bumpMatrixWrites(batch);
+    markInstanceRows(batch.instanceMatrix, start, count);
+    batch.matrixWrites++;
 }
 
 /** Drops the batch's cached bounds after its matrices moved; picking recomputes them. */
 export function invalidateBatchBounds(batch: ObjectBatch): void {
-    const mesh = batchMesh(batch);
+    const mesh = batch;
     mesh.boundingBox = null;
     mesh.boundingSphere = null;
 }
@@ -506,7 +476,7 @@ export function objectLocalBox(root: Group, uuid: string): Box3 | null {
 
 export function objectModelTransform(root: Group, uuid: string, out = new Matrix4()): Matrix4 {
     const ref = objectRef(root, uuid);
-    return ref ? getInstanceModelTransform(batchMesh(ref.mesh), ref.instanceId, out) : out.identity();
+    return ref ? getInstanceModelTransform(ref.mesh, ref.instanceId, out) : out.identity();
 }
 
 export function objectPivot(root: Group, uuid: string): Vector3 | undefined {
@@ -533,7 +503,7 @@ export function objectHeadValues(root: Group, uuid: string): ObjectHeadValues {
     const values: ObjectHeadValues = {};
     const ref = objectRef(root, uuid);
     if (!ref) return values;
-    const { geometry } = batchMesh(ref.mesh);
+    const { geometry } = ref.mesh;
     for (const [key, name] of headValueAttributes) {
         const attribute = geometry.getAttribute(name);
         if (attribute) values[key] = Array.from({ length: attribute.itemSize }, (_, component) => attribute.getComponent(ref.instanceId, component));
@@ -547,7 +517,7 @@ export function objectHeadValues(root: Group, uuid: string): ObjectHeadValues {
 export function setObjectHeadValues(root: Group, uuid: string, values: ObjectHeadValues): void {
     const ref = objectRef(root, uuid);
     if (!ref) return;
-    const { geometry } = batchMesh(ref.mesh);
+    const { geometry } = ref.mesh;
     for (const [key, name] of headValueAttributes) {
         const attribute = geometry.getAttribute(name);
         if (!values[key] || !attribute) continue;
@@ -563,5 +533,5 @@ export function setObjectHeadValues(root: Group, uuid: string, values: ObjectHea
 
 export function objectHasHat(root: Group, uuid: string): boolean | undefined {
     const ref = objectRef(root, uuid);
-    return ref && batchMesh(ref.mesh).userData.hasHat?.[ref.instanceId];
+    return ref && getInstanceHasHat(ref.mesh, ref.instanceId);
 }

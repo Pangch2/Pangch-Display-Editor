@@ -39,8 +39,8 @@ import type { GroupObjectSlot } from '../grouping/group';
 import { dragDeltaMatrix, dragPreviewPositionNode, dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
 import { transformInstanceRange } from './instance-ranges';
 import { getDisplayType, getInstanceCount, getInstanceHasHat, getInstanceLocalBox, getInstanceLocalBoxMin, getInstanceLocalOriginOffset, getInstanceValue,
-    getInstanceWorldMatrix, getInstanceWorldMatrixForOrigin, instanceValueSize, isInstanceValid, isItemDisplayHatEnabled, objectBatches, objectSlots, objectUuidAt,
-    type ObjectBatch } from '../../scene-store/object-access';
+    getInstanceWorldMatrix, getInstanceWorldMatrixForOrigin, instanceValueSize, isInstanceValid, isItemDisplayHatEnabled, objectBatches, objectRef, objectSlots, objectUuidAt,
+    type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
 
 // --- Types & Interfaces ---
 
@@ -97,6 +97,11 @@ const animationGroupBounds = new WeakMap<AnimationMeshPreview, Map<string, { box
 
 export function setLoadedObjectGroup(group: Group | null): void {
     loadedObjectGroup = group;
+}
+
+/** A queued object's current slot (queue entries keep uuids). */
+function queuedRef(entry: { type: string; id?: string }): ObjectRef | undefined {
+    return entry.type === 'object' && entry.id && loadedObjectGroup ? objectRef(loadedObjectGroup, entry.id) : undefined;
 }
 
 function selectedSlots(uuids: Iterable<string>): Map<ObjectBatch, Set<number>> {
@@ -233,7 +238,7 @@ export function calculateAvgOriginForChildren(children: GroupObjectSlot[], out =
     children.forEach(child => {
         const m = child.mesh;
         const id = child.instanceId;
-        if (!m && m !== 0) return;
+        if (!m) return;
 
         getInstanceWorldMatrixForOrigin(m, id, tempMat);
         getInstanceLocalOriginOffset(m, id, tempPos).applyMatrix4(tempMat);
@@ -793,13 +798,8 @@ export function updateSelectionOverlay(
             item.items.forEach(processQueueItem);
             return;
         }
-        let isSelected = false;
-        if (item.type === 'group' && item.id) {
-            if (currentSelection.groups.has(item.id)) isSelected = true;
-        } else if (item.type === 'object' && item.mesh && item.instanceId !== undefined) {
-            if (currentSelection.objects.has(slotKeyUuid(item.mesh, item.instanceId))) isSelected = true;
-        }
-        if (isSelected) return;
+        if (item.type === 'group' && item.id && currentSelection.groups.has(item.id)) return;
+        if (item.type === 'object' && item.id && currentSelection.objects.has(item.id)) return;
 
         if (item.type === 'group' && item.id) {
             if (!groups.has(item.id)) return;
@@ -813,17 +813,20 @@ export function updateSelectionOverlay(
                 let gQuat = item.gizmoLocalQuaternion && gPos ? getRotationFromMatrix(groupWorld).multiply(item.gizmoLocalQuaternion) : undefined;
                 queueItemsToRender.push({ matrix: instanceMat, color: 0x6FA21C, source: { type: 'group', id: item.id }, gizmoPosition: gPos, gizmoQuaternion: gQuat, gizmoLocalPosition: item.gizmoLocalPosition });
             }
-        } else if (item.type === 'object' && item.mesh && item.instanceId !== undefined) {
-            const localBox = getInstanceLocalBox(item.mesh, item.instanceId);
+        } else if (item.type === 'object') {
+            const ref = queuedRef(item);
+            if (!ref) return;
+            const { mesh, instanceId } = ref;
+            const localBox = getInstanceLocalBox(mesh, instanceId);
             if (localBox) {
                 localBox.getSize(tempSize);
                 localBox.getCenter(tempCenter);
-                const worldMat = getInstanceWorldMatrix(item.mesh, item.instanceId, new Matrix4());
+                const worldMat = getInstanceWorldMatrix(mesh, instanceId, new Matrix4());
                 const instanceMat = new Matrix4().makeTranslation(tempCenter.x, tempCenter.y, tempCenter.z).scale(tempSize).premultiply(worldMat);
                 let gPos = item.gizmoLocalPosition ? item.gizmoLocalPosition.clone().applyMatrix4(worldMat) : undefined;
                 let gQuat = item.gizmoLocalQuaternion && gPos ? getRotationFromMatrix(worldMat).multiply(item.gizmoLocalQuaternion) : undefined;
-                const color = getDisplayOverlayColor(getDisplayType(item.mesh, item.instanceId));
-                queueItemsToRender.push({ matrix: instanceMat, color, source: { type: 'object', mesh: item.mesh, instanceId: item.instanceId }, gizmoPosition: gPos, gizmoQuaternion: gQuat, gizmoLocalPosition: item.gizmoLocalPosition });
+                const color = getDisplayOverlayColor(getDisplayType(mesh, instanceId));
+                queueItemsToRender.push({ matrix: instanceMat, color, source: { type: 'object', mesh, instanceId }, gizmoPosition: gPos, gizmoQuaternion: gQuat, gizmoLocalPosition: item.gizmoLocalPosition });
             }
         }
     };
@@ -958,7 +961,7 @@ export function updateSelectionOverlay(
             qItem.items.forEach(sub => {
                 let localBox: Box3 | null = null, worldMat = new Matrix4();
                 if (sub.type === 'group' && sub.id) { localBox = getGroupLocalBoundingBox(sub.id); getGroupWorldMatrixWithFallback(sub.id, worldMat); }
-                else if (sub.type === 'object' && sub.mesh && sub.instanceId !== undefined) { localBox = getInstanceLocalBox(sub.mesh, sub.instanceId); getInstanceWorldMatrix(sub.mesh, sub.instanceId, worldMat); }
+                else { const ref = queuedRef(sub); if (ref) { localBox = getInstanceLocalBox(ref.mesh, ref.instanceId); getInstanceWorldMatrix(ref.mesh, ref.instanceId, worldMat); } }
                 if (localBox && !localBox.isEmpty()) bundleBox.union(_TMP_BOX3_A.copy(localBox).applyMatrix4(worldMat));
             });
             if (!bundleBox.isEmpty()) boxesToDraw.push(bundleBox);

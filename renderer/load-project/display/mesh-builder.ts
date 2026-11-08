@@ -1,4 +1,4 @@
-import { BufferGeometry, Euler, InstancedBufferAttribute, InstancedMesh, Material, MathUtils, Matrix4, Mesh, MeshBasicNodeMaterial, Quaternion, Sphere, StorageInstancedBufferAttribute, Texture, Vector3 } from 'three/webgpu';
+import { BufferGeometry, Euler, InstancedBufferAttribute, Material, MathUtils, Matrix4, Mesh, MeshBasicNodeMaterial, Quaternion, Sphere, StorageInstancedBufferAttribute, Texture, Vector3 } from 'three/webgpu';
 import * as Overlay from '../../controls/selection/overlay';
 import { type DeletedSceneDelta, deleteSelectedItems } from '../../controls/grouping/delete';
 import { loadedObjectGroup, type GlobalBrightness, type Brightness, setInstanceSkyBrightness, addTextDisplayItems } from './display-instancing';
@@ -8,13 +8,15 @@ import { isApplying } from '../../controls/undo-redo/undo-redo';
 import { changeInstanceModelTransform, removeInstanceModelTransform } from '../batching/instance-model-transform';
 import { trackProjectEdit } from '../../save/pending-edits';
 import { entityVisibleAttributeName, setEntityStateAttributes, dragSelectedAttributeName } from '../../entity-material';
-import { type GroupData, type OtherItem } from '../pbde/pbde-types';
+import { type OtherItem } from '../pbde/pbde-types';
 import { textDisplayInstanceAttributeNames, createTextDisplayTemplates, getTextDisplayTemplateKey, type TextDisplayOptions } from './text-display';
 import { appendDisplayObjects, loadAndRenderPbde, performSelection } from './project-renderer';
 import { compressSync, strToU8 } from 'fflate';
-import { getLinkedMirrorUuid, isMirrorModelingEnabled, replaceMirrorUuid } from '../../controls/transform/mirroring';
-import { cloneAnimationTarget } from '../../animation/animation-state';
-import { batchOf, cloneBatchGeometry, getInstancePivot, setInstancePivot } from '../../scene-store/object-access';
+import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
+import { applySceneVisibility } from '../../controls/scene-visibility';
+import { getInstancePivot, isObjectBatch, objectSlots, setInstancePivot } from '../../scene-store/object-access';
+import { cloneBatchGeometry } from '../../scene-store/row-store';
+import { ObjectBatch } from '../../scene-store/object-batch';
 import { removeInstances } from '../../scene-store/object-batches';
 export { previewObjectModels as previewDisplayObjects } from './object-model-preview';
 
@@ -42,16 +44,17 @@ export { setPlayerHeadLayerVisible } from './player-head-atlas';
 export { updatePlayerHeadTexture } from './player-head-atlas';
 export { flipPlayerHeadTextures } from './player-head-atlas';
 
-export type DisplayReplacementResult = string[] & {
-    history?: { removed: DeletedSceneDelta; created: Map<InstancedMesh, Set<number>>; objectIds?: Map<string, string> };
-};
+/** A replacement in history: the same objects with their old models (undo) or their new ones (redo). */
+export type ReplacementDelta = { objectIds: string[]; undo(): void; redo(): void; dispose(): void };
+
+export type DisplayReplacementResult = string[] & { history?: ReplacementDelta };
 export function updateDisplayObjectMatrix(objectUuid: string, name: string, preview = false): Promise<void> {
     return trackProjectEdit(updateObjectMatrix(objectUuid, name, preview));
 }
 
 async function updateObjectMatrix(objectUuid: string, name: string, preview: boolean): Promise<void> {
     const userData = loadedObjectGroup.userData;
-    const ref = (userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
+    const ref = (userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined)?.get(objectUuid);
     if (!ref) throw new Error('변경할 디스플레이 오브젝트를 찾을 수 없습니다.');
 
     const names = userData.objectNames as Map<string, string>;
@@ -97,7 +100,7 @@ function disposeUnusedTextDisplayResources(geometry: BufferGeometry, material: M
     let textureUsed = false;
     const texture = (material as Material & { map?: Texture | null }).map;
     loadedObjectGroup.traverse(object => {
-        if (!(object as Mesh).isMesh) return;
+        if (!(object as Mesh).isMesh && !isObjectBatch(object)) return;
         const mesh = object as Mesh;
         geometryUsed ||= mesh.geometry === geometry;
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -114,7 +117,7 @@ function disposeUnusedTextDisplayResources(geometry: BufferGeometry, material: M
 
 export function isolateTextDisplay(objectUuid: string): void {
     const userData = loadedObjectGroup.userData;
-    const refs = userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined;
+    const refs = userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined;
     const ref = refs?.get(objectUuid);
     if (!ref || ref.mesh.count <= 1 || Overlay.getDisplayType(ref.mesh, ref.instanceId) !== 'text_display') return;
 
@@ -133,7 +136,7 @@ export function isolateTextDisplay(objectUuid: string): void {
     geometry.boundingBox = Overlay.getInstanceLocalBox(oldMesh, oldInstanceId)?.clone() ?? geometry.boundingBox;
     if (geometry.boundingBox) geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new Sphere());
     setEntityStateAttributes(geometry, 1, [oldMesh.geometry.getAttribute(entityVisibleAttributeName)?.getX(oldInstanceId) ?? 1]);
-    const mesh = new InstancedMesh(geometry, oldMesh.material, 1);
+    const mesh = new ObjectBatch(geometry, oldMesh.material, 1);
     mesh.instanceMatrix = new StorageInstancedBufferAttribute(1, 16);
     const matrix = new Matrix4();
     oldMesh.getMatrixAt(oldInstanceId, matrix);
@@ -151,7 +154,7 @@ export function isolateTextDisplay(objectUuid: string): void {
 
     refs!.set(objectUuid, { mesh, instanceId: 0 });
 
-    removeInstances(loadedObjectGroup, batchOf(oldMesh), [oldInstanceId]);
+    removeInstances(loadedObjectGroup, oldMesh, [oldInstanceId]);
     oldMesh.computeBoundingBox();
     oldMesh.computeBoundingSphere();
     mesh.computeBoundingBox();
@@ -173,7 +176,7 @@ export function updateTextDisplay(objectUuid: string, name: string, options: Tex
 
 async function updateTextObject(objectUuid: string, name: string, options: TextDisplayOptions): Promise<void> {
     const userData = loadedObjectGroup.userData;
-    const refs = userData.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined;
+    const refs = userData.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined;
     let ref = refs?.get(objectUuid);
     if (!ref || Overlay.getDisplayType(ref.mesh, ref.instanceId) !== 'text_display') {
         throw new Error('변경할 텍스트 디스플레이를 찾을 수 없습니다.');
@@ -304,9 +307,9 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         }));
     }
     const ud = loadedObjectGroup.userData;
-    const refs = ud.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }>;
+    const refs = ud.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }>;
     const preserveVisibleSize = localStorage.getItem('pdeObjectReplaceMode') === 'preserve-visible-size';
-    const getOverlaySize = (mesh: InstancedMesh, instanceId: number, instanceMatrix: Matrix4): Vector3 | null => {
+    const getOverlaySize = (mesh: ObjectBatch, instanceId: number, instanceMatrix: Matrix4): Vector3 | null => {
         const box = Overlay.getInstanceLocalBox(mesh, instanceId);
         if (!box) return null;
         const matrix = instanceMatrix.clone().scale(box.getSize(new Vector3())).premultiply(mesh.matrixWorld);
@@ -316,12 +319,9 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             new Vector3().setFromMatrixColumn(matrix, 2).length()
         );
     };
-    const previousSceneOrder = (ud.sceneOrder as Array<{ type: 'group' | 'object'; id: string }> | undefined)?.slice();
-    const sceneIndexes = new Map(previousSceneOrder?.map((entry, index) => [entry.type === 'object' ? entry.id : '', index]) ?? []);
-    const previousGroupChildren = new Map<string, GroupData['children']>();
     const replacements = requests.map(({ objectUuid, name, transformContext, isItemDisplay: requestedItemDisplay, isTextDisplay = false, options, paintTexture }) => {
         const oldRef = refs?.get(objectUuid);
-        if (!oldRef?.mesh?.isInstancedMesh) throw new Error('교체할 오브젝트를 찾을 수 없습니다.');
+        if (!isObjectBatch(oldRef?.mesh)) throw new Error('교체할 오브젝트를 찾을 수 없습니다.');
 
         const oldMatrix = new Matrix4();
         oldRef.mesh.getMatrixAt(oldRef.instanceId, oldMatrix);
@@ -335,9 +335,6 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         const oldGeometryDisplayType = Overlay.getDisplayType(oldRef.mesh, oldRef.instanceId);
         const oldPlayerHeadScale = wasPlayerHead && Overlay.isItemDisplayHatEnabled(oldRef.mesh, oldRef.instanceId) ? PLAYER_HEAD_LAYER_SCALE : 1;
         if (isPlayerHead) oldMatrix.multiply(getPlayerHeadRenderMatrix(oldDisplayType).invert());
-        const groupId = (ud.objectToGroup as Map<string, string> | undefined)?.get(objectUuid);
-        const group = groupId ? (ud.groups as Map<string, GroupData> | undefined)?.get(groupId) : undefined;
-        if (groupId && group && !previousGroupChildren.has(groupId)) previousGroupChildren.set(groupId, [...group.children]);
         const wasItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
         const isItemDisplay = !isTextDisplay && (requestedItemDisplay ?? wasItemDisplay);
         const displayTypeChanged = oldGeometryDisplayType !== (isTextDisplay ? 'text_display' : isItemDisplay ? 'item_display' : 'block_display');
@@ -353,12 +350,12 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         const pivotParent = transformContext?.pivotWorld ? undefined : pivot?.clone().applyMatrix4(displayedMatrix);
         const pivotWorld = transformContext?.pivotWorld?.clone()
             ?? pivotParent?.clone().applyMatrix4(oldRef.mesh.matrixWorld);
-        const replacementUuid = MathUtils.generateUUID();
+        // The new model is built under a temporary id, then trades places with the object.
+        const tempUuid = MathUtils.generateUUID();
         const label = (ud.objectLabels as Map<string, string> | undefined)?.get(objectUuid);
         const texture = paintTexture ?? getPlayerHeadTexture(objectUuid);
         return {
-            objectUuid, replacementUuid, label, groupId, oldMesh: oldRef.mesh, oldInstanceId: oldRef.instanceId,
-            sceneIndex: sceneIndexes.get(objectUuid) ?? -1,
+            objectUuid, tempUuid, label, oldMesh: oldRef.mesh, oldInstanceId: oldRef.instanceId,
             customPivot,
             customPivotParent: customPivot?.clone().applyMatrix4(displayedMatrix),
             pivotParent,
@@ -370,7 +367,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             preservesObjectTransform,
             transformContext,
             node: {
-                uuid: replacementUuid,
+                uuid: tempUuid,
                 name,
                 nbt: (ud.objectNbt as Map<string, string> | undefined)?.get(objectUuid) ?? '',
                 transforms: oldMatrix.clone().transpose().toArray(),
@@ -399,98 +396,77 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             options: node.options
         }))
         : null;
-    if (directTextItems) {
-        await addTextDisplayItems(directTextItems, (mesh, instanceId, uuid) => {
-            refs.set(uuid, { mesh, instanceId });
-        });
-        const names = ud.objectNames as Map<string, string>;
-        const labels = ud.objectLabels as Map<string, string>;
-        const textOptions = ud.objectTextDisplayOptions as Map<string, TextDisplayOptions>;
-        const objectNbt = ud.objectNbt as Map<string, string>;
-        const brightness = ud.objectBrightness as Map<string, unknown>;
-        for (const item of directTextItems) {
-            names.set(item.uuid, item.name ?? '');
-            labels.set(item.uuid, 'text_display');
-            textOptions.set(item.uuid, { ...((item.options as TextDisplayOptions | undefined) ?? {}) });
-            objectNbt.set(item.uuid, typeof item.nbt === 'string' ? item.nbt : '');
-            if (item.brightness) brightness.set(item.uuid, item.brightness);
-        }
-        if (import.meta.env.DEV) console.assert(
-            directTextItems.every(item => refs.has(item.uuid)),
-            'Direct text display replacement did not register every object.'
-        );
-    } else {
-        const added = await appendDisplayObjects(replacements.map(({ node }) => node));
-        if (replacements.some(state => !refs.has(state.replacementUuid))) {
-            deleteSelectedItems(loadedObjectGroup, {
-                groups: new Set(),
-                objects: new Map([...added].filter(([object]) => (object as Mesh).isMesh)) as Map<Mesh, Set<number>>
-            }, { resetSelectionAndDeselect: () => {} })?.dispose();
-            if (previousSceneOrder) ud.sceneOrder = previousSceneOrder;
+    const tempUuids = replacements.map(state => state.tempUuid);
+    // Appending lists the temporary objects in the scene order; the objects keep their own entries.
+    const sceneOrder = ud.sceneOrder;
+    // Animation skips the temporary objects while the append awaits; everything after it runs synchronously.
+    const staged = (ud.animationPreviewObjectIds ??= new Set<string>()) as Set<string>;
+    tempUuids.forEach(uuid => staged.add(uuid));
+    try {
+        if (directTextItems) {
+            await addTextDisplayItems(directTextItems, (mesh, instanceId, uuid) => {
+                refs.set(uuid, { mesh, instanceId });
+            });
+            const names = ud.objectNames as Map<string, string>;
+            const labels = ud.objectLabels as Map<string, string>;
+            const textOptions = ud.objectTextDisplayOptions as Map<string, TextDisplayOptions>;
+            const objectNbt = ud.objectNbt as Map<string, string>;
+            const brightness = ud.objectBrightness as Map<string, unknown>;
+            for (const item of directTextItems) {
+                names.set(item.uuid, item.name ?? '');
+                labels.set(item.uuid, 'text_display');
+                textOptions.set(item.uuid, { ...((item.options as TextDisplayOptions | undefined) ?? {}) });
+                objectNbt.set(item.uuid, typeof item.nbt === 'string' ? item.nbt : '');
+                if (item.brightness) brightness.set(item.uuid, item.brightness);
+            }
             if (import.meta.env.DEV) console.assert(
-                replacements.every(state => refs.has(state.objectUuid) && !refs.has(state.replacementUuid)),
-                'Failed display replacement must preserve the original objects.'
+                directTextItems.every(item => refs.has(item.uuid)),
+                'Direct text display replacement did not register every object.'
             );
-            throw new Error('선택한 속성 조합은 표시할 모델이 없어 적용할 수 없습니다.');
+        } else {
+            const added = await appendDisplayObjects(replacements.map(({ node }) => node));
+            if (tempUuids.some(uuid => !refs.has(uuid))) {
+                deleteSelectedItems(loadedObjectGroup, {
+                    groups: new Set(),
+                    objects: new Map([...added].filter(([object]) => isObjectBatch(object))) as Map<ObjectBatch, Set<number>>
+                }, { resetSelectionAndDeselect: () => {} })?.dispose();
+                if (import.meta.env.DEV) console.assert(
+                    replacements.every(state => refs.has(state.objectUuid) && !refs.has(state.tempUuid)),
+                    'Failed display replacement must preserve the original objects.'
+                );
+                throw new Error('선택한 속성 조합은 표시할 모델이 없어 적용할 수 없습니다.');
+            }
         }
+    } finally {
+        // A project opened during the append owns the scene order now.
+        if (ud.objectUuidToInstance === refs) ud.sceneOrder = sceneOrder;
+        tempUuids.forEach(uuid => staged.delete(uuid));
     }
-    const deletionStates = new Map<InstancedMesh, typeof replacements>();
-    const boundsDirtyMeshes = new Set<InstancedMesh>();
+    const deletionStates = new Map<ObjectBatch, typeof replacements>();
+    const boundsDirtyMeshes = new Set<ObjectBatch>();
     for (const state of replacements) {
         const states = deletionStates.get(state.oldMesh) ?? [];
         states.push(state);
         deletionStates.set(state.oldMesh, states);
     }
     const selectionReplacements: Array<{
-        oldMesh: InstancedMesh;
+        oldMesh: ObjectBatch;
         oldInstanceId: number;
         oldLastInstanceId: number;
-        mesh: InstancedMesh;
+        mesh: ObjectBatch;
         instanceId: number;
-        oldUuid: string;
-        uuid: string;
     }> = [];
     const deletionOrder = Array.from(deletionStates, ([mesh, states]) => {
         let oldLastInstanceId = mesh.count - 1;
         return states.sort((a, b) => b.oldInstanceId - a.oldInstanceId)
             .map(state => ({ state, oldLastInstanceId: oldLastInstanceId-- }));
     }).flat();
-    for (const state of replacements) cloneAnimationTarget(loadedObjectGroup, state.objectUuid, state.replacementUuid, state.groupId ?? null);
-    const removed = deleteSelectedItems(loadedObjectGroup, {
-        groups: new Set(),
-        objects: new Map(Array.from(deletionStates, ([mesh, states]) => [mesh, new Set(states.map(state => state.oldInstanceId))]))
-    }, { resetSelectionAndDeselect: () => {} });
-    if (!removed) throw new Error('교체할 오브젝트를 삭제할 수 없습니다.');
 
-    const replacementUuids = new Map(replacements.map(state => [state.objectUuid, state.replacementUuid]));
-    if (previousSceneOrder) {
-        const nextSceneOrder = previousSceneOrder.map(entry => {
-            const replacementUuid = entry.type === 'object' ? replacementUuids.get(entry.id) : undefined;
-            return replacementUuid ? { type: 'object' as const, id: replacementUuid } : entry;
-        });
-        for (const state of replacements) {
-            if (state.sceneIndex < 0 && !state.groupId) nextSceneOrder.push({ type: 'object', id: state.replacementUuid });
-        }
-        ud.sceneOrder = nextSceneOrder;
-        if (import.meta.env.DEV) console.assert(previousSceneOrder.every((entry, index) => (
-            nextSceneOrder[index].id === (entry.type === 'object' ? replacementUuids.get(entry.id) ?? entry.id : entry.id)
-        )), 'Display replacement changed scene order.');
-    }
-    for (const [groupId, children] of previousGroupChildren) {
-        const group = (ud.groups as Map<string, GroupData>).get(groupId);
-        group.children = children.map(child => {
-            const replacementUuid = child.type === 'object' ? replacementUuids.get(child.id) : undefined;
-            if (!replacementUuid) return child;
-            if (!refs.has(replacementUuid)) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
-            (ud.objectToGroup as Map<string, string>).set(replacementUuid, groupId);
-            return { type: 'object' as const, id: replacementUuid };
-        });
-    }
-
+    // Fitting writes the new slots while the temporary objects own them (pivots are kept by uuid).
     for (const state of replacements) {
-        if (state.label !== undefined) (ud.objectLabels as Map<string, string>).set(state.replacementUuid, state.label);
+        if (state.label !== undefined) (ud.objectLabels as Map<string, string>).set(state.tempUuid, state.label);
 
-        const replacement = refs.get(state.replacementUuid);
+        const replacement = refs.get(state.tempUuid);
         if (!replacement) throw new Error('변경한 오브젝트 모델을 만들 수 없습니다.');
         const playerHeadLayerScale = state.oldPlayerHeadScale / (
             state.node.name.startsWith('player_head') && Overlay.isItemDisplayHatEnabled(replacement.mesh, replacement.instanceId)
@@ -567,28 +543,90 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         mesh.computeBoundingBox();
         mesh.computeBoundingSphere();
     }
-    for (const state of replacements) replaceMirrorUuid(loadedObjectGroup, state.objectUuid, state.replacementUuid);
+    // The objects move to the new slots; the temporary ids take the old slots and leave with them.
+    const pairs = replacements.map(state => [state.objectUuid, state.tempUuid] as [string, string]);
+    tradeObjects(pairs);
+    applySceneVisibility(loadedObjectGroup, pairs.map(([uuid]) => uuid));
+    const removed = deleteTemporaryObjects(tempUuids);
     for (const { state, oldLastInstanceId } of deletionOrder) {
-        const replacement = refs.get(state.replacementUuid)!;
+        const replacement = refs.get(state.objectUuid)!;
         selectionReplacements.push({
             oldMesh: state.oldMesh, oldInstanceId: state.oldInstanceId, oldLastInstanceId,
-            mesh: replacement.mesh, instanceId: replacement.instanceId,
-            oldUuid: state.objectUuid, uuid: state.replacementUuid
+            mesh: replacement.mesh, instanceId: replacement.instanceId
         });
     }
+    if (import.meta.env.DEV) console.assert(
+        replacements.every(state => refs.has(state.objectUuid) && !refs.has(state.tempUuid)),
+        'Display replacement must keep the object ids and drop the temporary ones.'
+    );
     window.dispatchEvent(new CustomEvent('pde:replace-object-selection', { detail: selectionReplacements }));
     if (!isApplying()) window.dispatchEvent(new CustomEvent('pde:scene-updated'));
-    const result = replacements.slice(0, requestedCount).map(({ replacementUuid }) => replacementUuid) as DisplayReplacementResult;
-    const created = new Map<InstancedMesh, Set<number>>();
-    for (const state of replacements) {
-        const replacement = refs.get(state.replacementUuid);
-        if (!replacement) continue;
-        const ids = created.get(replacement.mesh) ?? new Set<number>();
-        ids.add(replacement.instanceId);
-        created.set(replacement.mesh, ids);
-    }
-    result.history = { removed, created, objectIds: replacementUuids };
+    const result = replacements.slice(0, requestedCount).map(({ objectUuid }) => objectUuid) as DisplayReplacementResult;
+    result.history = replacementDelta(pairs, removed);
     return result;
+}
+
+// Per-object values that come with the model. Place, visibility, mirror pairs, animation and the custom-pivot flag stay.
+const modelValueMaps = ['objectNames', 'objectLabels', 'objectDisplayTypes', 'objectBlockProps', 'objectTextDisplayOptions',
+    'objectTextures', 'objectNbt', 'objectBrightness', 'objectPivots', 'objectDisplayKinds'] as const;
+
+/** Trades slots and model values between each object and its temporary one; trading twice restores both. */
+function tradeObjects(pairs: Array<[string, string]>): void {
+    const ud = loadedObjectGroup.userData;
+    const refs = ud.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }>;
+    const items = ud.objectIsItemDisplay as Set<string> | undefined;
+    for (const [uuid, temp] of pairs) {
+        const ref = refs.get(uuid)!, tempRef = refs.get(temp)!;
+        refs.set(uuid, tempRef);
+        refs.set(temp, ref);
+        for (const name of modelValueMaps) {
+            const map = ud[name] as Map<string, unknown> | undefined;
+            if (!map) continue;
+            const has = map.has(uuid), value = map.get(uuid);
+            if (map.has(temp)) map.set(uuid, map.get(temp)); else map.delete(uuid);
+            if (has) map.set(temp, value); else map.delete(temp);
+        }
+        if (items && items.has(uuid) !== items.has(temp)) {
+            const [from, to] = items.has(uuid) ? [uuid, temp] : [temp, uuid];
+            items.delete(from);
+            items.add(to);
+        }
+    }
+}
+
+function deleteTemporaryObjects(temps: string[]): DeletedSceneDelta {
+    const removed = deleteSelectedItems(loadedObjectGroup, { groups: new Set(), objects: objectSlots(loadedObjectGroup, temps) },
+        { resetSelectionAndDeselect: () => {}, preserveAnimation: true });
+    if (!removed) throw new Error('교체할 오브젝트를 삭제할 수 없습니다.');
+    return removed;
+}
+
+/** Undo brings the temporary objects back on the old slots, trades back and drops them from the new ones; redo reverses it. */
+function replacementDelta(pairs: Array<[string, string]>, removed: DeletedSceneDelta): ReplacementDelta {
+    let replaced = true;
+    let restored: DeletedSceneDelta | null = null;
+    return {
+        objectIds: pairs.map(([uuid]) => uuid),
+        undo: () => {
+            if (!replaced) return;
+            removed.undo();
+            tradeObjects(pairs);
+            if (restored) restored.redo();
+            else restored = deleteTemporaryObjects(pairs.map(([, temp]) => temp));
+            replaced = false;
+        },
+        redo: () => {
+            if (replaced) return;
+            restored!.undo();
+            tradeObjects(pairs);
+            removed.redo();
+            replaced = true;
+        },
+        dispose: () => {
+            removed.dispose();
+            restored?.dispose();
+        }
+    };
 }
 
 export async function addDisplayObject(name: string, isItemDisplay: boolean): Promise<string> {
@@ -668,8 +706,8 @@ export async function replaceDisplayObject(
 
 export function updateObjectBrightness(objectUuid: string, brightness: { sky: number; block: number }): void {
     const ud = loadedObjectGroup.userData;
-    const ref = (ud.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined)?.get(objectUuid);
-    if (!ref?.mesh?.isInstancedMesh) return;
+    const ref = (ud.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined)?.get(objectUuid);
+    if (!isObjectBatch(ref?.mesh)) return;
     (ud.objectBrightness as Map<string, { sky: number; block: number }>).set(objectUuid, brightness);
     setInstanceSkyBrightness(ref.mesh, ref.instanceId, brightness);
     if (ref.mesh.instanceColor) ref.mesh.instanceColor.needsUpdate = true;
@@ -680,8 +718,8 @@ export function updateGlobalBrightness(brightness: GlobalBrightness): void {
     const ud = loadedObjectGroup.userData;
     ud.globalBrightness = brightness;
     const objectBrightness = ud.objectBrightness as Map<string, Brightness> | undefined;
-    for (const [uuid, ref] of (ud.objectUuidToInstance as Map<string, { mesh: InstancedMesh; instanceId: number }> | undefined) ?? []) {
-        if (!ref.mesh.isInstancedMesh) continue;
+    for (const [uuid, ref] of (ud.objectUuidToInstance as Map<string, { mesh: ObjectBatch; instanceId: number }> | undefined) ?? []) {
+        if (!isObjectBatch(ref.mesh)) continue;
         setInstanceSkyBrightness(ref.mesh, ref.instanceId, objectBrightness?.get(uuid));
         if (ref.mesh.instanceColor) ref.mesh.instanceColor.needsUpdate = true;
     }

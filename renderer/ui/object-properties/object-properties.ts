@@ -375,7 +375,7 @@ function propertySelect(value: string, values: string[], onChange: (value: strin
         try {
             const result = await onChange(after);
             if (result && result.history) recordReplacementChange(
-                loadedObjectGroup, result.history.removed, result.history.created, beforeUi
+                loadedObjectGroup, result.history, beforeUi
             );
             else recordStateChange({
                 before,
@@ -2012,19 +2012,17 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
     schedulePropertySectionRender();
 }
 
-window.addEventListener('pde:replace-object-selection', event => {
-    // oldUuid/uuid are set when a new object replaced the old one; other entries only move slots.
-    const replacements = (event as CustomEvent<Array<{ oldUuid?: string; uuid?: string }>>).detail;
-    const renamed = new Map(replacements.flatMap(({ oldUuid, uuid }) => oldUuid && uuid ? [[oldUuid, uuid] as const] : []));
+window.addEventListener('pde:replace-object-selection', () => {
+    // Entries move objects to other slots; uuids never change.
     const oldHeights = selectionOrder.map(item => propertySectionHeights.get(item.key) ?? propertySectionEstimate);
     const changedIndexes = new Set<number>();
     // Sections capture their slot, so any section whose object moved or was replaced is rebuilt. This listener is
     // registered at import, before the gizmo's, so it runs before the gizmo's reselection re-renders same-uuid keys.
     selectionOrder.forEach((item, index) => {
         if (!('mesh' in item)) return;
-        const uuid = renamed.get(item.uuid) ?? item.uuid;
+        const { uuid } = item;
         const ref = objectRef(loadedObjectGroup, uuid);
-        if (!ref || (uuid === item.uuid && ref.mesh === item.mesh && ref.instanceId === item.instanceId)) return;
+        if (!ref || (ref.mesh === item.mesh && ref.instanceId === item.instanceId)) return;
         selectionOrder[index] = { key: `object:${uuid}`, uuid, mesh: ref.mesh, instanceId: ref.instanceId };
         changedIndexes.add(index);
     });
@@ -2046,7 +2044,7 @@ window.addEventListener('pde:replace-object-selection', event => {
             sectionInputs.delete(section);
         };
         const activeElement = document.activeElement;
-        // Select handlers must use the replacement UUID before the next change.
+        // Select handlers must use the new slot before the next change.
         if (activeElement && section.contains(activeElement) && !(activeElement instanceof HTMLSelectElement)) activeElement.addEventListener('blur', rerender, { once: true });
         else rerender();
     });

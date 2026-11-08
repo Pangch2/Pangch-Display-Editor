@@ -1,5 +1,6 @@
 import { openWithAnimation, closeWithAnimation } from '../../ui/common/ui-open-close.js';
-import { Group, Mesh, Object3D } from 'three/webgpu';
+import { Group, Object3D } from 'three/webgpu';
+import { isObjectBatch, type ObjectBatch } from '../../scene-store/object-access';
 import { beginPbdeLoadGeneration, loadAndRenderPbde, loadedObjectGroup, notifyPlayerHeadAtlasesChanged, performSelection, updateGlobalBrightness } from '../display/mesh-builder';
 import type { GlobalBrightness, LoadedSelection } from '../display/mesh-builder';
 import { isPbdeLogEnabled, pbdeLogNames } from './pbde-log';
@@ -12,8 +13,8 @@ import { prepareMcfunctionFiles } from '../mcfunction/mcfunction-import';
 import { currentLoadGen } from '../display/display-instancing';
 import { trackProjectEdit, deferProjectChange, commitFocusedProjectEdit, settleCurrentProjectEdits } from '../../save/pending-edits';
 import { autoSave } from '../../save/auto/auto-save';
-import { encodePdeProject } from '../../save/pde-format';
-import { serializeProject } from '../../save/project-state';
+import { encodePdeProjectSteps, validatePdeProjectSteps } from '../../save/pde-format';
+import { serializeProjectSteps } from '../../save/project-state';
 import { disposeProjectResources } from '../display/project-resources';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
@@ -89,11 +90,13 @@ export function getActiveProjectId(): string | undefined { return projects[activ
 export function hasProject(id: string): boolean { return projects.some(project => project.id === id); }
 
 function registerProjectAutoSave(project: ProjectState): void {
-    autoSave.register(project.id, () => {
+    autoSave.register(project.id, function* () {
         const root = project === projects[activeProject] ? loadedObjectGroup : new Group();
         if (root !== loadedObjectGroup) root.userData = project.data;
-        const snapshot = serializeProject(root);
-        return { name: snapshot.name, data: encodePdeProject(snapshot) };
+        const snapshot = yield* serializeProjectSteps(root);
+        yield true; // Scene read; the rest only works on the snapshot.
+        yield* validatePdeProjectSteps(snapshot);
+        return { name: snapshot.name, data: yield* encodePdeProjectSteps(snapshot) };
     });
 }
 
@@ -215,6 +218,7 @@ function switchProject(index: number): void {
     const targetId = projects[index].id;
     if (deferProjectChange(() => switchProject(projects.findIndex(project => project.id === targetId)))) return;
     beginPbdeLoadGeneration();
+    autoSave.cancel();
     loadedObjectGroup.userData.resetSelection?.();
     saveActiveProject();
     loadedObjectGroup.clear();
@@ -560,7 +564,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
         const newGroupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
         deleteSelectedItems(loadedObjectGroup, {
             groups: newGroupIds,
-            objects: new Map([...allNewMeshes].filter(([mesh]) => (mesh as Mesh).isMesh)) as Map<Mesh, Set<number>>
+            objects: new Map([...allNewMeshes].filter(([mesh]) => isObjectBatch(mesh))) as Map<ObjectBatch, Set<number>>
         }, { resetSelectionAndDeselect: () => {} })?.dispose();
     }
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
@@ -568,7 +572,7 @@ async function mergepbde(files: File | File[]): Promise<void> {
         const newGroupIds = new Set([...(loadedObjectGroup.userData.groups as Map<string, unknown> | undefined)?.keys() ?? []].filter(id => !existingGroupIds.has(id)));
         recordCreationChange(loadedObjectGroup, {
             groups: newGroupIds,
-            objects: new Map([...allNewMeshes].filter(([mesh]) => (mesh as Mesh).isMesh)) as Map<Mesh, Set<number>>
+            objects: new Map([...allNewMeshes].filter(([mesh]) => isObjectBatch(mesh))) as Map<ObjectBatch, Set<number>>
         }, beforeUi);
     }
     await precompileLoadedScene('merge', fileList.length);

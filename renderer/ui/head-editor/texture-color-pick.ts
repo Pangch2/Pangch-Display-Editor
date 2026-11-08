@@ -4,7 +4,7 @@ import { getInstanceValues, isObjectBatch } from '../../scene-store/object-acces
 let pixelContext: CanvasRenderingContext2D | null = null;
 
 export function readTextureColor(hit: Intersection): [number, number, number, number] | null {
-  if (!hit.uv || !hit.face || !(hit.object as Mesh).isMesh) return null;
+  if (!hit.uv || !hit.face || (!(hit.object as Mesh).isMesh && !isObjectBatch(hit.object))) return null;
   const mesh = hit.object as Mesh;
   const material = Array.isArray(mesh.material) ? mesh.material[hit.face.materialIndex] : mesh.material;
   const map = (material as typeof material & { map?: Texture })?.map;
@@ -12,11 +12,11 @@ export function readTextureColor(hit: Intersection): [number, number, number, nu
   if (!map || !image?.width || !image?.height) return null;
   const settings = material.userData.textureColorPick;
   const uv = hit.uv.clone();
-  const attributeIndex = settings?.useVertexTint ? hit.face.a : hit.instanceId ?? 0;
-  // Vertex tints live in the shape; otherwise the values are per object.
+  const attributeIndex = hit.instanceId ?? 0;
+  // UV transforms and tints are per object.
   const valuesOf = (name?: string): number[] | undefined => {
     if (!name) return undefined;
-    if (!settings.useVertexTint && isObjectBatch(mesh)) return getInstanceValues(mesh, attributeIndex, name);
+    if (isObjectBatch(mesh)) return getInstanceValues(mesh, attributeIndex, name);
     const attribute = mesh.geometry.getAttribute(name);
     return attribute && Array.from({ length: attribute.itemSize }, (_, component) => attribute.getComponent(attributeIndex, component));
   };

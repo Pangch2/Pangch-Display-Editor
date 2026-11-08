@@ -25,6 +25,7 @@ import {
 import { initAssets } from './asset-manager';
 import { stabilizeInstancedMatrixBindingNames } from './entity-material';
 import { installGpuDraw } from './gpu-draw/gpu-draw-pipeline';
+import { readSceneVertexCounts } from './gpu-draw/vertex-counts';
 import { initSceneColorCapture } from './ui/common/scene-color-capture';
 import { precompileDisplayModels } from './load-project/display/display-model-precompile';
 import { getItemIconAtlas } from './ui/toolbar/item-icon-atlas';
@@ -125,6 +126,12 @@ window.addEventListener('pde:get-camera-state', (event: Event) => {
         target: controls.target.toArray(),
         zoom: camera.zoom
     };
+});
+
+window.addEventListener('pde:get-scene-vertex-counts', (event: Event) => {
+    if (!renderer || !camera || scenePrecompileInProgress) return;
+    const detail = (event as CustomEvent<{ counts?: ReturnType<typeof readSceneVertexCounts> }>).detail;
+    detail.counts = readSceneVertexCounts(renderer, loadedObjectGroup, camera);
 });
 
 window.addEventListener('pde:camera-fov-changed', (event: Event) => {
@@ -542,7 +549,8 @@ async function initScene(): Promise<void> {
     renderer.setSize(mainContent.clientWidth, mainContent.clientHeight);
     await renderer.init();
     stabilizeInstancedMatrixBindingNames(renderer);
-    if (!installGpuDraw(renderer)) console.warn('indirect-first-instance is unavailable; drawing meshes without GPU culling.');
+    // Content batches are drawn only by the pooled pipeline.
+    if (!installGpuDraw(renderer)) window.alert('이 GPU는 WebGPU indirect-first-instance 기능을 지원하지 않아 오브젝트를 표시할 수 없습니다.');
     loadedObjectGroup.userData.precompileDisplayModels = (meshes, current) => precompileDisplayModels(renderer, scene, camera, meshes, current);
     initSceneColorCapture(renderer, scene, () => camera);
 

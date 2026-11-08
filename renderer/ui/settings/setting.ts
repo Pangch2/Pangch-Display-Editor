@@ -10,6 +10,7 @@ import { initHeadAccountSettings } from './head-account-settings';
 import { initMineSkinSettings } from './head-mineskin-settings';
 import { initTransformToolbarSettings } from './transform-toolbar-settings';
 import { setSceneToolbarPosition } from '../toolbar/transform-toolbar';
+import type { SceneVertexCounts } from '../../gpu-draw/vertex-counts';
 
 const settingsButton = document.getElementById('settings-button')!;
 const toolbar = document.getElementById('scene-toolbar')!;
@@ -87,6 +88,8 @@ overlay.innerHTML = `
           <fieldset>
             <legend>현재 프로젝트</legend>
             <div class="settings-row"><span>프로젝트 이름</span><output id="scene-project-name">-</output></div>
+            <div class="settings-row"><span>총 정점 수</span><output id="scene-vertex-count">0</output></div>
+            <div class="settings-row" title="화면 밖·뒷면·숨김으로 GPU 컬링에서 제외된 정점 수"><span>컬링된 정점 수</span><output id="scene-culled-vertex-count">0</output></div>
             <div class="settings-row"><span>총 오브젝트 수</span><output id="scene-object-count">0</output></div>
             <div class="settings-row"><span>그룹</span><output id="scene-group-count">0</output></div>
             <div class="settings-row"><span>블록</span><output id="scene-block-count">0</output></div>
@@ -437,7 +440,29 @@ async function refreshSceneStatus(): Promise<void> {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, count]) => Object.assign(document.createElement('li'), { textContent: `${name} (${count})` })));
   if (import.meta.env.DEV) console.assert(overlay.querySelector('#scene-object-types')!.childElementCount === Number(overlay.querySelector<HTMLOutputElement>('#scene-object-type-count')!.value), 'Scene object types are incomplete.');
+  void refreshSceneVertices();
   await refreshSceneMemory();
+}
+
+let sceneVerticesPending = false;
+async function refreshSceneVertices(): Promise<void> {
+  if (!sceneStatusVisible() || openedFromWelcome || sceneVerticesPending) return;
+  sceneVerticesPending = true;
+  const data = loadedObjectGroup.userData;
+  const total = overlay.querySelector<HTMLOutputElement>('#scene-vertex-count')!;
+  const culled = overlay.querySelector<HTMLOutputElement>('#scene-culled-vertex-count')!;
+  try {
+    const detail: { counts?: Promise<SceneVertexCounts> } = {};
+    window.dispatchEvent(new CustomEvent('pde:get-scene-vertex-counts', { detail }));
+    const counts = await detail.counts;
+    if (data !== loadedObjectGroup.userData || !sceneStatusVisible()) return;
+    total.value = String(counts?.total ?? '-');
+    culled.value = String(counts?.culled ?? '-');
+  } catch {
+    total.value = culled.value = '-';
+  } finally {
+    sceneVerticesPending = false;
+  }
 }
 
 async function refreshSceneMemory(): Promise<void> {
@@ -524,9 +549,12 @@ window.addEventListener('pde:scene-updated', event => {
 window.addEventListener('pde:project-name-changed', event => {
   overlay.querySelector<HTMLOutputElement>('#scene-project-name')!.value = (event as CustomEvent<string>).detail || '새 프로젝트';
 });
-// Counts change only with the scene (pde:scene-updated); polling them re-walks every object.
+// Object counts follow scene events; GPU culling and memory can change without scene edits.
 setInterval(() => {
-  if (sceneStatusVisible() && !openedFromWelcome) void refreshSceneMemory();
+  if (sceneStatusVisible() && !openedFromWelcome) {
+    void refreshSceneMemory();
+    void refreshSceneVertices();
+  }
 }, 1000);
 
 toolbarPosition.addEventListener('change', () => {

@@ -1,10 +1,10 @@
-import { BufferGeometry, type InstancedMesh, Material, type Mesh, Node, type Object3D, Texture } from 'three/webgpu';
-import { getAtlasPartMaterials } from '../batching/atlas-part-material';
+import { BufferGeometry, Material, type Mesh, Node, type Object3D, Texture } from 'three/webgpu';
+import { isObjectBatch, type ObjectBatch } from '../../scene-store/object-access';
 import { disposeTexture, forgetBlockRenderResources } from './block-render-resources';
 import { clearImageHeadBlackMaterial, headGeometries } from './player-head-atlas';
 
 type ProjectScene = { children: Object3D[]; data: Record<string, any> };
-type ProjectResource = BufferGeometry | InstancedMesh | Material | Texture;
+type ProjectResource = BufferGeometry | ObjectBatch | Material | Texture;
 
 function addMaterialResources(material: Material, resources: Set<ProjectResource>): void {
     if (resources.has(material)) return;
@@ -28,10 +28,10 @@ function collectProjectResources(project: ProjectScene): Set<ProjectResource> {
     const resources = new Set<ProjectResource>();
     for (const child of project.children) child.traverse(object => {
         const mesh = object as Mesh;
-        if (!mesh.isMesh) return;
-        if ((mesh as InstancedMesh).isInstancedMesh) resources.add(mesh as InstancedMesh);
+        if (!mesh.isMesh && !isObjectBatch(object)) return;
+        if (isObjectBatch(object)) resources.add(object);
         resources.add(mesh.geometry);
-        for (const material of [...(Array.isArray(mesh.material) ? mesh.material : [mesh.material]), ...getAtlasPartMaterials(mesh.geometry)]) addMaterialResources(material, resources);
+        for (const material of [...(Array.isArray(mesh.material) ? mesh.material : [mesh.material])] ) addMaterialResources(material, resources);
     });
     for (const material of project.data.playerHeadAtlasMaterials ?? []) addMaterialResources(material, resources);
     for (const texture of project.data.blockAtlasTextures ?? []) resources.add(texture);

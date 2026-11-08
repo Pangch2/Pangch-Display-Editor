@@ -1,8 +1,9 @@
-import { Group, InstancedMesh } from 'three/webgpu';
+import { Group } from 'three/webgpu';
 import { setEntityStateAttributes } from '../entity-material';
 import { getAllGroupChildren } from './grouping/group';
-import { batchOf, getVisibleInstanceIds, setInstanceVisible, type ObjectBatch } from '../scene-store/object-access';
+import { getVisibleInstanceIds, setInstanceVisible } from '../scene-store/object-access';
 import { ObjectStore } from '../scene-store/object-store';
+import { ObjectBatch } from '../scene-store/object-batch';
 
 export { getVisibleInstanceIds };
 
@@ -70,9 +71,9 @@ if (import.meta.env.DEV) {
     root.userData.hiddenObjectUuids = new Set(['child']);
     console.assert(!isSceneObjectVisible(root, 'child'), 'A child must keep its hidden state after its group is enabled.');
 
-    const mesh = new InstancedMesh(undefined, undefined, 2);
+    const mesh = new ObjectBatch(undefined, undefined, 2);
     setEntityStateAttributes(mesh.geometry, 2);
-    const batch = batchOf(mesh);
+    const batch = mesh;
     root.userData.objectUuidToInstance = new ObjectStore([
         ['visible', { mesh: batch, instanceId: 0 }],
         ['hidden', { mesh: batch, instanceId: 1 }]

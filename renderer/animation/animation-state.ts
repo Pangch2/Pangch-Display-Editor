@@ -476,18 +476,6 @@ export function restoreAnimationSnapshot(root: Group, snapshot?: AnimationSnapsh
     else applyAnimationPose(root, snapshot.base, true);
 }
 
-export function remapAnimationSnapshot(snapshot: AnimationSnapshot | undefined, ids: Map<string, string>): AnimationSnapshot | undefined {
-    if (!snapshot || !ids.size) return snapshot;
-    const result = { ...snapshot, data: structuredClone(snapshot.data) };
-    for (const name of ['base', 'local', 'pose'] as const) result[name] = new Map([...result[name]].map(([id, node]) =>
-        [ids.get(id) ?? id, node.parent && ids.has(node.parent) ? { ...node, parent: ids.get(node.parent)! } : node]));
-    for (const clip of result.data ? animationClips(result.data) : []) {
-        for (const track of clip.tracks) track.id = ids.get(track.id) ?? track.id;
-        if (clip.excludedNodes) clip.excludedNodes = clip.excludedNodes.map(id => ids.get(id) ?? id);
-    }
-    return result;
-}
-
 export function recordAnimationTransform(root: Group, before?: AnimationSnapshot, targets: Iterable<string> = [], channels?: AnimationChannel[]): void {
     if (!before || !animationSession(root).enabled) return;
     const session = animationSession(root), after = captureAnimationPose(root);

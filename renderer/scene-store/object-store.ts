@@ -1,12 +1,14 @@
 type SlotRef = { mesh: object; instanceId: number };
 
-const idSpan = 0x10000;
+// Packed slot = batch index * idSpan + instance id; both stay within safe integers.
+const idSpan = 2 ** 24;
+const meshSpan = 2 ** 29;
 
 /**
  * The project's object table (root.userData.objectUuidToInstance): uuid → slot { mesh, instanceId }, and the
  * reverse slot → uuid. A Map by uuid, so the forward side reads like one.
- * - Slots are packed into one number (mesh index * 65536 + instance id); get() returns a new object on every
- *   call, so writers replace values rather than mutate them. Values with other properties or ids past 16 bits
+ * - Slots are packed into one number (mesh index * 2^24 + instance id); get() returns a new object on every
+ *   call, so writers replace values rather than mutate them. Values with other properties or ids past 24 bits
  *   keep the plain Map storage.
  * - The reverse side follows every write. A write clears a slot only while it still names that uuid, so two
  *   objects can trade slots in either order.
@@ -68,7 +70,7 @@ export class ObjectStore<R extends SlotRef = SlotRef> extends Map<string, R> {
         let slot = this.meshSlots.get(ref.mesh);
         if (slot === undefined) {
             slot = this.freeSlots.pop() ?? this.meshes.length;
-            if (slot >= idSpan) return undefined;
+            if (slot >= meshSpan) return undefined;
             this.meshes[slot] = ref.mesh;
             this.meshSlots.set(ref.mesh, slot);
             this.meshUses[slot] = 0;

@@ -7,8 +7,8 @@ import {
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
-import { isSlotSelected, toMeshMap, type SelectionState } from '../selection/select';
-import { performSelectionSwap, primarySource, SelectionSource, QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
+import { isSlotSelected, slotObjectUuid, toMeshMap, type SelectionState } from '../selection/select';
+import { performSelectionSwap, primarySource, queuedSlot, SelectionSource, QueueItem, QueueBundle, QueueEntry } from './vertex-swap';
 import type { GroupData } from '../grouping/group';
 import type { GizmoState } from '../gizmo/gizmo';
 import { applyLinkedMirrorDelta, syncLinkedMirrorGroupPivot, syncLinkedMirrorPivot } from '../transform/mirroring';
@@ -91,6 +91,7 @@ export function processVertexSnap(
 
     // Helper to update gizmoLocalPosition in vertexQueue
     const updateQueueItemPivot = (sourceItem: SelectionSource, newPivot: Vector3) => {
+        const sourceUuid = sourceItem.type === 'object' ? slotObjectUuid(sourceItem.mesh, sourceItem.instanceId) : undefined;
         if (!vertexQueue) return;
         
         for (const item of vertexQueue) {
@@ -98,8 +99,7 @@ export function processVertexSnap(
                 const target = item.items.find(sub => {
                     if (sub.type !== sourceItem.type) return false;
                     if (sub.type === 'group') return sub.id === (sourceItem as { type: 'group'; id: string }).id;
-                    return sub.mesh === (sourceItem as { type: 'object'; mesh: ObjectBatch; instanceId: number }).mesh
-                        && sub.instanceId === (sourceItem as { type: 'object'; mesh: ObjectBatch; instanceId: number }).instanceId;
+                    return sub.id === sourceUuid;
                 });
                 if (target) {
                     target.gizmoLocalPosition = newPivot;
@@ -114,8 +114,7 @@ export function processVertexSnap(
                         return;
                     }
                 } else {
-                    if (target.mesh === (sourceItem as { type: 'object'; mesh: ObjectBatch; instanceId: number }).mesh
-                        && target.instanceId === (sourceItem as { type: 'object'; mesh: ObjectBatch; instanceId: number }).instanceId) {
+                    if (target.id === sourceUuid) {
                         target.gizmoLocalPosition = newPivot;
                         return;
                     }
@@ -321,7 +320,7 @@ export function processVertexSnap(
             targets.isBundleMove = true;
             for (const item of bundle.items) {
                 if (item.type === 'group') addGroup(item.id!);
-                else if (item.type === 'object') addInstance(item.mesh!, item.instanceId!);
+                else if (item.type === 'object') { const ref = queuedSlot(item); if (ref) addInstance(ref.mesh, ref.instanceId); }
             }
         };
 
@@ -332,7 +331,7 @@ export function processVertexSnap(
                 if (qItem.type === 'bundle' && (qItem as QueueBundle).items) {
                     const found = (qItem as QueueBundle).items.find(sub => {
                         if (src.type === 'group' && sub.type === 'group') return sub.id === src.id;
-                        if (src.type === 'object' && sub.type === 'object') return sub.mesh === src.mesh && sub.instanceId === src.instanceId;
+                        if (src.type === 'object' && sub.type === 'object') return sub.id === slotObjectUuid(src.mesh, src.instanceId);
                         return false;
                     });
                     if (found) {

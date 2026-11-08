@@ -2,22 +2,18 @@ import { StandardDrawingPipeline } from 'three/webgpu';
 import type { Camera, WebGPURenderer } from 'three/webgpu';
 import { DrawPool } from './draw-pool';
 import { installPooledInstancing } from './pool-instance';
-import { installInstanceRowAccessors } from '../scene-store/object-access';
+import type { ObjectBatch } from '../scene-store/object-batch';
+import { setRowBindingLimit } from '../scene-store/row-store';
 
 /**
- * Draws content InstancedMeshes from shared pools instead of one render object per mesh: one proxy draw
- * per (layout, material), with compute-culled indirect args (frustum, facing, hidden). Other objects
- * (overlays, gizmos, previews) take the regular path.
+ * Draws content batches (ObjectBatch, not Meshes: three skips them) from shared pools: one proxy draw per
+ * (layout, material), with compute-culled indirect args (frustum, facing, hidden). Other objects (overlays,
+ * gizmos, previews) take the regular path.
  */
 export class PdeDrawingPipeline extends StandardDrawingPipeline {
     declare renderer: WebGPURenderer;
-    readonly pool: DrawPool;
+    readonly pool = new DrawPool();
     private camera: Camera | null = null;
-
-    constructor(maxStorageBindingSize: number) {
-        super();
-        this.pool = new DrawPool(maxStorageBindingSize);
-    }
 
     begin(camera: Camera, renderContext: unknown): void {
         super.begin(camera, renderContext);
@@ -25,9 +21,9 @@ export class PdeDrawingPipeline extends StandardDrawingPipeline {
         this.pool.beginCall();
     }
 
-    pushRenderItem(renderList, object, geometry, material, groupOrder: number, z: number, group, clippingContext): void {
-        if (this.pool.push(object, geometry, material, groupOrder, clippingContext)) return;
-        super.pushRenderItem(renderList, object, geometry, material, groupOrder, z, group, clippingContext);
+    project(object, camera: Camera, groupOrder: number, renderList, clippingContext): void {
+        if ((object as ObjectBatch).isObjectBatch !== true) return super.project(object, camera, groupOrder, renderList, clippingContext);
+        if (object.visible && object.layers.test(camera.layers)) this.pool.push(object, groupOrder, clippingContext);
     }
 
     finishRenderList(renderList): void {
@@ -44,13 +40,12 @@ export class PdeDrawingPipeline extends StandardDrawingPipeline {
     }
 }
 
-/** Switches the renderer to pooled drawing. False (regular draws, no culling) without `indirect-first-instance`. */
+/** Switches the renderer to pooled drawing, the only way content batches are drawn. False without `indirect-first-instance`. */
 export function installGpuDraw(renderer: WebGPURenderer): boolean {
     const backend = renderer.backend as unknown as { isWebGPUBackend?: boolean; device?: GPUDevice };
     if (!backend.isWebGPUBackend || !backend.device?.features.has('indirect-first-instance')) return false;
     installPooledInstancing();
-    // Adopted batches keep matrices and colors in pool rows.
-    installInstanceRowAccessors();
-    renderer.drawingPipeline = new PdeDrawingPipeline(backend.device.limits.maxStorageBufferBindingSize);
+    setRowBindingLimit(backend.device.limits.maxStorageBufferBindingSize);
+    renderer.drawingPipeline = new PdeDrawingPipeline();
     return true;
 }

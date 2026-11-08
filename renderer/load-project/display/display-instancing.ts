@@ -1,8 +1,10 @@
-import { Box3, BufferGeometry, Color, DynamicDrawUsage, Group, InstancedBufferAttribute, InstancedMesh, InterleavedBufferAttribute, Material, MathUtils, Matrix4, MeshBasicNodeMaterial, Object3D, Sphere, SRGBColorSpace, StorageInstancedBufferAttribute } from 'three/webgpu';
+import { Box3, BufferGeometry, Color, DynamicDrawUsage, Group, InstancedBufferAttribute, InterleavedBufferAttribute, Material, MathUtils, Matrix4, MeshBasicNodeMaterial, Object3D, Sphere, SRGBColorSpace, StorageInstancedBufferAttribute } from 'three/webgpu';
 import { type GeometryInstanceMeta, type GeometryMeta, type OtherItem } from '../pbde/pbde-types';
 import { planUvTransforms } from '../batching/geometry-batching';
 import { setEntityStateAttributes } from '../../entity-material';
 import { createTextDisplayTemplates, getTextDisplayTemplateKey, textDisplayInstanceAttributeNames } from './text-display';
+import { ObjectBatch } from '../../scene-store/object-batch';
+import { isObjectBatch } from '../../scene-store/object-access';
 
 export const loadedObjectGroup = new Group();
 
@@ -17,8 +19,6 @@ export function beginPbdeLoadGeneration(isMerge = false): number {
     return ++currentLoadGen;
 }
 
-export const MAX_INSTANCES_PER_INSTANCED_MESH = 32768;
-export const INITIAL_INSTANCES_PER_INSTANCED_MESH = MAX_INSTANCES_PER_INSTANCED_MESH >> 1;
 const signatureHashScratch = new ArrayBuffer(8);
 const signatureHashView = new DataView(signatureHashScratch);
 export type Brightness = { sky?: number; block?: number };
@@ -32,7 +32,7 @@ export type SignatureGroup = {
     isAtlasBatch?: boolean;
 };
 export type MaterialUpdate = {
-    instancedMesh: InstancedMesh;
+    instancedMesh: ObjectBatch;
     materials: Material[];
     pendingMaterialSlots: Array<{ index: number; promise: Promise<Material> }>;
     signature: string;
@@ -71,7 +71,7 @@ export function skyBrightnessColor(brightness?: Brightness): Color {
     return lightMapColors[level + block * 16];
 }
 
-export function setInstanceSkyBrightness(mesh: InstancedMesh, instanceId: number, brightness?: Brightness): void {
+export function setInstanceSkyBrightness(mesh: ObjectBatch, instanceId: number, brightness?: Brightness): void {
     mesh.setColorAt(instanceId, skyBrightnessColor(brightness));
     // A batch the draw pool adopted holds its colors in an interleaved row view, which has no usage of its own.
     if (!(mesh.instanceColor as unknown as InterleavedBufferAttribute).isInterleavedBufferAttribute) mesh.instanceColor!.setUsage(DynamicDrawUsage);
@@ -85,7 +85,7 @@ export function addLoadedInstance(selection: LoadedSelection, mesh: Object3D, in
 
 export async function addTextDisplayItems(
     items: OtherItem[],
-    registerObject: (mesh: InstancedMesh, instanceId: number, uuid: string, groupId: string | null) => void,
+    registerObject: (mesh: ObjectBatch, instanceId: number, uuid: string, groupId: string | null) => void,
     selection?: LoadedSelection,
     loadGen = currentLoadGen
 ): Promise<void> {
@@ -94,15 +94,15 @@ export async function addTextDisplayItems(
         for (const template of templates.values()) template.geometry.dispose();
         return;
     }
-    const reusable = new Map<string, InstancedMesh>();
+    const reusable = new Map<string, ObjectBatch>();
     for (const child of loadedObjectGroup.children) {
-        const mesh = child as InstancedMesh;
-        if (!mesh.isInstancedMesh || !mesh.userData.textDisplayBatch || mesh.count >= getInstancedCapacity(mesh)) continue;
+        const mesh = child as ObjectBatch;
+        if (!isObjectBatch(mesh) || !mesh.userData.textDisplayBatch || mesh.count >= getInstancedCapacity(mesh)) continue;
         reusable.set(`${(mesh.material as Material).uuid}:${mesh.geometry.userData.textDisplayGeometryKey ?? ''}`, mesh);
     }
 
-    const groups = new Map<string, Array<{ item: OtherItem; template: InstancedMesh }>>();
-    const reusedMeshes = new Set<InstancedMesh>();
+    const groups = new Map<string, Array<{ item: OtherItem; template: ObjectBatch }>>();
+    const reusedMeshes = new Set<ObjectBatch>();
     const usedMaterials = new Set<Material>();
     for (const item of items) {
         const key = getTextDisplayTemplateKey(item);
@@ -139,47 +139,44 @@ export async function addTextDisplayItems(
         const material = group[0].template.material as Material;
         usedMaterials.add(material);
         const sourceGeometry = group[0].template.geometry;
-        for (let start = 0; start < group.length; start += MAX_INSTANCES_PER_INSTANCED_MESH) {
-            const chunk = group.slice(start, start + MAX_INSTANCES_PER_INSTANCED_MESH);
-            const capacity = getAppendableInstanceCapacity(chunk.length);
-            const geometry = start === 0 ? sourceGeometry : sourceGeometry.clone();
-            usedGeometries.add(geometry);
-            for (const attributeName of textDisplayInstanceAttributeNames) {
-                const source = chunk[0].template.geometry.getAttribute(attributeName);
-                const values = new Float32Array(capacity * source.itemSize);
-                chunk.forEach(({ template }, instanceId) => {
-                    const attribute = template.geometry.getAttribute(attributeName);
-                    for (let component = 0; component < attribute.itemSize; component++) {
-                        values[instanceId * attribute.itemSize + component] = attribute.getComponent(0, component);
-                    }
-                });
-                geometry.setAttribute(attributeName, new InstancedBufferAttribute(values, source.itemSize));
-            }
-            geometry.boundingBox = chunk.reduce(
-                (bounds, { template }) => bounds.union(template.geometry.boundingBox!),
-                new Box3()
-            );
-            geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new Sphere());
-            setEntityStateAttributes(geometry, capacity);
-            const textMesh = new InstancedMesh(geometry, material, capacity);
-            textMesh.instanceMatrix = new StorageInstancedBufferAttribute(capacity, 16);
-            textMesh.count = chunk.length;
-            textMesh.userData.displayType = 'text_display';
-            textMesh.userData.textDisplayBatch = true;
-            textMesh.frustumCulled = false;
-            textMesh.renderOrder = 1;
-            textMesh.layers.enable(2);
-            chunk.forEach(({ item }, instanceId) => {
-                textMesh.setMatrixAt(instanceId, new Matrix4().fromArray(item.transform).transpose());
-                setInstanceSkyBrightness(textMesh, instanceId, item.brightness as Brightness | undefined);
-                registerObject(textMesh, instanceId, item.uuid, item.groupId);
-                if (selection) addLoadedInstance(selection, textMesh, instanceId);
+        const capacity = getAppendableInstanceCapacity(group.length);
+        const geometry = sourceGeometry;
+        usedGeometries.add(geometry);
+        for (const attributeName of textDisplayInstanceAttributeNames) {
+            const source = group[0].template.geometry.getAttribute(attributeName);
+            const values = new Float32Array(capacity * source.itemSize);
+            group.forEach(({ template }, instanceId) => {
+                const attribute = template.geometry.getAttribute(attributeName);
+                for (let component = 0; component < attribute.itemSize; component++) {
+                    values[instanceId * attribute.itemSize + component] = attribute.getComponent(0, component);
+                }
             });
-            textMesh.instanceMatrix.needsUpdate = true;
-            if (textMesh.instanceColor) textMesh.instanceColor.needsUpdate = true;
-            textMesh.computeBoundingSphere();
-            loadedObjectGroup.add(textMesh);
+            geometry.setAttribute(attributeName, new InstancedBufferAttribute(values, source.itemSize));
         }
+        geometry.boundingBox = group.reduce(
+            (bounds, { template }) => bounds.union(template.geometry.boundingBox!),
+            new Box3()
+        );
+        geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new Sphere());
+        setEntityStateAttributes(geometry, capacity);
+        const textMesh = new ObjectBatch(geometry, material, capacity);
+        textMesh.instanceMatrix = new StorageInstancedBufferAttribute(capacity, 16);
+        textMesh.count = group.length;
+        textMesh.userData.displayType = 'text_display';
+        textMesh.userData.textDisplayBatch = true;
+        textMesh.frustumCulled = false;
+        textMesh.renderOrder = 1;
+        textMesh.layers.enable(2);
+        group.forEach(({ item }, instanceId) => {
+            textMesh.setMatrixAt(instanceId, new Matrix4().fromArray(item.transform).transpose());
+            setInstanceSkyBrightness(textMesh, instanceId, item.brightness as Brightness | undefined);
+            registerObject(textMesh, instanceId, item.uuid, item.groupId);
+            if (selection) addLoadedInstance(selection, textMesh, instanceId);
+        });
+        textMesh.instanceMatrix.needsUpdate = true;
+        if (textMesh.instanceColor) textMesh.instanceColor.needsUpdate = true;
+        textMesh.computeBoundingSphere();
+        loadedObjectGroup.add(textMesh);
     }
     for (const mesh of reusedMeshes) {
         mesh.instanceMatrix.needsUpdate = true;
@@ -208,7 +205,7 @@ export function isInstancedGeometryAttribute(attribute: unknown): attribute is I
         || (candidate?.isInterleavedBufferAttribute && candidate.data?.isInstancedInterleavedBuffer));
 }
 
-export function getInstancedCapacity(mesh: InstancedMesh): number {
+export function getInstancedCapacity(mesh: ObjectBatch): number {
     let capacity = mesh.instanceMatrix.count;
     if (mesh.instanceColor) capacity = Math.min(capacity, mesh.instanceColor.count);
     for (const attribute of Object.values(mesh.geometry.attributes)) {
@@ -315,6 +312,6 @@ export function getInstanceDisplayType(instance: GeometryInstanceMeta, part?: Ge
 }
 
 export function getAppendableInstanceCapacity(count: number): number {
-    // 1/8 room to append: the pooled draw never uploads these arrays, so growing past it only adds a chunk mesh.
-    return Math.max(count, Math.min(MAX_INSTANCES_PER_INSTANCED_MESH, Math.max(256, count + Math.ceil(count / 8))));
+    // 1/8 room to append; past it the batch grows (growBatch).
+    return Math.max(256, count + Math.ceil(count / 8));
 }

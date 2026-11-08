@@ -1,7 +1,8 @@
-import { Color, Group, InstancedMesh, Matrix4, StorageInstancedBufferAttribute, type InstancedBufferAttribute, type InterleavedBufferAttribute } from 'three/webgpu';
+import { Color, Group, InstancedBufferAttribute, InstancedInterleavedBuffer, InterleavedBufferAttribute, Matrix4 } from 'three/webgpu';
 import { dragSelectedAttributeName } from '../entity-material';
-import { restoreAtlasPartMaterials } from '../load-project/batching/atlas-part-material';
-import { batchMesh, batchOf, cloneBatchGeometry, moveObjectSlot, type ObjectBatch } from './object-access';
+import { moveObjectSlot } from './object-access';
+import { unsealBatch } from './row-store';
+import { ObjectBatch } from './object-batch';
 
 /**
  * Batch structure: appending copies, swap-removing slots and putting removed slots back. Callers keep the uuid
@@ -15,19 +16,19 @@ function isInstancedAttribute(attribute: unknown): attribute is InstancedAttribu
 }
 
 /** Every per-instance value of a batch by name: matrix, color and instanced attributes. Names outlive the attribute objects. */
-function instanceValueNames(mesh: InstancedMesh): string[] {
+function instanceValueNames(mesh: ObjectBatch): string[] {
     return [...(mesh.instanceColor ? ['instanceMatrix', 'instanceColor'] : ['instanceMatrix']),
         ...Object.entries(mesh.geometry.attributes).filter(([, attribute]) => isInstancedAttribute(attribute)).map(([name]) => name)];
 }
 
-function instanceValue(mesh: InstancedMesh, name: string): InstancedAttribute | undefined {
+function instanceValue(mesh: ObjectBatch, name: string): InstancedAttribute | undefined {
     if (name === 'instanceMatrix') return mesh.instanceMatrix;
     if (name === 'instanceColor') return mesh.instanceColor ?? undefined;
     const attribute = mesh.geometry.getAttribute(name);
     return isInstancedAttribute(attribute) ? attribute : undefined;
 }
 
-function capacityOf(mesh: InstancedMesh): number {
+function capacityOf(mesh: ObjectBatch): number {
     let capacity = mesh.instanceMatrix.count;
     if (mesh.instanceColor) capacity = Math.min(capacity, mesh.instanceColor.count);
     for (const attribute of Object.values(mesh.geometry.attributes)) if (isInstancedAttribute(attribute)) capacity = Math.min(capacity, attribute.count);
@@ -38,9 +39,8 @@ function capacityOf(mesh: InstancedMesh): number {
 
 const tmpMatrix = new Matrix4();
 const tmpColor = new Color();
-const appendableChunks = new WeakMap<InstancedMesh, InstancedMesh>();
 
-function copyInstancedAttributes(source: InstancedMesh, sourceId: number, target: InstancedMesh, targetId: number, updated: Set<InstancedAttribute>): void {
+function copyInstancedAttributes(source: ObjectBatch, sourceId: number, target: ObjectBatch, targetId: number, updated: Set<InstancedAttribute>): void {
     for (const [name, sourceAttribute] of Object.entries(source.geometry.attributes)) {
         if (!isInstancedAttribute(sourceAttribute)) continue;
         const targetAttribute = target.geometry.getAttribute(name);
@@ -57,87 +57,52 @@ function copyInstancedAttributes(source: InstancedMesh, sourceId: number, target
     }
 }
 
-function copyInstanceUserData(source: InstancedMesh, sourceId: number, target: InstancedMesh, targetId: number): void {
-    if (source.userData.hasHat?.[sourceId] !== undefined) (target.userData.hasHat ??= [])[targetId] = source.userData.hasHat[sourceId];
-    const tile = source.userData.imageHeadTilePositions?.[sourceId] as [number, number] | undefined;
-    if (tile) {
-        target.userData.imageHeadLayer = source.userData.imageHeadLayer;
-        (target.userData.imageHeadTilePositions ??= [])[targetId] = [...tile];
+/** Moves the batch's per-instance values into arrays of `capacity` slots (out of its rows first); it re-seals on its next draw. */
+function growBatch(batch: ObjectBatch, capacity: number): void {
+    unsealBatch(batch);
+    const buffers = new Map<object, InstancedInterleavedBuffer>();
+    const grow = (attribute: InstancedAttribute): InstancedAttribute => {
+        if (attribute.isInterleavedBufferAttribute) {
+            const { data } = attribute;
+            let grown = buffers.get(data);
+            if (!grown) {
+                const array = new Float32Array(capacity * data.stride);
+                array.set((data.array as Float32Array).subarray(0, Math.min(array.length, data.array.length)));
+                buffers.set(data, grown = new InstancedInterleavedBuffer(array, data.stride));
+            }
+            return new InterleavedBufferAttribute(grown, attribute.itemSize, attribute.offset, attribute.normalized);
+        }
+        const array = new Float32Array(capacity * attribute.itemSize);
+        array.set((attribute.array as Float32Array).subarray(0, Math.min(array.length, attribute.array.length)));
+        return new InstancedBufferAttribute(array, attribute.itemSize, attribute.normalized);
+    };
+    batch.instanceMatrix = grow(batch.instanceMatrix) as InstancedBufferAttribute;
+    if (batch.instanceColor) batch.instanceColor = grow(batch.instanceColor) as InstancedBufferAttribute;
+    for (const [name, attribute] of Object.entries(batch.geometry.attributes)) {
+        if (isInstancedAttribute(attribute)) batch.geometry.setAttribute(name, grow(attribute));
     }
-}
-
-/** An empty batch drawing like `source`, for copies that do not fit into it. */
-function createChunk(root: Group, source: InstancedMesh): InstancedMesh {
-    const capacity = Math.max(1, capacityOf(source));
-    const material = Array.isArray(source.material) ? [...source.material] : source.material;
-    const chunk = new InstancedMesh(cloneBatchGeometry(source.geometry), material, capacity);
-    chunk.instanceMatrix = new StorageInstancedBufferAttribute(capacity, 16);
-    if (source.instanceColor) chunk.instanceColor = source.instanceColor.clone();
-    chunk.count = 0;
-    chunk.userData.pdeDuplicateChunk = true;
-    chunk.userData.displayType = source.userData.displayType;
-    // Chunks gather copies from one source batch, so they can mix kinds like it.
-    chunk.userData.mixedDisplayKinds = true;
-    if (source.userData.textDisplayBatch) chunk.userData.textDisplayBatch = true;
-    if (source.userData.pbdeModelMatrix) chunk.userData.pbdeModelMatrix = [...source.userData.pbdeModelMatrix];
-    if (source.geometry.userData.atlasBatch) chunk.userData.pbdeSignature = source.userData.pbdeSignature;
-    if (source.userData.hasHat) chunk.userData.hasHat = [];
-    if (source.userData.imageHeadLayer !== undefined) {
-        chunk.userData.imageHeadLayer = source.userData.imageHeadLayer;
-        chunk.userData.imageHeadTilePositions = [];
-    }
-    chunk.frustumCulled = source.frustumCulled;
-    chunk.renderOrder = source.renderOrder;
-    chunk.visible = false;
-    chunk.layers.mask = source.layers.mask;
-    root.add(chunk);
-    return chunk;
-}
-
-function appendableChunk(root: Group, source: InstancedMesh): InstancedMesh {
-    const chunk = appendableChunks.get(source);
-    if (chunk?.parent === root && chunk.count < capacityOf(chunk) && chunk.geometry.userData.atlasBatch === source.geometry.userData.atlasBatch) return chunk;
-    const created = createChunk(root, source);
-    appendableChunks.set(source, created);
-    return created;
 }
 
 /**
- * Appends a copy of each listed slot of `batch` (drag flag cleared) to the batch itself while it has room, then
- * to chunks drawing like it. Returns where each copy landed, in order. Registering the copies is the caller's job.
+ * Appends a copy of each listed slot (drag flag cleared) to the batch, growing it when full (1/8 room). Returns
+ * the new slots, in order. Registering the copies is the caller's job.
  */
-export function appendInstanceCopies(root: Group, batch: ObjectBatch, instanceIds: number[]): Array<{ mesh: ObjectBatch; instanceId: number }> {
-    const source = batchMesh(batch);
-    if (!source.geometry || instanceIds.length === 0) return [];
-    restoreAtlasPartMaterials(source);
-    let target = source;
-    let capacity = capacityOf(target);
+export function appendInstanceCopies(batch: ObjectBatch, instanceIds: number[]): Array<{ mesh: ObjectBatch; instanceId: number }> {
+    if (!batch.geometry || instanceIds.length === 0) return [];
+    const needed = batch.count + instanceIds.length;
+    if (needed > capacityOf(batch)) growBatch(batch, needed + Math.ceil(needed / 8));
     const slots: Array<{ mesh: ObjectBatch; instanceId: number }> = [];
-    const updated = new Set<InstancedMesh>(), updatedColors = new Set<InstancedMesh>(), updatedAttributes = new Set<InstancedAttribute>();
+    const updatedAttributes = new Set<InstancedAttribute>();
     for (const instanceId of instanceIds) {
-        if (target.count >= capacity) {
-            target = appendableChunk(root, source);
-            capacity = capacityOf(target);
-        }
-        const targetId = target.count;
-        source.getMatrixAt(instanceId, tmpMatrix);
-        target.setMatrixAt(targetId, tmpMatrix);
-        copyInstancedAttributes(source, instanceId, target, targetId, updatedAttributes);
-        if (source.instanceColor) {
-            source.getColorAt(instanceId, tmpColor);
-            target.setColorAt(targetId, tmpColor);
-            updatedColors.add(target);
-        }
-        copyInstanceUserData(source, instanceId, target, targetId);
-        slots.push({ mesh: batchOf(target), instanceId: targetId });
-        target.count++;
-        updated.add(target);
+        const targetId = batch.count;
+        batch.setMatrixAt(targetId, batch.getMatrixAt(instanceId, tmpMatrix));
+        copyInstancedAttributes(batch, instanceId, batch, targetId, updatedAttributes);
+        if (batch.instanceColor) batch.setColorAt(targetId, batch.getColorAt(instanceId, tmpColor));
+        slots.push({ mesh: batch, instanceId: targetId });
+        batch.count++;
     }
-    for (const mesh of updated) {
-        mesh.instanceMatrix.needsUpdate = true;
-        mesh.visible = source.visible;
-    }
-    for (const mesh of updatedColors) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    batch.instanceMatrix.needsUpdate = true;
+    if (batch.instanceColor) batch.instanceColor.needsUpdate = true;
     for (const attribute of updatedAttributes) attribute.needsUpdate = true;
     return slots;
 }
@@ -149,9 +114,8 @@ const tmpRemoveColor = new Color();
 
 /** Swap-removes the given slots (sorted descending): the last slot fills each hole. An emptied batch leaves the scene. */
 export function removeInstances(root: Group, batch: ObjectBatch, instanceIdsDescending: number[]): void {
-    const mesh = batchMesh(batch);
+    const mesh = batch;
     const uvOffset = mesh.geometry.attributes.instancedUvOffset as InstancedAttribute | undefined;
-    const hasHat = mesh.userData.hasHat as boolean[] | undefined;
     const swap = (from: number, to: number) => {
         mesh.setMatrixAt(to, mesh.getMatrixAt(from, tmpRemoveMatrix));
         for (const attribute of Object.values(mesh.geometry.attributes)) {
@@ -162,13 +126,6 @@ export function removeInstances(root: Group, batch: ObjectBatch, instanceIdsDesc
             attribute.needsUpdate = true;
         }
         if (mesh.instanceColor) mesh.setColorAt(to, mesh.getColorAt(from, tmpRemoveColor));
-        if (Array.isArray(hasHat)) hasHat[to] = hasHat[from];
-        const tiles = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
-        if (tiles) {
-            if (from in tiles) tiles[to] = tiles[from];
-            else delete tiles[to];
-            delete tiles[from];
-        }
     };
     for (const instanceId of instanceIdsDescending) {
         const last = mesh.count - 1;
@@ -184,13 +141,7 @@ export function removeInstances(root: Group, batch: ObjectBatch, instanceIdsDesc
     if (mesh.count === 0) mesh.removeFromParent();
 }
 
-type EntryState<V> = { has: boolean; value?: V };
-type SlotState = {
-    instanceId: number;
-    values: Array<{ name: string; values: number[] }>;
-    hasHat: EntryState<boolean>;
-    imageHeadTilePosition: EntryState<[number, number]>;
-};
+type SlotState = { instanceId: number; values: Array<{ name: string; values: number[] }> };
 
 /** What putting a batch's removed slots back needs: its place in the scene, count and the overwritten slots. */
 export type BatchRemovalState = {
@@ -208,21 +159,18 @@ export type BatchRemovalState = {
 
 /** Snapshot before removeInstances(ids): the removed slots and the last ones that fill them. */
 export function captureBatchRemoval(batch: ObjectBatch, instanceIds: Set<number>, withSlots: boolean): BatchRemovalState {
-    const mesh = batchMesh(batch);
+    const mesh = batch;
     const parent = mesh.parent as Group | null;
     const touched = new Set(instanceIds);
     let remaining = mesh.count;
     for (let index = 0; index < instanceIds.size; index++) touched.add(--remaining);
     const names = instanceValueNames(mesh);
-    const entry = <V>(values: V[] | undefined, id: number): EntryState<V> => ({ has: Array.isArray(values) && id in values, value: values?.[id] });
     const slots = !withSlots ? [] : [...touched].map(instanceId => ({
         instanceId,
         values: names.map(name => {
             const attribute = instanceValue(mesh, name)!;
             return { name, values: Array.from({ length: attribute.itemSize }, (_, component) => attribute.getComponent(instanceId, component)) };
-        }),
-        hasHat: entry(mesh.userData.hasHat as boolean[] | undefined, instanceId),
-        imageHeadTilePosition: entry(mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined, instanceId)
+        })
     }));
     return { batch, parent, childIndex: parent?.children.indexOf(mesh) ?? -1, visible: mesh.visible, count: mesh.count,
         detachedWhole: instanceIds.size === mesh.count, touched: [...touched], slots };
@@ -230,7 +178,7 @@ export function captureBatchRemoval(batch: ObjectBatch, instanceIds: Set<number>
 
 /** Puts a captured batch back as it was before the removal. */
 export function restoreBatchRemoval(state: BatchRemovalState): void {
-    const mesh = batchMesh(state.batch);
+    const mesh = state.batch;
     mesh.visible = state.visible;
     if (state.parent && !mesh.parent) {
         state.parent.add(mesh);
@@ -244,31 +192,23 @@ export function restoreBatchRemoval(state: BatchRemovalState): void {
             values.forEach((value, component) => attribute.setComponent(slot.instanceId, component, value));
             attribute.needsUpdate = true;
         }
-        const hasHat = mesh.userData.hasHat as boolean[] | undefined;
-        if (hasHat) slot.hasHat.has ? hasHat[slot.instanceId] = slot.hasHat.value! : delete hasHat[slot.instanceId];
-        const tiles = mesh.userData.imageHeadTilePositions as Array<[number, number]> | undefined;
-        if (tiles) slot.imageHeadTilePosition.has ? tiles[slot.instanceId] = slot.imageHeadTilePosition.value! : delete tiles[slot.instanceId];
     }
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    mesh.computeBoundingBox();
-    mesh.computeBoundingSphere();
+    // Bounds are recomputed on demand.
+    mesh.boundingBox = mesh.boundingSphere = null;
 }
 
-/** Frees a batch that a kept removal emptied, when nothing else owns it (duplicate chunks). */
+/** Frees the rows of a batch a dropped removal emptied. */
 export function disposeRemovedBatch(state: BatchRemovalState): void {
-    const mesh = batchMesh(state.batch);
-    if (!state.detachedWhole || mesh.parent || !mesh.userData.pdeDuplicateChunk) return;
-    mesh.dispose();
-    mesh.geometry.dispose();
+    if (state.detachedWhole && !state.batch.parent) state.batch.dispose();
 }
-
 
 if (import.meta.env.DEV) {
-    const root = new Group();
-    const source = new InstancedMesh(undefined, undefined, 2);
-    root.add(source);
-    // A full source sends both copies to one chunk: the second reuses the partly filled one.
-    const copies = appendInstanceCopies(root, batchOf(source), [0, 1]);
-    console.assert(copies[0].mesh === copies[1].mesh && copies[0].mesh !== batchOf(source) && root.children.length === 2, 'Copies must reuse a partly filled chunk.');
+    const source = new ObjectBatch(undefined, undefined, 2);
+    source.setMatrixAt(1, new Matrix4().makeTranslation(3, 0, 0));
+    // A full batch grows in place: copies keep their source's values.
+    const copies = appendInstanceCopies(source, [1, 1]);
+    console.assert(copies.every(copy => copy.mesh === source) && source.count === 4 && source.instanceMatrix.count >= 4
+        && source.getMatrixAt(3, new Matrix4()).elements[12] === 3, 'Copies must grow their own batch.');
 }

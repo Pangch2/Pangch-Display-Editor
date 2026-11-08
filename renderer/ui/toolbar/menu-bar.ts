@@ -7,11 +7,18 @@ import { openUserGuide } from '../dialogs/user-guide';
 
 const menuBar = document.querySelector<HTMLElement>('.menu-bar-items')!;
 const dropdowns = [...menuBar.querySelectorAll<HTMLElement>('.menu-bar-dropdown')];
+let menuHoverTimer: ReturnType<typeof setTimeout>;
 const closeMenus = () => {
+    clearTimeout(menuHoverTimer);
     for (const dropdown of dropdowns) {
         dropdown.querySelector<HTMLElement>('.menu-bar-popup')!.hidden = true;
         dropdown.querySelector('button')!.setAttribute('aria-expanded', 'false');
     }
+};
+const scheduleMenu = (action: () => void) => {
+    clearTimeout(menuHoverTimer);
+    // Allow diagonal movement past another trigger into the open popup.
+    menuHoverTimer = setTimeout(action, 150);
 };
 
 for (const dropdown of dropdowns) {
@@ -22,11 +29,13 @@ for (const dropdown of dropdowns) {
         popup.hidden = false;
         trigger.setAttribute('aria-expanded', 'true');
     };
-    dropdown.addEventListener('pointerenter', openMenu);
-    dropdown.addEventListener('pointerleave', closeMenus);
+    dropdown.addEventListener('pointerenter', () => clearTimeout(menuHoverTimer));
+    dropdown.addEventListener('pointerleave', () => scheduleMenu(closeMenus));
+    trigger.addEventListener('pointerenter', () => scheduleMenu(openMenu));
     trigger.addEventListener('click', openMenu);
     dropdown.addEventListener('focusout', event => {
-        if (!dropdown.contains(event.relatedTarget as Node | null)) closeMenus();
+        // A hidden menu may still own focus after another menu opens on hover.
+        if (!popup.hidden && !dropdown.contains(event.relatedTarget as Node | null)) closeMenus();
     });
     popup.addEventListener('click', event => {
         if (!(event.target as HTMLElement).closest('button:enabled')) return;
@@ -88,6 +97,6 @@ window.addEventListener('keydown', event => {
     action();
 }, true);
 const summonButton = document.getElementById('summon-menu-button')!;
-summonButton.addEventListener('pointerenter', closeMenus);
-summonButton.addEventListener('click', openSummonCommand);
+summonButton.addEventListener('pointerenter', () => scheduleMenu(closeMenus));
+summonButton.addEventListener('click', () => { closeMenus(); openSummonCommand(); });
 document.getElementById('user-guide-button')!.addEventListener('click', openUserGuide);

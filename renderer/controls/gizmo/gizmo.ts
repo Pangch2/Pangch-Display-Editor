@@ -72,6 +72,7 @@ import { flipObjectUuids, reflectGroups, resolveMirroredBlockNames, type FlipAxi
 import {
     applyLinkedMirrorDelta,
     getLinkedMirrorSelection,
+    inheritLinkedMirrorPlane,
     getMirrorPairs,
     isMirrorModelingEnabled,
     linkMirrorGroupPair,
@@ -479,6 +480,12 @@ const dragInitialSelectionMatrix = new Matrix4();
 const dragScaleFrame = new Matrix4();
 const dragInitialQuaternion = new Quaternion();
 const dragInitialScale = new Vector3();
+// Scale snap restarts from these whenever fine adjust toggles mid-drag.
+const scaleSnapBaseScale = new Vector3();
+const scaleSnapBaseRatio = new Vector3();
+const scaleSnapLastScale = new Vector3();
+const scaleSnapLastRatio = new Vector3();
+let scaleSnapFine = false;
 const dragInitialPosition = new Vector3();
 const dragInitialBoundingBox = new Box3();
 const dragStartPivotBaseWorld = new Vector3();
@@ -558,8 +565,8 @@ function snapFromStart(current: number, start: number, step: number): number {
 
 function applyRelativeDragSnap(): void {
     if (!selectionHelper || !transformControls) return;
-    if (isShortcutPressed('fineAdjust')) return;
-    if (transformControls.mode === 'translate' && positionDragValue !== null) {
+    const fineAdjust = isShortcutPressed('fineAdjust');
+    if (transformControls.mode === 'translate' && positionDragValue !== null && !fineAdjust) {
         const delta = _TMP_VEC3_A.copy(selectionHelper.position).sub(dragInitialPosition);
         if (currentSpace === 'local') delta.applyQuaternion(_TMP_QUAT_A.copy(dragInitialQuaternion).invert());
         delta.set(
@@ -581,14 +588,21 @@ function applyRelativeDragSnap(): void {
         }
         const sourceScale = _TMP_VEC3_A.setFromMatrixScale(scaleMatrix);
         const uniformScale = Math.max(sourceScale.x, sourceScale.y, sourceScale.z);
+        if (fineAdjust !== scaleSnapFine) {
+            // Toggling fine adjust restarts the drag here, so snapping needs a full step from this value.
+            scaleSnapBaseScale.copy(scaleSnapLastScale);
+            scaleSnapBaseRatio.copy(scaleSnapLastRatio);
+            scaleSnapFine = fineAdjust;
+        }
         for (const axis of ['x', 'y', 'z'] as const) {
             if (!transformControls.axis?.includes(axis.toUpperCase())) continue;
             const referenceScale = transformControls.axis === 'XYZ' ? uniformScale : sourceScale[axis];
             const step = scaleDragValue * dragInitialScale[axis] / (referenceScale || 1);
-            let current = selectionHelper.scale[axis];
+            let ratio = selectionHelper.scale[axis] / dragInitialScale[axis];
+            let gain = 1;
             if (referenceScale > 0 && referenceScale < 1) {
                 // Read the pointer ratio so repeated change events cannot amplify the corrected scale.
-                let ratio: number;
+                gain = 1 / referenceScale;
                 if (transformControls.axis === 'XYZ') {
                     ratio = transformControls.pointEnd.length() / transformControls.pointStart.length();
                     if (transformControls.pointEnd.dot(transformControls.pointStart) < 0) ratio *= -1;
@@ -598,9 +612,14 @@ function applyRelativeDragSnap(): void {
                     direction.applyQuaternion(transformControls.worldQuaternionStart);
                     ratio = transformControls.pointEnd.dot(direction) / transformControls.pointStart.dot(direction);
                 }
-                if (Number.isFinite(ratio)) current = dragInitialScale[axis] * (1 + (ratio - 1) / referenceScale);
             }
-            selectionHelper.scale[axis] = snapFromStart(current, dragInitialScale[axis], step) || step;
+            if (!Number.isFinite(ratio)) ratio = scaleSnapLastRatio[axis];
+            const baseScale = scaleSnapBaseScale[axis];
+            const current = baseScale + dragInitialScale[axis] * (ratio - scaleSnapBaseRatio[axis]) * gain;
+            const next = fineAdjust ? current : snapFromStart(current, baseScale, step) || step;
+            selectionHelper.scale[axis] = next;
+            scaleSnapLastScale[axis] = next;
+            scaleSnapLastRatio[axis] = ratio;
         }
     }
 }
@@ -1071,6 +1090,7 @@ function createGroup(): string | undefined {
         _replaceSelectionWithGroupsAndObjects(linked.groups, Select.toObjectUuids(linked.objects));
         const mirrorGroupId = createGroupCommand(loadedObjectGroup, currentSelection, _getGizmoCommandCallbacks());
         linkMirrorPair(getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs'), sourceGroupId, mirrorGroupId);
+        if (mirrorGroupId) inheritLinkedMirrorPlane(loadedObjectGroup, linked, sourceGroupId, mirrorGroupId);
         applySelection(null, [], sourceGroupId);
         return sourceGroupId;
     });
@@ -1194,8 +1214,8 @@ function duplicateSelected(): void {
             preserveAnchors: true,
             explicitPrimary: sourcePrimary
         });
-        reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot, mirrorModelingPivot.clone().setX(0));
-        const flipPromise = flipObjectUuids(loadedObjectGroup, mirroredUuids, 'x', mirrorModelingPivot, mirroredGroupIds.length > 0 ? 'center' : pivotMode, undefined, mirrorModelingPivot.clone().setX(0));
+        reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot);
+        const flipPromise = flipObjectUuids(loadedObjectGroup, mirroredUuids, 'x', mirrorModelingPivot, mirroredGroupIds.length > 0 ? 'center' : pivotMode, undefined, mirrorModelingPivot);
         sourceGroupIds.forEach((id, index) => linkMirrorGroupPair(loadedObjectGroup, id, mirroredGroupIds[index]));
         updateHelperPosition();
         updateSelectionOverlay();
@@ -1219,7 +1239,7 @@ function duplicateSelected(): void {
             updateSelectionOverlay();
             _emitSceneUpdated();
             recordCreationChange(loadedObjectGroup, { groups: createdGroups, objects: createdObjects }, beforeUi);
-            finalUuids.history?.removed.dispose();
+            finalUuids.history?.dispose();
         }).catch(error => console.error('미러링 복제에 실패했습니다.', error))
             ;
     });
@@ -1479,6 +1499,11 @@ export function initGizmo({
             _pendingHelperMatrix.copy(dragInitialMatrix);
             dragInitialQuaternion.copy(selectionHelper!.quaternion);
             dragInitialScale.copy(selectionHelper!.scale);
+            scaleSnapBaseScale.copy(dragInitialScale);
+            scaleSnapLastScale.copy(dragInitialScale);
+            scaleSnapBaseRatio.set(1, 1, 1);
+            scaleSnapLastRatio.set(1, 1, 1);
+            scaleSnapFine = isShortcutPressed('fineAdjust');
             transformControls!.pointEnd.copy(transformControls!.pointStart);
             dragInitialPosition.copy(selectionHelper!.position);
             const primaryMatrix = _getPrimaryWorldMatrix(_TMP_MAT4_A);
@@ -1687,7 +1712,7 @@ export function initGizmo({
                 { ...getSelectionCallbacks(), updateHelperPosition: undefined },
                 { preserveAnchors: true, explicitPrimary: sourcePrimary, detachTransform: false }
             );
-            reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot, mirrorModelingPivot.clone().setX(0));
+            reflectGroups(loadedObjectGroup, new Set(mirroredGroupIds), 'x', mirrorModelingPivot);
             sourceGroupIds.forEach((id, index) => linkMirrorGroupPair(loadedObjectGroup, id, mirroredGroupIds[index]));
             void flipObjectUuids(
                 loadedObjectGroup,
@@ -1698,7 +1723,7 @@ export function initGizmo({
                 () => sourceUuids.forEach((uuid, index) => linkMirrorPair(
                     getMirrorPairs(loadedObjectGroup, 'objectMirrorPairs'), uuid, mirroredUuids[index]
                 )),
-                mirrorModelingPivot.clone().setX(0),
+                mirrorModelingPivot,
                 true
             ).catch(error => console.error('스마트 스케일 미러링 복제에 실패했습니다.', error));
             return getSelectedItems();
@@ -2233,15 +2258,12 @@ export function initGizmo({
     });
     window.addEventListener('pde:replace-object-selection', event => {
         // Each entry moves one object to another slot; the old mesh's last slot fills the hole (swap-remove).
-        // oldUuid/uuid are set when a new object replaced the old one.
         const replacements = (event as CustomEvent<Array<{
             oldMesh: ObjectBatch;
             oldInstanceId: number;
             oldLastInstanceId: number;
             mesh: ObjectBatch;
             instanceId: number;
-            oldUuid?: string;
-            uuid?: string;
         }> & { preview?: boolean }>).detail;
         if (replacements.preview) {
             // The drag mask is per slot, so it follows the moved rows.
@@ -2262,9 +2284,8 @@ export function initGizmo({
         }
         invalidateSelectionCaches();
         // Slot moves leave a uuid selection unchanged; only the overlay and anchors read slots.
-        const isSelected = (uuid: string | undefined) => !!uuid && currentSelection.objects.has(uuid);
-        const changed = replacements.some(({ oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId, oldUuid }) =>
-            isSelected(oldUuid) || Select.isSlotSelected(mesh, instanceId)
+        const changed = replacements.some(({ oldMesh, oldInstanceId, oldLastInstanceId, mesh, instanceId }) =>
+            Select.isSlotSelected(mesh, instanceId)
             || (oldInstanceId < oldLastInstanceId && Select.isSlotSelected(oldMesh, oldInstanceId)));
         if (!changed) return;
         const preservedAnchor = _isMultiSelection() && _multiSelectionOriginAnchorValid
@@ -2278,13 +2299,9 @@ export function initGizmo({
             explicitPivot: _multiSelectionExplicitPivot,
             anchorMode: _selectionAnchorMode
         } : null;
-        const renamed = new Map(replacements.flatMap(({ oldUuid, uuid }) => oldUuid && uuid ? [[oldUuid, uuid] as const] : []));
-        const objects = [...currentSelection.objects].map(uuid => renamed.get(uuid) ?? uuid);
-        let primary = currentSelection.primary;
-        if (primary?.type === 'object' && renamed.has(primary.uuid)) primary = { type: 'object', uuid: renamed.get(primary.uuid)! };
-        _replaceSelectionWithGroupsAndObjects(new Set(currentSelection.groups), objects, {
+        _replaceSelectionWithGroupsAndObjects(new Set(currentSelection.groups), [...currentSelection.objects], {
             preserveAnchors: true,
-            explicitPrimary: primary
+            explicitPrimary: currentSelection.primary
         });
         if (preservedAnchor && preservedPivotState) {
             isCustomPivot = preservedPivotState.isCustomPivot;

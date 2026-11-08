@@ -1,4 +1,4 @@
-import { Box3, BufferGeometry, CanvasTexture, Float32BufferAttribute, FrontSide, InstancedBufferAttribute, InstancedMesh, MathUtils, MeshBasicNodeMaterial, NearestFilter, Sphere, SRGBColorSpace, Texture, Vector3 } from 'three/webgpu';
+import { Box3, BufferGeometry, CanvasTexture, Float32BufferAttribute, FrontSide, InstancedBufferAttribute, MathUtils, MeshBasicNodeMaterial, NearestFilter, Sphere, SRGBColorSpace, Texture, Vector3 } from 'three/webgpu';
 import { attribute, mix, positionGeometry, positionLocal, texture, uv, vec2, vec3, vertexStage } from 'three/tsl';
 import { strFromU8 } from 'fflate';
 import { getAssetBytes } from '../../asset-manager';
@@ -7,6 +7,7 @@ import { instanceAttribute } from '../../gpu-draw/pool-instance';
 import { findUnihexGlyph } from './unihex-font';
 import { loadedObjectGroup } from './display-instancing';
 import { appendTextGlyphQuads, type BitmapGlyph, type TextGlyphDraw, type TextGlyphQuad } from './text-glyph-geometry';
+import { ObjectBatch } from '../../scene-store/object-batch';
 
 export type TextDisplayOptions = {
     color?: string;
@@ -613,7 +614,7 @@ function createTextDisplayMaterial(textTexture: Texture): MeshBasicNodeMaterial 
     return material;
 }
 
-export async function createTextDisplayMesh(item: TextDisplayItem): Promise<InstancedMesh> {
+export async function createTextDisplayMesh(item: TextDisplayItem): Promise<ObjectBatch> {
     const options = item.options ?? {};
     const { text, pageEnds, spriteReferences, playerReferences } = prepareTextContent(item.name ?? '', options);
     const spriteCharacterIndices = new Set([...spriteReferences, ...playerReferences].map(sprite => sprite.characterIndex));
@@ -871,8 +872,8 @@ export async function createTextDisplayMesh(item: TextDisplayItem): Promise<Inst
     const material = createTextDisplayMaterial(texture);
     material.visible = text.length > 0;
 
-    // ponytail: live edits stay standalone; static project text is packed by createTextDisplayTemplates.
-    return new InstancedMesh(geometry, material, 1);
+    // Live edits stay standalone; static project text is packed by createTextDisplayTemplates.
+    return new ObjectBatch(geometry, material, 1);
 }
 
 type TextDisplayAtlasPage = {
@@ -974,7 +975,7 @@ function getTextDisplayAtlasMaterial(region: TextDisplayAtlasRegion, source: Mes
     return material;
 }
 
-export async function createTextDisplayTemplates(items: TextDisplayItem[]): Promise<Map<string, InstancedMesh>> {
+export async function createTextDisplayTemplates(items: TextDisplayItem[]): Promise<Map<string, ObjectBatch>> {
     const uniqueItems = new Map(items.map(item => [getTextDisplayTemplateKey(item), item]));
     const templates = new Map(await Promise.all(Array.from(uniqueItems, async ([key, item]) => [
         key,

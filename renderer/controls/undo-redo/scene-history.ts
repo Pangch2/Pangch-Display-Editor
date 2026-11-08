@@ -1,16 +1,17 @@
-import { Group, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
+import { Group, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 
 import { record } from './undo-redo.js';
 import { getAllDescendantGroups, getAllGroupChildren, normalizePivotToVector3, type GroupData } from '../grouping/group';
 import type { SelectionState } from '../selection/select';
 import { getLinkedMirrorSelection } from '../transform/mirroring';
+import { getMirrorPlane, setMirrorPlane } from '../transform/mirror-planes';
 import { deleteSelectedItems, type DeletedSceneDelta } from '../grouping/delete';
 import type { QueueItem, SelectionSource } from '../vertex/vertex-swap';
-import { animationSession, captureAnimationSnapshot, recordAnimationTransform, restoreAnimationSnapshot, remapAnimationSnapshot, rebaseAnimationStructure, syncAnimationTargets, type AnimationSnapshot } from '../../animation/animation-state';
-import { getInstanceCount, invalidateBatchBounds, markInstanceMatrices, objectHeadValues, objectIsCustomPivot, objectPivot, objectRef, objectSlots,
-    objectUuidAt, readInstanceMatrix, setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, writeInstanceMatrix, type ObjectBatch,
-    type ObjectHeadValues } from '../../scene-store/object-access';
+import { animationSession, captureAnimationSnapshot, recordAnimationTransform, restoreAnimationSnapshot, rebaseAnimationStructure, syncAnimationTargets, type AnimationSnapshot } from '../../animation/animation-state';
+import type { ReplacementDelta } from '../../load-project/display/mesh-builder';
+import { getInstanceCount, invalidateBatchBounds, markInstanceMatrices, objectHeadValues, objectIsCustomPivot, objectPivot, objectRef, objectSlots, objectUuidAt, readInstanceMatrix, setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, writeInstanceMatrix, type ObjectHeadValues } from '../../scene-store/object-access';
 import { ObjectStore } from '../../scene-store/object-store';
+import { ObjectBatch } from '../../scene-store/object-batch';
 
 type HistorySelection = SelectionState;
 
@@ -62,6 +63,7 @@ interface TransformGroupState {
 interface TransformState {
     objects: TransformObjectsState;
     groups: TransformGroupState[];
+    mirrorPlanes: Array<[a: string, b: string, plane: Matrix4]>;
 }
 
 export interface TransformHistoryState {
@@ -278,33 +280,22 @@ export function recordCreationChange(
 
 export function recordReplacementChange(
     root: Group,
-    removed: DeletedSceneDelta,
-    created: Map<ObjectBatch, Set<number>>,
+    replacement: ReplacementDelta,
     beforeUi: HistoryUiState,
     afterUi = captureHistoryUiState()
 ): void {
-    recordCreatedAnimationKeys(root, { groups: new Set(), objects: created });
-    const resolveObjects = captureObjectSelectionResolver(root, created);
-    let detachedCreated: DeletedSceneDelta | null = null;
     recordStateChange({
         before: { replaced: false, ui: beforeUi },
         after: { replaced: true, ui: afterUi },
-        apply: async state => {
-            if (state.replaced) {
-                removed.redo();
-                detachedCreated?.undo();
-            } else {
-                if (detachedCreated) detachedCreated.redo();
-                else detachedCreated = deleteSelectedItems(root, { groups: new Set(), objects: resolveObjects() }, { resetSelectionAndDeselect: () => {} });
-                removed.undo();
-            }
+        apply: state => {
+            if (state.replaced) replacement.redo();
+            else replacement.undo();
             restoreHistoryUiState(state.ui);
         },
         refresh: () => refreshHistory(root),
-        dispose: () => {
-            removed.dispose();
-            detachedCreated?.dispose();
-        }
+        dispose: () => replacement.dispose(),
+        // The objects keep their ids, so their animation keys are restored with the snapshot, not with the objects.
+        animation: { root, targets: animationSession(root).tick > 0 ? replacement.objectIds : [] }
     });
 }
 
@@ -312,19 +303,17 @@ export async function recordReplacementTransformChange(
     root: Group,
     before: TransformHistoryState,
     after: TransformHistoryState,
-    replacements: Array<{ removed: DeletedSceneDelta; created: Map<ObjectBatch, Set<number>>; objectIds?: Map<string, string> }>,
+    replacements: ReplacementDelta[],
     auxiliary?: { before: unknown; after: unknown; apply: (state: unknown) => void | Promise<void> }
 ): Promise<void> {
-    const objectIds = new Map(replacements.flatMap(replacement => [...replacement.objectIds ?? []]));
-    const resolveObjects = replacements.map(replacement => captureObjectSelectionResolver(root, replacement.created));
     try {
-        recordAnimationTransform(root, remapAnimationSnapshot(before.animation, objectIds),
-            animationSession(root).tick > 0 ? objectIds.values() : []);
+        recordAnimationTransform(root, before.animation,
+            animationSession(root).tick > 0 ? replacements.flatMap(replacement => replacement.objectIds) : []);
     }
     catch (error) {
         for (const replacement of [...replacements].reverse()) {
-            deleteSelectedItems(root, { groups: new Set(), objects: replacement.created }, { resetSelectionAndDeselect: () => {} }).dispose();
-            replacement.removed.undo();
+            replacement.undo();
+            replacement.dispose();
         }
         if (auxiliary) await auxiliary.apply(auxiliary.before);
         applyTransformHistoryState(root, before);
@@ -333,34 +322,17 @@ export async function recordReplacementTransformChange(
         return;
     }
     after.animation = captureAnimationSnapshot(root);
-    const detachedCreated: Array<DeletedSceneDelta | null> = replacements.map(() => null);
     recordStateChange({
         before: { transformed: false, value: before },
         after: { transformed: true, value: after },
         apply: async state => {
-            if (state.transformed) {
-                replacements.forEach((replacement, index) => {
-                    replacement.removed.redo();
-                    detachedCreated[index]?.undo();
-                });
-            } else {
-                [...replacements].reverse().forEach((replacement, reverseIndex) => {
-                    const index = replacements.length - reverseIndex - 1;
-                    if (detachedCreated[index]) detachedCreated[index]!.redo();
-                    else detachedCreated[index] = deleteSelectedItems(root, {
-                        groups: new Set(), objects: resolveObjects[index]()
-                    }, { resetSelectionAndDeselect: () => {} });
-                    replacement.removed.undo();
-                });
-            }
+            if (state.transformed) replacements.forEach(replacement => replacement.redo());
+            else [...replacements].reverse().forEach(replacement => replacement.undo());
             if (auxiliary) await auxiliary.apply(state.transformed ? auxiliary.after : auxiliary.before);
             applyTransformHistoryState(root, state.value);
         },
         refresh: () => refreshHistory(root),
-        dispose: () => {
-            replacements.forEach(replacement => replacement.removed.dispose());
-            detachedCreated.forEach(delta => delta?.dispose());
-        }
+        dispose: () => replacements.forEach(replacement => replacement.dispose())
     });
 }
 
@@ -391,14 +363,29 @@ function captureTransformGroup(group: GroupData): TransformGroupState {
     };
 }
 
+function captureMirrorPlanes(root: Group, uuids: string[], groupIds: string[]): TransformState['mirrorPlanes'] {
+    const planes: TransformState['mirrorPlanes'] = [];
+    for (const [key, ids] of [['objectMirrorPairs', uuids], ['groupMirrorPairs', groupIds]] as const) {
+        const pairs = root.userData[key] as Map<string, string> | undefined;
+        if (!pairs?.size) continue;
+        for (const id of ids) {
+            const partner = pairs.get(id);
+            if (partner) planes.push([id, partner, getMirrorPlane(root, id, partner).clone()]);
+        }
+    }
+    return planes;
+}
+
 function captureObjectTransformState(root: Group, uuids: string[], groupIds: Iterable<string>): TransformHistoryState {
     const groups = root.userData.groups as Map<string, GroupData> | undefined;
+    const groupList = [...new Set(groupIds)];
     return {
         ui: captureHistoryUiState(),
         animation: captureAnimationSnapshot(root),
         transform: {
             objects: captureTransformObjects(root, uuids),
-            groups: Array.from(new Set(groupIds), id => groups?.get(id)).filter((group): group is GroupData => !!group).map(captureTransformGroup)
+            groups: groupList.map(id => groups?.get(id)).filter((group): group is GroupData => !!group).map(captureTransformGroup),
+            mirrorPlanes: captureMirrorPlanes(root, uuids, groupList)
         }
     };
 }
@@ -442,7 +429,10 @@ export function captureVertexHistoryState(
     for (const item of queue) {
         for (const entry of item.type === 'bundle' ? item.items : [item]) {
             if (entry.type === 'group') groups.add(entry.id!);
-            else addObject(entry.mesh!, entry.instanceId!);
+            else {
+                const ref = entry.id ? objectRef(root, entry.id) : undefined;
+                if (ref) addObject(ref.mesh, ref.instanceId);
+            }
         }
     }
     if (source?.type === 'group') groups.add(source.id);
@@ -495,6 +485,7 @@ function restoreTransformObjects(root: Group, state: TransformObjectsState): voi
 
 function restoreTransformState(root: Group, transform: TransformState): void {
     restoreTransformObjects(root, transform.objects);
+    for (const [a, b, plane] of transform.mirrorPlanes) setMirrorPlane(root, a, b, plane);
     const groups = root.userData.groups as Map<string, GroupData> | undefined;
     for (const state of transform.groups) {
         const group = groups?.get(state.id) as Partial<GroupData> | undefined;
@@ -724,7 +715,7 @@ export function recordGroupStructureChange(
 
 if (import.meta.env.DEV) {
     const root = new Group();
-    const mesh = new InstancedMesh(undefined, undefined, 3);
+    const mesh = new ObjectBatch(undefined, undefined, 3);
     root.add(mesh);
     root.userData.objectUuidToInstance = new ObjectStore([['a', { mesh, instanceId: 0 }], ['b', { mesh, instanceId: 1 }]]);
     mesh.setMatrixAt(0, new Matrix4().makeTranslation(1, 0, 0));

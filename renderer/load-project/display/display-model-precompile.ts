@@ -1,8 +1,9 @@
-import type { Camera, InstancedMesh, Scene, WebGPURenderer } from 'three/webgpu';
+import type { Camera, Scene, WebGPURenderer } from 'three/webgpu';
+import type { ObjectBatch } from '../../scene-store/object-batch';
 import { yieldPreview } from '../../animation/yield-preview';
 
 export async function precompileDisplayModels(renderer: WebGPURenderer, scene: Scene, camera: Camera,
-    meshes: InstancedMesh[], current: () => boolean): Promise<void> {
+    meshes: ObjectBatch[], current: () => boolean): Promise<void> {
     const compileCamera = camera.clone();
     compileCamera.layers.set(31);
     let deadline = performance.now() + 8;

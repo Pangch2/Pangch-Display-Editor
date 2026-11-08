@@ -82,7 +82,7 @@ export function invalidateSelectionCaches(): void {
     _selectedItemsCache = null;
 }
 
-// shortcut: slot view of a uuid selection for callers still keyed by mesh; drop once they take uuids (M5-M7).
+/** The selection's current slots grouped by batch, for one operation that writes per batch; slots move, so never keep them. */
 export function toMeshMap(uuids: Iterable<string> = currentSelection.objects): Map<ObjectBatch, Set<number>> {
     return loadedObjectGroupForSelect ? objectSlots(loadedObjectGroupForSelect, uuids) : new Map();
 }

@@ -108,7 +108,7 @@ async function applyIcon(name: string, isItemDisplay = activeAtlasName === 'item
         return { objectUuid, name: replacementName, isItemDisplay };
       })));
       if (result.history) recordReplacementChange(
-        loadedObjectGroup, result.history.removed, result.history.created, beforeUi
+        loadedObjectGroup, result.history, beforeUi
       );
     }
     closeSearch();
@@ -234,7 +234,7 @@ atlasButtons[3]?.addEventListener('click', async () => {
   const beforeUi = captureHistoryUiState();
   const result = await addTextDisplay(getSelectedUuids());
   if (result.history) {
-    recordReplacementChange(loadedObjectGroup, result.history.removed, result.history.created, beforeUi);
+    recordReplacementChange(loadedObjectGroup, result.history, beforeUi);
   } else {
     const ref = (loadedObjectGroup.userData.objectUuidToInstance as Map<string, ObjectRef>).get(result.uuid)!;
     recordCreationChange(loadedObjectGroup, {
@@ -283,8 +283,11 @@ document.addEventListener('keydown', event => {
 });
 searchInput.addEventListener('input', renderIcons);
 overlay.querySelector('button')!.addEventListener('click', closeSearch);
+// Close only when the press also started on the backdrop, so drag-selecting text out of the window doesn't close it.
+let pressedOnOverlay = false;
+overlay.addEventListener('pointerdown', event => { pressedOnOverlay = event.target === overlay; });
 overlay.addEventListener('click', event => {
-  if (event.target === overlay) closeSearch();
+  if (pressedOnOverlay && event.target === overlay) closeSearch();
 });
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !overlay.hidden) closeSearch();
