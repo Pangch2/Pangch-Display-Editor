@@ -133,7 +133,7 @@ export const userGuideSections = [
                     <h3>피벗</h3>
                     <p>피벗은 회전과 크기 조절의 기준점입니다. <kbd>Z</kbd>로 <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE29E;</span>중심·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE0AC;</span>원점을 전환합니다. <kbd>Alt</kbd>를 누른 채 이동 도구를 조작하면 피벗을 편집하고, <kbd>Ctrl + Alt</kbd>로 초기화합니다.</p>
                     <h3>드래그 간격과 미세 조정</h3>
-                    <p>설정에서 위치·각도·스케일 드래그값을 지정하면 일정한 간격으로 조작합니다. <kbd>Shift</kbd>를 누르면 간격 제한 없이 미세 조정할 수 있습니다.</p>
+                    <p>설정에서 위치·각도·스케일 드래그값을 지정하면 일정한 간격으로 조작합니다. <kbd>Shift</kbd>를 누르면 미세조정 위치·각도·스케일 드래그값을 적용합니다. 미세조정의 기본값은 제한없음입니다.</p>
                     <h3><span class="user-guide-icon lucide-icon vertex-icon" aria-hidden="true">&#xE121;</span>버텍스 모드</h3>
                     <p><kbd>V</kbd>로 버텍스 모드를 켭니다. 꼭짓점을 선택하고 이동·회전·크기 도구로 형태를 조절합니다. 작업을 마치면 <kbd>V</kbd>를 다시 눌러 일반 오브젝트 편집으로 돌아갑니다.</p>
                     <h3>나이프</h3>

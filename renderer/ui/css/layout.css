@@ -743,6 +743,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .transform-icon { width: 22px; height: 22px; background: currentColor; mask: var(--transform-mask) center / contain no-repeat; }
 .transform-icon.blockbench-scale { --transform-mask: url('../../../resources/blockbench-scale.svg'); }
 .transform-icon.shear { --transform-mask: url('../../../resources/shear.svg'); }
+.transform-icon.fine-adjust { --transform-mask: url('../../../resources/fine-adjust.svg'); }
 .vertex-icon { position: relative; }
 .vertex-icon::after {
   content: '';

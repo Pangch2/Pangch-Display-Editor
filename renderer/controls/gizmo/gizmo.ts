@@ -264,21 +264,26 @@ let previousHelperMatrix = new Matrix4();
 let positionDragValue: number | null = null;
 let rotationDragValue: number | null = null;
 let scaleDragValue: number | null = null;
+let finePositionDragValue: number | null = null;
+let fineRotationDragValue: number | null = null;
+let fineScaleDragValue: number | null = null;
 
 function applyRotationDragValue(): void {
-    transformControls?.setRotationSnap(isShortcutPressed('fineAdjust') || rotationDragValue === null
-        ? null
-        : rotationDragValue * Math.PI / 180);
+    const step = isShortcutPressed('fineAdjust') ? fineRotationDragValue : rotationDragValue;
+    transformControls?.setRotationSnap(step === null ? null : step * Math.PI / 180);
 }
 
 function applyGizmoDragValues(): void {
-    const value = (key: string): number | null => {
-        const stored = Number(localStorage.getItem(key) ?? '0.0001');
+    const value = (key: string, defaultValue = '0.0001'): number | null => {
+        const stored = Number(localStorage.getItem(key) ?? defaultValue);
         return Number.isFinite(stored) && stored > 0 ? stored : null;
     };
     positionDragValue = value('pdePositionDragValue');
     rotationDragValue = value('pdeRotationDragValue');
     scaleDragValue = value('pdeScaleDragValue');
+    finePositionDragValue = value('pdeFinePositionDragValue', '0');
+    fineRotationDragValue = value('pdeFineRotationDragValue', '0');
+    fineScaleDragValue = value('pdeFineScaleDragValue', '0');
     transformControls?.setTranslationSnap(null);
     applyRotationDragValue();
     transformControls?.setScaleSnap(null);
@@ -286,6 +291,7 @@ function applyGizmoDragValues(): void {
 
 window.addEventListener('pde:gizmo-drag-values-changed', applyGizmoDragValues);
 window.addEventListener('pde:shortcuts-changed', applyRotationDragValue);
+window.addEventListener('pde:fine-adjust-changed', applyRotationDragValue);
 window.addEventListener('keydown', applyRotationDragValue);
 window.addEventListener('keyup', applyRotationDragValue);
 window.addEventListener('blur', applyRotationDragValue);
@@ -566,17 +572,19 @@ function snapFromStart(current: number, start: number, step: number): number {
 function applyRelativeDragSnap(): void {
     if (!selectionHelper || !transformControls) return;
     const fineAdjust = isShortcutPressed('fineAdjust');
-    if (transformControls.mode === 'translate' && positionDragValue !== null && !fineAdjust) {
+    const positionStep = fineAdjust ? finePositionDragValue : positionDragValue;
+    const scaleStep = fineAdjust ? fineScaleDragValue : scaleDragValue;
+    if (transformControls.mode === 'translate' && positionStep !== null) {
         const delta = _TMP_VEC3_A.copy(selectionHelper.position).sub(dragInitialPosition);
         if (currentSpace === 'local') delta.applyQuaternion(_TMP_QUAT_A.copy(dragInitialQuaternion).invert());
         delta.set(
-            Math.round(delta.x / positionDragValue) * positionDragValue,
-            Math.round(delta.y / positionDragValue) * positionDragValue,
-            Math.round(delta.z / positionDragValue) * positionDragValue
+            Math.round(delta.x / positionStep) * positionStep,
+            Math.round(delta.y / positionStep) * positionStep,
+            Math.round(delta.z / positionStep) * positionStep
         );
         if (currentSpace === 'local') delta.applyQuaternion(dragInitialQuaternion);
         selectionHelper.position.copy(dragInitialPosition).add(delta);
-    } else if (transformControls.mode === 'scale' && scaleDragValue !== null) {
+    } else if (transformControls.mode === 'scale' && (scaleDragValue !== null || fineScaleDragValue !== null)) {
         // The helper stores ratios; the drag setting is an increment of the actual selection scale.
         const scaleMatrix = _TMP_MAT4_A.copy(dragInitialSelectionMatrix);
         const primary = currentSelection.primary;
@@ -597,7 +605,7 @@ function applyRelativeDragSnap(): void {
         for (const axis of ['x', 'y', 'z'] as const) {
             if (!transformControls.axis?.includes(axis.toUpperCase())) continue;
             const referenceScale = transformControls.axis === 'XYZ' ? uniformScale : sourceScale[axis];
-            const step = scaleDragValue * dragInitialScale[axis] / (referenceScale || 1);
+            const step = scaleStep === null ? null : scaleStep * dragInitialScale[axis] / (referenceScale || 1);
             let ratio = selectionHelper.scale[axis] / dragInitialScale[axis];
             let gain = 1;
             if (referenceScale > 0 && referenceScale < 1) {
@@ -616,7 +624,7 @@ function applyRelativeDragSnap(): void {
             if (!Number.isFinite(ratio)) ratio = scaleSnapLastRatio[axis];
             const baseScale = scaleSnapBaseScale[axis];
             const current = baseScale + dragInitialScale[axis] * (ratio - scaleSnapBaseRatio[axis]) * gain;
-            const next = fineAdjust ? current : snapFromStart(current, baseScale, step) || step;
+            const next = step === null ? current : snapFromStart(current, baseScale, step) || step;
             selectionHelper.scale[axis] = next;
             scaleSnapLastScale[axis] = next;
             scaleSnapLastRatio[axis] = ratio;

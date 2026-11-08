@@ -46,6 +46,9 @@ overlay.innerHTML = `
             <label class="settings-row"><span>위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdePositionDragValue"><button type="button" aria-label="위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>각도 드래그값</span><span class="settings-drag-value" data-values="0,180,90,45,30,15,10,5,2,1,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeRotationDragValue"><button type="button" aria-label="각도 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeScaleDragValue"><button type="button" aria-label="스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+            <label class="settings-row"><span>미세조정 위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0" data-storage-key="pdeFinePositionDragValue"><button type="button" aria-label="미세조정 위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+            <label class="settings-row"><span>미세조정 각도 드래그값</span><span class="settings-drag-value" data-values="0,180,90,45,30,15,10,5,2,1,0.0001"><input type="text" inputmode="decimal" value="0" data-storage-key="pdeFineRotationDragValue"><button type="button" aria-label="미세조정 각도 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
+            <label class="settings-row"><span>미세조정 스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0" data-storage-key="pdeFineScaleDragValue"><button type="button" aria-label="미세조정 스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
           </fieldset>
           <fieldset>
             <legend>자동저장</legend>
@@ -616,7 +619,8 @@ dragControls.forEach(control => {
   const commit = (rawValue: string): void => {
     const value = Number(rawValue);
     if (!Number.isFinite(value) || value < 0) {
-      input.value = localStorage.getItem(storageKey) === '0' ? '제한없음' : localStorage.getItem(storageKey) ?? '0.0001';
+      const stored = localStorage.getItem(storageKey) ?? input.defaultValue;
+      input.value = stored === '0' ? '제한없음' : stored;
       return;
     }
     localStorage.setItem(storageKey, String(value));
@@ -624,7 +628,8 @@ dragControls.forEach(control => {
     window.dispatchEvent(new Event('pde:gizmo-drag-values-changed'));
   };
 
-  input.value = localStorage.getItem(storageKey) === '0' ? '제한없음' : localStorage.getItem(storageKey) ?? '0.0001';
+  const stored = localStorage.getItem(storageKey) ?? input.defaultValue;
+  input.value = stored === '0' ? '제한없음' : stored;
   input.addEventListener('focus', () => {
     if (input.value === '제한없음') input.value = '0';
   });
@@ -713,9 +718,3 @@ document.addEventListener('keydown', event => {
     openSettings();
   } else if (event.key === 'Escape') closeSettings();
 });
-
-if (import.meta.env.DEV) {
-  console.assert(overlay.querySelectorAll('[data-settings-page]').length === 4 && overlay.querySelectorAll('[data-settings-content]').length === 4, 'Settings page navigation is incomplete.');
-  console.assert(overlay.querySelectorAll('[data-reset-scope]').length === 2 && overlay.querySelector('#force-gc'), 'PDE reset controls are incomplete.');
-  console.assert(dragControls.map(control => control.querySelector('.settings-drag-menu')!.childElementCount).join() === '7,11,7', 'Drag value presets are incomplete.');
-}

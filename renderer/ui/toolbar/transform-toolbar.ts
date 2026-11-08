@@ -6,16 +6,17 @@ export const transformToolbars = [
     { id: 'transform-toolbar', label: '변환 도구', position: 'left', edit: false },
     { id: 'edit-toolbar', label: '편집 도구', position: 'right', edit: true }
 ] as const;
-export const transformToolbarTools: { action: TransformToolbarAction; label: string; icon?: string; mask?: string; edit?: boolean }[] = [
+export const transformToolbarTools: { action: TransformToolbarAction; label: string; icon?: string; mask?: string; edit?: boolean; defaultHidden?: boolean }[] = [
     { action: 'translate', label: '이동', icon: '\ue121' },
     { action: 'rotate', label: '회전', icon: '\ue149' },
     { action: 'scale', label: '크기', icon: '\ue2ec' },
-    { action: 'toggleScaleMode', label: '블록벤치 스케일', mask: 'blockbench-scale' },
-    { action: 'toggleSmartScale', label: '스마트 스케일', icon: '\ue357' },
-    { action: 'shear', label: '기울이기 (shear)', mask: 'shear' },
-    { action: 'toggleVertex', label: '버텍스 모드', icon: '\ue121' },
+    { action: 'toggleScaleMode', label: '블록벤치 스케일', mask: 'blockbench-scale', defaultHidden: true },
+    { action: 'toggleSmartScale', label: '스마트 스케일', icon: '\ue357', defaultHidden: true },
+    { action: 'shear', label: '기울이기 (shear)', mask: 'shear', defaultHidden: true },
+    { action: 'toggleVertex', label: '버텍스 모드', icon: '\ue121', defaultHidden: true },
     { action: 'toggleSpace', label: '좌표계', icon: '\ue0e8' },
     { action: 'togglePivot', label: '피벗', icon: '\ue0ac' },
+    { action: 'toggleFineAdjust', label: '미세조정 토글', mask: 'fine-adjust', defaultHidden: true },
     { action: 'undo', label: '실행 취소', icon: '\ue19b', edit: true },
     { action: 'redo', label: '다시 실행', icon: '\ue143', edit: true },
     { action: 'group', label: '그룹 생성/해제', icon: '\ue464', edit: true },
@@ -26,6 +27,11 @@ export const transformToolbarTools: { action: TransformToolbarAction; label: str
 export function getTransformToolbarPosition(toolbar: typeof transformToolbars[number]): string {
     const savedPosition = localStorage.getItem(`pdeToolbarPosition-${toolbar.id}`);
     return transformToolbarPositions.find(([side]) => side === savedPosition)?.[0] ?? toolbar.position;
+}
+
+export function isTransformToolVisible(tool: typeof transformToolbarTools[number]): boolean {
+    const saved = localStorage.getItem(`pdeToolbarVisible-${tool.action}`);
+    return saved === null ? !tool.defaultHidden : saved !== 'false';
 }
 
 export function setSceneToolbarPosition(position: string): void {
@@ -86,7 +92,7 @@ export function initTransformToolbar(getControls: () => TransformToolbarControls
     });
     const applyToolbarSettings = () => {
         transformToolbarTools.forEach((tool, index) => {
-            buttons[index].hidden = localStorage.getItem(`pdeToolbarVisible-${tool.action}`) === 'false';
+            buttons[index].hidden = !isTransformToolVisible(tool);
         });
         const scenePosition = localStorage.getItem('pdeToolbarPosition') === 'bottom' ? 'bottom' : 'top';
         sceneToolbar.classList.toggle('toolbar-bottom', scenePosition === 'bottom');
@@ -143,6 +149,7 @@ export function initTransformToolbar(getControls: () => TransformToolbarControls
             if (tool.edit || tool.action === 'toggleSpace' || tool.action === 'togglePivot') return;
             const pressed = !!state && (tool.action === 'toggleScaleMode' ? state.blockbenchScale
                 : tool.action === 'toggleSmartScale' ? state.smartScale
+                : tool.action === 'toggleFineAdjust' ? state.fineAdjust
                 : tool.action === 'toggleVertex' ? state.vertexMode : state.mode === tool.action);
             if (button.getAttribute('aria-pressed') !== String(pressed)) button.setAttribute('aria-pressed', String(pressed));
             if (tool.action === 'toggleVertex') {

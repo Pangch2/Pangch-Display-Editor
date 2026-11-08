@@ -1,4 +1,4 @@
-import { getTransformToolbarPosition, transformToolbarPositions, transformToolbars, transformToolbarTools } from '../toolbar/transform-toolbar';
+import { getTransformToolbarPosition, isTransformToolVisible, transformToolbarPositions, transformToolbars, transformToolbarTools } from '../toolbar/transform-toolbar';
 
 export function initTransformToolbarSettings(root: HTMLElement): void {
     for (const toolbar of transformToolbars) {
@@ -25,7 +25,7 @@ export function initTransformToolbarSettings(root: HTMLElement): void {
         });
         row.querySelectorAll<HTMLInputElement>('input').forEach(input => {
             const key = `pdeToolbarVisible-${input.dataset.toolbarAction}`;
-            input.checked = localStorage.getItem(key) !== 'false';
+            input.checked = isTransformToolVisible(transformToolbarTools.find(tool => tool.action === input.dataset.toolbarAction)!);
             input.addEventListener('change', () => {
                 localStorage.setItem(key, String(input.checked));
                 window.dispatchEvent(new Event('pde:toolbar-settings-changed'));

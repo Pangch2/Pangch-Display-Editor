@@ -12,6 +12,7 @@ export const shortcutDefinitions = [
   { id: 'toggleScaleMode', category: '일반', label: '스케일 모드 전환', defaults: ['B'] },
   { id: 'toggleSmartScale', category: '일반', label: '스마트 스케일', defaults: ['J'] },
   { id: 'fineAdjust', category: '일반', label: '미세조정', defaults: ['Shift'] },
+  { id: 'toggleFineAdjust', category: '일반', label: '미세조정 토글', defaults: [] },
   { id: 'headPainterCopyStamp', category: '헤드 페인터', label: '스탬프 복사', defaults: ['Shift'] },
   { id: 'headPainterConnectedFill', category: '헤드 페인터', label: '한 면 채우기', defaults: ['Shift'] },
   { id: 'headPainterFillAllFaces', category: '헤드 페인터', label: '6면 전체 채우기', defaults: ['Ctrl'] },
@@ -57,6 +58,12 @@ export type ShortcutId = typeof shortcutDefinitions[number]['id'];
 export type ShortcutMapping = Record<ShortcutId, string[]>;
 const storagePrefix = 'pdeShortcut:';
 const pressedKeys = new Set<string>();
+let fineAdjustToggled = false;
+
+export function toggleFineAdjust(): void {
+  fineAdjustToggled = !fineAdjustToggled;
+  window.dispatchEvent(new Event('pde:fine-adjust-changed'));
+}
 
 export function normalizeShortcutKey(key: string): string {
   if (key === 'Control' || key === 'Meta') return 'Ctrl';
@@ -78,8 +85,16 @@ window.addEventListener('keydown', event => {
   }
   pressedKeys.add(normalizeShortcutKey(event.key));
 }, true);
+window.addEventListener('keydown', event => {
+  const target = event.target as HTMLElement;
+  if (event.defaultPrevented || event.isComposing || target?.closest?.('input, textarea, select, [contenteditable]')) return;
+  if (!matchesShortcut(event, 'toggleFineAdjust')) return;
+  event.preventDefault();
+  if (!event.repeat) toggleFineAdjust();
+});
 window.addEventListener('keyup', event => pressedKeys.delete(normalizeShortcutKey(event.key)), true);
 window.addEventListener('blur', () => pressedKeys.clear());
+window.addEventListener('pde:shortcuts-changed', () => { fineAdjustToggled = false; });
 
 export function getShortcuts(id: ShortcutId): string[] {
   const saved = localStorage.getItem(storagePrefix + id);
@@ -161,7 +176,7 @@ export function matchesPointerShortcut(event: { ctrlKey?: boolean; metaKey?: boo
 }
 
 export function isShortcutPressed(id: ShortcutId): boolean {
-  return matchesShortcutKeys(pressedKeys, id);
+  return (id === 'fineAdjust' && fineAdjustToggled) || matchesShortcutKeys(pressedKeys, id);
 }
 
 if (import.meta.env.DEV) {

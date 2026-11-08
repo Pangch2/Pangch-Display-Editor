@@ -23,7 +23,7 @@ import * as GroupUtils from '../grouping/group';
 import { getLinkedMirrorSelection } from '../transform/mirroring';
 import { canRedo, canUndo, isApplying, redo, undo } from '../undo-redo/undo-redo';
 import { captureSelectionTransformState, recordTransformChange } from '../undo-redo/scene-history';
-import { isShortcutPressed, matchesShortcut, type ShortcutId } from './shortcuts';
+import { isShortcutPressed, matchesShortcut, toggleFineAdjust, type ShortcutId } from './shortcuts';
 import { copySelection, pasteSelection, isSelectionPastePending } from './selection-clipboard';
 import type { ObjectBatch } from '../../scene-store/object-access';
 
@@ -50,12 +50,13 @@ interface PivotResetFlags {
 
 type GizmoMode = 'translate' | 'rotate' | 'scale' | 'shear';
 export type TransformToolbarAction = GizmoMode | 'undo' | 'redo' | 'toggleScaleMode' | 'toggleSmartScale'
-    | 'toggleVertex' | 'toggleSpace' | 'togglePivot' | 'group' | 'duplicate' | 'deleteSelection';
+    | 'toggleVertex' | 'toggleSpace' | 'togglePivot' | 'toggleFineAdjust' | 'group' | 'duplicate' | 'deleteSelection';
 export interface TransformToolbarState {
     mode: GizmoMode;
     vertexMode: boolean;
     blockbenchScale: boolean;
     smartScale: boolean;
+    fineAdjust: boolean;
     space: 'world' | 'local';
     pivot: string;
     disabled: boolean;
@@ -334,6 +335,9 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
             }
             case 'toggleSmartScale':
                 p.toggleSmartScale();
+                break;
+            case 'toggleFineAdjust':
+                toggleFineAdjust();
                 break;
             case 'toggleShading':
                 console.log(toggleShading() ? 'Shading on' : 'Shading off');
@@ -647,6 +651,7 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
             vertexMode: p.state.isVertexMode,
             blockbenchScale: blockbenchScaleMode,
             smartScale: isSmartScaleEnabled(),
+            fineAdjust: isShortcutPressed('fineAdjust'),
             space: p.state.currentSpace,
             pivot: p.state.pivotMode,
             disabled: interactionBlocked() || p.getTransformControls().dragging || painterBlocksTransforms(),

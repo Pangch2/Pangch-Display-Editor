@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev:renderer": "vite",
-    "dev:main": "cross-env NODE_ENV=development nodemon --watch main.ts --watch preload.ts --exec \"tsc -p tsconfig.electron.json && electron .\"",
+    "dev:main": "cross-env NODE_ENV=development nodemon --signal SIGTERM --watch main.ts --watch preload.ts --exec \"tsc -p tsconfig.electron.json && electron .\"",
     "dev": "concurrently --kill-others-on-fail -n \"main,renderer\" \"npm:dev:main\" \"npm:dev:renderer\"",
     "build": "vite build",
     "compile:electron": "tsc -p tsconfig.electron.json",
@@ -40,15 +40,19 @@
         "to": "Pangch-Face.ico"
       }
     ],
-    "productName": "pde-001",
+    "productName": "pde-010",
     "asar": true,
     "directories": {
       "output": "dist"
     },
     "files": [
-  "renderer-dist/**/*",
+      "renderer-dist/**/*",
       "electron-dist/**/*",
-      "hardcoded/**/*"
+      "hardcoded/**/*",
+      "!node_modules/**/*.{map,d.cts,d.mts}",
+      "!node_modules/axios/dist/{browser,esm}/**/*",
+      "!node_modules/axios/dist/axios*.js",
+      "!node_modules/fflate/{umd/**,esm/browser.js,lib/browser.cjs}"
     ],
     "icon": "resources/Pangch-Face.ico",
     "mac": {
@@ -73,7 +77,7 @@
       "allowToChangeInstallationDirectory": false,
       "shortcutName": "PDE",
       "artifactName": "PDE-${version}-Setup.exe",
-      "uninstallDisplayName": "Panghch Display Editor",
+      "uninstallDisplayName": "Pangch Display Editor",
       "installerIcon": "resources/Pangch-Face.ico",
       "uninstallerIcon": "resources/Pangch-Face.ico",
       "installerHeaderIcon": "resources/Pangch-Face.ico"
