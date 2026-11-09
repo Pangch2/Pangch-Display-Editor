@@ -3,12 +3,13 @@ import type { Camera, WebGPURenderer } from 'three/webgpu';
 import { DrawPool } from './draw-pool';
 import { installPooledInstancing } from './pool-instance';
 import type { ObjectBatch } from '../scene-store/object-batch';
+import type { OverlayBatch } from './overlay-batch';
 import { setRowBindingLimit } from '../scene-store/row-store';
 
 /**
  * Draws content batches (ObjectBatch, not Meshes: three skips them) from shared pools: one proxy draw per
- * (layout, material), with compute-culled indirect args (frustum, facing, hidden). Other objects (overlays,
- * gizmos, previews) take the regular path.
+ * (layout, material), with compute-culled indirect args (frustum, facing, hidden). Overlays (OverlayBatch) draw once
+ * each; other objects (gizmos) take the regular path.
  */
 export class PdeDrawingPipeline extends StandardDrawingPipeline {
     declare renderer: WebGPURenderer;
@@ -22,6 +23,15 @@ export class PdeDrawingPipeline extends StandardDrawingPipeline {
     }
 
     project(object, camera: Camera, groupOrder: number, renderList, clippingContext): void {
+        if ((object as OverlayBatch).isOverlayBatch === true) {
+            const { draw } = object as OverlayBatch;
+            if (!object.visible || object.count <= 0 || !object.layers.test(camera.layers) || !draw.material.visible) return;
+            draw.count = object.count;
+            draw.renderOrder = object.renderOrder;
+            draw.matrixWorld.copy(object.matrixWorld);
+            renderList.push(draw, draw.geometry, draw.material, groupOrder, 0, null, clippingContext);
+            return;
+        }
         if ((object as ObjectBatch).isObjectBatch !== true) return super.project(object, camera, groupOrder, renderList, clippingContext);
         if (object.visible && object.layers.test(camera.layers)) this.pool.push(object, groupOrder, clippingContext);
     }

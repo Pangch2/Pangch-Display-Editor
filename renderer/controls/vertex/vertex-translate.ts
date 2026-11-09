@@ -2,8 +2,7 @@ import {
     Matrix4,
     Vector3,
     Mesh,
-    Group,
-    Sprite
+    Group
 } from 'three/webgpu';
 import * as GroupUtils from '../grouping/group';
 import * as Overlay from '../selection/overlay';
@@ -80,8 +79,8 @@ export function processVertexSnap(
     const k1 = keys[0];
     const k2 = keys[1];
 
-    let sprite1: Sprite | null = null;
-    let sprite2: Sprite | null = null;
+    let sprite1: Overlay.OverlayPoint | null = null;
+    let sprite2: Overlay.OverlayPoint | null = null;
 
     const foundSprites = Overlay.findSpritesByKeys([k1, k2]);
     sprite1 = foundSprites[k1];

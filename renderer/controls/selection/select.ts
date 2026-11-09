@@ -6,6 +6,7 @@ import { getVisibleInstanceIds } from '../scene-visibility';
 import { intersectSceneInstances } from './instance-raycast';
 import { matchesPointerShortcut } from '../input/shortcuts';
 import { getInstanceValue, isObjectBatch, objectBatches, objectRef, objectSlots, objectUuidAt, type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
+import type { ObjectStore } from '../../scene-store/object-store';
 
 // --- Types ---
 
@@ -53,7 +54,8 @@ export const currentSelection: SelectionState = {
 let loadedObjectGroupForSelect: Group | null = null;
 let _selectedItemsCacheKey: string | null = null;
 let _selectedItemsCache: SelectedItem[] | null = null;
-let _selectedItemsCacheUuids: (string | undefined)[] = [];
+let _selectedItemsCacheStore: ObjectStore | undefined;
+let _selectedItemsCacheStoreVersion = -1;
 
 // --- Internal Helpers ---
 
@@ -62,17 +64,14 @@ function _getSelectionCacheKey(): string {
     return `g:${Array.from(currentSelection.groups).sort().join('|')};o:${Array.from(currentSelection.objects).sort().join('|')}`;
 }
 
-/** Cached items stay valid only while every object is still in the slot it was resolved to. */
+function _slotStore(): ObjectStore | undefined {
+    return loadedObjectGroupForSelect?.userData.objectUuidToInstance as ObjectStore | undefined;
+}
+
+/** Cached items stay valid only while no object changed slot: the slot table is unchanged since they were resolved. */
 function _cachedSlotsCurrent(): boolean {
-    const root = loadedObjectGroupForSelect;
-    if (!root || !_selectedItemsCache) return false;
-    for (let index = 0; index < _selectedItemsCache.length; index++) {
-        const uuid = _selectedItemsCacheUuids[index], item = _selectedItemsCache[index];
-        if (!uuid) continue;
-        const ref = objectRef(root, uuid);
-        if (ref?.mesh !== item.mesh || ref.instanceId !== item.instanceId) return false;
-    }
-    return true;
+    const store = _slotStore();
+    return !!_selectedItemsCache && !!store && store === _selectedItemsCacheStore && store.version === _selectedItemsCacheStoreVersion;
 }
 
 // --- Public API ---
@@ -131,36 +130,34 @@ export function getSelectedItems(): SelectedItem[] {
     const key = _getSelectionCacheKey();
     if (_selectedItemsCacheKey === key && _cachedSlotsCurrent()) return _selectedItemsCache!;
 
-    const items: SelectedItem[] = [];
-    const uuids: (string | undefined)[] = [];
-    const seen = new Set<string>();
+    let items: SelectedItem[] = [];
     const root = loadedObjectGroupForSelect;
 
-    if (root) {
+    if (root && currentSelection.groups.size === 1 && !currentSelection.objects.size) {
+        // One group's objects are distinct already; the items share its (cached) slots.
+        items = GroupUtils.getAllGroupChildren(root, currentSelection.groups.values().next().value!).slice();
+    } else if (root) {
+        const seen = new Map<ObjectBatch, Set<number>>();
+        const add = (mesh: ObjectBatch, instanceId: number): boolean => {
+            let ids = seen.get(mesh);
+            if (!ids) seen.set(mesh, ids = new Set());
+            if (ids.has(instanceId)) return false;
+            ids.add(instanceId);
+            return true;
+        };
         for (const groupId of currentSelection.groups) {
-            for (const child of GroupUtils.getAllGroupChildren(root, groupId)) {
-                if (!child.mesh) continue;
-                const uniqueKey = `${child.mesh.uuid}_${child.instanceId}`;
-                if (seen.has(uniqueKey)) continue;
-                seen.add(uniqueKey);
-                items.push({ type: 'object', mesh: child.mesh, instanceId: child.instanceId });
-                uuids.push(child.id ?? objectUuidAt(root, child.mesh, child.instanceId));
-            }
+            for (const child of GroupUtils.getAllGroupChildren(root, groupId)) if (add(child.mesh, child.instanceId)) items.push(child);
         }
         for (const uuid of currentSelection.objects) {
             const ref = objectRef(root, uuid);
-            if (!ref) continue;
-            const uniqueKey = `${ref.mesh.uuid}_${ref.instanceId}`;
-            if (seen.has(uniqueKey)) continue;
-            seen.add(uniqueKey);
-            items.push({ type: 'object', mesh: ref.mesh, instanceId: ref.instanceId });
-            uuids.push(uuid);
+            if (ref && add(ref.mesh, ref.instanceId)) items.push({ type: 'object', mesh: ref.mesh, instanceId: ref.instanceId });
         }
     }
 
     _selectedItemsCacheKey = key;
     _selectedItemsCache = items;
-    _selectedItemsCacheUuids = uuids;
+    _selectedItemsCacheStore = _slotStore();
+    _selectedItemsCacheStoreVersion = _selectedItemsCacheStore?.version ?? -1;
     return items;
 }
 

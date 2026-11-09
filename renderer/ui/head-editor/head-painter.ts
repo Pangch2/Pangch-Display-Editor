@@ -241,7 +241,7 @@ function removeHeadPainterStampPreview(): void {
 function hidePaintPreview(): void {
   updateHeadAtlasPaintPreview();
   lastPreviewKey = null;
-  if (gpuPaintPreview) gpuPaintPreview.mesh.visible = false;
+  if (gpuPaintPreview) gpuPaintPreview.batch.visible = false;
   hideHeadPainterStampPreview();
 }
 
@@ -1417,7 +1417,7 @@ function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean):
     if (!gpuPreviewSceneData) {
       const data = prepareGpuPaintPreview(hit);
       if (!data) {
-        if (gpuPaintPreview) gpuPaintPreview.mesh.visible = false;
+        if (gpuPaintPreview) gpuPaintPreview.batch.visible = false;
         return false;
       }
       gpuPreviewSceneData = data;
@@ -1428,7 +1428,7 @@ function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean):
     if (sceneChanged || flagsChanged || !gpuPaintPreview) {
       const needsCapacity = !gpuPaintPreview || gpuPaintPreview.buffers.flags.array.length < gpuPreviewFlags!.length
         || gpuPaintPreview.buffers.masks.count < data.grids.length
-        || gpuPaintPreview.mesh.instanceMatrix.array.length < data.matrices.length
+        || gpuPaintPreview.batch.instances!.array.length < data.matrices.length
         || (['triangles', 'records', 'bins', 'indices'] as const).some(name => gpuPaintPreview!.buffers[name].array.length < data[name].length);
       if (needsCapacity) {
         const limit = painterContext.renderer.backend.device?.limits?.maxStorageBufferBindingSize ?? Infinity;
@@ -1438,12 +1438,12 @@ function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean):
           || capacityBytes(data.records.length, 2048) > limit || capacityBytes(data.grids.length, 2048) > limit
           || capacityBytes(data.bins.length, 2048) > limit || capacityBytes(data.indices.length, 8192) > limit) {
           gpuPreviewFailed = true;
-          if (gpuPaintPreview) gpuPaintPreview.mesh.visible = false;
+          if (gpuPaintPreview) gpuPaintPreview.batch.visible = false;
           return false;
         }
         if (gpuPaintPreview) disposeHeadPainterGpuPreview(gpuPaintPreview);
         gpuPaintPreview = createHeadPainterGpuPreview(data, gpuPreviewFlags!);
-        painterContext.scene.add(gpuPaintPreview.mesh);
+        painterContext.scene.add(gpuPaintPreview.batch);
         flagsChanged = true;
         sceneChanged = true;
       }
@@ -1463,7 +1463,7 @@ function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean):
       gpuPaintPreview!.frame.value.makeBasis(horizontal.applyMatrix3(linear), vertical.applyMatrix3(linear), normal)
         .setPosition(origin.applyMatrix4(world).sub(data.origin));
       const slot = data.sourceSlots.get(`${hit.mesh.uuid}_${hit.instanceId}:${hit.face}`);
-      if (slot === undefined) { gpuPaintPreview!.mesh.visible = false; return false; }
+      if (slot === undefined) { gpuPaintPreview!.batch.visible = false; return false; }
       gpuPaintPreview!.source.value.set(hit.columns, hit.rows, slot + hit.layer, Math.max(world.getMaxScaleOnAxis() * 1e-4, Number.EPSILON));
       gpuPreviewSourceKey = sourceKey;
     }
@@ -1478,20 +1478,20 @@ function updateGpuPaintPreview(hit: PaintHit, sourceKey: string, copy: boolean):
       }
       footprint.expandByScalar(gpuPaintPreview!.source.value.w * 2);
       if (data.unsupportedBounds.some(bounds => bounds.intersectsBox(footprint))) {
-        gpuPaintPreview!.mesh.visible = false;
+        gpuPaintPreview!.batch.visible = false;
         return false;
       }
     }
     updateGpuPaintPreviewAlphas();
     gpuPaintPreview!.brush.value.set(hit.x, hit.y, width, height);
-    gpuPaintPreview!.mesh.visible = true;
+    gpuPaintPreview!.batch.visible = true;
     hideHeadPainterStampPreview();
     painterContext.renderer.compute([gpuPaintPreview!.clear, gpuPaintPreview!.paint]);
     return true;
   } catch (error) {
     console.error('Head painter GPU preview failed; using CPU picking.', error);
     gpuPreviewFailed = true;
-    if (gpuPaintPreview) gpuPaintPreview.mesh.visible = false;
+    if (gpuPaintPreview) gpuPaintPreview.batch.visible = false;
     return false;
   }
 }

@@ -333,12 +333,42 @@ export function getGroupChain(loadedObjectGroup: Group, startGroupId: string): s
 }
 
 /** Every descendant object with its current slot, for one operation; slots move when objects are removed, so callers keep ids. */
-export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): GroupObjectSlot[] {
+/**
+ * A getAllGroupChildren result and what it was read from: every group record of the subtree with its children
+ * array and length (structure edits replace or resize these arrays), and the slot table's version.
+ */
+type GroupChildrenCache = {
+    groups: Map<string, GroupData>; store: { version?: number } | undefined; storeVersion: number;
+    ids: string[]; nodes: (GroupData | undefined)[]; arrays: (GroupChild[] | undefined)[]; lengths: number[];
+    children: readonly GroupObjectSlot[];
+};
+// var, created on first use: mirroring's dev self-check calls getAllGroupChildren while this module is still evaluating.
+// eslint-disable-next-line no-var
+var groupChildrenCaches: WeakMap<Group, Map<string, GroupChildrenCache>> | undefined;
+
+function isGroupChildrenCacheCurrent(cache: GroupChildrenCache, groups: Map<string, GroupData>, store: GroupChildrenCache['store']): boolean {
+    if (cache.groups !== groups || cache.store !== store || cache.storeVersion !== store?.version) return false;
+    for (let index = 0; index < cache.ids.length; index++) {
+        const node = groups.get(cache.ids[index]);
+        if (node !== cache.nodes[index]) return false;
+        if (node && (node.children !== cache.arrays[index] || (node.children?.length ?? 0) !== cache.lengths[index])) return false;
+    }
+    return true;
+}
+
+/** The group's objects (nested groups included) with their current slots. Cached: callers must not change the result. */
+export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): readonly GroupObjectSlot[] {
     const groups = getGroups(loadedObjectGroup);
     const group = groups.get(groupId);
     if (!group) return [];
+    const store = loadedObjectGroup.userData.objectUuidToInstance as GroupChildrenCache['store'];
+    let caches = (groupChildrenCaches ??= new WeakMap()).get(loadedObjectGroup);
+    if (!caches) groupChildrenCaches.set(loadedObjectGroup, caches = new Map());
+    const cached = caches.get(groupId);
+    if (cached && isGroupChildrenCacheCurrent(cached, groups, store)) return cached.children;
 
     const out: GroupObjectSlot[] = [];
+    const ids = [groupId], nodes: (GroupData | undefined)[] = [group], arrays = [group.children], lengths = [group.children?.length ?? 0];
     const stack: GroupChild[] = Array.isArray(group.children) ? group.children.slice().reverse() : [];
     while (stack.length > 0) {
         const child = stack.pop();
@@ -346,6 +376,8 @@ export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): 
 
         if (child.type === 'group') {
             const sub = groups.get(child.id);
+            // Missing groups are recorded too: adding one later must invalidate the result.
+            ids.push(child.id); nodes.push(sub); arrays.push(sub?.children); lengths.push(sub?.children?.length ?? 0);
             if (sub && Array.isArray(sub.children) && sub.children.length > 0) {
                 for (let i = sub.children.length - 1; i >= 0; i--) {
                     stack.push(sub.children[i]);
@@ -356,6 +388,12 @@ export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): 
             if (ref) out.push({ type: 'object', id: child.id, mesh: ref.mesh, instanceId: ref.instanceId });
         }
     }
+    // Without a versioned slot table nothing tells when slots move.
+    if (typeof store?.version !== 'number') return out;
+    caches.delete(groupId);
+    caches.set(groupId, { groups, store, storeVersion: store.version, ids, nodes, arrays, lengths, children: out });
+    // Each entry holds one slot per object, so only the 8 groups used last are kept.
+    if (caches.size > 8) caches.delete(caches.keys().next().value!);
     return out;
 }
 

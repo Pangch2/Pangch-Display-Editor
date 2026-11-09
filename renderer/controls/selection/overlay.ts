@@ -1,6 +1,5 @@
 import {
-    InstancedMesh,
-    Mesh,
+    Object3D,
     Vector3,
     Quaternion,
     Matrix4,
@@ -13,34 +12,32 @@ import {
     InstancedBufferAttribute,
     InterleavedBuffer,
     InterleavedBufferAttribute,
-    StorageInstancedBufferAttribute,
-    LineBasicMaterial,
+    StorageBufferAttribute,
+    LineBasicNodeMaterial,
+    SpriteNodeMaterial,
     EdgesGeometry,
     BoxGeometry,
     PlaneGeometry,
     DynamicDrawUsage,
     Material,
-    LineSegments,
     MeshBasicNodeMaterial,
-    SpriteMaterial,
-    Sprite,
-    Line,
     Scene,
     Renderer,
     Camera,
     Vector2
 } from 'three/webgpu';
-import { attribute } from 'three/tsl';
+import { Fn, attribute, cameraPosition, color, mix, modelWorldMatrix, positionLocal, uniform, vec4, vertexStage } from 'three/tsl';
 import { createHeadPainterGridMaterial, createHeadPainterPreviewMaterial } from './head-painter-gpu-preview';
+import { OverlayBatch, overlayInstance } from '../../gpu-draw/overlay-batch';
 import * as GroupUtils from '../grouping/group';
 import { decomposeDisplayMatrix } from '../../animation/display-transformation';
 import type { AnimationMeshPreview } from '../../animation/animation-mesh-preview';
 import type { GroupObjectSlot } from '../grouping/group';
-import { dragDeltaMatrix, dragPreviewPositionNode, dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
+import { dragDeltaMatrix, dragPreviewPosition, dragSelectedAttributeName, entityVisibleAttributeName } from '../../entity-material';
 import { transformInstanceRange } from './instance-ranges';
-import { getDisplayType, getInstanceCount, getInstanceHasHat, getInstanceLocalBox, getInstanceLocalBoxMin, getInstanceLocalOriginOffset, getInstanceValue,
-    getInstanceWorldMatrix, getInstanceWorldMatrixForOrigin, instanceValueSize, isInstanceValid, isItemDisplayHatEnabled, objectBatches, objectRef, objectSlots, objectUuidAt,
-    type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
+import { getBatchMatrixVersion, getDisplayType, getInstanceCount, getInstanceHasHat, getInstanceLocalBox, getInstanceLocalBoxMin, getInstanceLocalOriginOffset, getInstanceValue,
+    getInstanceValueVersion, getInstanceWorldMatrix, getInstanceWorldMatrixForOrigin, hasHatAttributeName, instanceValueSize, isInstanceValid, isItemDisplayHatEnabled,
+    objectBatches, objectRef, objectSlots, objectUuidAt, type ObjectBatch, type ObjectRef } from '../../scene-store/object-access';
 
 // --- Types & Interfaces ---
 
@@ -83,13 +80,25 @@ interface OverlayItem {
     gizmoLocalPosition?: Vector3;
 }
 
+/** A vertex-mode point, in the points overlay's space (moved by syncSelectionOverlay until the next rebuild). */
+export interface OverlayPoint {
+    position: Vector3;
+    // Kept as loose as Sprite.userData was: the vertex tools pass `source` on as a SelectionSource.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    userData: { key: string; source?: any; isCenter?: boolean };
+}
+
 // --- Constants & Temporaries ---
 
 const _TMP_MAT4_A = new Matrix4();
 const _TMP_MAT4_C = new Matrix4();
+const _TMP_MAT4_BOX = new Matrix4();
 const _TMP_BOX3_A = new Box3();
 const _TMP_VEC3_A = new Vector3();
 const _TMP_VEC3_B = new Vector3();
+const _TMP_COLOR = new Color();
+const _IDENTITY_QUAT = new Quaternion();
+const _UNIT_SCALE = new Vector3(1, 1, 1);
 
 let loadedObjectGroup: Group | null = null;
 const _dragInitialOverlayMatrix = new Matrix4();
@@ -123,26 +132,6 @@ function getAllGroupChildren(groupId: string) {
 
 // --- Geometry & Materials ---
 
-const _overlayUnitGeo = (() => {
-    const geo = new BufferGeometry();
-    const vertices = new Float32Array([
-        -0.5, -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5, -0.5,
-         0.5, -0.5, -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,
-         0.5, -0.5,  0.5, -0.5, -0.5,  0.5,  0.5, -0.5,  0.5,
-        -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5, -0.5,  0.5,
-        -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,  0.5, -0.5,
-         0.5,  0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5, -0.5,
-         0.5,  0.5,  0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5,
-        -0.5,  0.5,  0.5, -0.5,  0.5, -0.5, -0.5,  0.5,  0.5,
-        -0.5, -0.5, -0.5, -0.5,  0.5, -0.5, -0.5, -0.5, -0.5,
-         0.5, -0.5, -0.5,  0.5,  0.5, -0.5,  0.5, -0.5, -0.5,
-         0.5, -0.5,  0.5,  0.5,  0.5,  0.5,  0.5, -0.5,  0.5,
-        -0.5, -0.5,  0.5, -0.5,  0.5,  0.5, -0.5, -0.5,  0.5
-    ]);
-    geo.setAttribute('position', new BufferAttribute(vertices, 3));
-    return geo;
-})();
-
 const _axisUnitGeo = (() => {
     const geo = new BufferGeometry();
     const verts: number[] = [];
@@ -164,32 +153,18 @@ const _axisUnitGeo = (() => {
     return geo;
 })();
 
-const _axisMat = new LineBasicMaterial({
+// Axis helpers keep a constant on-screen size: scaled by their camera distance.
+const _axisMat = new LineBasicNodeMaterial({
     vertexColors: true,
     depthTest: false,
     depthWrite: false,
     transparent: true
 });
-
-const _selectionOverlayMat = new MeshBasicNodeMaterial({
-    color: 0xffffff,
-    depthTest: true,
-    depthWrite: false,
-    transparent: true,
-    opacity: 0.9,
-    wireframe: true
-});
-_selectionOverlayMat.positionNode = dragPreviewPositionNode;
-
-const _vertexSpriteMat = new SpriteMaterial({
-    color: 0x30333D,
-    sizeAttenuation: false,
-    depthTest: false,
-    depthWrite: false,
-    transparent: true
-});
-const _selectedVertexSpriteMat = _vertexSpriteMat.clone();
-_selectedVertexSpriteMat.color.setHex(0x437FD0);
+_axisMat.positionNode = Fn(() => {
+    const matrix = overlayInstance('mat4');
+    const scale = cameraPosition.distance(modelWorldMatrix.mul(matrix.element(3)).xyz).mul(0.15);
+    return matrix.mul(vec4(positionLocal.mul(scale), 1)).xyz;
+})();
 
 const _boxEdgesGeo = (() => {
     const boxGeo = new BoxGeometry(1, 1, 1);
@@ -198,13 +173,37 @@ const _boxEdgesGeo = (() => {
     return edgesGeo;
 })();
 
-const _multiSelectionMat = new LineBasicMaterial({
-    color: 0xFFFFFF,
+/** Unit box edges with a color and drag flag per box, for `capacity` boxes (matrices are the batch instances). */
+function createBoxOverlayGeometry(capacity: number): BufferGeometry {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', _boxEdgesGeo.getAttribute('position').clone());
+    geometry.setAttribute('overlayColor', new InstancedBufferAttribute(new Float32Array(capacity * 3), 3));
+    geometry.setAttribute(dragSelectedAttributeName, new InstancedBufferAttribute(new Float32Array(capacity), 1));
+    return geometry;
+}
+
+const _boxOverlayMat = new LineBasicNodeMaterial({
     depthTest: true,
     depthWrite: false,
     transparent: true,
     opacity: 0.9
 });
+_boxOverlayMat.colorNode = vertexStage(attribute('overlayColor', 'vec3'));
+_boxOverlayMat.positionNode = dragPreviewPosition(overlayInstance('mat4').mul(vec4(positionLocal, 1)).xyz);
+
+// Points are vec4(position, highlighted) instances drawn at a fixed screen size.
+const _pointScale = uniform(new Vector2());
+const _pointMat = new SpriteNodeMaterial({
+    sizeAttenuation: false,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true
+});
+_pointMat.positionNode = overlayInstance('vec4').xyz;
+_pointMat.scaleNode = _pointScale;
+_pointMat.colorNode = mix(color(0x30333D), color(0x437FD0), vertexStage(overlayInstance('vec4').w));
+
+const _hoverLineMat = new LineBasicNodeMaterial({ color: 0x437FD0, depthTest: false, transparent: true });
 
 const _unitCubeCorners = [
     new Vector3(-0.5, -0.5, -0.5),
@@ -228,7 +227,7 @@ function getDisplayOverlayColor(displayType?: string): number {
     return 0xFFD147;
 }
 
-export function calculateAvgOriginForChildren(children: GroupObjectSlot[], out = new Vector3()): Vector3 {
+export function calculateAvgOriginForChildren(children: readonly GroupObjectSlot[], out = new Vector3()): Vector3 {
     out.set(0, 0, 0);
     if (!Array.isArray(children) || children.length === 0) return out;
 
@@ -317,25 +316,74 @@ export function getGroupLocalBoundingBox(groupId: string): Box3 {
     }
     const children = getAllGroupChildren(groupId);
     const box = new Box3();
-    const tempMat = new Matrix4();
-    const tempBox = new Box3();
-
     if (children.length === 0) return box;
+    if (cache) {
+        for (const [batch, ids] of childIdsByBatch(children)) unionBatchBounds(box, batch, ids, groupInverse);
+        cache.set(groupId, { box: box.clone(), matrices });
+        return box;
+    }
 
-    children.forEach(child => {
-        const mesh = child.mesh;
-        const id = child.instanceId;
-        if (!mesh) return;
+    // Each batch's part is kept until the slots, the group transform or that batch's matrices or boxes change.
+    let bounds = groupBounds.get(groupId);
+    if (!bounds || bounds.children !== children || !bounds.inverse.equals(groupInverse)) {
+        bounds = { children, inverse: groupInverse, ids: childIdsByBatch(children), parts: new Map() };
+    }
+    groupBounds.delete(groupId);
+    groupBounds.set(groupId, bounds);
+    if (groupBounds.size > maxCachedGroupBounds) groupBounds.delete(groupBounds.keys().next().value!);
+    for (const [batch, ids] of bounds.ids) {
+        const key = batchBoundsKey(batch);
+        let part = bounds.parts.get(batch);
+        if (part?.key !== key) bounds.parts.set(batch, part = { key, box: unionBatchBounds(new Box3(), batch, ids, groupInverse) });
+        box.union(part.box);
+    }
+    return box;
+}
 
-        const localBox = getInstanceLocalBox(mesh, id);
-        if (!localBox) return;
+type GroupBounds = { children: readonly GroupObjectSlot[]; inverse: Matrix4; ids: Map<ObjectBatch, number[]>; parts: Map<ObjectBatch, { key: string; box: Box3 }> };
+const groupBounds = new Map<string, GroupBounds>();
+const maxCachedGroupBounds = 8;
+const _BOUNDS_LOCAL = new Box3();
+const _BOUNDS_BATCH = new Matrix4();
+const _BOUNDS_MATRIX = new Matrix4();
 
-        getInstanceWorldMatrix(mesh, id, tempMat);
-        tempMat.premultiply(groupInverse);
-        tempBox.copy(localBox).applyMatrix4(tempMat);
-        box.union(tempBox);
-    });
-    if (cache) cache.set(groupId, { box: box.clone(), matrices });
+function childIdsByBatch(children: readonly GroupObjectSlot[]): Map<ObjectBatch, number[]> {
+    const ids = new Map<ObjectBatch, number[]>();
+    for (const { mesh, instanceId } of children) {
+        let list = ids.get(mesh);
+        if (!list) ids.set(mesh, list = []);
+        list.push(instanceId);
+    }
+    return ids;
+}
+
+/** What a batch's part of a group box reads besides its slots: matrices, root transform, shape box and per-object box values. */
+function batchBoundsKey(batch: ObjectBatch): string {
+    const { geometry } = batch;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const shape = geometry.boundingBox;
+    // Row-stored batches share one version for all their values: text and head batches recompute on any row write.
+    return `${getBatchMatrixVersion(batch)}|${batch.matrixWorld.elements.join()}|${geometry.id}|${shape ? `${shape.min.toArray()}|${shape.max.toArray()}` : ''}`
+        + `|${getInstanceValueVersion(batch, 'textDisplayLayout')}|${getInstanceValueVersion(batch, hasHatAttributeName)}`;
+}
+
+/** Grows `box` by the given objects' boxes in the group's space (inverse = the group's inverse world matrix). */
+function unionBatchBounds(box: Box3, batch: ObjectBatch, ids: readonly number[], inverse: Matrix4): Box3 {
+    _BOUNDS_BATCH.multiplyMatrices(inverse, batch.matrixWorld);
+    for (const id of ids) {
+        const local = getInstanceLocalBox(batch, id, _BOUNDS_LOCAL);
+        if (!local || local.isEmpty()) continue;
+        const e = batch.getMatrixAt(id, _BOUNDS_MATRIX).premultiply(_BOUNDS_BATCH).elements;
+        const cx = (local.min.x + local.max.x) * 0.5, cy = (local.min.y + local.max.y) * 0.5, cz = (local.min.z + local.max.z) * 0.5;
+        const ex = (local.max.x - local.min.x) * 0.5, ey = (local.max.y - local.min.y) * 0.5, ez = (local.max.z - local.min.z) * 0.5;
+        // An affine box's bounds: transformed center ± the absolute basis applied to the half extents.
+        for (let axis = 0; axis < 3; axis++) {
+            const center = e[axis] * cx + e[axis + 4] * cy + e[axis + 8] * cz + e[axis + 12];
+            const radius = Math.abs(e[axis]) * ex + Math.abs(e[axis + 4]) * ey + Math.abs(e[axis + 8]) * ez;
+            if (center - radius < box.min.getComponent(axis)) box.min.setComponent(axis, center - radius);
+            if (center + radius > box.max.getComponent(axis)) box.max.setComponent(axis, center + radius);
+        }
+    }
     return box;
 }
 
@@ -402,15 +450,14 @@ function _getSelectedObjectCount(currentSelection: SelectionState): number {
 }
 
 export function prepareMultiSelectionDrag(_currentSelection: SelectionState): void {
-    const activeBoxLine = multiSelectionOverlay?.children[0] as LineSegments | undefined;
-    if (activeBoxLine) _dragInitialOverlayMatrix.copy(activeBoxLine.matrix);
+    if (selectionOverlay && multiBoxSlot >= 0) _dragInitialOverlayMatrix.fromArray(selectionOverlay.instances!.array, multiBoxSlot * 16);
 }
 
 function getSelectionOverlayBoundingBox(previewMatrix?: Matrix4): Box3 {
     const box = new Box3();
     if (!selectionOverlay) return box;
     const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
-    const matrices = selectionOverlay.instanceMatrix.array;
+    const matrices = selectionOverlay.instances!.array;
     const e = previewMatrix?.elements;
     for (let axis = 0; axis < 3; axis++) {
         const x = e ? e[axis] : Number(axis === 0);
@@ -438,7 +485,7 @@ function getSelectionOverlayBoundingBox(previewMatrix?: Matrix4): Box3 {
 const _headGridDragMatrix = new Matrix4();
 const HEAD_GRID_INSTANCES_PER_CHUNK = 32768;
 let headPainterGridOverlay: Group | null = null;
-let headPainterStampPreview: InstancedMesh | null = null;
+let headPainterStampPreview: OverlayBatch | null = null;
 let headPainterGridDirty = true;
 
 export function invalidateHeadPainterGridOverlay(): void {
@@ -468,7 +515,7 @@ export function updateHeadPainterGridOverlay(
         scene.add(headPainterGridOverlay);
     }
     headPainterGridOverlay.visible = true;
-    for (const child of headPainterGridOverlay.children) (child as InstancedMesh).count = 0;
+    for (const child of headPainterGridOverlay.children) (child as OverlayBatch).count = 0;
     const total = meshes.reduce((sum, mesh) => sum + getInstanceCount(mesh), 0);
     const worldMatrix = new Matrix4();
     let chunkIndex = 0;
@@ -490,35 +537,32 @@ export function updateHeadPainterGridOverlay(
             const scale = showLayer ? 1.0625 : 1;
             getInstanceWorldMatrix(mesh, instanceId, worldMatrix);
             if (getInstanceValue(mesh, instanceId, dragSelectedAttributeName)) worldMatrix.premultiply(dragDeltaMatrix);
-            let lines = headPainterGridOverlay.children[chunkIndex] as InstancedMesh;
-            if (lines && lines.count === lines.instanceMatrix.count) lines = headPainterGridOverlay.children[++chunkIndex] as InstancedMesh;
+            let lines = headPainterGridOverlay.children[chunkIndex] as OverlayBatch;
+            if (lines && lines.count === lines.instances!.count) lines = headPainterGridOverlay.children[++chunkIndex] as OverlayBatch;
             if (!lines) {
                 const capacity = Math.min(Math.max(16, total), HEAD_GRID_INSTANCES_PER_CHUNK);
                 const geometry = createHeadPainterGridGeometry(capacity);
-                const material = (headPainterGridOverlay.children[0] as InstancedMesh)?.material ?? createHeadPainterGridMaterial(color);
-                lines = new InstancedMesh(geometry, material, capacity);
-                (lines as InstancedMesh & { isLineSegments: boolean }).isLineSegments = true;
-                lines.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(capacity * 16), 16).setUsage(DynamicDrawUsage);
-                lines.count = 0;
-                lines.frustumCulled = false;
+                const material = (headPainterGridOverlay.children[0] as OverlayBatch)?.draw.material ?? createHeadPainterGridMaterial(color);
+                lines = new OverlayBatch('lines', geometry, material,
+                    new StorageBufferAttribute(new Float32Array(capacity * 16), 16).setUsage(DynamicDrawUsage));
                 lines.renderOrder = 1000;
                 headPainterGridOverlay.add(lines);
             }
             const slot = lines.count++;
-            write(lines.instanceMatrix, slot * 16, worldMatrix.elements);
-            write(lines.geometry.getAttribute('headPainterGridScale') as BufferAttribute, slot, [scale]);
+            write(lines.instances!, slot * 16, worldMatrix.elements);
+            write(lines.draw.geometry.getAttribute('headPainterGridScale') as BufferAttribute, slot, [scale]);
             for (let pair = 0; pair < 3; pair++) {
                 const first = getFaceGridCounts(uuid, pair * 2, worldMatrix, showLayer ? 1 : 0);
                 const second = getFaceGridCounts(uuid, pair * 2 + 1, worldMatrix, showLayer ? 1 : 0);
-                write(lines.geometry.getAttribute(`headPainterGrid${pair}`) as BufferAttribute, slot * 4,
+                write(lines.draw.geometry.getAttribute(`headPainterGrid${pair}`) as BufferAttribute, slot * 4,
                     [first[0], first[1], second[0], second[1]]);
-                write(lines.geometry.getAttribute(`headPainterTexture${pair}`) as BufferAttribute, slot * 4,
+                write(lines.draw.geometry.getAttribute(`headPainterTexture${pair}`) as BufferAttribute, slot * 4,
                     [first[2], first[3], second[2], second[3]]);
             }
         }
     }
     for (const attribute of changed) attribute.needsUpdate = true;
-    for (const child of headPainterGridOverlay.children) ((child as InstancedMesh).material as MeshBasicNodeMaterial).color.setHex(color);
+    for (const child of headPainterGridOverlay.children) ((child as OverlayBatch).draw.material as LineBasicNodeMaterial).color.setHex(color);
     headPainterGridDirty = false;
     _headGridDragMatrix.copy(dragDeltaMatrix);
 }
@@ -549,17 +593,11 @@ function createHeadPainterGridGeometry(capacity: number): BufferGeometry {
 export function removeHeadPainterGridOverlay(): void {
     if (headPainterGridOverlay) {
         headPainterGridOverlay.removeFromParent();
-        const geometries = new Set<BufferGeometry>();
         const materials = new Set<Material>();
-        headPainterGridOverlay.traverse(object => {
-            const mesh = object as InstancedMesh;
-            if (!mesh.isInstancedMesh) return;
-            mesh.dispose();
-            geometries.add(mesh.geometry);
-            const meshMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-            meshMaterials.forEach(material => materials.add(material));
-        });
-        geometries.forEach(geometry => geometry.dispose());
+        for (const chunk of [...headPainterGridOverlay.children] as OverlayBatch[]) {
+            materials.add(chunk.draw.material as Material);
+            chunk.dispose();
+        }
         materials.forEach(material => material.dispose());
         headPainterGridOverlay = null;
     }
@@ -601,31 +639,32 @@ export function updateHeadPainterStampPreview(
         if (bit < 32) face.low = (face.low | (1 << bit)) >>> 0;
         else face.high = (face.high | (1 << (bit - 32))) >>> 0;
     }
-    if (!headPainterStampPreview || headPainterStampPreview.instanceMatrix.count < count) {
-        const capacity = Math.max(count, (headPainterStampPreview?.instanceMatrix.count ?? 0) * 2, 16);
+    if (!headPainterStampPreview || headPainterStampPreview.instances!.count < count) {
+        const capacity = Math.max(count, (headPainterStampPreview?.instances!.count ?? 0) * 2, 16);
         const geometry = new PlaneGeometry(1, 1);
         geometry.setAttribute('headPainterGrid', new InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(DynamicDrawUsage));
         geometry.setAttribute('headPainterTextureSize', new InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(DynamicDrawUsage));
         geometry.setAttribute('headPainterCells', new InstancedBufferAttribute(new Uint32Array(capacity * 2), 2).setUsage(DynamicDrawUsage));
+        const instances = new StorageBufferAttribute(new Float32Array(capacity * 16), 16).setUsage(DynamicDrawUsage);
         if (headPainterStampPreview) {
-            headPainterStampPreview.dispose();
-            headPainterStampPreview.geometry.dispose();
-            headPainterStampPreview.geometry = geometry;
+            headPainterStampPreview.draw.geometry.dispose();
+            headPainterStampPreview.draw.geometry = geometry;
+            headPainterStampPreview.instances!.dispose();
+            headPainterStampPreview.instances = instances;
         } else {
-            headPainterStampPreview = new InstancedMesh(geometry, createHeadPainterPreviewMaterial(undefined, attribute('headPainterTextureSize', 'vec2')), capacity);
+            headPainterStampPreview = new OverlayBatch('triangles', geometry,
+                createHeadPainterPreviewMaterial(undefined, attribute('headPainterTextureSize', 'vec2')), instances);
             headPainterStampPreview.name = 'head-painter-stamp-preview';
             headPainterStampPreview.renderOrder = 2000;
-            headPainterStampPreview.frustumCulled = false;
             scene.add(headPainterStampPreview);
         }
-        headPainterStampPreview.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(capacity * 16), 16).setUsage(DynamicDrawUsage);
     }
     headPainterStampPreview.visible = true;
     headPainterStampPreview.count = count;
-    const grid = headPainterStampPreview.geometry.getAttribute('headPainterGrid') as InstancedBufferAttribute;
-    const textureSize = headPainterStampPreview.geometry.getAttribute('headPainterTextureSize') as InstancedBufferAttribute;
-    const cells = headPainterStampPreview.geometry.getAttribute('headPainterCells') as InstancedBufferAttribute;
-    const matrices = headPainterStampPreview.instanceMatrix.array as Float32Array;
+    const grid = headPainterStampPreview.draw.geometry.getAttribute('headPainterGrid') as InstancedBufferAttribute;
+    const textureSize = headPainterStampPreview.draw.geometry.getAttribute('headPainterTextureSize') as InstancedBufferAttribute;
+    const cells = headPainterStampPreview.draw.geometry.getAttribute('headPainterCells') as InstancedBufferAttribute;
+    const matrices = headPainterStampPreview.instances!.array as Float32Array;
     const packedMatrix = new Float32Array(16);
     const matrix = new Matrix4();
     const faceMatrix = new Matrix4();
@@ -652,7 +691,7 @@ export function updateHeadPainterStampPreview(
         }
         index++;
     }
-    if (updateEnd > updateStart) for (const buffer of [headPainterStampPreview.instanceMatrix, grid, textureSize, cells]) {
+    if (updateEnd > updateStart) for (const buffer of [headPainterStampPreview.instances!, grid, textureSize, cells]) {
         let start = updateStart * buffer.itemSize;
         let end = updateEnd * buffer.itemSize;
         // Preserve changes still awaiting consumption by WebGPU.
@@ -672,17 +711,80 @@ export function hideHeadPainterStampPreview(): void {
 
 export function removeHeadPainterStampPreview(): void {
     if (!headPainterStampPreview) return;
-    headPainterStampPreview.removeFromParent();
     headPainterStampPreview.dispose();
-    headPainterStampPreview.geometry.dispose();
-    (headPainterStampPreview.material as MeshBasicNodeMaterial).dispose();
+    (headPainterStampPreview.draw.material as MeshBasicNodeMaterial).dispose();
     headPainterStampPreview = null;
 }
 
-let selectionOverlay: InstancedMesh | null = null;
+let selectionOverlay: OverlayBatch | null = null;
 let selectionPointsOverlay: Group | null = null;
-let multiSelectionOverlay: Group | null = null;
-let hoveredVertex: Sprite | null = null;
+let pointOverlay: OverlayBatch | null = null;
+let axisOverlay: OverlayBatch | null = null;
+let hoverLineOverlay: OverlayBatch | null = null;
+/** Box slot of the multi-selection box, -1 without one (bundle boxes do not follow drags). */
+let multiBoxSlot = -1;
+let overlayPoints: OverlayPoint[] = [];
+let hoveredVertex: OverlayPoint | null = null;
+
+/** Creates the overlay batches once; updates only rewrite their instances. */
+function ensureSelectionOverlays(scene: Scene): void {
+    if (selectionOverlay) return;
+    selectionOverlay = new OverlayBatch('lines', createBoxOverlayGeometry(16), _boxOverlayMat, new StorageBufferAttribute(new Float32Array(16 * 16), 16));
+    selectionOverlay.renderOrder = 1;
+    selectionOverlay.matrixAutoUpdate = false;
+    hoverLineOverlay = new OverlayBatch('lines', new BufferGeometry().setAttribute('position', new Float32BufferAttribute(6, 3)), _hoverLineMat);
+    axisOverlay = new OverlayBatch('lines', _axisUnitGeo, _axisMat, new StorageBufferAttribute(new Float32Array(4 * 16), 16));
+    axisOverlay.renderOrder = 100;
+    pointOverlay = new OverlayBatch('sprites', null, _pointMat, new StorageBufferAttribute(new Float32Array(64 * 4), 4));
+    pointOverlay.renderOrder = 110;
+    selectionPointsOverlay = new Group();
+    selectionPointsOverlay.renderOrder = 999;
+    selectionPointsOverlay.matrixAutoUpdate = false;
+    selectionPointsOverlay.add(hoverLineOverlay, axisOverlay, pointOverlay);
+    scene.add(selectionOverlay, selectionPointsOverlay);
+}
+
+/** Room for `count` instances (capacity doubles; `grow` rebuilds per-instance geometry); returns the array, uploaded whole. */
+function reserveInstances(batch: OverlayBatch, count: number, grow?: (capacity: number) => BufferGeometry): Float32Array {
+    const old = batch.instances!;
+    if (old.count < count) {
+        const capacity = Math.max(count, old.count * 2);
+        batch.instances = new StorageBufferAttribute(new Float32Array(capacity * old.itemSize), old.itemSize);
+        old.dispose();
+        if (grow) {
+            batch.draw.geometry.dispose();
+            batch.draw.geometry = grow(capacity);
+        }
+    }
+    batch.count = count;
+    batch.instances!.clearUpdateRanges();
+    batch.instances!.needsUpdate = true;
+    return batch.instances!.array as Float32Array;
+}
+
+function markBoxes(start: number, count: number): void {
+    selectionOverlay!.instances!.addUpdateRange(start * 16, count * 16);
+    selectionOverlay!.instances!.needsUpdate = true;
+}
+
+function boxMatrix(box: Box3): Matrix4 {
+    return _TMP_MAT4_BOX.compose(box.getCenter(_TMP_VEC3_A), _IDENTITY_QUAT, box.getSize(_TMP_VEC3_B));
+}
+
+function setMultiBoxMatrix(matrix: Matrix4): void {
+    matrix.toArray(selectionOverlay!.instances!.array, multiBoxSlot * 16);
+    markBoxes(multiBoxSlot, 1);
+}
+
+/** Uploads point positions and highlights (hovered or selected). */
+function writePoints(selectedVertexKeys: Set<string>): void {
+    if (!pointOverlay) return;
+    const values = reserveInstances(pointOverlay, overlayPoints.length);
+    overlayPoints.forEach((point, index) => {
+        point.position.toArray(values, index * 4);
+        values[index * 4 + 3] = point === hoveredVertex || selectedVertexKeys.has(point.userData.key) ? 1 : 0;
+    });
+}
 
 export function updateSelectionOverlayObject(mesh: ObjectBatch, instanceId: number): void {
     const index = (selectionOverlay?.userData['objectIndexes'] as Map<string, number> | undefined)
@@ -697,9 +799,8 @@ export function updateSelectionOverlayObject(mesh: ObjectBatch, instanceId: numb
     _TMP_MAT4_C.makeTranslation(_TMP_VEC3_A.x, _TMP_VEC3_A.y, _TMP_VEC3_A.z)
         .scale(_TMP_VEC3_B)
         .premultiply(_TMP_MAT4_A);
-    selectionOverlay.setMatrixAt(index, _TMP_MAT4_C);
-    selectionOverlay.instanceMatrix.addUpdateRange(index * 16, 16);
-    selectionOverlay.instanceMatrix.needsUpdate = true;
+    _TMP_MAT4_C.toArray(selectionOverlay.instances!.array, index * 16);
+    markBoxes(index, 1);
 
     const item = (selectionOverlay.userData['items'] as OverlayItem[])[index];
     item.matrix.copy(_TMP_MAT4_C);
@@ -708,61 +809,40 @@ export function updateSelectionOverlayObject(mesh: ObjectBatch, instanceId: numb
     // ponytail: the aggregate box catches up on the next full selection refresh; per-key rebuilds must stay O(1).
 }
 
-function setBoxLineTransform(line: LineSegments, box: Box3): void {
-    box.getCenter(line.position);
-    box.getSize(line.scale);
-    line.updateMatrix();
-}
-
-export function getSelectionPointsOverlay(): Group | null {
-    return selectionPointsOverlay;
-}
-
 export function updateSelectionOverlay(
-    scene: Scene, 
-    renderer: Renderer, 
-    camera: Camera, 
-    currentSelection: SelectionState, 
-    vertexQueue: QueueItem[], 
-    isVertexMode: boolean, 
-    selectionHelper: Mesh,
-    selectedVertexKeys: Set<string>,
-    reuse = false
+    scene: Scene,
+    renderer: Renderer,
+    currentSelection: SelectionState,
+    vertexQueue: QueueItem[],
+    isVertexMode: boolean,
+    selectionHelper: Object3D,
+    selectedVertexKeys: Set<string>
 ): void {
-    if (selectionOverlay && !reuse) {
-        scene.remove(selectionOverlay);
-        selectionOverlay.dispose();
-        selectionOverlay = null;
-    }
-
-    if (selectionPointsOverlay) {
-        scene.remove(selectionPointsOverlay);
-        const hoverLine = selectionPointsOverlay.getObjectByName('VertexHoverLine') as Line | undefined;
-        hoverLine?.geometry.dispose();
-        (hoverLine?.material as Material | undefined)?.dispose();
-        selectionPointsOverlay = null;
-        hoveredVertex = null;
-    }
-
-    if (multiSelectionOverlay) {
-        scene.remove(multiSelectionOverlay);
-        multiSelectionOverlay = null;
-    }
+    ensureSelectionOverlays(scene);
+    const boxes = selectionOverlay!;
+    const pointsRoot = selectionPointsOverlay!;
+    overlayPoints = [];
+    hoveredVertex = null;
+    hoverLineOverlay!.count = 0;
+    multiBoxSlot = -1;
+    // Drags move the points overlay (syncSelectionOverlay) until this rebuild.
+    pointsRoot.matrix.identity().decompose(pointsRoot.position, pointsRoot.quaternion, pointsRoot.scale);
+    pointsRoot.updateMatrixWorld(true);
 
     const hasAnySelection = (currentSelection.groups && currentSelection.groups.size > 0) || (currentSelection.objects && currentSelection.objects.size > 0);
     if (!hasAnySelection && vertexQueue.length === 0) {
-        if (selectionOverlay) {
-            scene.remove(selectionOverlay);
-            selectionOverlay.dispose();
-            selectionOverlay = null;
-        }
+        boxes.count = 0;
+        boxes.userData['items'] = [];
+        boxes.userData['selectedCount'] = 0;
+        boxes.userData['objectIndexes'] = new Map();
+        pointsRoot.visible = false;
         return;
     }
 
     const itemsToRender: OverlayItem[] = [];
     const tempCenter = _TMP_VEC3_A;
     const tempSize = _TMP_VEC3_B;
-    
+
     if (currentSelection.groups) {
         for (const groupId of currentSelection.groups) {
             const localBox = getGroupLocalBoundingBox(groupId);
@@ -834,127 +914,10 @@ export function updateSelectionOverlay(
 
     const allOverlayItems = [...itemsToRender, ...queueItemsToRender];
 
-    if (selectionOverlay && selectionOverlay.count !== allOverlayItems.length) {
-        scene.remove(selectionOverlay);
-        selectionOverlay.dispose();
-        selectionOverlay = null;
-    }
-    if (allOverlayItems.length > 0) {
-        if (!selectionOverlay) {
-            _overlayUnitGeo.setAttribute(dragSelectedAttributeName, new InstancedBufferAttribute(new Float32Array(allOverlayItems.length), 1));
-            selectionOverlay = new InstancedMesh(_overlayUnitGeo, _selectionOverlayMat, allOverlayItems.length);
-            selectionOverlay.instanceMatrix = new StorageInstancedBufferAttribute(allOverlayItems.length, 16);
-            selectionOverlay.renderOrder = 1;
-            selectionOverlay.matrixAutoUpdate = false;
-            selectionOverlay.frustumCulled = false;
-            scene.add(selectionOverlay);
-        }
-        const dragSelected = _overlayUnitGeo.getAttribute(dragSelectedAttributeName);
-        dragSelected.array.fill(0);
-        dragSelected.array.fill(1, 0, itemsToRender.length);
-        dragSelected.needsUpdate = true;
-        selectionOverlay.userData['items'] = allOverlayItems;
-        selectionOverlay.userData['selectedCount'] = itemsToRender.length;
-        selectionOverlay.userData['objectIndexes'] = new Map(allOverlayItems.flatMap((item, index) =>
-            item.source.type === 'object' && item.source.mesh && item.source.instanceId !== undefined
-                ? [[`${item.source.mesh.uuid}:${item.source.instanceId}`, index] as const]
-                : []
-        ));
-        const colorObj = new Color();
-        allOverlayItems.forEach((item, index) => {
-            selectionOverlay!.setMatrixAt(index, item.matrix);
-            colorObj.setHex(item.color);
-            selectionOverlay!.setColorAt(index, colorObj);
-        });
-        selectionOverlay.instanceMatrix.needsUpdate = true;
-        if (selectionOverlay.instanceColor) selectionOverlay.instanceColor.needsUpdate = true;
-    }
-
-    if (allOverlayItems.length > 0 && isVertexMode) {
-        selectionPointsOverlay = new Group();
-        selectionPointsOverlay.renderOrder = 999;
-        selectionPointsOverlay.matrixAutoUpdate = false;
-        
-        const canvas = renderer.domElement;
-        const width = canvas.clientWidth, height = canvas.clientHeight;
-        const scaleX = 10 / width, scaleY = 10 / height;
-        const v = new Vector3();
-        const existingPoints = new Set<string>();
-
-        for (const item of allOverlayItems) {
-            for (const corner of _unitCubeCorners) {
-                v.copy(corner).applyMatrix4(item.matrix);
-                const key = `${v.x.toFixed(4)}_${v.y.toFixed(4)}_${v.z.toFixed(4)}`;
-                if (existingPoints.has(key)) continue;
-                existingPoints.add(key);
-                const sprite = new Sprite(selectedVertexKeys.has(key) ? _selectedVertexSpriteMat : _vertexSpriteMat);
-                sprite.position.copy(v);
-                sprite.userData = { key, source: item.source };
-                sprite.scale.set(scaleX, scaleY, 1);
-                selectionPointsOverlay.add(sprite);
-            }
-        }
-
-        if (selectionHelper) {
-            const gizmoPos = selectionHelper.position;
-            const centerKey = `CENTER_${gizmoPos.x.toFixed(4)}_${gizmoPos.y.toFixed(4)}_${gizmoPos.z.toFixed(4)}`;
-            const centerSprite = new Sprite(selectedVertexKeys.has(centerKey) ? _selectedVertexSpriteMat : _vertexSpriteMat);
-            centerSprite.position.copy(gizmoPos);
-            centerSprite.userData = { isCenter: true, key: centerKey };
-            centerSprite.scale.set(scaleX, scaleY, 1);
-            centerSprite.renderOrder = 110;
-            selectionPointsOverlay.add(centerSprite);
-
-            const createAxisHelper = (pos: Vector3, quat: Quaternion) => {
-                const axes = new LineSegments(_axisUnitGeo, _axisMat);
-                axes.position.copy(pos);
-                axes.quaternion.copy(quat);
-                axes.renderOrder = 100
-
-                // Set initial scale immediately to prevent jump/flicker on load
-                const distance = pos.distanceTo(camera.position);
-                const initialScale = distance * 0.15;
-                axes.scale.set(initialScale, initialScale, initialScale);
-                axes.updateMatrix();
-
-                axes.onBeforeRender = function(this: LineSegments, _renderer, _scene, cam) {
-                    const d = this.getWorldPosition(_TMP_VEC3_A).distanceTo(cam.position);
-                    const s = d * 0.15; 
-                    this.scale.set(s, s, s);
-                    this.updateMatrix();
-                };
-                return axes;
-            };
-
-            queueItemsToRender.forEach(item => {
-                if (item.gizmoPosition) {
-                    const posForKey = item.gizmoLocalPosition || item.gizmoPosition;
-                    const centerPosKey = `CENTER_QUEUE_${item.gizmoPosition.x.toFixed(4)}_${item.gizmoPosition.y.toFixed(4)}_${item.gizmoPosition.z.toFixed(4)}`;
-                    if (existingPoints.has(centerPosKey)) return;
-                    existingPoints.add(centerPosKey);
-
-                    const queueSprite = new Sprite(_vertexSpriteMat);
-                    queueSprite.position.copy(item.gizmoPosition);
-                    const src = item.source;
-                    const idStr = src.type === 'group' ? `G_${src.id}` : `O_${slotKeyUuid(src.mesh!, src.instanceId!)}`;
-                    const qKey = `QUEUE_${idStr}_${posForKey.x.toFixed(4)}_${posForKey.y.toFixed(4)}_${posForKey.z.toFixed(4)}`;
-                    queueSprite.userData = { isCenter: true, key: qKey, source: src };
-                    if (selectedVertexKeys.has(qKey)) queueSprite.material = _selectedVertexSpriteMat;
-                    queueSprite.scale.set(scaleX, scaleY, 1);
-                    queueSprite.renderOrder = 110;
-                    selectionPointsOverlay!.add(queueSprite);
-                    if (item.gizmoQuaternion) selectionPointsOverlay!.add(createAxisHelper(item.gizmoPosition, item.gizmoQuaternion));
-                }
-            });
-            selectionPointsOverlay.add(createAxisHelper(gizmoPos, selectionHelper.quaternion));
-        }
-        scene.add(selectionPointsOverlay);
-    }
-
+    // Aggregate boxes follow the item boxes: the multi-selection box first, then one per bundle.
     const boxesToDraw: Box3[] = [];
-    if (_getSelectedObjectCount(currentSelection) + (currentSelection.groups?.size || 0) > 1) {
-        boxesToDraw.push(getSelectionBoundingBox(currentSelection));
-    }
+    const hasMultiBox = _getSelectedObjectCount(currentSelection) + (currentSelection.groups?.size || 0) > 1;
+    if (hasMultiBox) boxesToDraw.push(getSelectionBoundingBox(currentSelection));
     vertexQueue.forEach(qItem => {
         if (qItem.type === 'bundle' && qItem.items && qItem.items.length > 1) {
             const bundleBox = new Box3();
@@ -968,25 +931,77 @@ export function updateSelectionOverlay(
         }
     });
 
-    if (boxesToDraw.length > 0) {
-        multiSelectionOverlay = new Group();
-        multiSelectionOverlay.matrixAutoUpdate = false;
-        boxesToDraw.forEach(box => {
-            const line = new LineSegments(_boxEdgesGeo, _multiSelectionMat);
-            line.matrixAutoUpdate = false;
-            setBoxLineTransform(line, box);
-            multiSelectionOverlay!.add(line);
-        });
-        scene.add(multiSelectionOverlay);
+    const matrices = reserveInstances(boxes, allOverlayItems.length + boxesToDraw.length, createBoxOverlayGeometry);
+    const colors = boxes.draw.geometry.getAttribute('overlayColor') as BufferAttribute;
+    const dragSelected = boxes.draw.geometry.getAttribute(dragSelectedAttributeName) as BufferAttribute;
+    dragSelected.array.fill(0);
+    dragSelected.array.fill(1, 0, itemsToRender.length);
+    allOverlayItems.forEach((item, index) => {
+        item.matrix.toArray(matrices, index * 16);
+        _TMP_COLOR.setHex(item.color).toArray(colors.array, index * 3);
+    });
+    boxesToDraw.forEach((box, index) => {
+        const slot = allOverlayItems.length + index;
+        boxMatrix(box).toArray(matrices, slot * 16);
+        _TMP_COLOR.setHex(0xFFFFFF).toArray(colors.array, slot * 3);
+    });
+    colors.needsUpdate = true;
+    dragSelected.needsUpdate = true;
+    if (hasMultiBox) multiBoxSlot = allOverlayItems.length;
+    boxes.userData['items'] = allOverlayItems;
+    boxes.userData['selectedCount'] = itemsToRender.length;
+    boxes.userData['objectIndexes'] = new Map(allOverlayItems.flatMap((item, index) =>
+        item.source.type === 'object' && item.source.mesh && item.source.instanceId !== undefined
+            ? [[`${item.source.mesh.uuid}:${item.source.instanceId}`, index] as const]
+            : []
+    ));
+
+    const axes: Matrix4[] = [];
+    if (allOverlayItems.length > 0 && isVertexMode) {
+        const canvas = renderer.domElement;
+        _pointScale.value.set(10 / canvas.clientWidth, 10 / canvas.clientHeight);
+        const existingPoints = new Set<string>();
+
+        for (const item of allOverlayItems) {
+            for (const corner of _unitCubeCorners) {
+                const position = corner.clone().applyMatrix4(item.matrix);
+                const key = `${position.x.toFixed(4)}_${position.y.toFixed(4)}_${position.z.toFixed(4)}`;
+                if (existingPoints.has(key)) continue;
+                existingPoints.add(key);
+                overlayPoints.push({ position, userData: { key, source: item.source } });
+            }
+        }
+
+        if (selectionHelper) {
+            const gizmoPos = selectionHelper.position;
+            const centerKey = `CENTER_${gizmoPos.x.toFixed(4)}_${gizmoPos.y.toFixed(4)}_${gizmoPos.z.toFixed(4)}`;
+            overlayPoints.push({ position: gizmoPos.clone(), userData: { isCenter: true, key: centerKey } });
+
+            queueItemsToRender.forEach(item => {
+                if (item.gizmoPosition) {
+                    const posForKey = item.gizmoLocalPosition || item.gizmoPosition;
+                    const centerPosKey = `CENTER_QUEUE_${item.gizmoPosition.x.toFixed(4)}_${item.gizmoPosition.y.toFixed(4)}_${item.gizmoPosition.z.toFixed(4)}`;
+                    if (existingPoints.has(centerPosKey)) return;
+                    existingPoints.add(centerPosKey);
+
+                    const src = item.source;
+                    const idStr = src.type === 'group' ? `G_${src.id}` : `O_${slotKeyUuid(src.mesh!, src.instanceId!)}`;
+                    const qKey = `QUEUE_${idStr}_${posForKey.x.toFixed(4)}_${posForKey.y.toFixed(4)}_${posForKey.z.toFixed(4)}`;
+                    overlayPoints.push({ position: item.gizmoPosition.clone(), userData: { isCenter: true, key: qKey, source: src } });
+                    if (item.gizmoQuaternion) axes.push(new Matrix4().compose(item.gizmoPosition, item.gizmoQuaternion, _UNIT_SCALE));
+                }
+            });
+            axes.push(new Matrix4().compose(gizmoPos, selectionHelper.quaternion, _UNIT_SCALE));
+        }
     }
+    const axisMatrices = reserveInstances(axisOverlay!, axes.length);
+    axes.forEach((matrix, index) => matrix.toArray(axisMatrices, index * 16));
+    writePoints(selectedVertexKeys);
+    pointsRoot.visible = overlayPoints.length > 0;
 }
 
 export function updateMultiSelectionOverlayDuringDrag(currentSelection: SelectionState, currentGizmoMat: Matrix4 | null, initialGizmoMat: Matrix4 | null): void {
-    if (!multiSelectionOverlay) return;
-    const activeBoxLine = multiSelectionOverlay.children[0] as LineSegments;
-    if (!activeBoxLine) return;
-    if (_getSelectedObjectCount(currentSelection) + (currentSelection.groups?.size || 0) <= 1) { activeBoxLine.visible = false; return; }
-    activeBoxLine.visible = true;
+    if (!selectionOverlay || multiBoxSlot < 0) return;
 
     if (currentGizmoMat && initialGizmoMat) {
         const tMat = _TMP_MAT4_C.copy(initialGizmoMat).invert().premultiply(currentGizmoMat);
@@ -995,108 +1010,88 @@ export function updateMultiSelectionOverlayDuringDrag(currentSelection: Selectio
             && Math.abs(e[4]) < 1e-10 && Math.abs(e[6]) < 1e-10
             && Math.abs(e[8]) < 1e-10 && Math.abs(e[9]) < 1e-10;
         if (axesStayAligned) {
-            activeBoxLine.matrix.multiplyMatrices(tMat, _dragInitialOverlayMatrix);
-            activeBoxLine.matrixWorldNeedsUpdate = true;
+            setMultiBoxMatrix(_TMP_MAT4_BOX.multiplyMatrices(tMat, _dragInitialOverlayMatrix));
             return;
         }
 
-        const worldBox = selectionOverlay ? getSelectionOverlayBoundingBox(tMat) : getSelectionBoundingBox(currentSelection, tMat);
-        if (!worldBox.isEmpty()) setBoxLineTransform(activeBoxLine, worldBox);
+        const worldBox = getSelectionOverlayBoundingBox(tMat);
+        if (!worldBox.isEmpty()) setMultiBoxMatrix(boxMatrix(worldBox));
         return;
     }
 
-    const worldBox = _TMP_BOX3_A.copy(getSelectionBoundingBox(currentSelection));
-    if (worldBox.isEmpty()) return;
-    setBoxLineTransform(activeBoxLine, worldBox);
-}
-
-export function syncSelectionPointsOverlay(delta: Vector3): void {
-    if (selectionPointsOverlay) { selectionPointsOverlay.position.add(delta); selectionPointsOverlay.updateMatrixWorld(true); }
+    const worldBox = getSelectionBoundingBox(currentSelection);
+    if (!worldBox.isEmpty()) setMultiBoxMatrix(boxMatrix(worldBox));
 }
 
 export function syncSelectionOverlay(deltaMatrix: Matrix4): void {
     if (selectionPointsOverlay) { selectionPointsOverlay.applyMatrix4(deltaMatrix); selectionPointsOverlay.updateMatrixWorld(true); }
 }
 
-export function commitSelectionOverlay(deltaMatrix: Matrix4, currentSelection: SelectionState): void {
-    if (selectionOverlay) {
-        const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
-        transformInstanceRange(selectionOverlay.instanceMatrix.array, deltaMatrix, 0, selectedCount);
-        selectionOverlay.instanceMatrix.needsUpdate = true;
+export function commitSelectionOverlay(deltaMatrix: Matrix4, _currentSelection: SelectionState): void {
+    if (!selectionOverlay) return;
+    const selectedCount = Math.min(selectionOverlay.count, (selectionOverlay.userData['selectedCount'] as number | undefined) ?? selectionOverlay.count);
+    if (selectedCount > 0) {
+        transformInstanceRange(selectionOverlay.instances!.array, deltaMatrix, 0, selectedCount);
+        markBoxes(0, selectedCount);
     }
-
-    const activeBoxLine = multiSelectionOverlay?.children[0] as LineSegments | undefined;
-    if (activeBoxLine) {
-        const finalBox = selectionOverlay ? getSelectionOverlayBoundingBox() : getSelectionBoundingBox(currentSelection);
-        if (!finalBox.isEmpty()) setBoxLineTransform(activeBoxLine, finalBox);
-    }
+    if (multiBoxSlot < 0) return;
+    const finalBox = getSelectionOverlayBoundingBox();
+    if (!finalBox.isEmpty()) setMultiBoxMatrix(boxMatrix(finalBox));
 }
 
 export function findClosestVertexForSnapping(gizmoWorldPos: Vector3, camera: Camera, renderer: Renderer, snapThreshold = 15): Vector3 | null {
-    if (!selectionPointsOverlay) return null;
+    if (!overlayPoints.length) return null;
     const rect = renderer.domElement.getBoundingClientRect();
     const gScreen = _TMP_VEC3_B.copy(gizmoWorldPos).project(camera);
     const gx = (gScreen.x * 0.5 + 0.5) * rect.width, gy = (1 - (gScreen.y * 0.5 + 0.5)) * rect.height;
     let minDSq = snapThreshold * snapThreshold, target: Vector3 | null = null;
-    selectionPointsOverlay.children.forEach(c => {
-        if (!(c as Sprite).isSprite || c.userData['isCenter']) return;
-        const vS = _TMP_VEC3_A.copy(c.position).project(camera);
+    for (const point of overlayPoints) {
+        if (point.userData.isCenter) continue;
+        const vS = _TMP_VEC3_A.copy(point.position).project(camera);
         const vx = (vS.x * 0.5 + 0.5) * rect.width, vy = (1 - (vS.y * 0.5 + 0.5)) * rect.height;
         const dSq = (vx-gx)**2 + (vy-gy)**2;
-        if (dSq < minDSq) { minDSq = dSq; target = c.position; }
-    });
+        if (dSq < minDSq) { minDSq = dSq; target = point.position; }
+    }
     return target;
 }
 
-export function getHoveredVertex(mouseNDC: Vector2, camera: Camera, renderer: Renderer): Sprite | null {
-    if (!selectionPointsOverlay) return null;
+export function getHoveredVertex(mouseNDC: Vector2, camera: Camera, renderer: Renderer): OverlayPoint | null {
     const canvas = renderer.domElement;
     const mx = (mouseNDC.x * 0.5 + 0.5) * canvas.clientWidth, my = (-mouseNDC.y * 0.5 + 0.5) * canvas.clientHeight;
-    let bestDSq = 100, best: Sprite | null = null;
-    selectionPointsOverlay.children.forEach(s => {
-        if (!(s as Sprite).isSprite) return;
-        const vS = _TMP_VEC3_A.copy(s.position).project(camera);
-        if (vS.z < -1 || vS.z > 1) return;
+    let bestDSq = 100, best: OverlayPoint | null = null;
+    for (const point of overlayPoints) {
+        const vS = _TMP_VEC3_A.copy(point.position).project(camera);
+        if (vS.z < -1 || vS.z > 1) continue;
         const sx = (vS.x * 0.5 + 0.5) * canvas.clientWidth, sy = (-vS.y * 0.5 + 0.5) * canvas.clientHeight;
         const dSq = (sx-mx)**2 + (sy-my)**2;
-        if (dSq < bestDSq) { bestDSq = dSq; best = s as Sprite; }
-    });
+        if (dSq < bestDSq) { bestDSq = dSq; best = point; }
+    }
     return best;
 }
 
-export function updateVertexHoverHighlight(hoveredSprite: Sprite | null, selectedVertexKeys: Set<string>): void {
-    if (!selectionPointsOverlay || hoveredSprite === hoveredVertex) return;
-    hoveredVertex = hoveredSprite;
-    let selected: Sprite | null = null, existingLine: Line | null = null;
-    selectionPointsOverlay.children.forEach(c => {
-        if (c.name === 'VertexHoverLine') { existingLine = c as Line; return; }
-        if (!(c as Sprite).isSprite) return;
-        const s = c as Sprite, key = s.userData['key'] as string | undefined;
-        const isSel = key && selectedVertexKeys.has(key);
-        if (isSel) selected = s;
-        s.material = s === hoveredSprite || isSel ? _selectedVertexSpriteMat : _vertexSpriteMat;
-    });
-    if (selectedVertexKeys.size === 1 && hoveredSprite && selected && hoveredSprite !== selected) {
-        if (!existingLine) {
-            const l = new Line(new BufferGeometry().setFromPoints([selected.position, hoveredSprite.position]), new LineBasicMaterial({ color: 0x437FD0, depthTest: false, transparent: true }));
-            l.name = 'VertexHoverLine'; selectionPointsOverlay.add(l);
-        } else existingLine.geometry.setFromPoints([selected.position, hoveredSprite.position]);
-    } else if (existingLine) { selectionPointsOverlay.remove(existingLine); existingLine.geometry.dispose(); (existingLine.material as Material).dispose(); }
+export function updateVertexHoverHighlight(hoveredPoint: OverlayPoint | null, selectedVertexKeys: Set<string>): void {
+    if (!overlayPoints.length || hoveredPoint === hoveredVertex) return;
+    hoveredVertex = hoveredPoint;
+    writePoints(selectedVertexKeys);
+    let selected: OverlayPoint | null = null;
+    for (const point of overlayPoints) if (selectedVertexKeys.has(point.userData.key)) selected = point;
+    if (selectedVertexKeys.size === 1 && hoveredPoint && selected && hoveredPoint !== selected) {
+        const position = hoverLineOverlay!.draw.geometry.getAttribute('position') as BufferAttribute;
+        position.setXYZ(0, selected.position.x, selected.position.y, selected.position.z);
+        position.setXYZ(1, hoveredPoint.position.x, hoveredPoint.position.y, hoveredPoint.position.z);
+        position.needsUpdate = true;
+        hoverLineOverlay!.count = 1;
+    } else hoverLineOverlay!.count = 0;
 }
 
-export function findSpritesByKeys(keys: string[]): Record<string, Sprite> {
-    const res: Record<string, Sprite> = {}, set = new Set(keys);
-    selectionPointsOverlay?.children.forEach(c => { if ((c as Sprite).isSprite && c.userData['key'] && set.has(c.userData['key'])) res[c.userData['key'] as string] = c as Sprite; });
+export function findSpritesByKeys(keys: string[]): Record<string, OverlayPoint> {
+    const res: Record<string, OverlayPoint> = {}, set = new Set(keys);
+    for (const point of overlayPoints) if (set.has(point.userData.key)) res[point.userData.key] = point;
     return res;
 }
 
 export function refreshSelectionPointColors(selectedVertexKeys: Set<string>): void {
     hoveredVertex = null;
-    const hoverLine = selectionPointsOverlay?.getObjectByName('VertexHoverLine') as Line | undefined;
-    if (hoverLine) {
-        selectionPointsOverlay!.remove(hoverLine);
-        hoverLine.geometry.dispose();
-        (hoverLine.material as Material).dispose();
-    }
-    selectionPointsOverlay?.children.forEach(s => { if ((s as Sprite).isSprite && s.userData['key']) (s as Sprite).material = selectedVertexKeys.has(s.userData['key'] as string) ? _selectedVertexSpriteMat : _vertexSpriteMat; });
+    if (hoverLineOverlay) hoverLineOverlay.count = 0;
+    writePoints(selectedVertexKeys);
 }

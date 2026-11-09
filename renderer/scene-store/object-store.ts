@@ -22,6 +22,8 @@ export class ObjectStore<R extends SlotRef = SlotRef> extends Map<string, R> {
     private freeSlots: number[] = [];
     /** Slot → uuid, one array per mesh. */
     private owners = new Map<object, (string | undefined)[]>();
+    /** Bumped by every write: lookups cached at one version still hold while it is unchanged. */
+    version = 0;
 
     constructor(entries?: Iterable<readonly [string, R]> | null) {
         // Map's constructor would call set() before the fields exist.
@@ -88,11 +90,22 @@ export class ObjectStore<R extends SlotRef = SlotRef> extends Map<string, R> {
         return value === undefined ? super.get(key) : this.unpack(value);
     }
 
+    /** get() into `out` instead of a new object, for loops over many keys; false when the key is unknown. */
+    readSlot(key: string, out: SlotRef): boolean {
+        const value = this.packed.get(key);
+        const ref = value === undefined ? super.get(key) : undefined;
+        if (value === undefined && !ref) return false;
+        out.mesh = value === undefined ? ref!.mesh : this.meshes[Math.floor(value / idSpan)]!;
+        out.instanceId = value === undefined ? ref!.instanceId : value % idSpan;
+        return true;
+    }
+
     has(key: string): boolean {
         return this.packed.has(key) || super.has(key);
     }
 
     set(key: string, ref: R): this {
+        this.version++;
         this.clearOwner(this.get(key), key);
         const value = this.pack(ref);
         const previous = this.packed.get(key);
@@ -109,6 +122,7 @@ export class ObjectStore<R extends SlotRef = SlotRef> extends Map<string, R> {
     }
 
     delete(key: string): boolean {
+        this.version++;
         this.clearOwner(this.get(key), key);
         const value = this.packed.get(key);
         if (value === undefined) return super.delete(key);
@@ -117,6 +131,7 @@ export class ObjectStore<R extends SlotRef = SlotRef> extends Map<string, R> {
     }
 
     clear(): void {
+        this.version++;
         this.packed.clear();
         this.meshes = [];
         this.meshSlots.clear();

@@ -9,7 +9,7 @@ import { deleteSelectedItems, type DeletedSceneDelta } from '../grouping/delete'
 import type { QueueItem, SelectionSource } from '../vertex/vertex-swap';
 import { animationSession, captureAnimationSnapshot, recordAnimationTransform, restoreAnimationSnapshot, rebaseAnimationStructure, syncAnimationTargets, type AnimationSnapshot } from '../../animation/animation-state';
 import type { ReplacementDelta } from '../../load-project/display/mesh-builder';
-import { getInstanceCount, invalidateBatchBounds, markInstanceMatrices, objectHeadValues, objectIsCustomPivot, objectPivot, objectRef, objectSlots, objectUuidAt, readInstanceMatrix, setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, writeInstanceMatrix, type ObjectHeadValues } from '../../scene-store/object-access';
+import { getInstanceCount, hasObjectPivotData, invalidateBatchBounds, markInstanceMatrices, objectHeadValues, objectIsCustomPivot, objectPivot, objectRef, objectSlots, objectUuidAt, readInstanceMatrix, readObjectRef, setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, writeInstanceMatrix, type ObjectHeadValues } from '../../scene-store/object-access';
 import { ObjectStore } from '../../scene-store/object-store';
 import { ObjectBatch } from '../../scene-store/object-batch';
 
@@ -45,9 +45,14 @@ interface TransformObjectsState {
     uuids: string[];
     /** Batch-local instance matrices, 16 floats per object. */
     matrices: Float32Array;
+    /** Sparse: set only for objects that have one. */
     pivots: Array<Vector3 | undefined>;
     isCustomPivots: Array<boolean | undefined>;
+    /** Where the objects sat, in uuid order, while the slot table had this version: a later capture reads by slot while it still does. */
+    slots?: CapturedSlots;
 }
+
+type CapturedSlots = { store: ObjectStore; version: number; runs: Array<{ mesh: ObjectBatch; ids: number[] }> };
 
 interface TransformGroupState {
     id: string;
@@ -336,17 +341,29 @@ export async function recordReplacementTransformChange(
     });
 }
 
-function captureTransformObjects(root: Group, uuids: string[]): TransformObjectsState {
-    const state: TransformObjectsState = { uuids: [], matrices: new Float32Array(uuids.length * 16), pivots: [], isCustomPivots: [] };
-    for (const uuid of uuids) {
-        const ref = objectRef(root, uuid);
-        if (!ref) continue;
-        const index = state.uuids.push(uuid) - 1;
-        readInstanceMatrix(ref.mesh, ref.instanceId, state.matrices, index * 16);
-        state.pivots.push(objectPivot(root, uuid)?.clone());
-        state.isCustomPivots.push(objectIsCustomPivot(root, uuid));
+function captureTransformObjects(root: Group, uuids: string[], slots?: CapturedSlots): TransformObjectsState {
+    const store = root.userData.objectUuidToInstance as ObjectStore | undefined;
+    let state: TransformObjectsState;
+    if (slots && store && slots.store === store && slots.version === store.version) {
+        // No object changed slot since `slots` was read: copy by slot instead of looking each uuid up.
+        state = { uuids, matrices: new Float32Array(uuids.length * 16), pivots: [], isCustomPivots: [], slots };
+        let index = 0;
+        for (const { mesh, ids } of slots.runs) for (const id of ids) readInstanceMatrix(mesh, id, state.matrices, 16 * index++);
+    } else {
+        state = { uuids: [], matrices: new Float32Array(uuids.length * 16), pivots: [], isCustomPivots: [] };
+        const ref = { mesh: null as unknown as ObjectBatch, instanceId: 0 };
+        for (const uuid of uuids) {
+            if (!readObjectRef(root, uuid, ref)) continue;
+            const index = state.uuids.push(uuid) - 1;
+            readInstanceMatrix(ref.mesh, ref.instanceId, state.matrices, index * 16);
+        }
+        if (state.uuids.length < uuids.length) state.matrices = state.matrices.slice(0, state.uuids.length * 16);
     }
-    if (state.uuids.length < uuids.length) state.matrices = state.matrices.slice(0, state.uuids.length * 16);
+    if (hasObjectPivotData(root)) state.uuids.forEach((uuid, index) => {
+        const pivot = objectPivot(root, uuid), isCustomPivot = objectIsCustomPivot(root, uuid);
+        if (pivot) state.pivots[index] = pivot.clone();
+        if (isCustomPivot !== undefined) state.isCustomPivots[index] = isCustomPivot;
+    });
     return state;
 }
 
@@ -376,14 +393,14 @@ function captureMirrorPlanes(root: Group, uuids: string[], groupIds: string[]): 
     return planes;
 }
 
-function captureObjectTransformState(root: Group, uuids: string[], groupIds: Iterable<string>): TransformHistoryState {
+function captureObjectTransformState(root: Group, uuids: string[], groupIds: Iterable<string>, slots?: CapturedSlots): TransformHistoryState {
     const groups = root.userData.groups as Map<string, GroupData> | undefined;
     const groupList = [...new Set(groupIds)];
     return {
         ui: captureHistoryUiState(),
         animation: captureAnimationSnapshot(root),
         transform: {
-            objects: captureTransformObjects(root, uuids),
+            objects: captureTransformObjects(root, uuids, slots),
             groups: groupList.map(id => groups?.get(id)).filter((group): group is GroupData => !!group).map(captureTransformGroup),
             mirrorPlanes: captureMirrorPlanes(root, uuids, groupList)
         }
@@ -395,20 +412,30 @@ export function captureTransformState(root: Group, meshToInstanceIds: Map<Object
 }
 
 export function captureSelectionTransformState(root: Group, meshToInstanceIds: Map<ObjectBatch, Iterable<number>>, groupIds: Iterable<string>): TransformHistoryState {
-    const objects = new Map<ObjectBatch, Set<number>>();
+    // Each valid slot's uuid once, grouped by batch in first-seen order (as slotUuids orders them). Per-batch flags
+    // instead of Sets: a group selection can hold the whole project. The slots are kept, so matrices are read by slot.
+    const slots = new Map<ObjectBatch, { seen: Uint8Array; uuids: string[]; ids: number[] }>();
     const add = (mesh: ObjectBatch, instanceId: number): void => {
-        const ids = objects.get(mesh) ?? new Set<number>();
-        ids.add(instanceId);
-        objects.set(mesh, ids);
+        let entry = slots.get(mesh);
+        if (!entry) slots.set(mesh, entry = { seen: new Uint8Array(getInstanceCount(mesh)), uuids: [], ids: [] });
+        if (!Number.isInteger(instanceId) || instanceId < 0 || instanceId >= entry.seen.length || entry.seen[instanceId]) return;
+        entry.seen[instanceId] = 1;
+        const uuid = objectUuidAt(root, mesh, instanceId);
+        if (!uuid) return;
+        entry.uuids.push(uuid);
+        entry.ids.push(instanceId);
     };
     meshToInstanceIds.forEach((ids, mesh) => { for (const id of ids) add(mesh, id); });
     const groups = new Set<string>();
     for (const groupId of new Set(groupIds)) {
         groups.add(groupId);
         getAllDescendantGroups(root, groupId).forEach(id => groups.add(id));
-        getAllGroupChildren(root, groupId).forEach(({ mesh, instanceId }) => add(mesh, instanceId));
+        for (const { mesh, instanceId } of getAllGroupChildren(root, groupId)) add(mesh, instanceId);
     }
-    return captureTransformState(root, objects, groups);
+    const store = root.userData.objectUuidToInstance as ObjectStore | undefined;
+    const captured = store && typeof store.version === 'number'
+        ? { store, version: store.version, runs: [...slots].map(([mesh, entry]) => ({ mesh, ids: entry.ids })) } : undefined;
+    return captureObjectTransformState(root, [...slots.values()].flatMap(entry => entry.uuids), groups, captured);
 }
 
 export function captureVertexHistoryState(
@@ -514,7 +541,7 @@ export function recordTransformChange(root: Group, before: TransformHistoryState
         window.alert(error instanceof Error ? error.message : String(error));
         return;
     }
-    const after = captureObjectTransformState(root, before.transform.objects.uuids, before.transform.groups.map(state => state.id));
+    const after = captureObjectTransformState(root, before.transform.objects.uuids, before.transform.groups.map(state => state.id), before.transform.objects.slots);
     recordStateChange({
         before,
         after,
@@ -541,7 +568,7 @@ export function captureSelectionGeometryState(
 }
 
 function captureObjectGeometryState(root: Group, before: GeometryHistoryState): GeometryHistoryState {
-    return withHeadValues(root, captureObjectTransformState(root, before.transform.objects.uuids, before.transform.groups.map(state => state.id)));
+    return withHeadValues(root, captureObjectTransformState(root, before.transform.objects.uuids, before.transform.groups.map(state => state.id), before.transform.objects.slots));
 }
 
 export function applyGeometryHistoryState(root: Group, state: GeometryHistoryState): void {

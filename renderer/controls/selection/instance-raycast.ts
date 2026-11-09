@@ -322,6 +322,23 @@ function collectBoxCandidates(node: BoundsNode, bounds: ArrayLike<number>, regio
     }
 }
 
+let warmGeneration = 0;
+
+/** Builds (or revalidates) the project's picking trees in idle time, a batch at a time, so the next click does not. */
+export function warmSceneRaycast(root: Group): void {
+    const generation = ++warmGeneration;
+    const batches = root.children.filter(isObjectBatch);
+    const step = (deadline: IdleDeadline) => {
+        if (generation !== warmGeneration) return;
+        do {
+            const batch = batches.pop();
+            if (batch && !batch.disposed && batch.parent === root) getBoundsTree(batch);
+        } while (batches.length && deadline.timeRemaining() > 0);
+        if (batches.length) requestIdleCallback(step, { timeout: 2000 });
+    };
+    requestIdleCallback(step, { timeout: 2000 });
+}
+
 export function intersectSceneInstances(
     raycaster: Raycaster,
     root: Group,

@@ -97,7 +97,8 @@ import {
     toggleSmartScale,
     updateSmartScaleDuringDrag
 } from './smart-scale';
-import { getInstanceMatrix, getInstancePivot, objectUuidAt, setInstanceValue, type ObjectBatch } from '../../scene-store/object-access';
+import { getInstanceCount, getInstanceMatrix, getInstancePivot, objectUuidAt, setInstanceValue, setInstanceValueRange, type ObjectBatch } from '../../scene-store/object-access';
+import { warmSceneRaycast } from '../selection/instance-raycast';
 
 // Interfaces 
 
@@ -674,6 +675,8 @@ function SelectionCenter(pivotMode: string, isCustomPivot: boolean, pivotOffset:
 function syncDragSelectionMask(): void {
     const nextIdsByMesh = new Map<ObjectBatch, Set<number>>();
     for (const { mesh, instanceId } of getSelectedItems()) {
+        // Slots past the count hold no object.
+        if (instanceId >= getInstanceCount(mesh)) continue;
         let ids = nextIdsByMesh.get(mesh);
         if (!ids) nextIdsByMesh.set(mesh, ids = new Set<number>());
         ids.add(instanceId);
@@ -684,15 +687,19 @@ function syncDragSelectionMask(): void {
         const previousIds = _dragSelectedIdsByMesh.get(mesh) ?? new Set<number>();
         const nextIds = nextIdsByMesh.get(mesh) ?? new Set<number>();
 
-        for (const id of previousIds) if (!nextIds.has(id)) setInstanceValue(mesh, id, dragSelectedAttributeName, 0);
-        for (const id of nextIds) setInstanceValue(mesh, id, dragSelectedAttributeName, 1);
+        // A wholly (de)selected batch is one write. Selected slots are rewritten: other code resets the mask (head rebuilds, slot reuse).
+        const count = getInstanceCount(mesh);
+        if (!nextIds.size && previousIds.size === count) setInstanceValueRange(mesh, 0, count, dragSelectedAttributeName, 0);
+        else for (const id of previousIds) if (!nextIds.has(id)) setInstanceValue(mesh, id, dragSelectedAttributeName, 0);
+        if (count && nextIds.size === count) setInstanceValueRange(mesh, 0, count, dragSelectedAttributeName, 1);
+        else for (const id of nextIds) setInstanceValue(mesh, id, dragSelectedAttributeName, 1);
     }
     _dragSelectedIdsByMesh = nextIdsByMesh;
 }
 
 function updateSelectionOverlay(notifySelection = true): void {
     if (notifySelection) syncDragSelectionMask();
-    Overlay.updateSelectionOverlay(scene, renderer, camera, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys, !notifySelection);
+    Overlay.updateSelectionOverlay(scene, renderer, currentSelection, vertexQueue, isVertexMode, selectionHelper, selectedVertexKeys);
     if (!notifySelection) {
         window.dispatchEvent(new CustomEvent('pde:object-transform-changed', {
             detail: { selection: currentSelection, pivotWorld: selectionHelper?.position.clone(), pivotMode,
@@ -1044,6 +1051,8 @@ function _emitSceneUpdated(): void {
 }
 
 function _handleSceneUpdated(event: Event): void {
+    // The first click must not build every picking tree.
+    warmSceneRaycast(loadedObjectGroup);
     const detail = (event as CustomEvent<SceneUpdatedDetail>).detail;
     if (detail?.skipGizmoRefresh) return;
     if (detail?.pivotChanged) pivotMode = 'origin';
@@ -1488,7 +1497,9 @@ export function initGizmo({
             }
             _meshToInstanceRanges.clear();
             for (const [mesh, instanceIds] of meshToInstanceIds) {
-                _meshToInstanceRanges.set(mesh, mergeInstanceIds(instanceIds));
+                // Selected items are distinct live slots: as many as the batch holds is the whole batch, no sort needed.
+                const count = getInstanceCount(mesh as ObjectBatch);
+                _meshToInstanceRanges.set(mesh, instanceIds.length === count ? [{ start: 0, count }] : mergeInstanceIds(instanceIds));
             }
             Overlay.prepareMultiSelectionDrag(currentSelection);
             draggingMode = transformControls!.mode;

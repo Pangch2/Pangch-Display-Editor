@@ -116,6 +116,7 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
         if (pool && (!poolUnchanged(pool) || pool.meshes.some(({ mesh }) => mesh.count !== 0)
             || pool.models.size !== replacements.length || replacements.some(({ objectUuid }) => !pool.models.has(objectUuid)))) { dropPool(entry); pool = undefined; }
         if (pool) {
+            if (import.meta.env.DEV) console.assert(pool.meshes.every(({ mesh }) => !mesh.disposed), 'A pooled preview batch was disposed; its objects would never draw.');
             for (const { mesh, count } of pool.meshes) {
                 mesh.count = count; mesh.visible = false;
                 for (const name of [entityVisibleAttributeName, dragSelectedAttributeName]) {
@@ -208,8 +209,8 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
                 for (const instanceId of [...ids].sort((a, b) => b - a)) moved.push({ oldMesh: mesh as ObjectBatch,
                     oldInstanceId: instanceId, oldLastInstanceId: last--, mesh: mesh as ObjectBatch, instanceId });
             }
-            if (objects.size) deleteSelectedItems(loadedObjectGroup, { groups: new Set(), objects },
-                { resetSelectionAndDeselect: () => {}, preserveAnimation: true, undoable: false })?.dispose();
+            const removed = objects.size ? deleteSelectedItems(loadedObjectGroup, { groups: new Set(), objects },
+                { resetSelectionAndDeselect: () => {}, preserveAnimation: true, undoable: false }) : null;
             notifySelection(moved);
             for (const mesh of objects.keys() as Iterable<ObjectBatch>) {
                 const pool = meshPools.get(mesh);
@@ -219,6 +220,8 @@ export async function previewObjectModels(requests: DisplayRequest[], isCurrent:
                     mesh.visible = false; loadedObjectGroup.add(mesh);
                 }
             }
+            // After pooled batches are back in the scene: disposing frees only detached batches, and a disposed batch is never drawn again.
+            removed?.dispose();
             for (const mesh of ownedMeshes) if (!mesh.parent && !meshPools.get(mesh)?.valid) {
                 disposeMesh(mesh);
             }

@@ -153,7 +153,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .menu-bar-title {
   flex: none;
   width: 33px;
-  height: 12px;
+  height: 15px;
   background: currentColor;
   mask: url('../../../resources/pde-wordmark.svg') center / 100% 100% no-repeat;
   font-size: 0;
@@ -183,9 +183,10 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
   height: 100%;
 }
 
-.menu-bar-button {
+.menu-bar-items .menu-bar-button {
   height: 100%;
-  padding: 0 8px;
+  padding: 0 10px;
+  font-size: 14px;
 }
 
 .menu-bar-items > span {
@@ -229,7 +230,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
   align-items: center;
   gap: 8px;
   flex: none;
-  padding: 7px 12px;
+  padding: 7px 12px 7px 5px;
   text-align: left;
 }
 

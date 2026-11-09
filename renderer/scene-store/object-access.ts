@@ -48,6 +48,15 @@ export function setInstanceValue(batch: ObjectBatch, instanceId: number, name: s
     return true;
 }
 
+/** Writes one per-object value to slots [start, start + count) and marks them as one row span. */
+export function setInstanceValueRange(batch: ObjectBatch, start: number, count: number, name: string, value: number, component = 0): boolean {
+    const attribute = batch.geometry.getAttribute(name);
+    if (!attribute) return false;
+    for (let instanceId = start; instanceId < start + count; instanceId++) attribute.setComponent(instanceId, component, value);
+    markInstanceRows(attribute, start, count);
+    return true;
+}
+
 // The visible slots of each batch, kept in step with setInstanceVisible; rebuilt when the batch's storage changes.
 type VisibleSlots = { attribute: unknown; count: number; ids: Set<number>; snapshot?: number[] };
 const visibleSlots = new WeakMap<ObjectBatch, VisibleSlots>();
@@ -200,7 +209,8 @@ export function getInstanceWorldMatrixForOrigin(batch: ObjectBatch, instanceId: 
     return getInstanceWorldMatrix(batch, instanceId, outMatrix);
 }
 
-export function getInstanceLocalBox(batch: ObjectBatch, instanceId: number): Box3 | null {
+/** The object's box in batch-local space, written to `out` (pass one to read many objects without allocating). */
+export function getInstanceLocalBox(batch: ObjectBatch, instanceId: number, out = new Box3()): Box3 | null {
     if (!batch) return null;
     const { geometry } = batch;
     if (!geometry) return null;
@@ -208,7 +218,7 @@ export function getInstanceLocalBox(batch: ObjectBatch, instanceId: number): Box
     if (!geometry.boundingBox) return null;
 
     const textLayout = geometry.getAttribute('textDisplayLayout');
-    let box = geometry.boundingBox.clone();
+    const box = out.copy(geometry.boundingBox);
     if (textLayout && instanceId < textLayout.count && !geometry.userData.textDisplayGeometryKey) {
         const centerX = (textLayout.getX(instanceId) + textLayout.getY(instanceId)) * 0.5;
         const halfWidth = textLayout.getW(instanceId) * 0.5;
@@ -216,10 +226,8 @@ export function getInstanceLocalBox(batch: ObjectBatch, instanceId: number): Box
         box.max.set(centerX + halfWidth, textLayout.getZ(instanceId), geometry.boundingBox.max.z);
     }
 
-    if (getDisplayType(batch, instanceId) === 'item_display' && hasInstanceHatData(batch) && !getInstanceHasHat(batch, instanceId)) {
-        const center = new Vector3();
-        box.getCenter(center);
-        box = new Box3().setFromCenterAndSize(center, new Vector3(1, 1, 1));
+    if (hasInstanceHatData(batch) && getDisplayType(batch, instanceId) === 'item_display' && !getInstanceHasHat(batch, instanceId)) {
+        box.setFromCenterAndSize(box.getCenter(new Vector3()), new Vector3(1, 1, 1));
     }
 
     return box;
@@ -397,7 +405,9 @@ export function hashInstanceRows(batch: ObjectBatch, start: number, end: number,
 export function readInstanceMatrix(batch: ObjectBatch, instanceId: number, target: Float32Array, offset = 0): void {
     const { instanceMatrix } = batch;
     const start = rowOf(instanceMatrix as unknown as InstanceArray, instanceId);
-    target.set((instanceMatrix.array as Float32Array).subarray(start, start + 16), offset);
+    const array = instanceMatrix.array as Float32Array;
+    // A plain copy: a subarray view per object adds up when whole selections are snapshotted.
+    for (let index = 0; index < 16; index++) target[offset + index] = array[start + index];
 }
 
 /** Writes 16 floats of `source` from `offset` as one object's matrix. Unmarked: call markInstanceMatrices after a run of writes. */
@@ -433,6 +443,11 @@ export function invalidateBatchBounds(batch: ObjectBatch): void {
 
 export function objectRef(root: Group, uuid: string): ObjectRef | undefined {
     return (root.userData.objectUuidToInstance as ObjectStore<ObjectRef> | undefined)?.get(uuid);
+}
+
+/** objectRef written into `out` (no allocation, for loops over many objects); undefined when the object is unknown. */
+export function readObjectRef(root: Group, uuid: string, out: ObjectRef): ObjectRef | undefined {
+    return (root.userData.objectUuidToInstance as ObjectStore<ObjectRef> | undefined)?.readSlot(uuid, out) ? out : undefined;
 }
 
 /** The uuid of the object in a batch slot. */
@@ -477,6 +492,12 @@ export function objectLocalBox(root: Group, uuid: string): Box3 | null {
 export function objectModelTransform(root: Group, uuid: string, out = new Matrix4()): Matrix4 {
     const ref = objectRef(root, uuid);
     return ref ? getInstanceModelTransform(ref.mesh, ref.instanceId, out) : out.identity();
+}
+
+/** True when any object has a pivot or custom-pivot flag, so loops over many objects can skip the lookups. */
+export function hasObjectPivotData(root: Group): boolean {
+    const data = root.userData as PivotData;
+    return !!(data.objectPivots?.size || data.objectIsCustomPivot?.size);
 }
 
 export function objectPivot(root: Group, uuid: string): Vector3 | undefined {

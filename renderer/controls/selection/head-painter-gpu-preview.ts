@@ -1,11 +1,12 @@
 import {
-    Box3, DoubleSide, DynamicDrawUsage, InstancedBufferAttribute, InstancedMesh, MeshBasicNodeMaterial,
-    LineBasicNodeMaterial, Matrix4, PlaneGeometry, StorageBufferAttribute, StorageInstancedBufferAttribute, Vector3, Vector4
+    Box3, DoubleSide, DynamicDrawUsage, InstancedBufferAttribute, MeshBasicNodeMaterial,
+    LineBasicNodeMaterial, Matrix4, PlaneGeometry, StorageBufferAttribute, Vector3, Vector4
 } from 'three/webgpu';
 import {
     Fn, If, Loop, atomicOr, atomicStore, attribute, float, fwidth, instanceIndex, max,
     positionGeometry, positionLocal, smoothstep, storage, uint, uniform, uv, varying, vec2, vec3, vec4, uvec2
 } from 'three/tsl';
+import { OverlayBatch, overlayInstance } from '../../gpu-draw/overlay-batch';
 
 // CPU and GPU choose the same pixel at UV boundaries despite Float32 interpolation error.
 export const headPainterPixelEpsilon = 1e-4;
@@ -23,7 +24,7 @@ export function createHeadPainterGridMaterial(color: number): LineBasicNodeMater
     const size = line.z.equal(0).select(textureSize.x, textureSize.y);
     const visible = line.y.lessThanEqual(count);
     material.opacityNode = varying(visible.toFloat(), 'vHeadPainterGridVisible').mul(0.9);
-    material.positionNode = Fn((builder) => {
+    material.positionNode = Fn(() => {
         const boundary = line.y.mul(size).div(count).add(0.5).floor().div(size);
         const coordinate = visible.select(line.z.equal(0).select(vec2(boundary, line.w), vec2(line.w, boundary)), vec2(0));
         const h = attribute('headPainterGridHorizontal', 'vec3');
@@ -31,8 +32,7 @@ export function createHeadPainterGridMaterial(color: number): LineBasicNodeMater
         const position = positionGeometry.add(h.mul(coordinate.x)).add(v.mul(coordinate.y));
         const local = position.add(vec3(0, 0.5, 0)).mul(attribute('headPainterGridScale', 'float'))
             .sub(vec3(0, 0.5, 0)).add(h.cross(v).normalize().mul(0.001));
-        // positionNode runs after Three's instancing; transform the complete local grid here.
-        return storage(builder.object.instanceMatrix, 'mat4').toReadOnly().element(instanceIndex).mul(vec4(local, 1)).xyz;
+        return overlayInstance('mat4').mul(vec4(local, 1)).xyz;
     })();
     return material;
 }
@@ -41,7 +41,7 @@ export function createHeadPainterPreviewMaterial(maskNode = attribute('headPaint
     const material = new MeshBasicNodeMaterial({ color: 0xffffff, side: DoubleSide, transparent: true,
         alphaTest: 0.001, depthTest: false, depthWrite: false });
     // Empty faces collapse before rasterization, even when the scene table contains every head face.
-    material.positionNode = maskNode.x.bitOr(maskNode.y).notEqual(uint(0)).select(positionLocal, vec3(0));
+    material.positionNode = maskNode.x.bitOr(maskNode.y).notEqual(uint(0)).select(overlayInstance('mat4').mul(vec4(positionLocal, 1)).xyz, vec3(0));
     material.opacityNode = Fn(() => {
         const counts = varying(attribute('headPainterGrid', 'vec2'), 'vHeadPainterGrid').toVar();
         const mask = varying(maskNode, 'vHeadPainterCells').setInterpolation('flat').toVar();
@@ -101,11 +101,11 @@ export function createHeadPainterGpuPreview(data: HeadPainterGpuPreviewData, fla
     geometry.setAttribute('headPainterGrid', new InstancedBufferAttribute(new Float32Array(faceCapacity * 2), 2).setUsage(DynamicDrawUsage));
     const maskRead = storage(buffers.masks, 'uint').toReadOnly();
     const maskNode = uvec2(maskRead.element(instanceIndex.mul(2)), maskRead.element(instanceIndex.mul(2).add(1)));
-    const mesh = new InstancedMesh(geometry, createHeadPainterPreviewMaterial(maskNode), faceCapacity);
-    mesh.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(capacity(data.matrices.length, 2048)), 16).setUsage(DynamicDrawUsage);
-    mesh.name = 'head-painter-gpu-preview';
-    mesh.frustumCulled = false;
-    mesh.renderOrder = 2000;
+    const batch = new OverlayBatch('triangles', geometry, createHeadPainterPreviewMaterial(maskNode),
+        new StorageBufferAttribute(new Float32Array(capacity(data.matrices.length, 2048)), 16).setUsage(DynamicDrawUsage));
+    batch.count = faceCapacity;
+    batch.name = 'head-painter-gpu-preview';
+    batch.renderOrder = 2000;
     const brush = uniform(new Vector4());
     const source = uniform(new Vector4());
     const bounds = uniform(data.binBounds.clone());
@@ -114,7 +114,7 @@ export function createHeadPainterGpuPreview(data: HeadPainterGpuPreviewData, fla
     const face = uniform(0, 'uint');
     const triangles = storage(buffers.triangles, 'vec4').toReadOnly();
     const records = storage(buffers.records, 'uvec4').toReadOnly();
-    (mesh.material as MeshBasicNodeMaterial).positionNode = Fn((builder) => {
+    (batch.draw.material as MeshBasicNodeMaterial).positionNode = Fn(() => {
         const metadata = records.element(instanceIndex.div(uint(2)).mul(uint(2)).add(uint(1)));
         const face = metadata.w, p = uv().sub(0.5);
         const local = face.equal(uint(0)).select(vec3(0.5, p.y, p.x.negate()),
@@ -124,7 +124,7 @@ export function createHeadPainterGpuPreview(data: HeadPainterGpuPreviewData, fla
             face.equal(uint(4)).select(vec3(p.x, p.y, 0.5), vec3(p.x.negate(), p.y, -0.5))))));
         const scale = instanceIndex.mod(uint(2)).equal(uint(0)).select(1.006, 1.0625 * 1.006);
         const position = local.mul(scale).sub(vec3(0, 0.5, 0));
-        const matrix = storage(builder.object.instanceMatrix, 'mat4').toReadOnly().element(metadata.z);
+        const matrix = overlayInstance('mat4', metadata.z);
         return maskNode.x.bitOr(maskNode.y).notEqual(uint(0)).select(matrix.mul(vec4(position, 1)).xyz, vec3(0));
     })();
     const bins = storage(buffers.bins, 'uvec2').toReadOnly();
@@ -224,7 +224,7 @@ export function createHeadPainterGpuPreview(data: HeadPainterGpuPreviewData, fla
             });
         });
     })().compute(flags.length);
-    return { mesh, buffers, brush, source, bounds, dimensions, frame, face, clear, paint };
+    return { batch, buffers, brush, source, bounds, dimensions, frame, face, clear, paint };
 }
 
 export type HeadPainterGpuPreview = ReturnType<typeof createHeadPainterGpuPreview>;
@@ -240,12 +240,12 @@ export function updateHeadPainterGpuPreviewData(preview: HeadPainterGpuPreview, 
         preview.buffers.flags.needsUpdate = true;
         preview.paint.count = flags.length;
     }
-    preview.mesh.instanceMatrix.array.set(data.matrices);
-    preview.mesh.instanceMatrix.needsUpdate = true;
-    const grid = preview.mesh.geometry.getAttribute('headPainterGrid');
+    preview.batch.instances!.array.set(data.matrices);
+    preview.batch.instances!.needsUpdate = true;
+    const grid = preview.batch.draw.geometry.getAttribute('headPainterGrid');
     grid.array.set(data.grids);
     grid.needsUpdate = true;
-    preview.mesh.count = data.grids.length / 2;
+    preview.batch.count = data.grids.length / 2;
     preview.bounds.value.copy(data.binBounds);
     preview.dimensions.value.copy(data.binDimensions);
 }
@@ -253,8 +253,6 @@ export function updateHeadPainterGpuPreviewData(preview: HeadPainterGpuPreview, 
 export function disposeHeadPainterGpuPreview(preview: HeadPainterGpuPreview): void {
     preview.clear.dispose();
     preview.paint.dispose();
-    preview.mesh.removeFromParent();
-    preview.mesh.dispose();
-    preview.mesh.geometry.dispose();
-    (preview.mesh.material as MeshBasicNodeMaterial).dispose();
+    preview.batch.dispose();
+    (preview.batch.draw.material as MeshBasicNodeMaterial).dispose();
 }
