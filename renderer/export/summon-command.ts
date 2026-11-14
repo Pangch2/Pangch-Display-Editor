@@ -346,15 +346,12 @@ function* createSummonCommands(project: Group, limit: number, separate = false):
     visitingGroups.add(id);
     const ownNbt = readNbt(group.nbt, `그룹 ${group.name} (${id})`);
     const groupNbt = mergeNbt(inheritedNbt, ownNbt);
-    const passengers = function* (childLimit: number): NbtChunks {
-      for (const child of group.children) {
-        if (child.type === 'group') yield* exportGroup(child.id, childLimit, groupNbt);
-        else yield* exportObjects(child.id, childLimit, groupNbt);
-      }
-    };
-    // Display passengers share the summon origin; group transforms are already in the object matrices.
-    if (!separate && Object.keys(ownNbt).length) yield* splitPassengers(omitDisplayDefaults(mergeNbt(groupNbt, { id: 'item_display', ...defaults })), passengers, available, `그룹 ${group.name} (${id})`, floatCache);
-    else yield* passengers(available);
+    // Groups are editor-only: children inherit the group NBT and ride the summon root directly,
+    // so no wrapper entity (and no nested Passengers list) is emitted.
+    for (const child of group.children) {
+      if (child.type === 'group') yield* exportGroup(child.id, available, groupNbt);
+      else yield* exportObjects(child.id, available, groupNbt);
+    }
     visitingGroups.delete(id);
     seenGroups.add(id);
   };

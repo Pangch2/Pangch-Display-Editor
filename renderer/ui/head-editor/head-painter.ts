@@ -164,6 +164,7 @@ let selectedBrushName: string | null = null;
 let stampWidth = 8;
 let stampHeight = 8;
 let stampPixels: Array<Rgba | null> = Array(64).fill(null);
+let stampAlign = localStorage.getItem('pdeHeadPainterStampAlign') === 'true';
 let stroke: Map<string, WorkSurface> | null = null;
 let strokePaintUsage: Parameters<typeof getPlayerHeadPaintSurface>[3];
 let strokeAtlasLayout = '';
@@ -1270,7 +1271,9 @@ function copyStamp(hit: PaintHit): void {
   const images = new Map<string, ReturnType<typeof readPlayerHeadPaint>>();
   const atlasImage = hit.atlas ? hit.surface.context.getImageData(0, 0, hit.atlas.canvas.width, hit.atlas.canvas.height) : null;
   stampPixels = Array(stampWidth * stampHeight).fill(null);
-  for (const { hit: target, index } of getStampCells(hit, true)) {
+  for (const { hit: cell, index } of getStampCells(hit, true)) {
+    // Copy what is shown: in auto layer mode each cell reads its own visible layer, not the one under the cursor.
+    const target = cell.atlas ? cell : currentPaintLayer(cell, images)!;
     let image = atlasImage ?? images.get(target.surface.objectUuid);
     if (!image) {
       image = readPlayerHeadPaint(target.surface);
@@ -1284,7 +1287,7 @@ function copyStamp(hit: PaintHit): void {
 
 // Snaps the stamp's top-left to multiples of its size so repeated clicks tile without gaps or overlap.
 function alignStampHit(hit: PaintHit): PaintHit {
-  if (lastTool !== 'stamp' || !isShortcutPressed('headPainterAlignStamp')) return hit;
+  if (lastTool !== 'stamp' || !stampAlign) return hit;
   return {
     ...hit,
     x: Math.floor(hit.x / stampWidth) * stampWidth + Math.floor(stampWidth / 2),
@@ -1463,7 +1466,7 @@ function onKeyUp(event: KeyboardEvent): void {
   refreshStampPreview(event);
 }
 
-// Modifier changes (align/copy) must redraw the stamp overlay without waiting for a pointer move.
+// Modifier changes (copy) must redraw the stamp overlay without waiting for a pointer move.
 function refreshStampPreview(event: KeyboardEvent): void {
   if (event.repeat || !active || lastTool !== 'stamp' || stroke || !previewSourceHit) return;
   lastPreviewKey = null;
@@ -2883,9 +2886,9 @@ function createPanel(): void {
     <fieldset data-tool-settings="stamp" hidden>
       <legend>스탬프</legend>
       <div class="head-painter-inline"><label>가로 <input id="head-painter-stamp-width" type="number" min="1" value="8"></label><label>세로 <input id="head-painter-stamp-height" type="number" min="1" value="8"></label></div>
-      <div class="head-painter-stamp-actions"><button type="button" data-stamp="left" class="lucide-icon" aria-label="왼쪽 회전" title="왼쪽 회전">\uE148</button><button type="button" data-stamp="right" class="lucide-icon" aria-label="오른쪽 회전" title="오른쪽 회전">\uE149</button><button type="button" data-stamp="vertical" class="lucide-icon" aria-label="상하 반전" title="상하 반전">\uE35E</button><button type="button" data-stamp="horizontal" class="lucide-icon" aria-label="좌우 반전" title="좌우 반전">\uE35D</button></div>
+      <div class="head-painter-stamp-actions"><button type="button" data-stamp="left" class="lucide-icon" aria-label="왼쪽 회전" title="왼쪽 회전">\uE148</button><button type="button" data-stamp="right" class="lucide-icon" aria-label="오른쪽 회전" title="오른쪽 회전">\uE149</button><button type="button" data-stamp="vertical" class="lucide-icon" aria-label="상하 반전" title="상하 반전">\uE35E</button><button type="button" data-stamp="horizontal" class="lucide-icon" aria-label="좌우 반전" title="좌우 반전">\uE35D</button><button type="button" id="head-painter-stamp-align" class="lucide-icon${stampAlign ? ' active' : ''}" aria-pressed="${stampAlign}" aria-label="정렬 배치" title="정렬 배치 (배치·복사를 스탬프 크기 격자에 맞춤)">\uE4FF</button></div>
       <div class="head-painter-stamp-preview"></div>
-      <small>Shift+클릭으로 복사, 클릭으로 배치, Ctrl+클릭으로 정렬배치</small>
+      <small>Shift+클릭으로 복사, 클릭으로 배치</small>
     </fieldset>
     </div>
     <div class="head-painter-section" data-head-painter-section="palette">
@@ -2995,6 +2998,13 @@ function createPanel(): void {
   root.querySelector<HTMLInputElement>('#head-painter-stamp-width')!.oninput = event => resizeStamp(Number((event.target as HTMLInputElement).value), stampHeight);
   root.querySelector<HTMLInputElement>('#head-painter-stamp-height')!.oninput = event => resizeStamp(stampWidth, Number((event.target as HTMLInputElement).value));
   root.querySelectorAll<HTMLButtonElement>('[data-stamp]').forEach(button => button.onclick = () => transformStamp(button.dataset.stamp as 'left' | 'right' | 'vertical' | 'horizontal'));
+  root.querySelector<HTMLButtonElement>('#head-painter-stamp-align')!.onclick = event => {
+    const button = event.currentTarget as HTMLButtonElement;
+    stampAlign = !stampAlign;
+    button.classList.toggle('active', stampAlign);
+    button.setAttribute('aria-pressed', String(stampAlign));
+    localStorage.setItem('pdeHeadPainterStampAlign', String(stampAlign));
+  };
   root.querySelector<HTMLSelectElement>('#head-painter-color-mode')!.onchange = event => {
     colorMode = (event.target as HTMLSelectElement).value as typeof colorMode;
     syncColorControls();

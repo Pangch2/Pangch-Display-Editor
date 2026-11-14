@@ -204,7 +204,7 @@ export const userGuideSections = [
                     <p>아틀라스의 페인팅 선택 범위가 있으면 그 안에서만 채웁니다. 기본 레이어는 불투명하게 채워집니다.</p>
 
                     <h3><span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE3BB;</span>스탬프 복사와 배치</h3>
-                    <p>먼저 가로·세로 크기를 정한 뒤 <kbd>Shift</kbd>를 누른 채 복사할 위치를 클릭합니다. 패널의 미리보기에서 복사된 모양을 확인하고, 적용할 위치를 클릭하거나 드래그해 배치합니다. <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE148;</span>왼쪽 회전·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE149;</span>오른쪽 회전은 90도씩 회전하고, <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE35D;</span>좌우 반전·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE35E;</span>상하 반전으로 뒤집습니다. <kbd>Ctrl</kbd>을 누른 채 클릭하면 스탬프 크기 단위 격자에 맞춰 정렬 배치되어, 이어서 클릭해도 빈틈이나 겹침 없이 타일처럼 깔립니다.</p>
+                    <p>먼저 가로·세로 크기를 정한 뒤 <kbd>Shift</kbd>를 누른 채 복사할 위치를 클릭합니다. 패널의 미리보기에서 복사된 모양을 확인하고, 적용할 위치를 클릭하거나 드래그해 배치합니다. <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE148;</span>왼쪽 회전·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE149;</span>오른쪽 회전은 90도씩 회전하고, <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE35D;</span>좌우 반전·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE35E;</span>상하 반전으로 뒤집습니다. 정렬을 켜면 배치와 복사가 스탬프 크기 단위 격자에 맞춰져, 이어서 찍어도 빈틈이나 겹침 없이 타일처럼 깔립니다.</p>
                     <p>스탬프는 복사한 픽셀의 색상과 알파를 배치합니다. 크기 변경은 복사 영역의 크기를 바꾸는 방식이므로 원하는 크기로 정한 뒤 다시 복사하세요.</p>
 
                     <h3>인접 헤드 페인트와 대칭 페인팅</h3>

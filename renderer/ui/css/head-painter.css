@@ -130,11 +130,11 @@
   gap: 4px;
 }
 
-/* 4 buttons span the same width as the preview grid below */
+/* 5 buttons (rotate/flip + align) span the same width as the preview grid below */
 .head-painter-stamp-actions {
   width: min(100%, 176px);
   justify-self: center;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .head-painter-tools {
@@ -149,6 +149,7 @@
 }
 
 .head-painter-tool.active,
+#head-painter-stamp-align.active,
 .head-painter-custom-brush button.active,
 .head-painter-basic-brushes button.active,
 .head-painter-generator button.active {
@@ -401,6 +402,11 @@
   aspect-ratio: 1;
   gap: 1px;
   background: #111;
+}
+
+.head-painter-stamp-preview + small {
+  display: block;
+  text-align: center;
 }
 
 .head-painter-stamp-preview span {

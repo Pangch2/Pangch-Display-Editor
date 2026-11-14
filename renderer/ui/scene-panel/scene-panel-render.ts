@@ -390,6 +390,9 @@ function rebuildSceneRows(): void {
 function syncScenePanelSpacerHeight(): void {
     if (!scenePanelState.scenePanelSpacerEl) return;
     scenePanelState.scenePanelSpacerEl.style.height = `${scenePanelState.visibleRows.length * scenePanelState.rowHeight}px`;
+    // Deep nesting widens rows past the panel so the list scrolls horizontally instead of clipping.
+    const maxDepth = scenePanelState.visibleRows.reduce((max, row) => Math.max(max, row.depth), 0);
+    if (scenePanelState.scenePanelContentEl) scenePanelState.scenePanelContentEl.style.minWidth = `${12 + maxDepth * 16 + 180}px`;
 }
 
 function fitSceneExtraBlocks(): void {

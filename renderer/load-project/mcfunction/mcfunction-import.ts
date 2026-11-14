@@ -197,9 +197,7 @@ function headTexture(item: Compound): string | undefined {
     const skin = textures && compound(textures.SKIN) ? textures.SKIN : undefined;
     const url = skin?.url;
     if (typeof url !== 'string' || !/^https?:\/\/textures\.minecraft\.net\/texture\/[\da-f]+$/i.test(url)) return undefined;
-    // Keep signatures, profile identity and other texture payload details unless the whole profile is represented.
-    if (Object.keys(profile).length === 1 && profile.properties.length === 1 && Object.keys(property).every(key => key === 'name' || key === 'value')
-        && Object.keys(payload).length === 1 && Object.keys(textures!).length === 1 && Object.keys(skin!).length === 1) delete components[key];
+    delete components[key];
     prune(item, 'components');
     return url.replace(/^http:/, 'https:');
 }
