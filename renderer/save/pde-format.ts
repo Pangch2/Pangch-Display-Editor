@@ -1,6 +1,6 @@
 import { strFromU8, strToU8 } from 'fflate';
 import { MathUtils } from 'three/webgpu';
-import { animationClips, validateAnimation, type AnimationClip, type AnimationData } from '../animation/animation-data';
+import { animationCameraItem, animationClips, transformMatrix, validateAnimation, type AnimationClip, type AnimationData } from '../animation/animation-data';
 import { defaultTextDisplayOptions, type TextDisplayOptions } from '../load-project/display/text-display';
 
 export type ObjectEditorState = {
@@ -257,17 +257,20 @@ export function* validatePdeProjectSteps(project: any): Generator<void, void> {
                 if (!record(clip) || !Array.isArray(clip.tracks)) throw new Error('잘못된 애니메이션 클립입니다.');
                 for (const track of clip.tracks) {
                     if (!record(track)) throw new Error('잘못된 애니메이션 대상입니다.');
-                    if (track.type !== 'camera') track.id = resolve(track.id);
+                    // Legacy camera tracks kept a literal id; migrateAnimationCamera replaces them.
+                    if ((track.type as string) !== 'camera') track.id = resolve(track.id);
                 }
                 if (clip.excludedNodes !== undefined) {
                     if (!Array.isArray(clip.excludedNodes)) throw new Error('잘못된 애니메이션 제외 대상입니다.');
                     clip.excludedNodes = clip.excludedNodes.map(resolve);
                 }
             }
+            if (state.animation.camera !== undefined) state.animation.camera = resolve(state.animation.camera);
         }
     }
     const seenObjects = new Set<string>();
     if (state.animation !== undefined) {
+        if (record(state.animation)) migrateAnimationCamera(project, objectIds);
         validateAnimation(state.animation, objectIds, groupIds);
         for (const clip of animationClips(state.animation)) for (const track of clip.tracks) for (const key of track.keys) {
             if (key.properties?.options !== undefined) validateTextDisplayOptions(key.properties.options, key.properties.name!);
@@ -302,6 +305,25 @@ export function* validatePdeProjectSteps(project: any): Generator<void, void> {
         && entry.length === 2 && (objectIds.has(entry[0]) || groupIds.has(entry[0])) && vector(entry[1], 16)))) throw new Error('잘못된 PDE 미러 기준면입니다.');
     if (state.globalBrightness !== undefined && (!record(state.globalBrightness) || !boolean(state.globalBrightness.enabled)
         || ![state.globalBrightness.sky, state.globalBrightness.block].every(value => Number.isInteger(value) && value >= 0 && value <= 15))) throw new Error('잘못된 PDE 전역 밝기입니다.');
+}
+
+// The camera used to be its own track type (with an optional shake track); its keys now move a camera item.
+function migrateAnimationCamera(project: any, objectIds: Set<string>): void {
+    const state = project.editorState, clips: any[] = animationClips(state.animation);
+    let uuid: string | undefined;
+    for (const clip of clips) {
+        if (!record(clip) || !Array.isArray(clip.tracks)) continue;
+        delete clip.cameraShake;
+        clip.tracks = clip.tracks.flatMap((track: any) => track?.type !== 'camera' ? [track]
+            : track.id === 'pde:camera' ? [{ ...track, type: 'object', id: uuid ??= MathUtils.generateUUID() }] : []);
+    }
+    if (!uuid) return;
+    const first = clips.flatMap(clip => Array.isArray(clip?.tracks) ? clip.tracks : []).find(track => track?.id === uuid)?.keys?.[0]?.transform;
+    project.children.push({ uuid, name: animationCameraItem, nbt: '', isItemDisplay: true,
+        transforms: first ? transformMatrix(first).transpose().toArray() : [...identityMatrix] });
+    state.objects.push({ uuid, label: '카메라' });
+    state.animation.camera = uuid;
+    objectIds.add(uuid);
 }
 
 export function encodePdeProject(project: PdeProject): Uint8Array {
@@ -368,9 +390,10 @@ export function* encodePdeProjectSteps(project: PdeProject): Generator<void, Uin
     for (const id of hidden) reference(id);
     for (const [id, partner] of mirrors) { reference(id); reference(partner); }
     const animation = project.editorState?.animation;
-    const saveClip = (clip: AnimationClip) => ({ ...clip, tracks: clip.tracks.map(track => ({ ...track, id: track.type === 'camera' ? track.id : reference(track.id) })),
+    const saveClip = (clip: AnimationClip) => ({ ...clip, tracks: clip.tracks.map(track => ({ ...track, id: reference(track.id) })),
         excludedNodes: clip.excludedNodes?.map(reference) });
-    const savedAnimation = animation && indexed ? { ...animation, ...saveClip(animation), clips: animation.clips?.map(saveClip) } : animation;
+    const savedAnimation = animation && indexed ? { ...animation, ...saveClip(animation), clips: animation.clips?.map(saveClip),
+        camera: animation.camera === undefined ? undefined : reference(animation.camera) } : animation;
     // Editor links use preorder indices; UUIDs exist only while editing.
     const saved = indexed ? omitDefaults({ ...project, children, editorState: omitDefaults({
         version: animation ? 5 : 4,

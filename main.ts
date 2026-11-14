@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -23,8 +23,8 @@ const SPRITE_ATLAS_DIR = path.join(CACHE_DIR, 'sprite-atlases');
 const KEY_MAPPING_DIR = path.join(CACHE_DIR, 'key-mapping');
 const KEY_MAPPING_ORDER_PATH = path.join(KEY_MAPPING_DIR, '.order');
 const BRUSH_DIR = path.join(CACHE_DIR, 'brush');
-const clientUrl = 'https://piston-data.mojang.com/v1/objects/e877b6a07acd633fb3bb475002175cec036e7b87/client.jar';
-const serverUrl = 'https://piston-data.mojang.com/v1/objects/33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c/server.jar';
+const clientUrl = 'https://piston-data.mojang.com/v1/objects/20d822c927fd9b3246f72b5af93b1e4f8e410d74/client.jar';
+const serverUrl = 'https://piston-data.mojang.com/v1/objects/5c4d729eca710d0a83b2d54a2cc94216b568385c/server.jar';
 // When packaged, __dirname points to app.asar contents. Files added via build.files are inside asar by default.
 // For reading hardcoded JSON at runtime, prefer resolved path within the asar; when unpacked dev, use __dirname.
 const APP_ROOT = path.dirname(__dirname);
@@ -496,11 +496,12 @@ function createWindow() {
     return autoSaveFiles.save(id, name, data, maximum);
   });
   registerProjectClipboard(win.webContents);
-  ipcMain.handle('capture-color-picker', async event => {
+  ipcMain.handle('get-cursor-client-point', event => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Invalid color picker sender');
-    const image = await win.webContents.capturePage();
-    if (image.isEmpty()) throw new Error('Color picker capture is empty');
-    return image.toDataURL({ scaleFactor: Math.max(...image.getScaleFactors()) });
+    const cursor = screen.getCursorScreenPoint();
+    const content = win.getContentBounds();
+    const zoom = win.webContents.getZoomFactor();
+    return { x: (cursor.x - content.x) / zoom, y: (cursor.y - content.y) / zoom };
   });
   ipcMain.handle('decompress-pde-project', (event, data: Uint8Array) => {
     if (event.sender !== win.webContents) throw new Error('Invalid project decompress sender');

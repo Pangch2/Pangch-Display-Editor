@@ -7,11 +7,12 @@ import type { CloneJobEntry } from './group';
 import * as Overlay from '../selection/overlay';
 import { isPbdeLogEnabled, pbdeLogNames } from '../../load-project/pbde/pbde-log';
 import { ObjectStore } from '../../scene-store/object-store';
-import { objectIsCustomPivot, objectPivot, setObjectIsCustomPivot, setObjectPivot, type ObjectBatch } from '../../scene-store/object-access';
+import { objectRef, objectIsCustomPivot, objectPivot, setObjectIsCustomPivot, setObjectPivot, type ObjectBatch } from '../../scene-store/object-access';
 import { appendInstanceCopies } from '../../scene-store/object-batches';
 
 const getDisplayType = Overlay.getDisplayType;
 
+import { animationCameraObject } from '../../animation/animation-camera';
 import { cloneAnimationTarget } from '../../animation/animation-state';
 
 interface SceneOrderEntry {
@@ -377,6 +378,9 @@ export function duplicateGroupsAndObjects(
     }
 
     for (const job of directJobs) jobs.push(job);
+    // The camera is unique: it is never cloned, alone or inside a group.
+    const cameraId = animationCameraObject(loadedObjectGroup), cameraRef = cameraId && objectRef(loadedObjectGroup, cameraId);
+    if (cameraRef) for (let i = jobs.length; i--;) if (jobs[i].mesh === cameraRef.mesh && jobs[i].instanceId === cameraRef.instanceId) jobs.splice(i, 1);
 
     const instancedJobs = new Map<ObjectBatch, CloneJobEntry[]>();
     for (const job of jobs) {

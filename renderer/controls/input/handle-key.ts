@@ -24,6 +24,7 @@ import { getLinkedMirrorSelection } from '../transform/mirroring';
 import { canRedo, canUndo, isApplying, redo, undo } from '../undo-redo/undo-redo';
 import { captureSelectionTransformState, recordTransformChange } from '../undo-redo/scene-history';
 import { isShortcutPressed, matchesShortcut, toggleFineAdjust, type ShortcutId } from './shortcuts';
+import { isAnimationCameraPreview } from '../../animation/animation-camera';
 import { copySelection, pasteSelection, isSelectionPastePending } from './selection-clipboard';
 import type { ObjectBatch } from '../../scene-store/object-access';
 
@@ -372,7 +373,8 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
 
     const executeAction = (key: ShortcutId, fromToolbar = false): void => {
         if (p.state.isGizmoBusy || interactionBlocked() || (fromToolbar && p.getTransformControls().dragging)) return;
-        if (key !== 'undo' && key !== 'redo' && painterBlocksTransforms()) return;
+        // Shading is a view toggle, so the head painter must not block it like transform shortcuts.
+        if (key !== 'undo' && key !== 'redo' && key !== 'toggleShading' && painterBlocksTransforms()) return;
         if (fromToolbar && (key === 'group' || key === 'duplicate' || key === 'deleteSelection') && !p.hasAnySelection()) return;
         if (key === 'copySelection') {
             if (p.getTransformControls().dragging) return;
@@ -445,6 +447,7 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
 
         if (matchesShortcut(event, 'focusSelection')) {
             event.preventDefault();
+            if (isAnimationCameraPreview(p.loadedObjectGroup)) return; // the view belongs to the camera object while previewing
             focusCameraOnSelection(
                 p.camera,
                 p.state.controls,

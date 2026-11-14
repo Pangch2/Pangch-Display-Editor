@@ -488,8 +488,23 @@ export function getSceneRaycastFaces(objects: Mesh[]): readonly PreparedFace[] {
     return raycastObjectBounds.get(objects)?.faces ?? [];
 }
 
-export function getSceneRaycastObjects(root: Group, region?: Box3, grid?: { axis: number; size: number }, prepareRaycast = true): Mesh[] {
+/**
+ * `slab` keeps only head faces lying wholly between two planes (dot(point, normal) in [min, max]): short rays along
+ * the normal can't reach the rest, and tilted heads would otherwise fill every ray's candidate list.
+ */
+export function getSceneRaycastObjects(root: Group, region?: Box3, grid?: { axis: number; size: number }, prepareRaycast = true,
+    slab?: { normal: Vector3; min: number; max: number }): Mesh[] {
     const objects: Mesh[] = [];
+    const corner = new Vector3();
+    const inSlab = (local: Box3, matrix: Matrix4): boolean => {
+        const e = matrix.elements, { x, y, z } = slab!.normal;
+        const distance = local.getCenter(corner).applyMatrix4(matrix).dot(slab!.normal);
+        // Half the box's extent along the normal: each local axis contributes |axis · normal| · half its size.
+        const reach = (Math.abs((e[0] * x + e[1] * y + e[2] * z) * (local.max.x - local.min.x))
+            + Math.abs((e[4] * x + e[5] * y + e[6] * z) * (local.max.y - local.min.y))
+            + Math.abs((e[8] * x + e[9] * y + e[10] * z) * (local.max.z - local.min.z))) / 2;
+        return distance - reach >= slab!.min && distance + reach <= slab!.max;
+    };
     const bounds: number[] = [];
     const faces: PreparedFace[] = [];
     const box = new Box3();
@@ -507,7 +522,7 @@ export function getSceneRaycastObjects(root: Group, region?: Box3, grid?: { axis
         for (let i = 0; i < (boxes?.length ?? 1); i++) {
             const first = boxes ? Math.max(start, i * 6) : start;
             const last = boxes ? Math.min(start + count, (i + 1) * 6) : start + count;
-            if (last <= first) continue;
+            if (last <= first || (slab && boxes && !inSlab(boxes[i], matrix))) continue;
             if (region || prepareRaycast) box.copy(boxes ? boxes[i] : geometry.boundingBox).applyMatrix4(matrix);
             if (region && !box.intersectsBox(region)) continue;
             faces.push({ mesh, geometry, matrix, inverse, instanceId, start: first, count: last - first, triangles: headFaces?.triangles[i] });

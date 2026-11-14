@@ -17,37 +17,47 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 #animation-panel[hidden] { display: none; }
 #animation-panel:focus-visible, .animation-resizer:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
 .animation-resizer { touch-action: none; user-select: none; }
-.animation-header { flex: none; max-height: calc(var(--animation-panel-height, 360px) - 74px); overflow: auto; scrollbar-width: thin; }
-.animation-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 4px 10px; flex: none; border-bottom: 1px solid #414149; background: #29292e; }
+.animation-header { flex: none; min-height: 0; max-height: calc(var(--animation-panel-height, 360px) - 74px); overflow: auto; scrollbar-width: thin; }
+.animation-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px 12px; padding: 6px 10px; border-bottom: 1px solid #414149; background: #2c2c31; }
 .animation-actions, .animation-timing { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
+.animation-timing { justify-self: end; flex-wrap: nowrap; }
 :is(.animation-controls, .animation-tools) label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.animation-controls input { width: 62px; font-variant-numeric: tabular-nums; }
-:is(.animation-controls, .animation-tools) button { color: inherit; background: var(--ui-control-bg); border: 1px solid var(--ui-control-border); border-radius: var(--ui-control-radius); padding: 4px 8px; cursor: pointer; font: inherit; }
+:is(.animation-controls, .animation-tools) input:not([type=checkbox]) { font-variant-numeric: tabular-nums; }
+.animation-timing input { width: 48px; text-align: center; }
+#animation-tick { width: 60px; }
+:is(.animation-controls, .animation-tools) button { color: inherit; background: var(--ui-control-bg); border: 1px solid var(--ui-control-border); border-radius: var(--ui-control-radius); padding: 4px 8px; cursor: pointer; font: inherit; white-space: nowrap; }
 :is(.animation-controls, .animation-tools) button:hover:not(:disabled, [aria-pressed="true"]) { background: var(--ui-control-hover); }
 :is(.animation-controls, .animation-tools) button:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
 :is(.animation-controls, .animation-tools) button:disabled { opacity: .4; cursor: default; }
-.animation-transport { display: flex; gap: 4px; flex: none; }
+.animation-transport { display: flex; gap: 3px; justify-self: center; }
 .animation-transport button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; font-size: 16px; }
 .animation-transport button.lucide-icon { font-family: 'lucide'; }
-#animation-pause { background: var(--ui-selected-bg); color: var(--ui-accent); }
+#animation-pause { width: 34px; background: var(--ui-selected-bg); color: var(--ui-accent); }
 #animation-loop { margin-left: 6px; border-left-color: #505057; }
 .animation-transport button:focus-visible { outline: 1px solid #70c7ff; outline-offset: 2px; }
 .animation-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 4px 12px; flex: none; border-bottom: 1px solid #414149; background: #29292e; }
 .animation-tools label { color: #aaaab5; }
-.animation-clip-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.animation-clip-controls > label { min-width: 0; }
-.animation-clip-controls > label select { width: 110px; min-width: 0; color-scheme: dark; }
+.animation-toolbar { justify-content: flex-start; gap: 6px 12px; padding: 5px 10px; }
+.animation-view-tools { display: flex; align-items: center; gap: 6px; padding-right: 12px; border-right: 1px solid #414149; }
+.animation-toolbar > .animation-actions { gap: 4px; flex-wrap: nowrap; }
+.animation-clip-controls { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 300px; }
+.animation-clip-controls > label { flex: 1; min-width: 0; }
+.animation-clip-controls > label select { flex: 1; width: 160px; min-width: 0; color-scheme: dark; }
 .animation-settings { position: relative; flex: none; }
-.animation-settings summary { cursor: pointer; padding: 4px 6px; white-space: nowrap; }
+.animation-settings summary { cursor: pointer; padding: 4px 6px; border-radius: var(--ui-control-radius); white-space: nowrap; }
+.animation-settings summary:hover { background: var(--ui-control-hover); }
 .animation-settings summary:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
 .animation-settings[open] > summary { color: var(--ui-accent); background: var(--ui-selected-bg); }
 .animation-settings:not([open]) > .animation-settings-body { display: none; }
 .animation-settings-body { position: fixed; bottom: 12px; right: calc(var(--panel-dock-right-width, 0px) + 12px); width: min(430px, calc(100vw - var(--panel-dock-left-width, 0px) - var(--panel-dock-right-width, 0px) - 24px)); max-height: calc(100vh - var(--menu-bar-height, 32px) - 32px); overflow: auto; box-sizing: border-box; padding: 14px; border: 1px solid #60606b; border-radius: 4px; background: #29292e; box-shadow: 0 5px 24px #0008; z-index: 5; display: grid; gap: 10px; }
 .animation-settings-body label { justify-content: space-between; gap: 12px; }
+.animation-settings-section { display: grid; gap: 10px; min-width: 0; }
+.animation-settings-section + .animation-settings-section { border-top: 1px solid #414149; padding-top: 12px; }
+.animation-settings-section > strong { color: #c4c4ce; font-size: 11px; }
 .animation-settings-body input[type=number] { width: 90px; }
 .animation-settings-body #animation-clip-name { width: 200px; max-width: 65%; }
 .animation-settings-body select { max-width: 65%; color-scheme: dark; }
-.animation-settings-body p, .animation-key-values small { color: #aaaab5; margin: 0; font-size: 11px; }
+.animation-settings-body p, .animation-key-values small { color: #aaaab5; margin: 0; font-size: 11px; line-height: 1.6; }
 .animation-settings-body #animation-layers { display: grid; gap: 6px; }
 .animation-settings-body #animation-layers label { justify-content: flex-start; }
 .animation-layer-control, .animation-layer-timing { display: grid; gap: 6px; }
@@ -56,10 +66,14 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-layer-timing [data-layer-starts] { width: 160px; min-width: 0; }
 .animation-layer-timing button { justify-self: start; }
 .animation-workspace { display: flex; flex: 1; min-height: 0; }
-.animation-inspector { order: 1; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; flex-wrap: nowrap; gap: 10px; width: 200px; min-width: 0; box-sizing: border-box; padding: 10px 12px; overflow: auto; border: 0; border-left: 1px solid #414149; scrollbar-width: thin; }
-.animation-inspector > strong { font-size: 11px; color: #a3a3af; }
+.animation-inspector { order: 1; display: block; flex: none; width: 216px; min-width: 0; box-sizing: border-box; padding: 0; overflow: auto; border: 0; border-left: 1px solid #414149; background: #232327; scrollbar-width: thin; }
+.animation-inspector-section { display: grid; align-content: start; gap: 8px; padding: 12px; min-width: 0; }
+.animation-inspector-section + .animation-inspector-section { border-top: 1px solid #414149; }
+.animation-inspector-section > strong { font-size: 11px; color: #c4c4ce; }
+.animation-inspector-hint { margin: 0; color: #a3a3af; font-size: 11px; line-height: 1.6; white-space: normal; }
+.animation-inspector:has(#animation-interpolation:not(:disabled)) .animation-inspector-hint { display: none; }
 .animation-inspector label { justify-content: space-between; }
-.animation-inspector select { width: 130px; min-width: 0; }
+.animation-inspector select { width: 132px; min-width: 0; }
 .animation-key-values, .animation-pre-values { display: grid; gap: 8px; }
 .animation-key-values { padding-top: 10px; border-top: 1px solid #414149; }
 .animation-key-values > span { color: #a3a3af; font-size: 11px; }
@@ -67,10 +81,11 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-key-values label:has(input[type=checkbox]) { justify-content: flex-start; }
 .animation-key-values small { line-height: 1.6; }
 .animation-zoom { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-.animation-zoom output { min-width: 42px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; color: #aaaab5; }
+.animation-zoom input { width: 48px; text-align: center; font-size: 11px; }
 .animation-zoom button { white-space: nowrap; }
-#animation-add { color: #9fd5f7; }
-.animation-camera-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding-left: 8px; border-left: 1px solid #48484e; }
+#animation-add { color: #9fd5f7; border-color: #4c6577; }
+.animation-camera-tools label { justify-content: flex-start; }
+.animation-camera-tools button { width: 100%; }
 #animation-camera-add { color: #9fd5f7; }
 .animation-scroll { overflow-x: scroll; overflow-y: auto; min-width: 0; min-height: 28px; flex: 1; contain: paint; color-scheme: dark; }
 .animation-ruler, .animation-row { display: grid; grid-template-columns: 220px var(--animation-timeline-width, 618px); width: max-content; }
@@ -124,23 +139,21 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-ruler .animation-playhead { z-index: 1; }
 .animation-ruler .animation-playhead::before { content: ''; position: absolute; left: -5px; top: 0; width: 11px; height: 8px; background: #f08172; clip-path: polygon(0 0, 100% 0, 100% 50%, 50% 100%, 0 50%); }
 .animation-end-marker { position: absolute; bottom: 0; width: 6px; height: 8px; border-right: 2px solid #70c7ff; border-bottom: 2px solid #70c7ff; transform: translateX(-100%); }
-.animation-empty { position: sticky; left: 0; width: fit-content; max-width: calc(100% - 32px); margin: 14px 16px; color: #a3a3af; font-size: 11px; }
+.animation-empty { position: sticky; left: 0; width: fit-content; max-width: calc(100% - 32px); margin: 20px 16px; color: #a3a3af; font-size: 11px; line-height: 1.8; }
+@container (max-width: 820px) {
+  .animation-controls { grid-template-columns: minmax(0, 1fr) auto; }
+  .animation-clip-controls { grid-column: 1; grid-row: 1; }
+  .animation-timing { grid-column: 2; grid-row: 1; }
+  .animation-transport { grid-column: 1 / -1; grid-row: 2; }
+}
 @container (max-width: 720px) {
-  .animation-controls { gap: 4px 8px; padding: 4px 8px; }
-  .animation-clip-controls { flex: 1 0 100%; }
-  .animation-clip-controls > label { flex: 1; }
-  .animation-clip-controls > label select { flex: 1; }
-  .animation-controls input { width: 48px; }
-  .animation-transport { gap: 1px; }
-  .animation-transport button { width: 24px; }
-  .animation-tools { padding: 4px 8px; }
   .animation-workspace { flex-direction: column; }
-  .animation-inspector { flex-direction: row; flex-wrap: wrap; align-items: center; width: auto; max-height: min(92px, calc(var(--animation-panel-height, 360px) / 4)); gap: 6px 12px; border-left: 0; border-top: 1px solid #414149; }
-  .animation-inspector > strong { display: none; }
-  .animation-key-values { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding-top: 6px; }
-  .animation-key-values > span, .animation-key-values small { flex-basis: 100%; }
-  .animation-pre-values { display: flex; flex-wrap: wrap; }
-  .animation-key-values label input:not([type=checkbox]) { width: 88px; }
+  .animation-inspector { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; width: auto; max-height: min(72px, calc(var(--animation-panel-height, 360px) / 4)); border-left: 0; border-top: 1px solid #414149; }
+  .animation-inspector-section { padding: 6px 10px; gap: 6px; }
+  .animation-inspector-section > strong, .animation-inspector-hint { display: none; }
+  .animation-inspector-section + .animation-inspector-section { border-top: 0; border-left: 1px solid #414149; }
+  .animation-inspector select { flex: 1; width: 0; }
+  .animation-key-values label input:not([type=checkbox]) { width: 120px; max-width: 70%; }
 }
 
 .menu-bar-logo {
@@ -521,6 +534,8 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
   stroke: currentColor;
   stroke-width: 1;
   stroke-opacity: 0.65;
+  /* Own layer: the path has a line per grid cell of every head, and repainting it with each stroke's canvas update stalls frames. */
+  will-change: transform;
 }
 
 .player-head-paint-preview {

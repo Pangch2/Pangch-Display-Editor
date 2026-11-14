@@ -37,6 +37,7 @@ import { hexToRgb, openColorPicker, rgbToHex } from '../common/color-picker';
 import { isValidSpriteReference, openSpriteAtlasPicker, openSpritePicker, resolveSpriteReference } from '../common/sprite-atlas-picker';
 import { evaluateMathExpression } from '../../math-expression';
 import { normalizeTransformInput } from './transform-input-value';
+import { initDragAlignInput, initDragValueInput } from '../common/drag-value-input';
 import { renderModelTransform } from '../../animation/animation-state';
 import { getInstancePivot, hasInstanceHatData, objectRef, objectSlots, objectUuidAt, objectWorldMatrix, setInstancePivot, type ObjectBatch } from '../../scene-store/object-access';
 
@@ -46,6 +47,9 @@ const projectProperties = document.getElementById('project-properties')!;
 const multiSelectionPivot = document.getElementById('multi-selection-pivot')!;
 const objectProperties = document.getElementById('object-properties')!;
 const propertyDetails = document.getElementById('project-details')!;
+const fineAdjustValues = document.getElementById('fine-adjust-values')!;
+fineAdjustValues.querySelectorAll<HTMLElement>('.settings-drag-value').forEach(initDragValueInput);
+initDragAlignInput(fineAdjustValues.querySelector<HTMLInputElement>('.fine-adjust-align input')!);
 const propertySectionEstimate = 250;
 const propertySectionSpacer = document.createElement('div');
 const propertySectionContent = document.createElement('div');
@@ -109,6 +113,7 @@ propertySectionContent.className = 'object-properties-content';
 objectProperties.replaceChildren(propertySectionSpacer, propertySectionContent);
 propertySectionResizeObserver.observe(propertyDetails);
 propertySectionResizeObserver.observe(multiSelectionPivot);
+propertySectionResizeObserver.observe(fineAdjustValues);
 const getPropertyScroller = (): HTMLElement => propertyDetails.closest('.panel-group')
     ? propertyDetails : propertyDetails.closest<HTMLElement>('.panel-dock:not(.single-panel)') ?? propertyDetails;
 const handlePropertyScroll = (event: Event): void => {
@@ -1949,7 +1954,7 @@ function handlePropertySectionResize(entries: ResizeObserverEntry[]): void {
     let heightChanged = false;
     let viewportChanged = false;
     for (const entry of entries) {
-        if (entry.target === propertyDetails || entry.target === multiSelectionPivot) {
+        if (entry.target === propertyDetails || entry.target === multiSelectionPivot || entry.target === fineAdjustValues) {
             viewportChanged = true;
             continue;
         }
@@ -1988,6 +1993,7 @@ function renderSelection(selection?: SelectionState, pivotWorld?: Vector3, multi
     tabs.hidden = selected;
     projectProperties.hidden = selected;
     objectProperties.hidden = !selected;
+    fineAdjustValues.hidden = !selected;
     const nextSelectionKeys = selectionOrder.map(item => item.key);
     if (!selected) {
         renderedSelectionKeys = [];

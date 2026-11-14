@@ -18,6 +18,11 @@ declare interface LoadingIconResult {
 
 declare type PainterAssetKind = 'brush' | 'palette';
 
+// Chromium EyeDropper API (not in TypeScript's DOM lib).
+declare class EyeDropper {
+  open(options?: { signal?: AbortSignal }): Promise<{ sRGBHex: string }>;
+}
+
 declare interface MinecraftSkinResult {
   success: boolean;
   png?: Uint8Array;
@@ -41,7 +46,7 @@ declare interface IpcApi {
   writeProjectClipboard(data: Uint8Array): Promise<void>;
   readProjectClipboard(): Promise<Uint8Array<ArrayBuffer> | undefined>;
   readClipboardText(): Promise<string>;
-  captureColorPicker(): Promise<string>;
+  getCursorClientPoint(): Promise<{ x: number; y: number }>;
   headTextures: import('./player-head-service/head-texture-types').HeadTextureApi;
   getAssetContent(path: string): Promise<AssetContentResult>;
   saveIconAtlas(name: 'block-atlas.png' | 'item-atlas.png', data: Uint8Array): Promise<{ success: boolean; error?: string }>;

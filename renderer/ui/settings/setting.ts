@@ -1,6 +1,7 @@
 import { blockbenchScaleMode, toggleBlockbenchScaleMode } from '../../controls/gizmo/blockbench-scale';
 import { closeWithAnimation, openWithAnimation } from '../common/ui-open-close.js';
 import { handleExpandCollapseShortcut } from '../common/expand-collapse';
+import { initDragAlignInput, initDragValueInput } from '../common/drag-value-input';
 import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
 import { cleanLabel } from '../scene-panel/scene-panel-model';
 import { getShortcutConflictDetails, getShortcutMapping, getShortcuts, matchesShortcut, normalizeShortcutKey, resetShortcutMapping, resetShortcuts, setShortcutMapping, setShortcuts, shortcutDefinitions, shortcutFromKeys } from '../../controls/input/shortcuts';
@@ -43,6 +44,7 @@ overlay.innerHTML = `
             <legend>조작</legend>
             <label class="settings-row"><span>스케일 조작 모드</span><span class="settings-select"><select id="scale-mode"><option value="default">기본</option><option value="blockbench">블록벤치 스케일 모드</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>오브젝트 교체 모드</span><span class="settings-select"><select id="object-replace-mode"><option value="default">기본</option><option value="preserve-visible-size">보이는 크기 유지</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
+            <label class="settings-row"><span>드래그 정렬</span><span class="settings-row-toggle"><input id="drag-align" type="checkbox"></span></label>
             <label class="settings-row"><span>위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdePositionDragValue"><button type="button" aria-label="위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>각도 드래그값</span><span class="settings-drag-value" data-values="0,180,90,45,30,15,10,5,2,1,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeRotationDragValue"><button type="button" aria-label="각도 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeScaleDragValue"><button type="button" aria-label="스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
@@ -604,64 +606,8 @@ objectReplaceMode.addEventListener('change', () => localStorage.setItem('pdeObje
 window.addEventListener('pde:blockbench-scale-mode-changed', () => {
   scaleMode.value = blockbenchScaleMode ? 'blockbench' : 'default';
 });
-const dragControls = [...overlay.querySelectorAll<HTMLElement>('.settings-drag-value')];
-function closeDragMenus(): void {
-  dragControls.forEach(control => {
-    control.querySelector<HTMLElement>('.settings-drag-menu')!.hidden = true;
-    control.querySelector<HTMLButtonElement>('button')!.setAttribute('aria-expanded', 'false');
-  });
-}
-dragControls.forEach(control => {
-  const input = control.querySelector<HTMLInputElement>('input')!;
-  const menuButton = control.querySelector<HTMLButtonElement>('button')!;
-  const menu = control.querySelector<HTMLElement>('.settings-drag-menu')!;
-  const storageKey = input.dataset.storageKey!;
-  const commit = (rawValue: string): void => {
-    const value = Number(rawValue);
-    if (!Number.isFinite(value) || value < 0) {
-      const stored = localStorage.getItem(storageKey) ?? input.defaultValue;
-      input.value = stored === '0' ? '제한없음' : stored;
-      return;
-    }
-    localStorage.setItem(storageKey, String(value));
-    input.value = value === 0 ? '제한없음' : String(value);
-    window.dispatchEvent(new Event('pde:gizmo-drag-values-changed'));
-  };
-
-  const stored = localStorage.getItem(storageKey) ?? input.defaultValue;
-  input.value = stored === '0' ? '제한없음' : stored;
-  input.addEventListener('focus', () => {
-    if (input.value === '제한없음') input.value = '0';
-  });
-  input.addEventListener('blur', () => commit(input.value));
-  input.addEventListener('keydown', event => {
-    if (event.key === 'Enter') input.blur();
-  });
-
-  menu.replaceChildren(...control.dataset.values!.split(',').map(value => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.dataset.value = value;
-    button.textContent = value === '0' ? '제한없음' : value;
-    return button;
-  }));
-  menuButton.addEventListener('click', event => {
-    event.stopPropagation();
-    const open = menu.hidden;
-    closeDragMenus();
-    menu.hidden = !open;
-    menuButton.setAttribute('aria-expanded', String(open));
-  });
-  menu.addEventListener('click', event => {
-    const button = (event.target as Element).closest<HTMLButtonElement>('[data-value]');
-    if (!button) return;
-    commit(button.dataset.value!);
-    closeDragMenus();
-  });
-});
-document.addEventListener('click', event => {
-  if (!(event.target as Element).closest('.settings-drag-value')) closeDragMenus();
-});
+initDragAlignInput(overlay.querySelector<HTMLInputElement>('#drag-align')!);
+overlay.querySelectorAll<HTMLElement>('.settings-drag-value').forEach(initDragValueInput);
 
 overlay.querySelectorAll<HTMLButtonElement>('[data-reset-scope]').forEach(button => {
   button.addEventListener('click', async () => {

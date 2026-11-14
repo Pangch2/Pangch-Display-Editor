@@ -367,6 +367,61 @@
   overflow-anchor: none;
 }
 
+#fine-adjust-values {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #3a3a3e;
+  background: #252528;
+}
+
+#fine-adjust-values[hidden] {
+  display: none;
+}
+
+#fine-adjust-values h3 {
+  margin: 0;
+  color: #ccc;
+  font-size: 12px;
+}
+
+.fine-adjust-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+#fine-adjust-values .fine-adjust-align {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  gap: 4px;
+  color: #ccc;
+  cursor: pointer;
+}
+
+#project-details .fine-adjust-align input {
+  appearance: auto;
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
+#fine-adjust-values label:not(.fine-adjust-align) {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+}
+
+#project-details .settings-drag-value > input {
+  border: 0;
+  background: transparent;
+}
+
 .object-properties-spacer {
   width: 1px;
   pointer-events: none;
@@ -422,6 +477,18 @@
 .camera-menu-checkbox:hover { background: #3b3b40; }
 .camera-menu-arrow { margin-left: auto; }
 .lucide-icon { font-family: 'lucide'; }
+
+/* Lucide glyphs fill the whole em box above the baseline, but Noto Sans KR glyphs sit lower in their taller line box.
+   Centering the two boxes therefore leaves the icon/checkbox ~1px high; nudge only those placed beside text. */
+:is(.menu-bar-popup button, .settings-nav button, .camera-menu-parent) > .lucide-icon {
+  position: relative;
+  top: 0.08em;
+}
+
+.camera-menu-checkbox > input[type="checkbox"] {
+  position: relative;
+  top: 1px;
+}
 
 .camera-submenu {
   position: absolute;
@@ -685,6 +752,12 @@
 .text-display-text {
   display: grid;
   gap: 4px;
+}
+
+/* The native checkbox box centers above the Korean glyph body; nudge it down to match the text. */
+#project-details input[type="checkbox"] {
+  position: relative;
+  top: 1px;
 }
 
 #project-details .object-property input[type="checkbox"] {

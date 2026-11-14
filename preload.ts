@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('ipcApi', {
   writeProjectClipboard: (data: Uint8Array) => ipcRenderer.invoke('write-project-clipboard', data),
   readProjectClipboard: () => ipcRenderer.invoke('read-project-clipboard'),
   readClipboardText: () => ipcRenderer.invoke('read-clipboard-text'),
-  captureColorPicker: () => ipcRenderer.invoke('capture-color-picker'),
+  getCursorClientPoint: () => ipcRenderer.invoke('get-cursor-client-point'),
   headTextures: {
     mineSkinKeys: () => ipcRenderer.invoke('head-mineskin-keys'),
     addMineSkinKey: () => ipcRenderer.invoke('head-mineskin-add'),

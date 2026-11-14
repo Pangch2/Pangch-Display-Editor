@@ -787,6 +787,8 @@ function playerHeadTextureDataUrl(image: HTMLImageElement, axis: PlayerHeadMirro
             const sourceKey = mirroredPlayerHeadFace(face, axis);
             const [sourceX, sourceY] = playerHeadFaceParts[sourceKey];
             const [flipX, flipY] = playerHeadFaceFlip(face, axis);
+            // drawImage blends over the original face, so transparent source pixels would keep the unmirrored ones.
+            context.clearRect(x, y, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
             context.save();
             context.translate(x + (flipX ? PLAYER_HEAD_PART_SIZE : 0), y + (flipY ? PLAYER_HEAD_PART_SIZE : 0));
             context.scale(flipX ? -1 : 1, flipY ? -1 : 1);
@@ -1233,7 +1235,8 @@ export function writePlayerHeadPaint(surface: PlayerHeadPaintSurface, packed: Im
 
 let playerHeadSkinCanvas: HTMLCanvasElement | undefined;
 
-export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = readPlayerHeadPaint(surface), projectData = loadedObjectGroup.userData): void {
+/** `defer` skips the PNG: the texture reads as deferredPlayerHeadTexture until getPlayerHeadTexture encodes it. */
+export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = readPlayerHeadPaint(surface), projectData = loadedObjectGroup.userData, defer = false): void {
     let hasHat = false;
     for (let y = PLAYER_HEAD_PART_SIZE * 2; y < PLAYER_HEAD_BLOCK_HEIGHT && !hasHat; y++) {
         for (let x = 0; x < PLAYER_HEAD_BLOCK_WIDTH; x++) {
@@ -1245,19 +1248,23 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = 
     }
     setInstanceHasHat(surface.mesh, surface.instanceId, hasHat);
 
-    const skin = playerHeadSkinCanvas ??= document.createElement('canvas');
-    if (skin.width !== 64 || skin.height !== 64) skin.width = skin.height = 64;
-    const context = skin.getContext('2d');
-    if (!context) return;
-    context.imageSmoothingEnabled = false;
-    context.clearRect(0, 0, 64, 64);
-    playerHeadPartOrder.forEach((key, index) => {
-        const [dx, dy] = playerHeadFaceParts[key];
-        const sourceX = (index % 3) * PLAYER_HEAD_PART_SIZE;
-        const sourceY = Math.floor(index / 3) * PLAYER_HEAD_PART_SIZE;
-        context.putImageData(packed, dx - sourceX, dy - sourceY, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
-    });
-    const dataUrl = skin.toDataURL('image/png');
+    let dataUrl: string = deferredPlayerHeadTexture;
+    if (!defer) {
+        const skin = playerHeadSkinCanvas ??= document.createElement('canvas');
+        if (skin.width !== 64 || skin.height !== 64) skin.width = skin.height = 64;
+        // CPU-backed: reading a GPU canvas back costs ~1ms per head.
+        const context = skin.getContext('2d', { willReadFrequently: true });
+        if (!context) return;
+        context.imageSmoothingEnabled = false;
+        context.clearRect(0, 0, 64, 64);
+        playerHeadPartOrder.forEach((key, index) => {
+            const [dx, dy] = playerHeadFaceParts[key];
+            const sourceX = (index % 3) * PLAYER_HEAD_PART_SIZE;
+            const sourceY = Math.floor(index / 3) * PLAYER_HEAD_PART_SIZE;
+            context.putImageData(packed, dx - sourceX, dy - sourceY, sourceX, sourceY, PLAYER_HEAD_PART_SIZE, PLAYER_HEAD_PART_SIZE);
+        });
+        dataUrl = skin.toDataURL('image/png');
+    }
     const material = (Array.isArray(surface.mesh.material) ? surface.mesh.material[0] : surface.mesh.material) as Material;
     const atlas = playerHeadAtlases.get(material);
     const oldUrl = atlas?.slotUrls[surface.slot];
@@ -1267,7 +1274,7 @@ export function commitPlayerHeadPaint(surface: PlayerHeadPaintSurface, packed = 
     }
     if (atlas && surface.denseLayer === undefined) {
         if (oldUrl && atlas.skins.get(oldUrl)?.slot === surface.slot) atlas.skins.delete(oldUrl);
-        if (!captureHeadAtlasUvs(surface.context.canvas, { x: surface.x, y: surface.y, width: PLAYER_HEAD_BLOCK_WIDTH, height: PLAYER_HEAD_BLOCK_HEIGHT }).length) {
+        if (!defer && !captureHeadAtlasUvs(surface.context.canvas, { x: surface.x, y: surface.y, width: PLAYER_HEAD_BLOCK_WIDTH, height: PLAYER_HEAD_BLOCK_HEIGHT }).length) {
             atlas.skins.set(dataUrl, { slot: surface.slot, hasHat });
         }
         atlas.slotUrls[surface.slot] = dataUrl;

@@ -21,6 +21,7 @@ import {
 } from './scene-panel-model';
 import { isSceneItemEnabled, setSceneItemEnabled } from '../../controls/scene-visibility';
 import { objectDisplayType } from '../../scene-store/object-access';
+import { animationCameraObject } from '../../animation/animation-camera';
 
 function updateVisibilityToggle(icon: HTMLElement, type: 'group' | 'object', id: string): void {
     const enabled = isSceneItemEnabled(loadedObjectGroup, type, id);
@@ -73,7 +74,9 @@ function updateObjectIcon(icon: HTMLElement, uuid: string): void {
         texture?.startsWith('data:image/png;base64') || texture === 'pde:deferred-player-head-texture'
     );
     icon.className = `scene-icon ${isTextDisplay ? 'icon-text' : isItemDisplay ? 'icon-item' : 'icon-box'}`;
-    const text = isTextDisplay ? '\uE198' : isPaintedHead ? '\uE1D3' : isItemDisplay ? '\uE5C6' : '\uE061';
+    // The camera keeps its icon whatever display it is replaced with.
+    const text = uuid === animationCameraObject(loadedObjectGroup) ? '\uE064'
+        : isTextDisplay ? '\uE198' : isPaintedHead ? '\uE1D3' : isItemDisplay ? '\uE5C6' : '\uE061';
     if (icon.textContent !== text) icon.textContent = text;
 }
 

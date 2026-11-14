@@ -133,7 +133,7 @@ export const userGuideSections = [
                     <h3>피벗</h3>
                     <p>피벗은 회전과 크기 조절의 기준점입니다. <kbd>Z</kbd>로 <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE29E;</span>중심·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE0AC;</span>원점을 전환합니다. <kbd>Alt</kbd>를 누른 채 이동 도구를 조작하면 피벗을 편집하고, <kbd>Ctrl + Alt</kbd>로 초기화합니다.</p>
                     <h3>드래그 간격과 미세 조정</h3>
-                    <p>설정에서 위치·각도·스케일 드래그값을 지정하면 일정한 간격으로 조작합니다. <kbd>Shift</kbd>를 누르면 미세조정 위치·각도·스케일 드래그값을 적용합니다. 미세조정의 기본값은 제한없음입니다.</p>
+                    <p>설정에서 위치·각도·스케일 드래그값을 지정하면 일정한 간격으로 조작합니다. <kbd>Shift</kbd>를 누르면 미세조정 위치·각도·스케일 드래그값을 적용합니다. 미세조정의 기본값은 제한없음입니다. 드래그 정렬을 켜면 위치·스케일이 시작값 기준이 아니라 드래그값의 배수로 정렬됩니다.</p>
                     <h3><span class="user-guide-icon lucide-icon vertex-icon" aria-hidden="true">&#xE121;</span>버텍스 모드</h3>
                     <p><kbd>V</kbd>로 버텍스 모드를 켭니다. 꼭짓점을 선택하고 이동·회전·크기 도구로 형태를 조절합니다. 작업을 마치면 <kbd>V</kbd>를 다시 눌러 일반 오브젝트 편집으로 돌아갑니다.</p>
                     <h3>나이프</h3>
@@ -191,23 +191,24 @@ export const userGuideSections = [
 
                     <h3><span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE13B;</span>색상 선택과 알파</h3>
                     <p>색상 선택 도구로 3D 모델의 텍스처 또는 아틀라스의 픽셀을 클릭하면 색상과 알파를 가져와 현재 팔레트 칸에 저장합니다. 헤드 외의 텍스처가 있는 모델에서도 색을 가져올 수 있습니다.</p>
-                    <p>팔레트의 색상 사각형을 누르면 색상 선택 창이 열립니다. 색상 영역·색조 슬라이더, RGB 또는 OKLCH 채널, HEX 값으로 색을 고르고 <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE13B;</span>색 스포이드로 화면의 색을 가져옵니다. 창의 제목을 드래그해 옮기고 가장자리·모서리로 크기를 조절할 수 있습니다.</p>
+                    <p>팔레트의 색상 사각형을 누르면 색상 선택 창이 열립니다. 색상 영역·색조 슬라이더, RGB 또는 OKLCH 채널, HEX 값으로 색을 고르고 <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE13B;</span>색 스포이드로 화면의 색을 가져옵니다. 디스플레이 엔티티를 누르면 조명이 적용되기 전의 원래 색을, 그 밖의 곳(PDE 창 밖 포함)을 누르면 보이는 화면 색을 가져옵니다. 창의 제목을 드래그해 옮기고 가장자리·모서리로 크기를 조절할 수 있습니다.</p>
                     <p>팔레트의 일반 모드는 6자리 HEX, OKLCH 모드는 <code>oklch(0.7 0.15 30)</code> 같은 값으로 입력합니다. <kbd>Enter</kbd>로 적용할 수 있습니다. 알파는 0~255이며 0은 투명, 255는 불투명입니다. 반투명·투명 페인팅은 겉 레이어에서 사용합니다.</p>
 
                     <h3><span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE2E6;</span>양동이 채우기</h3>
                     <table><thead><tr><th>조작</th><th>3D 표면</th><th>아틀라스</th></tr></thead><tbody>
-                        <tr><td>일반 클릭</td><td>현재 면에서 클릭한 픽셀과 RGB가 같은 칸을 채웁니다.</td><td>클릭한 픽셀에서 이어진 같은 RGB 영역을 채웁니다. UV 밖에서는 알파도 같은 영역을 찾습니다.</td></tr>
-                        <tr><td><kbd>Shift</kbd> + 클릭</td><td>클릭한 면 전체를 채웁니다.</td><td>일반 클릭과 같은 연결 영역 채우기입니다.</td></tr>
-                        <tr><td><kbd>Ctrl</kbd> + 클릭</td><td>해당 헤드의 현재 레이어 여섯 면 전체를 채웁니다.</td><td>클릭한 UV에 해당하는 헤드의 현재 레이어 여섯 면을 채웁니다.</td></tr>
+                        <tr><td>일반 클릭</td><td>클릭한 칸에서 이어진 같은 RGB 칸을 채웁니다. 모서리로 이어진 다른 면까지 퍼집니다.</td><td>클릭한 픽셀에서 이어진 같은 RGB 영역을 채웁니다. UV 밖에서는 알파도 같은 영역을 찾습니다.</td></tr>
+                        <tr><td><kbd>Shift</kbd> + 클릭</td><td>현재 면에서 클릭한 픽셀과 RGB가 같은 칸을 모두 채웁니다.</td><td>클릭한 UV 면에서 RGB가 같은 픽셀을 모두 채웁니다.</td></tr>
+                        <tr><td><kbd>Ctrl</kbd> + 클릭</td><td>클릭한 면 전체를 채웁니다.</td><td>클릭한 UV 면 전체를 채웁니다.</td></tr>
+                        <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + 클릭</td><td>해당 헤드의 현재 레이어 여섯 면 전체를 채웁니다.</td><td>클릭한 UV에 해당하는 헤드의 현재 레이어 여섯 면을 채웁니다.</td></tr>
                     </tbody></table>
                     <p>아틀라스의 페인팅 선택 범위가 있으면 그 안에서만 채웁니다. 기본 레이어는 불투명하게 채워집니다.</p>
 
                     <h3><span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE3BB;</span>스탬프 복사와 배치</h3>
-                    <p>먼저 가로·세로 크기를 정한 뒤 <kbd>Shift</kbd>를 누른 채 복사할 위치를 클릭합니다. 패널의 미리보기에서 복사된 모양을 확인하고, 적용할 위치를 클릭하거나 드래그해 배치합니다. <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE148;</span>왼쪽 회전·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE149;</span>오른쪽 회전은 90도씩 회전하고, <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE35D;</span>좌우 반전·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE35E;</span>상하 반전으로 뒤집습니다.</p>
+                    <p>먼저 가로·세로 크기를 정한 뒤 <kbd>Shift</kbd>를 누른 채 복사할 위치를 클릭합니다. 패널의 미리보기에서 복사된 모양을 확인하고, 적용할 위치를 클릭하거나 드래그해 배치합니다. <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE148;</span>왼쪽 회전·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE149;</span>오른쪽 회전은 90도씩 회전하고, <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE35D;</span>좌우 반전·<span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE35E;</span>상하 반전으로 뒤집습니다. <kbd>Ctrl</kbd>을 누른 채 클릭하면 스탬프 크기 단위 격자에 맞춰 정렬 배치되어, 이어서 클릭해도 빈틈이나 겹침 없이 타일처럼 깔립니다.</p>
                     <p>스탬프는 복사한 픽셀의 색상과 알파를 배치합니다. 크기 변경은 복사 영역의 크기를 바꾸는 방식이므로 원하는 크기로 정한 뒤 다시 복사하세요.</p>
 
                     <h3>인접 헤드 페인트와 대칭 페인팅</h3>
-                    <p>인접 헤드 페인트를 켜면 3D에서 브러시·스탬프가 닿는 주변 헤드에도 이어 칠할 수 있고, 양동이의 일반 클릭·한 면 채우기도 연결된 인접 헤드로 확장됩니다. <kbd>Ctrl</kbd>의 여섯 면 채우기는 클릭한 헤드가 대상입니다. 끄면 다른 헤드로 넘어가는 페인팅을 제한합니다.</p>
+                    <p>인접 헤드 페인트를 켜면 3D에서 브러시·스탬프가 닿는 주변 헤드에도 이어 칠할 수 있고, 양동이의 일반 클릭·<kbd>Shift</kbd>·<kbd>Ctrl</kbd> 채우기도 연결된 인접 헤드로 확장됩니다. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>의 여섯 면 채우기는 클릭한 헤드가 대상입니다. 끄면 다른 헤드로 넘어가는 페인팅을 제한합니다.</p>
                     <p>3D 화면의 오른쪽 클릭 메뉴에서 <span class="user-guide-icon lucide-icon" aria-hidden="true">&#xE3B6;</span>미러링 모델링을 켜고 연결된 대칭 헤드를 편집하면 3D에서 칠한 텍스처도 X축으로 반전해 함께 반영됩니다. 아틀라스 직접 편집은 해당 이미지 영역을 편집하는 방식입니다.</p>
 
                     <h3>팔레트와 그라데이션</h3>

@@ -139,6 +139,7 @@ export function duplicateSelectedCommand(
     const selectedObjects = slotList(currentSelection.objects);
 
     const newSel = Duplicate.duplicateGroupsAndObjects(loadedObjectGroup, selectedGroupIds, selectedObjects);
+    if (!newSel.groups.size && !newSel.objects.size) return null; // only the camera was selected
 
     const preserveAnchors = callbacks.isMultiSelection();
     callbacks.beginSelectionReplace({ anchorMode: selectionAnchorMode, detachTransform: false, preserveAnchors });

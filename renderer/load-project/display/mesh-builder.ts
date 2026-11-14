@@ -14,6 +14,9 @@ import { appendDisplayObjects, loadAndRenderPbde, performSelection } from './pro
 import { compressSync, strToU8 } from 'fflate';
 import { getLinkedMirrorUuid, isMirrorModelingEnabled } from '../../controls/transform/mirroring';
 import { applySceneVisibility } from '../../controls/scene-visibility';
+import { animationCameraItem } from '../../animation/animation-data';
+import { animationCameraObject } from '../../animation/animation-camera';
+import { cameraModelQuaternion } from '../../animation/animation-state';
 import { getInstancePivot, isObjectBatch, objectSlots, setInstancePivot } from '../../scene-store/object-access';
 import { cloneBatchGeometry } from '../../scene-store/row-store';
 import { ObjectBatch } from '../../scene-store/object-batch';
@@ -327,8 +330,10 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         oldRef.mesh.getMatrixAt(oldRef.instanceId, oldMatrix);
         const displayedMatrix = oldMatrix.clone();
         removeInstanceModelTransform(oldRef.mesh, oldRef.instanceId, oldMatrix);
-        const oldOverlaySize = preserveVisibleSize ? getOverlaySize(oldRef.mesh, oldRef.instanceId, displayedMatrix) : null;
         const oldName = (ud.objectNames as Map<string, string> | undefined)?.get(objectUuid) ?? '';
+        // The camera icon is a small flat stand-in: whatever replaces it takes its thin size, but it never takes another object's size.
+        const oldOverlaySize = preserveVisibleSize && name.split('[', 1)[0] !== animationCameraItem
+            ? getOverlaySize(oldRef.mesh, oldRef.instanceId, displayedMatrix) : null;
         const wasPlayerHead = oldName.startsWith('player_head');
         const isPlayerHead = name.startsWith('player_head');
         const oldDisplayType = (ud.objectDisplayTypes as Map<string, string> | undefined)?.get(objectUuid);
@@ -337,12 +342,23 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         if (isPlayerHead) oldMatrix.multiply(getPlayerHeadRenderMatrix(oldDisplayType).invert());
         const wasItemDisplay = (ud.objectIsItemDisplay as Set<string> | undefined)?.has(objectUuid) ?? false;
         const isItemDisplay = !isTextDisplay && (requestedItemDisplay ?? wasItemDisplay);
-        const displayTypeChanged = oldGeometryDisplayType !== (isTextDisplay ? 'text_display' : isItemDisplay ? 'item_display' : 'block_display');
+        const newDisplayType = isTextDisplay ? 'text_display' : isItemDisplay ? 'item_display' : 'block_display';
+        const displayTypeChanged = oldGeometryDisplayType !== newDisplayType;
+        // The camera object keeps its pose (the middle of its model, turned for the model) across a model swap: the new model takes the
+        // old one's place and facing, and becoming the camera icon resets its size.
+        const keepsPose = objectUuid === animationCameraObject(loadedObjectGroup);
+        if (keepsPose) {
+            const position = new Vector3(), quaternion = new Quaternion(), scale = new Vector3();
+            oldMatrix.decompose(position, quaternion, scale);
+            if (name.split('[', 1)[0] === animationCameraItem) scale.set(1, 1, 1);
+            quaternion.multiply(cameraModelQuaternion(oldGeometryDisplayType)).multiply(cameraModelQuaternion(newDisplayType).invert());
+            oldMatrix.compose(position, quaternion, scale);
+        }
         // Property changes replace the model without moving or resizing the object.
         const preservesObjectTransform = !displayTypeChanged
             && oldName.split('[', 1)[0] === name.split('[', 1)[0];
         const customPivot = getInstancePivot(oldRef.mesh, oldRef.instanceId)?.clone();
-        const pivot = transformContext?.pivotMode === 'center' || displayTypeChanged
+        const pivot = transformContext?.pivotMode === 'center' || displayTypeChanged || keepsPose
             ? Overlay.getInstanceLocalBox(oldRef.mesh, oldRef.instanceId)?.getCenter(new Vector3())
             : customPivot ?? (oldGeometryDisplayType === 'block_display' && !wasPlayerHead && !isPlayerHead
                 ? Overlay.getInstanceLocalBoxMin(oldRef.mesh, oldRef.instanceId)
@@ -364,6 +380,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             oldOverlaySize,
             oldPlayerHeadScale,
             displayTypeChanged,
+            keepsPose,
             preservesObjectTransform,
             transformContext,
             node: {
@@ -489,6 +506,7 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
         };
         if (state.displayTypeChanged) {
             const replacementMatrix = state.displayedMatrix.clone();
+            if (state.keepsPose) replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix); // already turned for the new model
             scaleReplacementMatrix(replacementMatrix);
             const offset = new Vector3();
             if (state.pivotWorld) {
@@ -505,12 +523,12 @@ async function replaceObjects(requests: Parameters<typeof replaceDisplayObjects>
             replacement.mesh.setMatrixAt(replacement.instanceId, replacementMatrix);
             replacement.mesh.instanceMatrix.needsUpdate = true;
             boundsDirtyMeshes.add(replacement.mesh);
-        } else if (!state.preservesObjectTransform && state.pivotWorld && (!state.customPivot || state.transformContext?.pivotMode === 'center')) {
+        } else if (!state.preservesObjectTransform && state.pivotWorld && (!state.customPivot || state.keepsPose || state.transformContext?.pivotMode === 'center')) {
             const replacementMatrix = new Matrix4();
             replacement.mesh.getMatrixAt(replacement.instanceId, replacementMatrix);
             scaleReplacementMatrix(replacementMatrix);
             const replacementDisplayType = Overlay.getDisplayType(replacement.mesh, replacement.instanceId);
-            const replacementPivot = state.transformContext?.pivotMode === 'center'
+            const replacementPivot = state.transformContext?.pivotMode === 'center' || state.keepsPose
                 ? Overlay.getInstanceLocalBox(replacement.mesh, replacement.instanceId)?.getCenter(new Vector3())
                 : replacementDisplayType === 'block_display'
                 ? Overlay.getInstanceLocalBoxMin(replacement.mesh, replacement.instanceId)
@@ -629,9 +647,9 @@ function replacementDelta(pairs: Array<[string, string]>, removed: DeletedSceneD
     };
 }
 
-export async function addDisplayObject(name: string, isItemDisplay: boolean): Promise<string> {
+export async function addDisplayObject(name: string, isItemDisplay: boolean, matrix?: Matrix4): Promise<string> {
     const uuid = MathUtils.generateUUID();
-    const transforms = name === 'player_head'
+    const transforms = matrix ? matrix.clone().transpose().toArray() : name === 'player_head'
         ? new Matrix4().compose(
             new Vector3(0, 0.5, 0),
             new Quaternion().setFromEuler(new Euler(Math.PI, 0, -Math.PI)),

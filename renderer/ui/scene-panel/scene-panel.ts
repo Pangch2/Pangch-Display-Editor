@@ -77,6 +77,8 @@ window.addEventListener('pde:scene-updated', event => {
     if ((event as CustomEvent).detail?.texturesOnly) scheduleScenePanelRender(true);
     else refreshScenePanel();
 });
+// A camera key can make an existing object the camera, which changes only its icon.
+window.addEventListener('pde:animation-changed', () => scheduleScenePanelRender(true));
 window.addEventListener('pde:animation-properties-updated', () => {
     for (const el of scenePanelState.renderedRowEls.values()) el.remove();
     scenePanelState.renderedRowEls.clear();

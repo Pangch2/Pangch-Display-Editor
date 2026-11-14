@@ -14,8 +14,10 @@ export const shortcutDefinitions = [
   { id: 'fineAdjust', category: '일반', label: '미세조정', defaults: ['Shift'] },
   { id: 'toggleFineAdjust', category: '일반', label: '미세조정 토글', defaults: [] },
   { id: 'headPainterCopyStamp', category: '헤드 페인터', label: '스탬프 복사', defaults: ['Shift'] },
-  { id: 'headPainterConnectedFill', category: '헤드 페인터', label: '한 면 채우기', defaults: ['Shift'] },
-  { id: 'headPainterFillAllFaces', category: '헤드 페인터', label: '6면 전체 채우기', defaults: ['Ctrl'] },
+  { id: 'headPainterAlignStamp', category: '헤드 페인터', label: '스탬프 정렬 배치', defaults: ['Ctrl'] },
+  { id: 'headPainterSameColorFill', category: '헤드 페인터', label: '한 면 같은 색 채우기', defaults: ['Shift'] },
+  { id: 'headPainterFillFace', category: '헤드 페인터', label: '한 면 채우기', defaults: ['Ctrl'] },
+  { id: 'headPainterFillAllFaces', category: '헤드 페인터', label: '6면 전체 채우기', defaults: ['Ctrl+Shift'] },
   { id: 'headPainterPaletteGradient', category: '헤드 페인터', label: '팔레트 그라데이션', defaults: ['Shift'] },
   { id: 'headPainterSelectBrushArea', category: '헤드 페인터', label: '브러시 픽셀 영역 선택', defaults: ['Ctrl'] },
   { id: 'headPainterClearBrushSelection', category: '헤드 페인터', label: '브러시 선택 해제', defaults: ['Ctrl+G'] },
@@ -50,8 +52,7 @@ export const shortcutDefinitions = [
   { id: 'animationNextTick', category: '애니메이션', label: '1틱 앞으로 이동', defaults: ['ArrowRight'] },
   { id: 'animationPreviousKey', category: '애니메이션', label: '이전 키프레임', defaults: ['Ctrl+ArrowLeft'] },
   { id: 'animationNextKey', category: '애니메이션', label: '다음 키프레임', defaults: ['Ctrl+ArrowRight'] },
-  { id: 'animationCameraKey', category: '애니메이션', label: '현재 구도로 카메라 키 추가', defaults: ['Shift+C'] },
-  { id: 'animationCameraEdit', category: '애니메이션', label: '미리보기 구도에서 카메라 편집', defaults: ['Shift+V'] },
+  { id: 'animationCameraKey', category: '애니메이션', label: '현재 시점으로 카메라 키 추가', defaults: ['Shift+C'] },
 ] as const;
 
 export type ShortcutId = typeof shortcutDefinitions[number]['id'];

@@ -799,6 +799,8 @@ async function buildBlockModelGeometryData(resolved: ResolvedModel, opts: any = 
                 if (adj.flipU) corners = flipUCorners(corners);
                 if (adj.flipV) corners = flipVCorners(corners);
             }
+            // shade:false faces carry a length-3 normal; the entity shader reads that as "draw unlit" (entity-material.ts).
+            if (el.shade === false) v.n.multiplyScalar(3);
             pushQuad(buff, v.a, v.b, v.c, v.d, v.n, corners[0], corners[1], corners[2], corners[3]);
         }
     }

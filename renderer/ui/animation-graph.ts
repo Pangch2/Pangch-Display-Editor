@@ -12,9 +12,13 @@ export function animationGraphLayout(track: AnimationTrack | undefined, channel:
     const values = entries.flatMap((key, index) => {
         if (index === 0) return [value(key)];
         const previous = entries[index - 1];
-        return Array.from({ length: 25 }, (_, sample) => channel === 'all'
+        const samples = Array.from({ length: 25 }, (_, sample) => channel === 'all'
             ? value(previous) + (value(key) - value(previous)) * curveAmount(keyCurve(key, channel), sample / 24)
             : sampleChannelValues(track!.keys, channel, previous.tick + (key.tick - previous.tick) * sample / 24, rate)[axis]);
+        // Bezier handles can extend beyond the sampled curve; keep them inside the row too.
+        const curve = keyCurve(key, channel);
+        if (Array.isArray(curve)) for (const handle of [1, 3]) samples.push(value(previous) + (value(key) - value(previous)) * curve[handle]);
+        return samples;
     });
     const minimum = values.reduce((min, value) => Math.min(min, value), 0);
     const maximum = values.reduce((max, value) => Math.max(max, value), channel === 'all' ? 100 : 1);

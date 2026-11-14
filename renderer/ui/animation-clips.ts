@@ -6,23 +6,31 @@ export function initAnimationClipControls(selection: () => Set<string>, edit: (a
     const element = document.createElement('div');
     element.className = 'animation-clip-controls';
     element.innerHTML = `<label>동작 <select id="animation-clip" class="pde-input" aria-label="애니메이션 클립"></select></label>
-        <details class="animation-settings"><summary title="동작 이름·추가·복제·삭제 및 재생 설정">동작 설정</summary><div class="animation-settings-body">
+        <details class="animation-settings"><summary title="동작 이름·추가·복제·삭제 및 재생 설정">설정</summary><div class="animation-settings-body">
+            <section class="animation-settings-section" aria-label="동작 관리"><strong>동작</strong>
             <label>이름 <input id="animation-clip-name" class="pde-input" aria-label="애니메이션 이름" maxlength="120" placeholder="애니메이션 이름"></label>
             <div class="animation-actions">
                 <button type="button" id="animation-clip-add">새 동작</button>
                 <button type="button" id="animation-clip-copy">동작 복제</button>
                 <button type="button" id="animation-clip-delete">동작 삭제</button>
             </div>
+            </section>
+            <section class="animation-settings-section" aria-label="재생 설정"><strong>재생</strong>
             <label>종료 방식 <select id="animation-loop-mode" class="pde-input"><option value="once">한 번 재생 후 처음으로</option><option value="hold">마지막 자세 유지</option><option value="loop">반복</option></select></label>
             <label>종료 틱 <input id="animation-end-tick" class="pde-input" type="number" min="0" step="1" placeholder="마지막 키"></label>
             <label>반복 대기 틱 <input id="animation-loop-delay" class="pde-input" type="number" min="0" step="1" value="0"></label>
             <label>동작 전환 틱 <input id="animation-transition" class="pde-input" type="number" min="0" step="1" value="0"></label>
             <p>재생 중 다른 동작을 선택하면 현재 자세에서 전환합니다.</p>
+            </section>
+            <section class="animation-settings-section" aria-label="동작 적용 파츠"><strong>적용 파츠</strong>
             <div class="animation-actions"><button type="button" id="animation-mask-only">선택 파츠만 적용</button><button type="button" id="animation-mask-exclude">선택 파츠 제외</button><button type="button" id="animation-mask-all">전체 적용</button></div>
             <output id="animation-mask-count"></output>
+            </section>
+            <section class="animation-settings-section" aria-label="함께 재생할 동작">
             <strong>이 동작과 함께 재생</strong><div id="animation-layers"></div>
             <p>시점은 재생 시작부터 센 현재 동작의 틱입니다. 지정 시점·일정 간격에서는 각 배치를 한 번씩 재생하며, 구간 밖에서는 원래 동작을 따릅니다. 타임라인의 동작 행을 두 번 클릭해도 배치할 수 있습니다.</p>
             <p>각 동작의 속도·반복 규칙으로 함께 재생합니다. 파츠가 겹치면 목록 아래쪽 동작이 우선합니다.</p>
+            </section>
         </div></details>`;
     const picker = element.querySelector<HTMLSelectElement>('#animation-clip')!;
     const name = element.querySelector<HTMLInputElement>('#animation-clip-name')!;

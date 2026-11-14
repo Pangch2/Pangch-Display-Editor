@@ -2,6 +2,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { ViewHelper } from 'three/examples/jsm/helpers/ViewHelper.js';
 import { initGizmo } from './controls/gizmo/gizmo';
 import type { InitGizmoResult, OrbitControlsLike } from './controls/gizmo/gizmo';
+import { pickInstance } from './controls/selection/select';
 import {
     Group,
     BufferGeometry,
@@ -38,7 +39,8 @@ import './ui/scene-panel/scene-panel';
 import './ui/layout/panel-layout';
 import './ui/object-properties/object-properties';
 import './ui/animation-panel';
-import { bindAnimationCamera, isAnimationCameraPreview, setAnimationCameraPreview } from './animation/animation-camera';
+import { bindAnimationCamera, isAnimationCameraPreview, lockAnimationCameraControls, setAnimationCameraPreview } from './animation/animation-camera';
+import { addCameraDirection, updateCameraDirection } from './animation/camera-direction';
 import { initHeadPainter, updateHeadPainter } from './ui/head-editor/head-painter';
 import { waitForWelcome } from './ui/dialogs/welcome';
 
@@ -552,12 +554,13 @@ async function initScene(): Promise<void> {
     // Content batches are drawn only by the pooled pipeline.
     if (!installGpuDraw(renderer)) window.alert('이 GPU는 WebGPU indirect-first-instance 기능을 지원하지 않아 오브젝트를 표시할 수 없습니다.');
     loadedObjectGroup.userData.precompileDisplayModels = (meshes, current) => precompileDisplayModels(renderer, scene, camera, meshes, current);
-    initSceneColorCapture(renderer, scene, () => camera);
+    initSceneColorCapture(renderer, scene, () => camera, raycaster => !!pickInstance(raycaster, loadedObjectGroup));
 
     // 4. 컨트롤(Controls)
     controls = new OrbitControls(camera, renderer.domElement);
     controls.screenSpacePanning = true;
-    bindAnimationCamera(loadedObjectGroup, () => camera, controls);
+    bindAnimationCamera(loadedObjectGroup, () => camera, () => controls);
+    addCameraDirection(scene);
     controls.addEventListener('change', notifyCameraChanged);
     initHeadPainter({
         renderer,
@@ -754,6 +757,8 @@ function animate(): void {
             floorGrid.rotation.set(Math.abs(direction.z) * Math.PI / 2, 0, -Math.abs(direction.x) * Math.PI / 2);
             viewHelperWasAnimating = false;
         }
+        lockAnimationCameraControls(loadedObjectGroup);
+        updateCameraDirection(loadedObjectGroup);
         const renderStartMs = performance.now();
         renderer.render(scene, camera);
         renderer.autoClear = false;

@@ -130,6 +130,13 @@
   gap: 4px;
 }
 
+/* 4 buttons span the same width as the preview grid below */
+.head-painter-stamp-actions {
+  width: min(100%, 176px);
+  justify-self: center;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .head-painter-tools {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
@@ -184,8 +191,23 @@
   font-size: 18px;
 }
 
+.head-painter-generator-load > div > button,
+[data-head-painter-section="texture-generator"] button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* Lucide glyphs fill the em box above the baseline while Noto Sans KR sits lower, so centered icons look ~1px high. */
+:is(.head-painter-generator-tabs button:not([data-generator-target]), .head-painter-generator-load button, [data-head-painter-section="texture-generator"] button) > .lucide-icon {
+  position: relative;
+  top: 0.08em;
+}
+
 .head-painter-generator-check {
   display: flex !important;
+  align-items: center;
   margin-top: 5px;
   gap: 5px;
 }
@@ -244,6 +266,12 @@
 .head-painter-panel input[type="checkbox"] {
   appearance: auto;
   width: auto;
+}
+
+/* Same glyph-vs-box offset as the icons: the checkbox centers ~1px above its Korean label. */
+:is(.head-painter-checks label, .head-painter-generator-check) > input[type="checkbox"] {
+  position: relative;
+  top: 1px;
 }
 
 .head-painter-panel input[type="number"],
@@ -366,7 +394,8 @@
 
 .head-painter-stamp-preview {
   display: grid;
-  width: min(100%, 128px);
+  width: min(100%, 176px);
+  justify-self: center;
   min-height: 0;
   overflow: hidden;
   aspect-ratio: 1;

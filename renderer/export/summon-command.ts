@@ -6,6 +6,7 @@ import type { TextDisplayOptions } from '../load-project/display/text-display';
 import { getBedItemDisplayModelMatrix, getSkullBlockModelMatrix } from '../load-project/scene/scene-parser';
 import { parseSnbt, snbtNumber, SnbtLiteral, stringifySnbt, type SnbtValue } from './snbt';
 import { decomposeDisplayTransformation, preserveDisplayTransformation } from './display-transformation';
+import { animationCameraItem } from '../animation/animation-data';
 
 type Compound = { [key: string]: SnbtValue };
 export type SummonExportMode = 'command' | 'datapack' | 'separate';
@@ -228,6 +229,8 @@ function* createSummonCommands(project: Group, limit: number, separate = false):
     seenObjects.add(uuid);
     const ref = refs?.get(uuid);
     const name = names?.get(uuid) ?? '';
+    // The camera icon only exists in the editor; a camera replaced with a display exports as that display.
+    if (name.split('[')[0] === animationCameraItem) return [];
     const target = `오브젝트 ${data.objectLabels?.get(uuid) || name || uuid} (${uuid})`;
     if (!ref) throw new Error(`${target}: 씬 인스턴스를 찾을 수 없습니다.`);
     const ownNbt = readNbt(data.objectNbt?.get(uuid), target);

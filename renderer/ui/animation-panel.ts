@@ -1,16 +1,17 @@
 import { loadedObjectGroup as root } from '../load-project/display/display-instancing';
 import { Matrix4 } from 'three/webgpu';
-import { animationCameraId, animationCameraShakeId, animationCameraIds } from '../animation/animation-data';
-import { generateCameraShakeTrack, sampleCameraShake } from '../animation/camera-shake';
-import { editAnimationCameraView, isAnimationCameraPreview, recordAnimationCamera, setAnimationCameraPreview } from '../animation/animation-camera';
-import { animationData, animationSession, captureAnimationSnapshot, previewAnimation, restoreAnimationSnapshot,
-    recordAnimationTransform, setAnimationEnabled, syncAnimationTargets, selectAnimationClip, previewAnimationPlayback } from '../animation/animation-state';
+import { animationCameraItem } from '../animation/animation-data';
+import { animationCameraObject, animationViewMatrix, isAnimationCameraPreview, setAnimationCameraPreview } from '../animation/animation-camera';
+import { addDisplayObject, replaceDisplayObjects } from '../load-project/display/mesh-builder';
+import { objectRef } from '../scene-store/object-access';
+import { animationData, animationSession, captureAnimationSnapshot, previewAnimation, restoreAnimationSnapshot, placeAnimationCamera,
+    recordAnimationTransform, setAnimationEnabled, syncAnimationTargets, selectAnimationClip, previewAnimationPlayback, previewCamera } from '../animation/animation-state';
 import { animationEasings, animationChannels, animationEndTick, animationLayers, animationPlayback, channelKeys, keyHasChannel, keyCurve, setKeyCurve, keyChannelValues, animationExpression,
     copyKeyChannels, removeKeyChannels, mergeAnimationKey, offsetAnimationChannel, keyTransform, animationTimelineEnd, ticksPerSecond, type AnimationChannel, type AnimationClip, type AnimationCurve, type AnimationKey, type AnimationTrack, type AnimationVector } from '../animation/animation-data';
 import { animationGraphLayout, renderAnimationGraph, type GraphChannel, type GraphLayout } from './animation-graph';
 import { initAnimationClipControls } from './animation-clips';
 import { renderAnimationLayerRow } from './animation-layer-timeline';
-import { recordStateChange, refreshHistory } from '../controls/undo-redo/scene-history';
+import { captureHistoryUiState, recordCreationChange, recordReplacementChange, recordStateChange, refreshHistory } from '../controls/undo-redo/scene-history';
 import { flushProjectEdits, queueProjectEdit, startProjectEdit } from '../save/pending-edits';
 import { getShortcuts, matchesPointerShortcut, matchesShortcut } from '../controls/input/shortcuts';
 import { handleExpandCollapseShortcut } from './common/expand-collapse';
@@ -26,7 +27,7 @@ panel.hidden = true;
 panel.tabIndex = 0;
 panel.setAttribute('aria-label', '애니메이션 키프레임');
 panel.innerHTML = `<div class="details-resizer animation-resizer" role="separator" tabindex="0" aria-label="애니메이션 패널 높이" aria-orientation="horizontal" aria-controls="animation-panel" aria-valuemin="120"></div>
-    <div class="animation-header"><div class="animation-controls" role="toolbar" aria-label="애니메이션 도구">
+    <div class="animation-header"><div class="animation-controls" role="toolbar" aria-label="동작과 재생">
     <div class="animation-transport" role="group" aria-label="애니메이션 재생 제어">
         <button id="animation-start" type="button" title="처음으로 (Home)" aria-label="처음으로">|‹</button>
         <button id="animation-previous-key" class="lucide-icon" type="button" title="이전 키프레임" aria-label="이전 키프레임">&#xE15F;</button>
@@ -36,38 +37,31 @@ panel.innerHTML = `<div class="details-resizer animation-resizer" role="separato
         <button id="animation-loop" type="button" title="0틱부터 재생 종료 틱까지 반복" aria-label="반복 재생" aria-pressed="false">↻</button>
     </div>
     <div class="animation-timing">
-        <label>틱 <input id="animation-tick" class="pde-input" type="number" inputmode="numeric" min="0" step="1" value="0"></label>
+        <label class="animation-current-tick">현재 <input id="animation-tick" class="pde-input" aria-label="현재 틱" type="number" inputmode="numeric" min="0" step="1" value="0"> 틱</label>
         <label class="animation-rate"><input id="animation-rate" class="pde-input" aria-label="재생속도 (틱/초)" type="number" inputmode="decimal" min="1" max="10000" step="any" value="20"> 틱/초</label>
     </div>
+    </div>
+    <div class="animation-tools animation-toolbar" role="toolbar" aria-label="타임라인 편집">
+        <div class="animation-view-tools" role="group" aria-label="타임라인 보기">
+            <button id="animation-graph-toggle" type="button" aria-pressed="false" title="키프레임 / 그래프 보기 전환">그래프</button>
+        </div>
         <div class="animation-actions" role="group" aria-label="키프레임 편집">
-        <button id="animation-graph-toggle" type="button" aria-pressed="false" title="키프레임 / 그래프 보기 전환">그래프</button>
         <button id="animation-add" type="button" title="선택한 파츠의 현재 포즈를 키프레임으로 추가" disabled>◇ 키 추가</button>
-        <button id="animation-duplicate" type="button" disabled>복제</button>
-        <button id="animation-delete" type="button" disabled>삭제</button>
-        <div class="animation-camera-tools" role="group" aria-label="카메라 애니메이션">
-            <button id="animation-camera-add" type="button">카메라 키 추가</button>
-            <button id="animation-camera-edit" type="button">구도 편집</button>
-            <label title="타임라인에 따라 카메라를 이동합니다. 끄면 편집 시점으로 돌아갑니다."><input id="animation-camera-preview" type="checkbox">카메라 미리보기</label>
-        <details class="animation-settings animation-camera-settings"><summary>쉐이킹</summary><div class="animation-settings-body">
-            <label><input id="animation-camera-shake" type="checkbox">카메라 쉐이킹</label>
-            <label>생성 위치 강도 (블록) <input id="animation-camera-shake-translation" class="pde-input" type="number" min="0" max="100" step="any" value="0.05"></label>
-            <label>생성 회전 강도 (°) <input id="animation-camera-shake-rotation" class="pde-input" type="number" min="0" max="180" step="any" value="1"></label>
-            <label>생성 속도 <input id="animation-camera-shake-frequency" class="pde-input" type="number" min="0.1" max="60" step="any" value="2"></label>
-            <button id="animation-camera-shake-graph" type="button">쉐이킹 그래프 생성</button>
-            <button id="animation-camera-shake-key" type="button">현재 틱에 쉐이킹 키 추가</button>
-            <p>위 설정으로 위치 XYZ·pitch(X)·yaw(Y) 키를 생성합니다. 생성 후에는 그래프의 점·곡선과 키 값으로 편집합니다. 다시 생성하면 쉐이킹 키를 교체하며 실행 취소할 수 있습니다. 길이는 동작 설정의 종료 틱으로 조절합니다. pitch는 -90~90°로 제한하며 /tp에서 지원하지 않는 roll(Z)은 적용하지 않습니다.</p>
-        </div></details></div>
+        <button id="animation-duplicate" type="button" disabled>키 복제</button>
+        <button id="animation-delete" type="button" disabled>키 삭제</button>
         </div>
         <div class="animation-zoom" role="group" aria-label="타임라인 확대">
             <button id="animation-fit" type="button" title="모든 키프레임을 화면에 맞추기">전체 보기</button>
             <button id="animation-zoom-out" type="button" aria-label="타임라인 축소">−</button>
-            <output id="animation-zoom-value" aria-label="확대 비율">100%</output>
+            <label><input id="animation-zoom-value" class="pde-input" type="text" inputmode="decimal" aria-label="확대 비율 (%)" value="100">%</label>
             <button id="animation-zoom-in" type="button" aria-label="타임라인 확대">+</button>
         </div>
     </div></div>
     <div class="animation-workspace">
     <aside class="animation-inspector animation-tools" aria-label="키프레임 속성">
-        <strong>키프레임</strong>
+        <div class="animation-inspector-section">
+        <strong>키프레임 속성</strong>
+        <p class="animation-inspector-hint">타임라인에서 키를 선택해 편집하세요.</p>
         <label id="animation-channel-label">채널 <select id="animation-channel" class="pde-input" aria-label="편집할 변형 채널과 축">
             ${(['translation', 'rotation', 'scale'] as const).flatMap((channel, index) => ['X', 'Y', 'Z'].map((axis, i) =>
                 `<option value="${channel}:${i}">${['이동', '회전', '크기'][index]} ${axis}</option>`)).join('')}
@@ -84,8 +78,15 @@ panel.innerHTML = `<div class="details-resizer animation-resizer" role="separato
         <label><input id="animation-pre-enabled" type="checkbox">진입 값 분리</label>
         <span class="animation-pre-values" hidden>${['X', 'Y', 'Z'].map((axis, index) => `<label>${axis} 진입 <input class="pde-input" data-animation-pre="${index}" aria-label="키프레임 ${axis} 진입 값 또는 수식" maxlength="1024"></label>`).join('')}</span>
         <small>time: 초 · tick: 틱 · t: 구간 진행률 · value: 기본 값 · sin(2*pi*time)</small>
-    </div></aside>
-    <div class="animation-scroll" tabindex="0" aria-label="애니메이션 타임라인"><div class="animation-ruler"><span>파츠 <small id="animation-selection-count">키 0개 선택</small></span><div role="slider" tabindex="0" aria-label="현재 시간" aria-valuemin="0"></div></div><div class="animation-rows"></div><p class="animation-empty" hidden>파츠를 선택한 뒤 키 추가로 시작하세요. 포즈를 바꾸면 현재 틱에 키가 기록됩니다.</p></div></div>`;
+    </div></div>
+        <div class="animation-inspector-section animation-camera-tools" role="group" aria-label="카메라 애니메이션">
+            <strong>카메라</strong>
+            <label title="카메라 오브젝트를 따라 시점을 이동합니다. 끄면 편집 시점으로 돌아갑니다."><input id="animation-camera-preview" type="checkbox">카메라 미리보기</label>
+            <button id="animation-camera-add" type="button">카메라 키 추가</button>
+            <button id="animation-camera-restore" type="button" title="카메라 오브젝트를 다시 카메라 모양으로 되돌립니다. 위치와 회전은 그대로입니다.">카메라로 되돌리기</button>
+        </div>
+    </aside>
+    <div class="animation-scroll" tabindex="0" aria-label="애니메이션 타임라인"><div class="animation-ruler"><span>파츠 / 트랙 <small id="animation-selection-count">키 0개 선택</small></span><div role="slider" tabindex="0" aria-label="현재 시간" aria-valuemin="0"></div></div><div class="animation-rows"></div><p class="animation-empty" hidden>파츠를 선택한 뒤 ◇ 키 추가로 시작하세요.<br>포즈를 바꾸면 현재 틱에 키가 자동으로 기록됩니다.</p></div></div>`;
 const header = panel.querySelector<HTMLElement>('.animation-header')!;
 document.body.append(panel);
 const resizer = panel.querySelector<HTMLElement>('.animation-resizer')!;
@@ -98,76 +99,51 @@ const rows = panel.querySelector<HTMLElement>('.animation-rows')!;
 const deleteButton = panel.querySelector<HTMLButtonElement>('#animation-delete')!;
 const addButton = panel.querySelector<HTMLButtonElement>('#animation-add')!;
 const cameraAddButton = panel.querySelector<HTMLButtonElement>('#animation-camera-add')!;
-const cameraEditButton = panel.querySelector<HTMLButtonElement>('#animation-camera-edit')!;
-const cameraPreviewInput = panel.querySelector<HTMLInputElement>('#animation-camera-preview')!;
-const cameraShakeInput = panel.querySelector<HTMLInputElement>('#animation-camera-shake')!;
-const cameraShakeTranslation = panel.querySelector<HTMLInputElement>('#animation-camera-shake-translation')!;
-const cameraShakeRotation = panel.querySelector<HTMLInputElement>('#animation-camera-shake-rotation')!;
-const cameraShakeFrequency = panel.querySelector<HTMLInputElement>('#animation-camera-shake-frequency')!;
-const cameraShakeGraphButton = panel.querySelector<HTMLButtonElement>('#animation-camera-shake-graph')!;
-const cameraShakeKeyButton = panel.querySelector<HTMLButtonElement>('#animation-camera-shake-key')!;
-const cameraSettings = panel.querySelector<HTMLDetailsElement>('.animation-camera-settings')!;
-window.addEventListener('pointerdown', event => { if (!cameraSettings.contains(event.target as Node)) cameraSettings.open = false; });
-window.addEventListener('focusin', event => { if (!cameraSettings.contains(event.target as Node)) cameraSettings.open = false; });
-window.addEventListener('blur', () => { cameraSettings.open = false; });
-cameraSettings.onkeydown = event => {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cameraSettings.open = false; cameraSettings.querySelector('summary')!.focus(); }
-};
-cameraAddButton.onclick = () => editAnimation(() => {
-    editAnimationCameraView(root);
-    recordAnimationCamera(root, animationData(root)!, animationSession(root).tick);
-    setSelectedKeys([{ id: animationCameraId, tick: animationSession(root).tick }]);
-    cameraSettings.open = false;
-});
-cameraEditButton.onclick = () => {
+const cameraRestoreButton = panel.querySelector<HTMLButtonElement>('#animation-camera-restore')!;
+cameraRestoreButton.onclick = () => {
+    cancelScrub?.();
     void enqueue(async () => {
         if (!await settle()) return;
-        editAnimationCameraView(root);
-        changed(false);
+        const id = animationCameraObject(root);
+        if (!id) return;
+        const beforeUi = captureHistoryUiState();
+        const result = await replaceDisplayObjects([{ objectUuid: id, name: animationCameraItem, isItemDisplay: true }], false);
+        if (result.history) recordReplacementChange(root, result.history, beforeUi);
+        previewAnimation(root); changed(false);
     });
 };
-for (const input of [cameraShakeInput, cameraShakeTranslation, cameraShakeRotation, cameraShakeFrequency]) input.onchange = () => {
-    const enabled = cameraShakeInput.checked;
-    const translation = Number(cameraShakeTranslation.value), rotation = Number(cameraShakeRotation.value), frequency = Number(cameraShakeFrequency.value);
-    if ([cameraShakeTranslation, cameraShakeRotation, cameraShakeFrequency].some(input => !input.value || !input.checkValidity())) {
-        input.blur();
-        syncAnimationPanel(); return;
-    }
-    editAnimation(() => {
-        const clip = animationData(root)!;
-        if (enabled && clip.endTick === undefined && animationEndTick(clip) === 0) clip.endTick = Math.max(clip.duration - 1, animationSession(root).tick);
-        if (enabled && !clip.tracks.some(track => track.id === animationCameraId)) {
-            editAnimationCameraView(root);
-            recordAnimationCamera(root, clip, animationSession(root).tick);
+const cameraPreviewInput = panel.querySelector<HTMLInputElement>('#animation-camera-preview')!;
+cameraAddButton.onclick = () => {
+    cancelScrub?.();
+    void enqueue(async () => {
+        if (!await settle() || !animationSession(root).enabled) return;
+        const view = animationViewMatrix(root);
+        let id = animationCameraObject(root);
+        if (!id) {
+            const beforeUi = captureHistoryUiState();
+            root.updateWorldMatrix(true, false);
+            id = await addDisplayObject(animationCameraItem, true, root.matrixWorld.clone().invert().multiply(view));
+            const ref = objectRef(root, id);
+            if (!ref) throw new Error('카메라 오브젝트를 만들 수 없습니다.');
+            root.userData.objectLabels.set(id, '카메라');
+            window.dispatchEvent(new CustomEvent('pde:object-renamed', { detail: { key: `object:${id}`, value: '카메라' } }));
+            recordCreationChange(root, { groups: new Set(), objects: new Map([[ref.mesh, new Set([ref.instanceId])]]) }, beforeUi);
         }
-        clip.cameraShake = { enabled, translation, rotation, frequency };
-        if (enabled && !clip.tracks.some(track => track.id === animationCameraShakeId)) clip.tracks.push(generateCameraShakeTrack(clip));
-        if (enabled) setAnimationCameraPreview(root, true);
+        const before = captureAnimationSnapshot(root)!;
+        try {
+            root.userData.animation.camera = id;
+            placeAnimationCamera(root, id, view);
+            recordAnimationTransform(root, before, [id]);
+            setSelectedKeys([{ id, tick: animationSession(root).tick }]);
+            recordKeyEdit(before); panel.focus();
+        } catch (error) { restoreAnimationSnapshot(root, before); changed(); throw error; }
     });
 };
-cameraShakeGraphButton.onclick = () => editAnimation(() => {
-    const clip = animationData(root)!;
-    const track = generateCameraShakeTrack(clip);
-    clip.tracks = [...clip.tracks.filter(track => track.id !== animationCameraShakeId), track];
-    graphMode = true; channelSelect.value = 'translation:0';
-    setSelectedKeys([{ id: animationCameraShakeId, tick: Math.min(animationSession(root).tick, track.keys[track.keys.length - 1].tick) }]);
-    cameraSettings.open = false;
-});
-cameraShakeKeyButton.onclick = () => editAnimation(() => {
-    const clip = animationData(root)!, tick = animationSession(root).tick;
-    const values = sampleCameraShake(clip, tick);
-    let track = clip.tracks.find(track => track.id === animationCameraShakeId);
-    if (!track) clip.tracks.push(track = { type: 'camera', id: animationCameraShakeId, keys: [] });
-    mergeAnimationKey(track, { tick, transform: keyTransform(new Matrix4()), channels: ['translation', 'rotation'], values });
-    graphMode = true; channelSelect.value = 'translation:0';
-    setSelectedKeys([{ id: animationCameraShakeId, tick }]); cameraSettings.open = false;
-});
 cameraPreviewInput.onchange = () => {
     const enabled = cameraPreviewInput.checked;
     void enqueue(async () => {
         if (!await settle()) return;
         setAnimationCameraPreview(root, enabled);
-        cameraSettings.open = false;
         previewAnimation(root); changed(false);
     });
 };
@@ -176,7 +152,7 @@ const interpolationSelect = panel.querySelector<HTMLSelectElement>('#animation-i
 const startButton = panel.querySelector<HTMLButtonElement>('#animation-start')!;
 const endButton = panel.querySelector<HTMLButtonElement>('#animation-end')!;
 const loopButton = panel.querySelector<HTMLButtonElement>('#animation-loop')!;
-const zoomValue = panel.querySelector<HTMLOutputElement>('#animation-zoom-value')!;
+const zoomValue = panel.querySelector<HTMLInputElement>('#animation-zoom-value')!;
 const selectionCount = panel.querySelector<HTMLElement>('#animation-selection-count')!;
 const emptyMessage = panel.querySelector<HTMLElement>('.animation-empty')!;
 const previousKeyButton = panel.querySelector<HTMLButtonElement>('#animation-previous-key')!;
@@ -190,7 +166,6 @@ let graphMode = false;
 let selectedKeys = new Map<string, Set<number>>();
 let copiedKeys: Array<{ id: string; key: AnimationKey }> = [];
 let selectionIds = new Set<string>();
-let selectingKeyParts = false;
 let selectionPrimary: PrimarySelection | null = null;
 let pending = Promise.resolve();
 let revision = 0;
@@ -205,7 +180,7 @@ let timelineEnd = 100;
 let followPlayback = true;
 let lastKeyTick = 0;
 let zoomAnchor: { clientX: number; tick: number; scrollLeft: number } | undefined;
-let timelineRows: Array<{ type: 'group' | 'object' | 'camera' | 'clip'; id: string; depth: number; clip?: AnimationClip; animated?: boolean; inheritedAnimation?: boolean }> = [];
+let timelineRows: Array<{ type: 'group' | 'object' | 'clip'; id: string; depth: number; clip?: AnimationClip; animated?: boolean; inheritedAnimation?: boolean }> = [];
 let timelineTracks = new Map<string, AnimationTrack>();
 const renderedRows = new Map<number, HTMLElement>();
 const expandedGroupIds = new Set<string>();
@@ -220,7 +195,7 @@ filterControls.innerHTML = `<summary>필터: 전체</summary><div class="animati
     <button type="button" data-filter="add">선택 항목 추가</button>
     <button type="button" data-filter="reset">필터 해제</button>
     <span class="animation-filter-targets"></span></div>`;
-header.querySelector('.animation-actions')!.append(filterControls);
+header.querySelector('.animation-view-tools')!.append(filterControls);
 window.addEventListener('pointerdown', event => { if (!filterControls.contains(event.target as Node)) filterControls.open = false; });
 window.addEventListener('focusin', event => { if (!filterControls.contains(event.target as Node)) filterControls.open = false; });
 window.addEventListener('blur', () => { filterControls.open = false; });
@@ -243,7 +218,7 @@ nameFilterInput.addEventListener('input', () => {
 
 function matchesTargetFilter(id: string): boolean {
     if (targetFilter && !targetFilter.has(id)) return false;
-    const name = id === animationCameraShakeId ? '카메라 쉐이킹' : id === animationCameraId ? '카메라' : root.userData.groups?.get(id)?.name ?? getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
+    const name = root.userData.groups?.get(id)?.name ?? getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
     return !nameFilter || name.toLocaleLowerCase().includes(nameFilter);
 }
 
@@ -485,9 +460,7 @@ function selectKeyParts(anchorMode: 'default' | 'center' = 'default'): void {
     const explicitPrimary: PrimarySelection | null = anchorMode === 'center' ? null : keepPrimary ? primary
         : groups.has(firstId) ? { type: 'group', id: firstId }
             : objects.has(firstId) ? { type: 'object', uuid: firstId } : null;
-    selectingKeyParts = true;
-    try { root.userData.replaceSelectionWithGroupsAndObjects?.(groups, objects, { anchorMode, explicitPrimary }); }
-    finally { selectingKeyParts = false; }
+    root.userData.replaceSelectionWithGroupsAndObjects?.(groups, objects, { anchorMode, explicitPrimary });
 }
 
 function selectKey(id: string, tick: number, additive: boolean, preserve = false): void {
@@ -544,9 +517,9 @@ function captureTimelineDrag(event: PointerEvent) {
     return Object.assign(drag, { cleanup });
 }
 
-function beginKeyDrag(event: PointerEvent, id: string, tick: number, graph?: GraphLayout): void {
+function beginKeyDrag(event: PointerEvent, id: string, tick: number): void {
     if (event.button !== 0 || !event.isPrimary || matchesPointerShortcut(event, 'boxSelect')) return;
-    const startX = event.clientX, startY = event.clientY, startScroll = timelineScroll.scrollLeft;
+    const startX = event.clientX, startScroll = timelineScroll.scrollLeft;
     const additive = matchesPointerShortcut(event, 'multiSelect');
     const drag = captureTimelineDrag(event);
     void enqueue(async () => {
@@ -568,18 +541,15 @@ function beginKeyDrag(event: PointerEvent, id: string, tick: number, graph?: Gra
                 restoreAnimationSnapshot(root, before);
                 selectedKeys = selectionBefore; previewAnimation(root, tick); changed(false);
             };
-            let delta = 0, valueDelta = 0;
+            let delta = 0;
             while (!drag.canceled && animationData(root) === data && animationSession(root).enabled) {
                 let next = Math.max(-minimum, Math.round((drag.clientX - startX + timelineScroll.scrollLeft - startScroll) / pixelsPerTick));
-                const nextValue = graph && Math.abs(drag.clientY - startY) >= 4 ? (startY - drag.clientY) * graph.unitsPerPixel : 0;
                 const canMove = entries.every(entry => Number.isSafeInteger(entry.tick + next)
                     && !originals.get(entry.track)!.some(other => other.tick === entry.tick + next
                         && !entries.some(moving => moving.track === entry.track && moving.tick === other.tick)
                         && (editChannel() === 'all' || keyHasChannel(other, editChannel() as AnimationChannel))));
-                if (graph && !canMove) next = delta;
-                if ((next !== delta || nextValue !== valueDelta) && (canMove || graph)) {
+                if (next !== delta && canMove) {
                     delta = next;
-                    valueDelta = nextValue;
                     if (editChannel() === 'all') {
                         for (const entry of entries) entry.key.tick = entry.tick + delta;
                         for (const track of tracks) track.keys.sort((a, b) => a.tick - b.tick);
@@ -590,21 +560,13 @@ function beginKeyDrag(event: PointerEvent, id: string, tick: number, graph?: Gra
                         }
                         for (const entry of entries) mergeAnimationKey(entry.track, { ...copyKeyChannels(entry.key, editChannel()), tick: entry.tick + delta });
                     }
-                    if (graph && graph.channel !== 'all') for (const entry of entries) {
-                        if (entry.track.id !== animationCameraShakeId) continue;
-                        const original = originals.get(entry.track)!.find(key => key.tick === entry.tick)!;
-                        const key = entry.track.keys.find(key => key.tick === entry.tick + delta)!;
-                        const vector = keyChannelValues(original, graph.channel, original.tick, graph.rate) as AnimationVector;
-                        vector[graph.axis] = Number(vector[graph.axis]) + valueDelta;
-                        (key.values ??= {})[graph.channel] = vector;
-                    }
                     setSelectedKeys(entries.map(entry => ({ id: entry.track.id, tick: entry.tick + delta })));
                     previewAnimation(root, tick + delta); changed(false);
                 }
                 if (drag.released) break;
                 await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
             }
-            if (!drag.canceled && animationData(root) === data && (delta !== 0 || valueDelta !== 0)) {
+            if (!drag.canceled && animationData(root) === data && delta !== 0) {
                 const after = captureAnimationSnapshot(root)!;
                 recordStateChange({ before, after, apply: state => restoreAnimationSnapshot(root, state), refresh: () => { refreshHistory(root); changed(); } });
             }
@@ -645,8 +607,6 @@ function syncKeyValues(): void {
         input.value = values.every(value => value === values[0]) ? values[0] : '';
         input.placeholder = input.value ? '' : '여러 값';
         input.title = channel === 'rotation' ? '회전 각도(도). 360·720 등 회전수 또는 시간 기반 수식을 입력합니다.' : '숫자 또는 시간 기반 수식';
-        input.disabled = channel === 'rotation' && axis === 2 && entries.every(({ track }) => track.id === animationCameraShakeId);
-        if (channel === 'rotation' && entries.every(({ track }) => track.id === animationCameraShakeId)) input.title = axis === 0 ? 'Minecraft pitch (°), 양수는 아래쪽' : axis === 1 ? 'Minecraft yaw (°), 양수는 오른쪽' : '/tp는 roll을 지원하지 않습니다.';
     }
 }
 
@@ -659,7 +619,6 @@ for (const input of keyValues.querySelectorAll<HTMLInputElement>('[data-animatio
             if (channel === 'all' || !source) throw new Error('키 값을 입력해 주세요.');
             const value = Number.isFinite(Number(source)) ? Number(source) : source;
             for (const { key, track } of selectedKeyEntries()) {
-                if (track.id === animationCameraShakeId && (channel === 'scale' || channel === 'rotation' && axis === 2)) continue;
                 const fallback = keyChannelValues(key, channel, key.tick, animationData(root)?.tickRate);
                 if (typeof value === 'string') animationExpression(value, key.tick, animationData(root)?.tickRate, 0, fallback[axis]);
                 if (typeof value === 'number' && !Number.isFinite(Math.fround(value))) throw new Error('키 값이 너무 큽니다.');
@@ -667,7 +626,7 @@ for (const input of keyValues.querySelectorAll<HTMLInputElement>('[data-animatio
                 const vector = key[field]?.[channel] ?? [...(key.values?.[channel] ?? fallback)] as AnimationVector;
                 vector[axis] = value;
                 (key[field] ??= {})[channel] = vector;
-                if (!pre && key.tick === 0 && track.id !== animationCameraShakeId) offsetAnimationChannel(track, channel, fallback,
+                if (!pre && key.tick === 0) offsetAnimationChannel(track, channel, fallback,
                     keyChannelValues(key, channel, 0, animationData(root)?.tickRate));
             }
         });
@@ -850,32 +809,19 @@ export function syncAnimationPanel(): void {
     panel.hidden = !session.enabled;
     document.body.classList.toggle('animation-active', session.enabled);
     button?.setAttribute('aria-pressed', String(session.enabled));
-    const hasCamera = data && [data, ...animationLayers(root.userData.animation)].some(clip => clip.tracks.some(track => track.id === animationCameraId));
+    const hasCamera = !!animationCameraObject(root);
     if (!hasCamera) setAnimationCameraPreview(root, false);
     cameraPreviewInput.checked = isAnimationCameraPreview(root);
     cameraPreviewInput.disabled = !hasCamera;
-    cameraAddButton.title = `현재 구도를 ${session.tick}틱에 추가 / 같은 틱의 키 갱신 (${getShortcuts('animationCameraKey').join(' / ')})`;
-    cameraEditButton.disabled = !cameraPreviewInput.checked;
-    cameraEditButton.title = `현재 미리보기 구도에서 카메라 조작 시작 (${getShortcuts('animationCameraEdit').join(' / ')})`;
-    const hasShakeTrack = data?.tracks.some(track => track.id === animationCameraShakeId);
-    cameraShakeInput.checked = data?.cameraShake?.enabled ?? !!hasShakeTrack;
-    cameraShakeGraphButton.disabled = cameraShakeKeyButton.disabled = !cameraShakeInput.checked;
-    cameraShakeGraphButton.textContent = hasShakeTrack ? '설정값으로 그래프 다시 생성' : '쉐이킹 그래프 생성';
-    for (const [input, value] of [[cameraShakeTranslation, data?.cameraShake?.translation ?? .05],
-        [cameraShakeRotation, data?.cameraShake?.rotation ?? 1], [cameraShakeFrequency, data?.cameraShake?.frequency ?? 2]] as const) {
-        input.disabled = !cameraShakeInput.checked;
-        if (document.activeElement !== input) input.value = String(value);
-    }
+    const cameraId = animationCameraObject(root);
+    cameraRestoreButton.disabled = !cameraId || root.userData.objectNames?.get(cameraId)?.split('[')[0] === animationCameraItem;
+    cameraAddButton.title = `현재 시점을 ${session.tick}틱의 카메라 키로 추가 / 같은 틱의 키 갱신 (${getShortcuts('animationCameraKey').join(' / ')})`;
     if (visibilityChanged) window.dispatchEvent(new Event('resize'));
     if (!session.enabled) return;
-    const editingShake = selectedKeys.size === 1 && selectedKeys.has(animationCameraShakeId);
-    for (const option of channelSelect.options) option.disabled = editingShake && (option.value.startsWith('scale:') || option.value === 'rotation:2');
-    if (channelSelect.selectedOptions[0]?.disabled) channelSelect.value = 'translation:0';
     graphButton.setAttribute('aria-pressed', String(graphMode));
     panel.classList.toggle('animation-graph-active', graphMode);
     channelLabel.hidden = false;
-    channelLabel.title = editingShake ? '쉐이킹 점 드래그: 틱·값 이동 · 곡선·원형 핸들: 보간 조절 · 회전 X: pitch · Y: yaw'
-        : `다이아몬드·선·원형 핸들: 키프레임 좌표와 틱을 유지하며 중간 변화 조절 · ${getShortcuts('ungroup').join(' / ')}: 앞 구간 끊기 · ${getShortcuts('group').join(' / ')}: 앞 구간 연결`;
+    channelLabel.title = `다이아몬드·선·원형 핸들: 키프레임 좌표와 틱을 유지하며 중간 변화 조절 · ${getShortcuts('ungroup').join(' / ')}: 앞 구간 끊기 · ${getShortcuts('group').join(' / ')}: 앞 구간 연결`;
     graphButton.title = '키프레임 / 그래프 보기 전환';
     duplicateButton.title = `선택한 키 복제 (${getShortcuts('duplicate').join(' / ')})`;
     deleteButton.title = `선택한 키 삭제 (${getShortcuts('deleteSelection').join(' / ')})`;
@@ -896,7 +842,7 @@ function syncAnimationTime(): void {
     endButton.disabled = session.tick === lastKeyTick;
     loopButton.disabled = lastKeyTick === 0;
     loopButton.setAttribute('aria-pressed', String(data?.loopMode === 'loop'));
-    zoomValue.value = `${Math.round(pixelsPerTick / 6 * 100)}%`;
+    if (document.activeElement !== zoomValue) zoomValue.value = String(Number((pixelsPerTick / 6 * 100).toFixed(2)));
     timelineEnd = Math.max(timelineEnd, lastKeyTick, session.tick + Math.max(100, timelineScroll.clientWidth / pixelsPerTick));
     for (const track of data!.tracks) timelineEnd = Math.max(timelineEnd, track.keys[track.keys.length - 1]?.tick ?? 0);
     timelineEnd = Math.ceil(timelineEnd / 100) * 100;
@@ -924,10 +870,6 @@ function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
     const visited = new Set<string>();
     const matchingRows = new Set<string>();
     timelineRows = [];
-    for (const id of animationCameraIds) if (tracks.has(id)) {
-        timelineRows.push({ type: 'camera', id, depth: 0, animated: true });
-        if (matchesTargetFilter(id)) matchingRows.add(id);
-    }
     if (!graphMode && !filtering) for (const clip of animationLayers(root.userData.animation)) {
         timelineRows.push({ type: 'clip', id: `clip:${clip.id ?? 'default'}`, depth: 0, clip });
     }
@@ -1000,14 +942,10 @@ function renderVisibleAnimationRows(): void {
         part.style.paddingLeft = `${10 + depth * 16}px`;
         const label = document.createElement('button'); label.type = 'button';
         label.className = 'animation-part';
-        label.textContent = id === animationCameraShakeId ? '카메라 쉐이킹' : type === 'camera' ? '카메라' : type === 'group' ? groups.get(id).name : getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
+        label.textContent = type === 'group' ? groups.get(id).name : getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
         label.title = label.textContent;
         label.onclick = event => {
             selectedKeys.clear();
-            if (type === 'camera') {
-                setSelectedKeys((timelineTracks.get(id)?.keys ?? []).map(key => ({ id, tick: key.tick })));
-                syncAnimationPanel(); panel.focus(); return;
-            }
             selectPart(type, id, matchesPointerShortcut(event, 'multiSelect') || matchesPointerShortcut(event, 'boxSelect'));
             syncAnimationPanel(); panel.focus();
         };
@@ -1032,14 +970,13 @@ function renderVisibleAnimationRows(): void {
         const visibility = document.createElement('button');
         visibility.type = 'button';
         visibility.className = 'animation-visibility lucide-icon';
-        const enabled = type === 'camera' || isSceneItemEnabled(root, type, id);
+        const enabled = isSceneItemEnabled(root, type, id);
         visibility.textContent = enabled ? '\uE0BA' : '\uE0BB';
         visibility.title = `${label.textContent}: ${enabled ? '숨기기' : '보이기'}`;
         visibility.setAttribute('aria-label', visibility.title);
         visibility.setAttribute('aria-pressed', String(enabled));
         visibility.onpointerdown = event => event.stopPropagation();
         visibility.onclick = event => {
-            if (type === 'camera') return;
             event.stopPropagation();
             void enqueue(async () => {
                 if (!await settle()) return;
@@ -1050,7 +987,7 @@ function renderVisibleAnimationRows(): void {
                 rows.querySelector<HTMLButtonElement>(`[data-id="${CSS.escape(id)}"] .animation-visibility`)?.focus();
             });
         };
-        if (type !== 'camera') part.append(visibility);
+        part.append(visibility);
         if (type === 'group' && animated) {
             part.classList.add('has-animation');
             const indicator = document.createElement('span');
@@ -1088,19 +1025,6 @@ function renderVisibleAnimationRows(): void {
                     event.preventDefault(); event.stopPropagation();
                     editCurveHandle(id, curveKey.tick, handle, 0, (event.key === 'ArrowUp' ? .05 : -.05) * direction, key.tick);
                 };
-                if (id === animationCameraShakeId && graph.channel !== 'all') {
-                    marker.title = `${key.tick}틱 · ${Number(value.toFixed(4))} · 드래그: 틱·쉐이킹 값 이동 · 방향키: 값 조절`;
-                    marker.onpointerdown = event => beginKeyDrag(event, id, key.tick, graph);
-                    marker.onkeydown = event => {
-                        if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
-                        event.preventDefault(); event.stopPropagation();
-                        editAnimation(() => {
-                            const values = keyChannelValues(key, graph.channel as AnimationChannel, key.tick, graph.rate) as AnimationVector;
-                            values[graph.axis] = Number(values[graph.axis]) + (event.key === 'ArrowUp' ? 1 : -1) * graph.unitsPerPixel;
-                            (key.values ??= {})[graph.channel] = values;
-                        });
-                    };
-                }
             }
             marker.setAttribute('aria-label', `${label.textContent} ${key.tick}틱 키프레임${graph ? ` · ${channelSelect.selectedOptions[0].textContent} ${Number(graph.value(key).toFixed(4))}${graph.channel === 'all' ? '%' : ''}` : ''}`);
             marker.classList.toggle('selected', selectedKeys.get(id)?.has(key.tick) ?? false);
@@ -1221,6 +1145,16 @@ function setTimelineZoom(value: number, tick = animationSession(root).tick): voi
     timelineScroll.scrollLeft = Math.max(0, tick * pixelsPerTick - Math.max(0, Math.min(timelineScroll.clientWidth - 238, offset)));
     renderTimelineRuler();
 }
+zoomValue.onchange = () => {
+    const value = zoomValue.value.trim(), percentage = Number(value);
+    if (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) && Number.isFinite(percentage) && percentage > 0) {
+        setTimelineZoom(percentage / 100 * 6);
+    }
+    zoomValue.value = String(Number((pixelsPerTick / 6 * 100).toFixed(2)));
+};
+zoomValue.onkeydown = event => {
+    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); zoomValue.blur(); }
+};
 panel.querySelector<HTMLButtonElement>('#animation-zoom-in')!.onclick = () => setTimelineZoom(pixelsPerTick * 1.25);
 panel.querySelector<HTMLButtonElement>('#animation-zoom-out')!.onclick = () => setTimelineZoom(pixelsPerTick / 1.25);
 panel.querySelector<HTMLButtonElement>('#animation-fit')!.onclick = () => {
@@ -1312,7 +1246,6 @@ deleteButton.onclick = () => void enqueue(async () => {
     const data = animationData(root)!;
     for (const track of data.tracks) removeKeyChannels(track, selectedKeys.get(track.id) ?? new Set(), editChannel());
     data.tracks = data.tracks.filter(track => track.keys.length);
-    if (selectedKeys.has(animationCameraShakeId) && !data.tracks.some(track => track.id === animationCameraShakeId) && data.cameraShake) data.cameraShake.enabled = false;
     selectedKeys.clear(); previewAnimation(root);
     const after = captureAnimationSnapshot(root)!;
     recordStateChange({ before, after, apply: state => restoreAnimationSnapshot(root, state), refresh: () => { refreshHistory(root); changed(); } });
@@ -1345,17 +1278,17 @@ async function pasteKeys(): Promise<void> {
     if (!await settle() || !copiedKeys.length || !animationSession(root).enabled) return;
     const data = animationData(root)!;
     const first = copiedKeys.reduce((tick, entry) => Math.min(tick, entry.key.tick), Infinity);
-    const target = !copiedKeys.some(entry => animationCameraIds.includes(entry.id)) && new Set(copiedKeys.map(entry => entry.id)).size === 1 && selectionIds.size === 1 ? [...selectionIds][0] : undefined;
+    const target = new Set(copiedKeys.map(entry => entry.id)).size === 1 && selectionIds.size === 1 ? [...selectionIds][0] : undefined;
     const entries = copiedKeys.map(entry => ({ ...entry, id: target ?? entry.id,
         key: { ...structuredClone(entry.key), tick: animationSession(root).tick + (entry.key.tick - first) } }))
-        .filter(entry => (animationCameraIds.includes(entry.id) || root.userData.groups?.has(entry.id) || root.userData.objectUuidToInstance?.has(entry.id)));
+        .filter(entry => root.userData.groups?.has(entry.id) || root.userData.objectUuidToInstance?.has(entry.id));
     if (!entries.length) return;
     if (entries.some(entry => !Number.isSafeInteger(entry.key.tick))) throw new Error('키프레임을 붙여넣을 수 있는 시간 범위를 초과했습니다.');
     const before = captureAnimationSnapshot(root)!;
     try {
         for (const entry of entries) {
             let track = data.tracks.find(track => track.id === entry.id);
-            if (!track) data.tracks.push(track = { type: animationCameraIds.includes(entry.id) ? 'camera' : root.userData.groups?.has(entry.id) ? 'group' : 'object', id: entry.id, keys: [] });
+            if (!track) data.tracks.push(track = { type: root.userData.groups?.has(entry.id) ? 'group' : 'object', id: entry.id, keys: [] });
             const missing = (entry.key.channels ?? animationChannels).filter(channel => !track.keys.some(key => keyHasChannel(key, channel)));
             const node = animationSession(root).local.get(entry.id);
             if (entry.key.tick > 0 && missing.length && node) {
@@ -1463,7 +1396,7 @@ timelineScroll.addEventListener('wheel', event => {
 window.addEventListener('pde:selection-changed', (event: CustomEvent) => {
     selectionIds = new Set([...event.detail?.groups ?? [], ...event.detail?.objects ?? []]);
     selectionPrimary = event.detail?.primary ?? null;
-    for (const id of selectedKeys.keys()) if (!selectionIds.has(id) && !(selectingKeyParts && animationCameraIds.includes(id))) selectedKeys.delete(id);
+    for (const id of selectedKeys.keys()) if (!selectionIds.has(id)) selectedKeys.delete(id);
     syncAnimationPanel();
 });
 window.addEventListener('keydown', event => {
@@ -1490,8 +1423,7 @@ window.addEventListener('keydown', event => {
     const action = matchesShortcut(event, 'animationPlay') ? pauseButton
         : matchesShortcut(event, 'animationPreviousKey') ? previousKeyButton
         : matchesShortcut(event, 'animationNextKey') ? nextKeyButton
-        : matchesShortcut(event, 'animationCameraKey') ? cameraAddButton
-        : matchesShortcut(event, 'animationCameraEdit') ? cameraEditButton : null;
+        : matchesShortcut(event, 'animationCameraKey') ? cameraAddButton : null;
     if (!action && !tickDirection) {
         if (!['Shift', 'Control', 'Alt', 'Meta'].includes(event.key) && !matchesShortcut(event, 'focusSelection')) pausePlayback();
         return;
@@ -1529,6 +1461,7 @@ window.addEventListener('pde:scene-updated', event => {
         setAnimationEnabled(root, true);
     }
     pausePlayback(); syncAnimationTargets(root); syncAnimationPanel();
+    previewCamera(root); // an edited camera object moves the previewed view with it
 });
 window.addEventListener('pde:animation-changed', syncAnimationPanel);
 window.addEventListener('pde:camera-type-applied', syncAnimationPanel);
@@ -1538,7 +1471,6 @@ window.addEventListener('pde:animation-properties-updated', () => {
     if (nameFilter) { syncAnimationPanel(); return; }
     for (const row of rows.children as HTMLCollectionOf<HTMLElement>) {
         const id = row.dataset.id!;
-        if (animationCameraIds.includes(id)) continue;
         const group = root.userData.groups?.get(id);
         const name = group ? group.name : getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
         const label = row.querySelector<HTMLElement>('.animation-part')!;

@@ -4,6 +4,7 @@ import { applySceneVisibility } from '../controls/scene-visibility';
 import { getMirrorPlane, setMirrorPlane, worldXReflection } from '../controls/transform/mirror-planes';
 import type { GroupData } from '../controls/grouping/group';
 import { runSteps, validatePdeProject, type PdeEditorState, type PdeNode, type PdeProject, type ObjectEditorState } from './pde-format';
+import { animationCameraObject } from '../animation/animation-camera';
 import { animationSession, serializeAnimation, importAnimation, renderModelTransform } from '../animation/animation-state';
 import { getDisplayType, getInstanceHasHat, getInstanceMatrix, hasInstanceHatData, objectHeadValues, objectIsCustomPivot, objectPivot, setInstanceHasHat,
     setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, type ObjectRef } from '../scene-store/object-access';
@@ -36,6 +37,7 @@ export function* serializeProjectSteps(root: Group, selection?: ProjectSelection
     const seenGroups = new Set<string>();
     const groupStack = new Set<string>();
     const saveObject = (uuid: string): PdeNode | undefined => {
+        if (selection && uuid === animationCameraObject(root)) return undefined; // the camera is unique: it is never copied
         const ref = refs.get(uuid);
         if (!ref || seenObjects.has(uuid)) return undefined;
         seenObjects.add(uuid);

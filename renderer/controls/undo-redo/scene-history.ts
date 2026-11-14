@@ -1,6 +1,6 @@
 import { Group, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 
-import { record } from './undo-redo.js';
+import { isApplying, record } from './undo-redo.js';
 import { getAllDescendantGroups, getAllGroupChildren, normalizePivotToVector3, type GroupData } from '../grouping/group';
 import type { SelectionState } from '../selection/select';
 import { getLinkedMirrorSelection } from '../transform/mirroring';
@@ -156,7 +156,20 @@ export function captureHistoryUiState(): HistoryUiState {
 
 export function restoreHistoryUiState(state: HistoryUiState): void {
     if (currentSelection && state.selection) {
-        Object.assign(currentSelection, cloneSelection(state.selection));
+        if (isApplying()) {
+            const primary = currentSelection.primary;
+            const previousPrimary = state.selection.primary;
+            // A saved gizmo frame only belongs to the selection that captured it.
+            if (currentSelection.groups.size !== state.selection.groups.size
+                || currentSelection.objects.size !== state.selection.objects.size
+                || [...currentSelection.groups].some(id => !state.selection!.groups.has(id))
+                || [...currentSelection.objects].some(uuid => !state.selection!.objects.has(uuid))
+                || primary?.type !== previousPrimary?.type
+                || (primary?.type === 'group' ? primary.id : primary?.uuid)
+                    !== (previousPrimary?.type === 'group' ? previousPrimary.id : previousPrimary?.uuid)) return;
+        } else {
+            Object.assign(currentSelection, cloneSelection(state.selection));
+        }
     }
     if (restoreGizmoState && state.gizmo) restoreGizmoState(cloneValue(state.gizmo));
 }
@@ -171,6 +184,18 @@ export function setHistoryGizmoState(capture: () => HistoryGizmoState, restore: 
 }
 
 export function refreshHistory(root?: Group): void {
+    if (root && currentSelection) {
+        for (const id of currentSelection.groups) {
+            if (!root.userData.groups?.has(id)) currentSelection.groups.delete(id);
+        }
+        for (const uuid of currentSelection.objects) {
+            if (!objectRef(root, uuid)) currentSelection.objects.delete(uuid);
+        }
+        const primary = currentSelection.primary;
+        if (primary && !(primary.type === 'group' ? currentSelection.groups.has(primary.id) : currentSelection.objects.has(primary.uuid))) {
+            currentSelection.primary = null;
+        }
+    }
     root?.updateMatrixWorld(true);
     window.dispatchEvent(new CustomEvent('pde:scene-updated'));
     window.dispatchEvent(new CustomEvent('pde:history-restored', { detail: { scene: true } }));

@@ -728,7 +728,11 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                                 // Clone and apply local transform (modelMatrix)
                                 const clonedGeo = baseGeo.clone();
                                 localMatrix.fromArray(part.modelMatrix);
+                                // applyMatrix4 normalizes normals, which would drop the length-3 "unlit" marker (shade:false faces).
+                                const normals = clonedGeo.getAttribute('normal');
+                                const unlit = Array.from({ length: normals.count }, (_, vertex) => normals.getX(vertex) ** 2 + normals.getY(vertex) ** 2 + normals.getZ(vertex) ** 2 > 2);
                                 clonedGeo.applyMatrix4(localMatrix);
+                                unlit.forEach((flag, vertex) => { if (flag) normals.setXYZ(vertex, normals.getX(vertex) * 3, normals.getY(vertex) * 3, normals.getZ(vertex) * 3); });
                                 geometriesToMerge.push(clonedGeo);
                             }
 

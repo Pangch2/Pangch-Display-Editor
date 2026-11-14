@@ -222,15 +222,12 @@ function createPicker(): HTMLElement {
     syncPicker(false);
   };
   const eyedropper = element.querySelector<HTMLButtonElement>('.color-picker-eyedropper')!;
-  eyedropper.onclick = async event => {
+  eyedropper.onclick = async () => {
     const pickerOptions = options;
     const update = onInput;
-    const bounds = eyedropper.getBoundingClientRect();
-    const clientX = event.detail ? event.clientX : bounds.left + bounds.width / 2;
-    const clientY = event.detail ? event.clientY : bounds.top + bounds.height / 2;
     element.hidden = true;
     pickerOptions.onEyeDropperChange?.(true);
-    const rgb = await pickScreenColor(clientX, clientY);
+    const rgb = await pickScreenColor();
     pickerOptions.onEyeDropperChange?.(false);
     if (onInput !== update) return;
     element.hidden = false;

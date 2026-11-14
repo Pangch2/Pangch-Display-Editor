@@ -268,6 +268,7 @@ let scaleDragValue: number | null = null;
 let finePositionDragValue: number | null = null;
 let fineRotationDragValue: number | null = null;
 let fineScaleDragValue: number | null = null;
+let dragAlign = false;
 
 function applyRotationDragValue(): void {
     const step = isShortcutPressed('fineAdjust') ? fineRotationDragValue : rotationDragValue;
@@ -285,6 +286,7 @@ function applyGizmoDragValues(): void {
     finePositionDragValue = value('pdeFinePositionDragValue', '0');
     fineRotationDragValue = value('pdeFineRotationDragValue', '0');
     fineScaleDragValue = value('pdeFineScaleDragValue', '0');
+    dragAlign = localStorage.getItem('pdeDragAlign') === 'true';
     transformControls?.setTranslationSnap(null);
     applyRotationDragValue();
     transformControls?.setScaleSnap(null);
@@ -576,15 +578,17 @@ function applyRelativeDragSnap(): void {
     const positionStep = fineAdjust ? finePositionDragValue : positionDragValue;
     const scaleStep = fineAdjust ? fineScaleDragValue : scaleDragValue;
     if (transformControls.mode === 'translate' && positionStep !== null) {
-        const delta = _TMP_VEC3_A.copy(selectionHelper.position).sub(dragInitialPosition);
+        // Align snaps the gizmo onto the step grid; otherwise only the moved distance is stepped.
+        const origin = dragAlign ? _TMP_VEC3_B.set(0, 0, 0) : dragInitialPosition;
+        const delta = _TMP_VEC3_A.copy(selectionHelper.position).sub(origin);
         if (currentSpace === 'local') delta.applyQuaternion(_TMP_QUAT_A.copy(dragInitialQuaternion).invert());
-        delta.set(
-            Math.round(delta.x / positionStep) * positionStep,
-            Math.round(delta.y / positionStep) * positionStep,
-            Math.round(delta.z / positionStep) * positionStep
-        );
+        for (const axis of ['x', 'y', 'z'] as const) {
+            // Undragged axes keep their off-grid value instead of jumping.
+            if (dragAlign && !transformControls.axis?.includes(axis.toUpperCase())) continue;
+            delta[axis] = Math.round(delta[axis] / positionStep) * positionStep;
+        }
         if (currentSpace === 'local') delta.applyQuaternion(dragInitialQuaternion);
-        selectionHelper.position.copy(dragInitialPosition).add(delta);
+        selectionHelper.position.copy(origin).add(delta);
     } else if (transformControls.mode === 'scale' && (scaleDragValue !== null || fineScaleDragValue !== null)) {
         // The helper stores ratios; the drag setting is an increment of the actual selection scale.
         const scaleMatrix = _TMP_MAT4_A.copy(dragInitialSelectionMatrix);
@@ -625,7 +629,7 @@ function applyRelativeDragSnap(): void {
             if (!Number.isFinite(ratio)) ratio = scaleSnapLastRatio[axis];
             const baseScale = scaleSnapBaseScale[axis];
             const current = baseScale + dragInitialScale[axis] * (ratio - scaleSnapBaseRatio[axis]) * gain;
-            const next = step === null ? current : snapFromStart(current, baseScale, step) || step;
+            const next = step === null ? current : snapFromStart(current, dragAlign ? 0 : baseScale, step) || step;
             selectionHelper.scale[axis] = next;
             scaleSnapLastScale[axis] = next;
             scaleSnapLastRatio[axis] = ratio;
@@ -1211,7 +1215,8 @@ function duplicateSelected(): void {
             || sourceGroupIds.some(id => getMirrorPairs(loadedObjectGroup, 'groupMirrorPairs').has(id))
         );
         const duplicateCallbacks = getDuplicateCommandCallbacks();
-        const firstCreated = duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks)!;
+        const firstCreated = duplicateSelectedCommand(loadedObjectGroup, currentSelection, _selectionAnchorMode, duplicateCallbacks);
+        if (!firstCreated) return;
         if (!mirrorModeling) {
             recordCreationChange(loadedObjectGroup, firstCreated, beforeUi);
             return;
@@ -1783,8 +1788,12 @@ export function initGizmo({
         }
     };
 
-    transformControls.addEventListener('change', (_event: object) => {
+    // General change events also fire when a click merely starts dragging.
+    transformControls.addEventListener('objectChange', (_event: object) => {
         if (transformControls!.dragging && _hasAnySelection()) {
+            selectionHelper!.updateMatrixWorld();
+            if (selectionHelper!.matrixWorld.equals(dragInitialMatrix)
+                && _pendingHelperMatrix.equals(dragInitialMatrix)) return;
             applyRelativeDragSnap();
 
             if (isPivotEditMode && transformControls!.mode === 'translate') {

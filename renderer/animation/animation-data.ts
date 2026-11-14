@@ -20,17 +20,15 @@ export type AnimationVector = [number | string, number | string, number | string
 export type AnimationKey = { tick: number; transform: AnimationTransform; curve?: AnimationCurve; texture?: string; properties?: AnimationProperties; pivot?: number[] | null;
     channels?: AnimationChannel[]; curves?: Partial<Record<AnimationChannel, AnimationCurve>>;
     values?: Partial<Record<AnimationChannel, AnimationVector>>; pre?: Partial<Record<AnimationChannel, AnimationVector>> };
-export const animationCameraId = 'pde:camera';
-export const animationCameraShakeId = 'pde:camera-shake';
-export const animationCameraIds = [animationCameraId, animationCameraShakeId];
-export type AnimationTrack = { type: 'group' | 'object' | 'camera'; id: string; keys: AnimationKey[] };
+// Item name of the camera object's default model, drawn from the lucide camera glyph (pbde/camera-item-assets.ts).
+export const animationCameraItem = 'pde:camera';
+export type AnimationTrack = { type: 'group' | 'object'; id: string; keys: AnimationKey[] };
 export type AnimationLayerTiming = { id: string; starts: number[]; interval?: number };
-export type AnimationCameraShake = { enabled: boolean; translation: number; rotation: number; frequency: number };
 export type AnimationClip = { id?: string; name?: string; duration: number; tickRate?: number; tracks: AnimationTrack[];
     loopMode?: 'once' | 'hold' | 'loop'; loopDelay?: number; endTick?: number; transitionTicks?: number; excludedNodes?: string[];
-    layers?: string[]; layerTimings?: AnimationLayerTiming[]; cameraShake?: AnimationCameraShake };
-// The original timeline remains the first clip so old projects retain their data.
-export type AnimationData = AnimationClip & { clips?: AnimationClip[]; activeClip?: string };
+    layers?: string[]; layerTimings?: AnimationLayerTiming[] };
+// The original timeline remains the first clip so old projects retain their data. `camera` is the object the view follows.
+export type AnimationData = AnimationClip & { clips?: AnimationClip[]; activeClip?: string; camera?: string };
 export const ticksPerSecond = 20;
 
 export function animationClips(data: AnimationData): AnimationClip[] { return [data, ...(data.clips ?? [])]; }
@@ -462,13 +460,6 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
     if (!value || !Number.isSafeInteger(value.duration) || value.duration < 1 || !Array.isArray(value.tracks)) throw new Error('잘못된 애니메이션 길이 또는 트랙입니다.');
     if (value.tickRate !== undefined && (typeof value.tickRate !== 'number' || !Number.isFinite(value.tickRate)
         || value.tickRate < 1 || value.tickRate > 10000)) throw new Error('틱 속도는 1~10000틱/초여야 합니다.');
-    if (value.cameraShake !== undefined) {
-        const shake = value.cameraShake;
-        if (!shake || typeof shake !== 'object' || Array.isArray(shake) || typeof shake.enabled !== 'boolean'
-            || ![shake.translation, shake.rotation, shake.frequency].every(n => typeof n === 'number' && Number.isFinite(n))
-            || shake.translation < 0 || shake.translation > 100 || shake.rotation < 0 || shake.rotation > 180
-            || shake.frequency < .1 || shake.frequency > 60) throw new Error('쉐이킹 위치는 0~100, 회전은 0~180°, 속도는 0.1~60이어야 합니다.');
-    }
     if (value.id !== undefined && (typeof value.id !== 'string' || !value.id.length || value.id.length > 128)
         || value.name !== undefined && (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 120)
         || value.loopMode !== undefined && !['once', 'hold', 'loop'].includes(value.loopMode)
@@ -479,8 +470,7 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
         || vector(curve, 4) && curve[0] >= 0 && curve[2] <= 1 && curve[0] <= curve[2];
     const seen = new Set<string>();
     for (const track of value.tracks) {
-        if (!track || !['object', 'group', 'camera'].includes(track.type) || (track.type === 'camera'
-            ? !animationCameraIds.includes(track.id) : !(track.type === 'group' ? groups : objects).has(track.id))
+        if (!track || !['object', 'group'].includes(track.type) || !(track.type === 'group' ? groups : objects).has(track.id)
             || seen.has(track.id) || !Array.isArray(track.keys) || !track.keys.length) throw new Error('잘못된 애니메이션 대상입니다.');
         seen.add(track.id);
         let previous = -1;
@@ -525,6 +515,7 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
 
 export function validateAnimation(value: any, objects: Set<string>, groups: Set<string>): asserts value is AnimationData {
     if (!value || value.clips !== undefined && !Array.isArray(value.clips)) throw new Error('잘못된 애니메이션 목록입니다.');
+    if (value.camera !== undefined && !objects.has(value.camera)) throw new Error('잘못된 애니메이션 카메라입니다.');
     const clips = animationClips(value);
     const ids = new Set<string>();
     for (const clip of clips) {

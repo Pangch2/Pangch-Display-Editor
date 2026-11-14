@@ -12,6 +12,7 @@ import {
   normalGeometry,
   normalLocal,
   modelNormalMatrix,
+  instanceColor,
   Fn,
   If,
   max,
@@ -233,7 +234,13 @@ export function createEntityMaterial(diffuseTex: Texture, tintHex = 0xffffff, us
 
   const material = new MeshBasicNodeMaterial();
   material.positionNode = useEntityVisibility ? entityVisiblePositionNode : dragPreviewPositionNode;
-  material.colorNode = mix(unlitColor, litColor, shadingEnabled);
+  // Faces with shade:false (the camera icon) have an oversized normal and are never lit; any other model lights normally.
+  // The raw vertex normal is read: pooled draws rescale normalLocal by the instance matrix.
+  const shadeFace = varying(normalGeometry.dot(normalGeometry).lessThan(2.0).select(float(1), float(0)), 'pdeShadeFace');
+  // Three multiplies the object's brightness (instance color) in after colorNode, so unlit faces divide it back out.
+  const instanceTint = Fn((builder: { object?: { instanceColor?: unknown } }) => builder.object?.instanceColor ? max(instanceColor, vec3(0.001)) : vec3(1))();
+  const shaded = mix(unlitColor, litColor, shadingEnabled.mul(shadeFace));
+  material.colorNode = vec4(shaded.rgb.div(mix(instanceTint, vec3(1), shadeFace)), shaded.a);
   material.map = diffuseTex;
   material.userData.textureColorPick = {
     uvAttribute: useInstancedUvTransform

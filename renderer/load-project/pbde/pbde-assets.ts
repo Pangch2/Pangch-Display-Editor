@@ -1,4 +1,5 @@
 import type { AssetPayload } from './pbde-types';
+import { cameraItemAsset } from './camera-item-assets';
 
 // --- 메인 스레드용 에셋 공급자 ---
 
@@ -44,6 +45,8 @@ function toUint8Array(input: ArrayBuffer | ArrayBufferView): Uint8Array {
 
 const mainThreadAssetProvider: { getAsset(assetPath: string): Promise<AssetPayload> } = {
     async getAsset(assetPath: string): Promise<AssetPayload> {
+        const cameraAsset = cameraItemAsset(assetPath);
+        if (cameraAsset !== undefined) return cameraAsset;
         const isHardcoded = assetPath.startsWith('hardcoded/');
         const result = isHardcoded
             ? await window.ipcApi.getHardcodedContent(assetPath.replace(/^hardcoded\//, ''))

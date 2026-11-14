@@ -5,18 +5,19 @@ import { activeAnimation, animationClips, animationLayers, animationLayerPlaybac
     sampleChannelValues, offsetAnimationChannel, sampleTexture, sampleProperties, samplePivot, transformMatrix, type AnimationData, type AnimationClip, type AnimationChannel,
     type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationTransform } from './animation-data';
 import { decomposeDisplayMatrix } from './display-transformation';
-import { captureAnimationCamera, previewAnimationCamera, setAnimationCameraPreview } from './animation-camera';
+import { animationCameraObject, isAnimationCameraPreview, previewAnimationCamera, setAnimationCameraPreview } from './animation-camera';
 import { applyAnimationProperties, hasPendingAnimationProperties } from './animation-properties';
 import { applyAnimationMeshPreview, canReuseAnimationMeshPreview, createAnimationMeshPreview, restoreAnimationMeshPreview,
     type AnimationMeshPreview } from './animation-mesh-preview';
-import { getBatchMatrixVersion, getInstanceHasHat, getInstanceIsCustomPivot, getInstanceMatrix, getInstanceModelMatrix, getInstancePivot, invalidateBatchBounds,
-    readInstanceMatrix, setInstanceIsCustomPivot, setInstanceMatrix, setInstancePivot, type ObjectBatch } from '../scene-store/object-access';
+import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
+import { getBatchMatrixVersion, getDisplayType, getInstanceHasHat, getInstanceLocalBox, getInstanceValue, getInstanceIsCustomPivot, getInstanceMatrix, getInstanceModelMatrix, getInstancePivot, getInstanceWorldMatrix, invalidateBatchBounds,
+    objectRef, readInstanceMatrix, setInstanceIsCustomPivot, setInstanceMatrix, setInstancePivot, type ObjectBatch } from '../scene-store/object-access';
 
 type PoseNode = { type: 'group' | 'object'; parent: string | null; matrix: number[]; texture?: string; hasHat?: boolean; properties?: AnimationProperties;
     pivot?: number[]; isCustomPivot?: boolean; animatePivot?: boolean; matrixAutoUpdate?: boolean };
 export type AnimationPose = Map<string, PoseNode>;
 type AnimationSession = { enabled: boolean; tick: number; base: AnimationPose; local: AnimationPose; playbackTick?: number;
-    playbackSeconds?: number; playbackFinished?: boolean; transition?: { from: AnimationPose; duration: number; camera?: number[] }; meshPreview?: AnimationMeshPreview };
+    playbackSeconds?: number; playbackFinished?: boolean; transition?: { from: AnimationPose; duration: number }; meshPreview?: AnimationMeshPreview };
 export type AnimationSnapshot = { data?: AnimationData; base: AnimationPose; local: AnimationPose; pose: AnimationPose };
 
 export function animationProjectData(root: Group): AnimationData | undefined { return root.userData.animation; }
@@ -346,8 +347,6 @@ function applyPreview(root: Group, tick: number, layers?: Array<{ clip: Animatio
         }
     }
     session.tick = nextTick;
-    previewAnimationCamera(root, layers ?? (clip ? [{ clip, tick: nextTick }] : []), session.transition?.camera,
-        session.transition ? Math.min(1, elapsed / session.transition.duration) : 1);
     if (preview && groupOnly) {
         const pose = evaluateAnimation(preview.local, clip, session.tick, preview.groupBase, layers);
         applyAnimationProperties(root, pose);
@@ -355,6 +354,7 @@ function applyPreview(root: Group, tick: number, layers?: Array<{ clip: Animatio
         for (const [id, node] of pose) changed = applyGroupPose(root, id, node) || changed;
         if (changed) root.userData.animationPreviewRevision = (root.userData.animationPreviewRevision ?? 0) + 1;
         applyAnimationMeshPreview(root, preview, pose);
+        previewCamera(root);
         return;
     }
     let pose = evaluateAnimation(session.local, animationData(root), session.tick, session.base, layers);
@@ -369,6 +369,56 @@ function applyPreview(root: Group, tick: number, layers?: Array<{ clip: Animatio
         if (amount >= 1) delete session.transition;
     }
     applyAnimationPose(root, pose);
+    previewCamera(root);
+}
+
+export function previewCamera(root: Group): void {
+    if (!isAnimationCameraPreview(root)) return;
+    const id = animationCameraObject(root), pose = id && animationCameraPose(root, id);
+    if (!id || !pose) { previewAnimationCamera(root); return; }
+    previewAnimationCamera(root, id, pose);
+}
+
+const turnedAround = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
+/** A text display reads from its +Z side while the camera looks along -Z, so a text standing in for the camera is turned half way round. */
+export function cameraModelQuaternion(displayType?: string): Quaternion {
+    return displayType === 'text_display' ? turnedAround.clone() : new Quaternion();
+}
+
+/**
+ * The camera object's pose in world space (rigid): where the game looks from and along. Its position is the middle of whatever model the
+ * object shows, so swapping the model neither moves the view nor the object, and its rotation is the display rotation turned for that model.
+ */
+export function animationCameraPose(root: Group, id: string): Matrix4 | undefined {
+    const ref = objectRef(root, id);
+    if (!ref) return undefined;
+    ref.mesh.updateWorldMatrix(true, false);
+    const world = getInstanceWorldMatrix(ref.mesh, ref.instanceId, new Matrix4());
+    // While the object is dragged its matrix only changes on release; the drag preview is a separate delta.
+    if (getInstanceValue(ref.mesh, ref.instanceId, dragSelectedAttributeName)) world.premultiply(dragDeltaMatrix);
+    const center = (getInstanceLocalBox(ref.mesh, ref.instanceId)?.getCenter(new Vector3()) ?? new Vector3()).applyMatrix4(world);
+    const quaternion = new Quaternion();
+    world.multiply(renderModelTransform(root, id, ref.mesh, ref.instanceId).invert()).decompose(new Vector3(), quaternion, new Vector3());
+    quaternion.multiply(cameraModelQuaternion(getDisplayType(ref.mesh, ref.instanceId)));
+    return new Matrix4().compose(center, quaternion, new Vector3(1, 1, 1));
+}
+
+/** Puts the camera object at a world-space view (its display transform) so a key can record it. */
+export function placeAnimationCamera(root: Group, id: string, world: Matrix4): void {
+    const ref = objectRef(root, id);
+    if (!ref) throw new Error('카메라 오브젝트를 찾을 수 없습니다.');
+    ref.mesh.updateWorldMatrix(true, false);
+    const model = renderModelTransform(root, id, ref.mesh, ref.instanceId);
+    const quaternion = new Quaternion(), scale = new Vector3(), position = new Vector3(), view = new Quaternion();
+    getInstanceWorldMatrix(ref.mesh, ref.instanceId, new Matrix4()).multiply(model.clone().invert()).decompose(position, quaternion, scale);
+    world.decompose(position, view, new Vector3());
+    // Keep the object's size; turn it to the view, then put the middle of its model on the view's position.
+    const turned = view.multiply(cameraModelQuaternion(getDisplayType(ref.mesh, ref.instanceId)).invert());
+    const center = (getInstanceLocalBox(ref.mesh, ref.instanceId)?.getCenter(new Vector3()) ?? new Vector3()).applyMatrix4(
+        new Matrix4().compose(new Vector3(), turned, scale).multiply(model));
+    const display = new Matrix4().compose(position.sub(center), turned, scale);
+    setInstanceMatrix(ref.mesh, ref.instanceId, ref.mesh.matrixWorld.clone().invert().multiply(display).multiply(model));
+    invalidateBatchBounds(ref.mesh);
 }
 
 export function previewAnimation(root: Group, tick?: number): void {
@@ -427,7 +477,7 @@ export function selectAnimationClip(root: Group, id: string, transitionTicks = 0
     const from = transitionTicks > 0 && session.enabled ? captureAnimationPose(root) : undefined;
     data.activeClip = id;
     session.tick = 0; session.playbackTick = 0; session.playbackSeconds = 0; session.playbackFinished = false;
-    session.transition = from ? { from, duration: transitionTicks, camera: captureAnimationCamera(root) } : undefined;
+    session.transition = from ? { from, duration: transitionTicks } : undefined;
     if (session.enabled) previewAnimationPlayback(root, 0);
 }
 
@@ -668,7 +718,7 @@ export function rebaseAnimationStructure(root: Group, before?: AnimationSnapshot
         return { ...node, matrix: (parent ? matrix(node).premultiply(matrix(parent)) : matrix(node)).toArray() };
     };
     for (const clip of data ? animationClips(data) : []) {
-        const nextTracks = clip.tracks.filter(track => track.type === 'camera' || after.has(track.id) && !changed.has(track.id));
+        const nextTracks = clip.tracks.filter(track => after.has(track.id) && !changed.has(track.id));
         if (!changed.size) { clip.tracks = nextTracks; continue; }
         const originalClip = animationClips(before.data!).find(entry => (entry.id ?? 'default') === (clip.id ?? 'default'))!;
         const animatedParents = new Set(originalClip.tracks.filter(track => !originalClip.excludedNodes?.includes(track.id)).map(track => track.id));
@@ -704,7 +754,7 @@ export function rebaseAnimationStructure(root: Group, before?: AnimationSnapshot
                 key.pivot = original?.keys.find(key => key.tick === tick)?.pivot;
                 previous = world;
             }
-            if (originalClip.tracks.some(track => track.type !== 'camera')) nextTracks.push(track);
+            if (originalClip.tracks.length) nextTracks.push(track);
         }
         clip.tracks = nextTracks;
         if (clip.excludedNodes) clip.excludedNodes = clip.excludedNodes.filter(id => after.has(id));
@@ -717,7 +767,7 @@ export function rebaseAnimationStructure(root: Group, before?: AnimationSnapshot
 }
 
 function animationBakeTicks(clip: AnimationClip): number[] {
-    const tracks = clip.tracks.filter(track => track.type !== 'camera');
+    const { tracks } = clip;
     const ticks = [...new Set([0, ...tracks.flatMap(track => track.keys.map(key => key.tick))])].sort((a, b) => a - b);
     if (!tracks.some(track => track.keys.some(key => key.channels || key.values || key.curves || key.pre))) return ticks;
     const end = Math.max(clip.endTick ?? 0, ticks[ticks.length - 1]);
@@ -736,10 +786,10 @@ export function serializeAnimation(root: Group, objects: Set<string>, groups: Se
         const parent = snapshot.local.get(id)?.parent;
         return parent && !ids.has(parent);
     });
+    if (result.camera && !objects.has(result.camera)) delete result.camera;
     for (const clip of animationClips(result)) {
         const source = animationClips(data).find(entry => (entry.id ?? 'default') === (clip.id ?? 'default'))!;
-        clip.tracks = clip.tracks.filter(track => track.type === 'camera' ? !selection : ids.has(track.id));
-        if (selection) delete clip.cameraShake;
+        clip.tracks = clip.tracks.filter(track => ids.has(track.id));
         if (clip.excludedNodes) clip.excludedNodes = clip.excludedNodes.filter(id => ids.has(id));
         if (!needsRebase || !source.tracks.length) continue;
         const ticks = animationBakeTicks(source);
@@ -766,6 +816,7 @@ export function serializeAnimation(root: Group, objects: Set<string>, groups: Se
 export function importAnimation(root: Group, value: AnimationData | undefined, merge: boolean,
     objects: Map<string, string>, groups: Map<string, string>): void {
     const data = value && structuredClone(value);
+    if (data?.camera) data.camera = objects.get(data.camera) ?? data.camera;
     if (data) for (const clip of animationClips(data)) {
         for (const track of clip.tracks) track.id = (track.type === 'group' ? groups : objects).get(track.id) ?? track.id;
         if (clip.excludedNodes) clip.excludedNodes = clip.excludedNodes.map(id => objects.get(id) ?? groups.get(id) ?? id);
@@ -773,17 +824,16 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
     const old = animationProjectData(root);
     if (merge && old && data) {
         const destination = activeAnimation(old), source = activeAnimation(data);
+        if (data.camera && !animationCameraObject(root)) old.camera = data.camera;
         for (const clip of animationClips(old)) clip.layers ??= [...(old.layers ?? [])];
         const ids = new Map<string, string>();
         const legacy = !data.clips?.length && !data.name && !data.id && !data.loopMode && data.endTick === undefined;
         const compatible = (a: AnimationClip, b: AnimationClip) =>
-            (['enabled', 'translation', 'rotation', 'frequency'] as const).every(field => a.cameraShake?.[field] === b.cameraShake?.[field]) &&
-            !(a.tracks.some(track => track.type === 'camera') && b.tracks.some(track => track.type === 'camera')) &&
             (['name', 'tickRate', 'loopMode', 'loopDelay', 'endTick', 'transitionTicks'] as const).every(field => a[field] === b[field]);
         for (const clip of animationClips(data)) {
             const target = animationClips(old).find(entry => clip.id && entry.id === clip.id && compatible(entry, clip))
                 ?? (clip === data && compatible(old, clip) ? old : undefined)
-                ?? (clip === source && (legacy && !clip.cameraShake && !clip.tracks.some(track => track.type === 'camera') || compatible(destination, clip)) ? destination : undefined);
+                ?? (clip === source && (legacy || compatible(destination, clip)) ? destination : undefined);
             if (target) {
                 target.tracks.push(...clip.tracks);
                 if (clip.excludedNodes?.length) target.excludedNodes = [...new Set([...(target.excludedNodes ?? []), ...clip.excludedNodes])];

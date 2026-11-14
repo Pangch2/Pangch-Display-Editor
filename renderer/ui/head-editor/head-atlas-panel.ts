@@ -801,8 +801,9 @@ playerHeadAtlasScroll.addEventListener('wheel', event => {
     box.scrollTop += after.top + textureY * after.height - event.clientY;
 }, { passive: false });
 
-window.addEventListener('pde:scene-updated', () => {
-    if (!cancelUvDrag) refreshUvEditor();
+window.addEventListener('pde:scene-updated', event => {
+    // A stroke that moved no head to another slot changed pixels only: rebuilding every face and grid line stalls pointer-up.
+    if (!(event as CustomEvent).detail?.sameAtlasFaces && !cancelUvDrag) refreshUvEditor();
     refreshPlayerHeadAtlasThumbnails();
 });
 window.addEventListener('pde:animation-textures-updated', () => {
