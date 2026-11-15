@@ -6,6 +6,7 @@ import { activeAnimation, animationClips, animationLayers, animationLayerPlaybac
     type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationTransform } from './animation-data';
 import { decomposeDisplayMatrix } from './display-transformation';
 import { animationCameraObject, isAnimationCameraPreview, previewAnimationCamera, setAnimationCameraPreview } from './animation-camera';
+import { applySceneVisibility } from '../controls/scene-visibility';
 import { applyAnimationProperties, hasPendingAnimationProperties } from './animation-properties';
 import { applyAnimationMeshPreview, canReuseAnimationMeshPreview, createAnimationMeshPreview, restoreAnimationMeshPreview,
     type AnimationMeshPreview } from './animation-mesh-preview';
@@ -321,6 +322,9 @@ export function setAnimationEnabled(root: Group, enabled: boolean): void {
         applyAnimationPose(root, session.base, true);
         session.enabled = false;
     }
+    const camera = root.userData.animation?.camera as string | undefined;
+    if (camera) applySceneVisibility(root, [camera]);
+    window.dispatchEvent(new Event('pde:animation-mode-changed'));
 }
 
 function applyPreview(root: Group, tick: number, layers?: Array<{ clip: AnimationClip; tick: number }>, elapsed = 0): void {

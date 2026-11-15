@@ -77,6 +77,8 @@ window.addEventListener('pde:scene-updated', event => {
     if ((event as CustomEvent).detail?.texturesOnly) scheduleScenePanelRender(true);
     else refreshScenePanel();
 });
+// The animation camera is listed only in animation mode.
+window.addEventListener('pde:animation-mode-changed', () => refreshScenePanel());
 // A camera key can make an existing object the camera, which changes only its icon.
 window.addEventListener('pde:animation-changed', () => scheduleScenePanelRender(true));
 window.addEventListener('pde:animation-properties-updated', () => {

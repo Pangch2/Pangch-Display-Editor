@@ -812,7 +812,8 @@ function getPlaneDirection(planeName: GizmoPlaneName, direction: Vector3): Gizmo
 
 function refreshAnimationPivotState(): void {
     CustomPivot.clearEphemeralPivotUndo();
-    if (_isMultiSelection() && _multiSelectionExplicitPivot) return;
+    // A center-anchored selection (select all, marquee) follows its bounds, not the primary's pivot.
+    if (_isMultiSelection() && (_multiSelectionExplicitPivot || _selectionAnchorMode === 'center')) return;
     if (_isMultiSelection()) {
         const primary = currentSelection.primary;
         let pivot: Vector3 | null = null;

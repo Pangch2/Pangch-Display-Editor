@@ -267,6 +267,21 @@
   width: 88px;
 }
 
+.atlas-view-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.atlas-view-settings .settings-window {
+  width: min(440px, calc(100vw - 32px));
+}
+
+/* Pushes cancel/save to the right on the same row. */
+.atlas-view-reset {
+  margin-right: auto;
+}
+
 .summon-command-window {
   padding: 0;
   max-width: calc(100vw - 32px);

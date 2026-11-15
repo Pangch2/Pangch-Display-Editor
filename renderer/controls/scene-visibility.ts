@@ -20,8 +20,13 @@ export function isSceneItemEnabled(root: Group, type: 'group' | 'object', id: st
     return !(type === 'group' ? hiddenGroups(root) : hiddenObjects(root)).has(id);
 }
 
+/** The animation camera only exists in the scene while animation mode is on. */
+export function isAnimationCameraHidden(root: Group, uuid: string): boolean {
+    return uuid === root.userData.animation?.camera && !root.userData.animationSession?.enabled;
+}
+
 export function isSceneObjectVisible(root: Group, uuid: string): boolean {
-    if (hiddenObjects(root).has(uuid)) return false;
+    if (hiddenObjects(root).has(uuid) || isAnimationCameraHidden(root, uuid)) return false;
     const ud = root.userData as SceneVisibilityData;
     let groupId = ud.objectToGroup?.get(uuid) ?? null;
     while (groupId) {

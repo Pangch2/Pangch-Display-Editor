@@ -410,15 +410,49 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
   border-top: 1px solid #3a3a3e;
 }
 
+/* The selected/hover highlight covers the whole row, gear included. */
+.player-head-atlas-item {
+  display: flex;
+  align-items: center;
+  border-left: 3px solid transparent;
+}
+
+.player-head-atlas-item:hover {
+  background: #303034;
+}
+
+.player-head-atlas-item:has(> [aria-pressed="true"]) {
+  border-left-color: #70c7ff;
+  background: #3a3a3f;
+}
+
+.player-head-atlas-view-button {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  padding: 0;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  background: var(--ui-control-bg);
+  color: #bbb;
+  font: normal 400 16px/1 'lucide';
+  cursor: pointer;
+}
+
+.player-head-atlas-view-button:hover { background: var(--ui-control-hover); color: #eee; }
+.player-head-atlas-view-button:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -2px; }
+
 .player-head-atlas-option {
   display: flex;
+  min-width: 0;
+  flex: 1;
   align-items: center;
   box-sizing: border-box;
   width: 100%;
   height: 48px;
   padding: 0 8px 0 5px;
   border: 0;
-  border-left: 3px solid transparent;
   background: transparent;
   color: #bbb;
   font: inherit;
@@ -427,13 +461,10 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 }
 
 .player-head-atlas-option:hover {
-  background: #303034;
   color: #eee;
 }
 
 .player-head-atlas-option[aria-pressed="true"] {
-  border-left-color: #70c7ff;
-  background: #3a3a3f;
   color: #fff;
 }
 
@@ -478,26 +509,36 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 }
 
 #player-head-atlas-scroll .player-head-atlas-box {
+  display: flex;
   width: 100%;
   aspect-ratio: 1;
   flex: none;
   overflow: auto;
   border: 1px solid #45454a;
   box-sizing: border-box;
-  background-color: #202023;
-  background-image:
-    linear-gradient(45deg, #29292d 25%, transparent 25%),
-    linear-gradient(-45deg, #29292d 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #29292d 75%),
-    linear-gradient(-45deg, transparent 75%, #29292d 75%);
-  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
-  background-size: 16px 16px;
+  background-color: #18181a;
   box-shadow: 0 2px 8px #0008;
+}
+
+/* Clips the stage to the configured visible size; the stage keeps the full atlas so pixel math is unchanged. */
+.player-head-atlas-view {
+  flex: none;
+  /* Auto margins center the view without cutting off the top/left once zoomed past the box. */
+  margin: auto;
+  width: calc(100% * var(--player-head-atlas-zoom, 1) * var(--player-head-atlas-view-fit, 1));
+  overflow: hidden;
+  /* Checkerboard only behind the shown atlas area. */
+  background-color: #202023;
+  /* Cells match head blocks (size set from JS), so they follow zoom too. */
+  background-image: var(--player-head-checker, none);
+  background-size: var(--player-head-checker-size, 100% 100%);
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
 }
 
 .player-head-atlas-stage {
   position: relative;
-  width: calc(100% * var(--player-head-atlas-zoom, 1));
+  width: calc(100% * var(--player-head-atlas-view-scale, 1));
   touch-action: none;
   user-select: none;
 }

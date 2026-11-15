@@ -3,6 +3,7 @@ import { closeWithAnimation, openWithAnimation } from '../common/ui-open-close.j
 import { handleExpandCollapseShortcut } from '../common/expand-collapse';
 import { initDragAlignInput, initDragValueInput } from '../common/drag-value-input';
 import { loadedObjectGroup } from '../../load-project/pbde/upload-pbde';
+import { applyStoredPlayerHeadAtlasLayout, getPlayerHeadAtlasLayout, isPlayerHeadAtlasLayoutInUse } from '../../load-project/display/player-head-atlas';
 import { cleanLabel } from '../scene-panel/scene-panel-model';
 import { getShortcutConflictDetails, getShortcutMapping, getShortcuts, matchesShortcut, normalizeShortcutKey, resetShortcutMapping, resetShortcuts, setShortcutMapping, setShortcuts, shortcutDefinitions, shortcutFromKeys } from '../../controls/input/shortcuts';
 import { autoSaveStorageKey, readAutoSaveSettings, updateAutoSaveSettings } from '../../save/auto/auto-save-settings';
@@ -38,6 +39,7 @@ overlay.innerHTML = `
             <label class="settings-row"><span>카메라</span><span class="settings-select"><select id="camera-type"><option value="perspective">원근</option><option value="orthographic">직교</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>카메라 FOV</span><span class="settings-range"><input id="camera-fov" type="range" min="20" max="120" value="80"><output>80°</output></span></label>
             <label class="settings-row"><span>렌더 해상도</span><span class="settings-select"><select id="render-scale"><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
+            <label class="settings-row"><span>텍스쳐 추가방식</span><span class="settings-select"><select id="head-atlas-layout"><option value="default">기본</option><option value="blockbench">블록벤치식 박스 배치</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>격자/XYZ축 높이</span><span class="settings-row-toggle"><input id="grid-axes-visible" type="checkbox" checked><input id="grid-height" type="text" inputmode="decimal" value="0"></span></label>
           </fieldset>
           <fieldset>
@@ -194,6 +196,7 @@ const gridAxesVisibleInput = overlay.querySelector<HTMLInputElement>('#grid-axes
 const gridHeightInput = overlay.querySelector<HTMLInputElement>('#grid-height')!;
 const scaleMode = overlay.querySelector<HTMLSelectElement>('#scale-mode')!;
 const objectReplaceMode = overlay.querySelector<HTMLSelectElement>('#object-replace-mode')!;
+const headAtlasLayout = overlay.querySelector<HTMLSelectElement>('#head-atlas-layout')!;
 const shortcutList = overlay.querySelector<HTMLElement>('#settings-shortcut-list')!;
 const presetToggle = overlay.querySelector<HTMLButtonElement>('#shortcut-preset-toggle')!;
 const presetMenu = overlay.querySelector<HTMLElement>('#shortcut-preset-menu')!;
@@ -492,6 +495,16 @@ const savedScaleMode = localStorage.getItem('pdeScaleMode') === 'blockbench';
 if (savedScaleMode !== blockbenchScaleMode) toggleBlockbenchScaleMode();
 scaleMode.value = blockbenchScaleMode ? 'blockbench' : 'default';
 objectReplaceMode.value = localStorage.getItem('pdeObjectReplaceMode') === 'preserve-visible-size' ? 'preserve-visible-size' : 'default';
+headAtlasLayout.value = localStorage.getItem('pdeHeadAtlasLayout') === 'blockbench' ? 'blockbench' : 'default';
+// Heads already in any open project fix the layout, so the select locks and its row explains why.
+function syncHeadAtlasLayoutLock(): void {
+  const locked = isPlayerHeadAtlasLayoutInUse();
+  headAtlasLayout.disabled = locked;
+  if (locked) headAtlasLayout.value = getPlayerHeadAtlasLayout();
+  headAtlasLayout.closest('label')!.title = locked
+    ? '헤드 텍스쳐가 있는 프로젝트가 열려 있어 바꿀 수 없습니다. 헤드를 모두 지우거나 해당 프로젝트를 닫으면 바꿀 수 있습니다.'
+    : '이후에 추가하는 헤드 텍스쳐부터 적용됩니다';
+}
 
 function selectSettingsPage(selectedPage: string): void {
   if (openedFromWelcome && selectedPage !== 'general' && selectedPage !== 'shortcuts') return;
@@ -521,6 +534,7 @@ export function openSettings(options: {
     : options.initialPage ?? overlay.querySelector<HTMLButtonElement>('.settings-nav .active')!.dataset.settingsPage!);
   overlay.hidden = false;
   if (!openedFromWelcome) void refreshSceneStatus();
+  syncHeadAtlasLayoutLock();
   openWithAnimation(settingsWindow);
   closeButton.focus();
   return overlay;
@@ -603,6 +617,10 @@ scaleMode.addEventListener('change', () => {
   localStorage.setItem('pdeScaleMode', scaleMode.value);
 });
 objectReplaceMode.addEventListener('change', () => localStorage.setItem('pdeObjectReplaceMode', objectReplaceMode.value));
+headAtlasLayout.addEventListener('change', () => {
+  localStorage.setItem('pdeHeadAtlasLayout', headAtlasLayout.value);
+  applyStoredPlayerHeadAtlasLayout();
+});
 window.addEventListener('pde:blockbench-scale-mode-changed', () => {
   scaleMode.value = blockbenchScaleMode ? 'blockbench' : 'default';
 });

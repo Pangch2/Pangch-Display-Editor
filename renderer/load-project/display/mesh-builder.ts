@@ -2,7 +2,7 @@ import { BufferGeometry, Euler, InstancedBufferAttribute, Material, MathUtils, M
 import * as Overlay from '../../controls/selection/overlay';
 import { type DeletedSceneDelta, deleteSelectedItems } from '../../controls/grouping/delete';
 import { loadedObjectGroup, type GlobalBrightness, type Brightness, setInstanceSkyBrightness, addTextDisplayItems } from './display-instancing';
-import { getPlayerHeadRenderMatrix, PLAYER_HEAD_LAYER_SCALE, getPlayerHeadTexture } from './player-head-atlas';
+import { getPlayerHeadRenderMatrix, PLAYER_HEAD_LAYER_SCALE, getPlayerHeadTexture, DEFAULT_PLAYER_HEAD_TEXTURE, PlayerHeadAtlasFullError, updatePlayerHeadTexture as updateAtlasPlayerHeadTexture } from './player-head-atlas';
 import { getItemDisplayModelMatrix } from '../scene/scene-parser';
 import { isApplying } from '../../controls/undo-redo/undo-redo';
 import { changeInstanceModelTransform, removeInstanceModelTransform } from '../batching/instance-model-transform';
@@ -44,7 +44,6 @@ export { commitPlayerHeadPaint } from './player-head-atlas';
 export { getPlayerHeadTexture } from './player-head-atlas';
 export { replacePlayerHeadTextureReference } from './player-head-atlas';
 export { setPlayerHeadLayerVisible } from './player-head-atlas';
-export { updatePlayerHeadTexture } from './player-head-atlas';
 export { flipPlayerHeadTextures } from './player-head-atlas';
 
 /** A replacement in history: the same objects with their old models (undo) or their new ones (redo). */
@@ -280,6 +279,19 @@ window.addEventListener('pde:history-restored', event => {
     void Promise.all([...options].map(([uuid, value]) => updateTextDisplay(uuid, names.get(uuid) ?? '', value)))
         .catch(error => console.error('텍스트 디스플레이 복원에 실패했습니다.', error));
 });
+
+/** Sets a head's texture; when its atlas is full the head is rebuilt, which places it in another (possibly new) atlas. */
+export async function updatePlayerHeadTexture(objectUuid: string, textureUrl: string): Promise<void> {
+    try {
+        await updateAtlasPlayerHeadTexture(objectUuid, textureUrl);
+    } catch (error) {
+        if (!(error instanceof PlayerHeadAtlasFullError)) throw error;
+        const name = (loadedObjectGroup.userData.objectNames as Map<string, string> | undefined)?.get(objectUuid) ?? 'player_head';
+        const result = await replaceDisplayObjects([{ objectUuid, name, paintTexture: textureUrl.trim() || DEFAULT_PLAYER_HEAD_TEXTURE }], false);
+        // The caller's history stores texture values and re-applies them, so the replacement itself is not kept.
+        result.history?.dispose();
+    }
+}
 
 export function replaceDisplayObjects(requests: Array<{
     objectUuid: string;

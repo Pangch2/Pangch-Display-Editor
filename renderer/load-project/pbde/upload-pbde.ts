@@ -16,6 +16,7 @@ import { autoSave } from '../../save/auto/auto-save';
 import { encodePdeProjectSteps, validatePdeProjectSteps } from '../../save/pde-format';
 import { serializeProjectSteps } from '../../save/project-state';
 import { disposeProjectResources } from '../display/project-resources';
+import { ensurePlayerHeadAtlas, getProjectPlayerHeadAtlases, setProjectPlayerHeadAtlasSizes } from '../display/player-head-atlas';
 
 type ModalOverlayElement = HTMLDivElement & { escHandler?: (event: KeyboardEvent) => void };
 type ScenePrecompileTrace = {
@@ -230,7 +231,12 @@ function switchProject(index: number): void {
     setHistoryContext(projects[index].id);
     Object.assign(loadedObjectGroup.userData, projects[index].data);
     for (const child of projects[index].children) loadedObjectGroup.add(child);
-    notifyPlayerHeadAtlasesChanged();
+    if (getProjectPlayerHeadAtlases().length) notifyPlayerHeadAtlasesChanged();
+    else {
+        // A new tab gets an empty full-size atlas, not the last loaded file's saved sizes/names.
+        setProjectPlayerHeadAtlasSizes(undefined);
+        ensurePlayerHeadAtlas();
+    }
     if (projects[index].camera) {
         window.dispatchEvent(new CustomEvent('pde:set-camera-state', { detail: projects[index].camera }));
     }

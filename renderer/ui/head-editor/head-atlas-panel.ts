@@ -4,6 +4,8 @@ import { isApplying, redo, undo } from '../../controls/undo-redo/undo-redo';
 import { getShortcuts, matchesShortcut } from '../../controls/input/shortcuts';
 import { getHeadAtlasUvRect, setHeadAtlasUvRect, transformHeadUvRect, type HeadUvRect } from './head-atlas-uv';
 import { openAtlasColorReplace } from './atlas-color-replace';
+import { openAtlasViewSettings, type AtlasViewSize } from './atlas-view-settings';
+import { PLAYER_HEAD_BLOCK_HEIGHT, PLAYER_HEAD_BLOCK_WIDTH, getPlayerHeadAtlasArea, getPlayerHeadAtlasName, renamePlayerHeadAtlas, resizePlayerHeadAtlas } from '../../load-project/display/player-head-atlas';
 
 export type HeadAtlasPaintTarget = {
     canvas: HTMLCanvasElement;
@@ -59,6 +61,25 @@ replaceColorButton.addEventListener('click', () => {
         moveMode === 'texture' ? region.rect : getHeadAtlasUvRect(canvas, region.faceX, region.faceY));
     openAtlasColorReplace(canvas, rects, activePlayerHeadAtlas, replaceColorButton);
 });
+const atlasArea = (canvas: HTMLCanvasElement): AtlasViewSize => getPlayerHeadAtlasArea(canvas) ?? { width: canvas.width, height: canvas.height };
+const applyAtlasViewSize = (view: HTMLElement, canvas: HTMLCanvasElement): void => {
+    const { width, height } = atlasArea(canvas);
+    view.style.aspectRatio = `${width} / ${height}`;
+    // Fit the area inside the fixed square box (contain), like Blockbench's texture view.
+    view.style.setProperty('--player-head-atlas-view-fit', String(Math.min(1, width / height)));
+    // One checker cell per head block, as a one-pixel-per-block image stretched once: a repeating
+    // gradient tile gets rounded to whole pixels by Chromium and drifts off the block grid.
+    const columns = Math.ceil(width / PLAYER_HEAD_BLOCK_WIDTH), rows = Math.ceil(height / PLAYER_HEAD_BLOCK_HEIGHT);
+    const checker = document.createElement('canvas');
+    checker.width = columns;
+    checker.height = rows;
+    const context = checker.getContext('2d')!;
+    context.fillStyle = '#29292d';
+    for (let y = 0; y < rows; y++) for (let x = (y + 1) % 2; x < columns; x += 2) context.fillRect(x, y, 1, 1);
+    view.style.setProperty('--player-head-checker', `url(${checker.toDataURL()})`);
+    view.style.setProperty('--player-head-checker-size', `${100 * columns * PLAYER_HEAD_BLOCK_WIDTH / width}% ${100 * rows * PLAYER_HEAD_BLOCK_HEIGHT / height}%`);
+    view.style.setProperty('--player-head-atlas-view-scale', String(canvas.width / width));
+};
 const metrics = playerHeadAtlasScroll.querySelector<HTMLElement>('.player-head-uv-metrics')!;
 const [positionX, positionY, pixelSize] = metrics.querySelectorAll('span');
 const moveLabels = { uv: 'UV만 이동', texture: '텍스처만 이동', both: 'UV와 텍스처 함께 이동' };
@@ -661,8 +682,16 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
 const refreshPlayerHeadAtlasThumbnails = (): void => {
     playerHeadAtlasList.querySelectorAll<HTMLCanvasElement>('canvas').forEach((thumbnail, index) => {
         const context = thumbnail.getContext('2d');
-        context?.clearRect(0, 0, thumbnail.width, thumbnail.height);
-        context?.drawImage(playerHeadAtlasCanvases[index], 0, 0, thumbnail.width, thumbnail.height);
+        const source = playerHeadAtlasCanvases[index];
+        const { width, height } = atlasArea(source);
+        if (!context) return;
+        const scale = Math.min(thumbnail.width / width, thumbnail.height / height);
+        // A 2048→48 shrink at the default 'low' quality samples a few texels and drops whole heads; 'high' filters every pixel.
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
+        context.clearRect(0, 0, thumbnail.width, thumbnail.height);
+        context.drawImage(source, 0, 0, width, height,
+            (thumbnail.width - width * scale) / 2, (thumbnail.height - height * scale) / 2, width * scale, height * scale);
     });
 };
 
@@ -682,8 +711,12 @@ const renderPlayerHeadAtlases = (canvases: HTMLCanvasElement[]): void => {
     const stage = document.createElement('div');
     stage.className = 'player-head-atlas-stage';
     if (canvas) {
+        const view = document.createElement('div');
+        view.className = 'player-head-atlas-view';
+        applyAtlasViewSize(view, canvas);
         stage.append(canvas);
-        box.append(stage);
+        view.append(stage);
+        box.append(view);
     }
     if (selectedCanvas !== canvas) selectedRegions.clear();
     positionX.textContent = 'X —';
@@ -712,7 +745,10 @@ const renderPlayerHeadAtlases = (canvases: HTMLCanvasElement[]): void => {
         option.type = 'button';
         option.className = 'player-head-atlas-option';
         option.ariaPressed = String(index === activePlayerHeadAtlas);
-        option.ariaLabel = `아틀라스 ${index + 1}, ${canvas.width} × ${canvas.height} 픽셀`;
+        const area = atlasArea(canvas);
+        const atlasName = getPlayerHeadAtlasName(canvas) ?? '';
+        const label = atlasName || `아틀라스 ${index + 1}`;
+        option.ariaLabel = `${label}, ${area.width} × ${area.height} 픽셀`;
 
         const thumbnail = document.createElement('canvas');
         thumbnail.width = thumbnail.height = 48;
@@ -720,19 +756,43 @@ const renderPlayerHeadAtlases = (canvases: HTMLCanvasElement[]): void => {
         const description = document.createElement('span');
         description.className = 'player-head-atlas-description';
         const name = document.createElement('span');
-        name.textContent = `아틀라스 ${index + 1}`;
+        name.textContent = label;
         const resolution = document.createElement('span');
-        resolution.textContent = `${canvas.width} × ${canvas.height} px`;
+        resolution.textContent = `${area.width} × ${area.height} px`;
         description.append(name, resolution);
         option.append(thumbnail, description);
         option.addEventListener('click', () => {
             activePlayerHeadAtlas = index;
             renderPlayerHeadAtlases(canvases);
         });
-        return option;
+        const viewButton = document.createElement('button');
+        viewButton.type = 'button';
+        viewButton.className = 'player-head-atlas-view-button';
+        viewButton.textContent = '';
+        viewButton.title = viewButton.ariaLabel = `${label} 설정`;
+        // Resizing/renaming notifies pde:player-head-atlases-changed, which re-renders the list and preview.
+        viewButton.addEventListener('click', () => openAtlasViewSettings(viewButton, label, { ...area, name: atlasName }, settings => {
+            const used = resizePlayerHeadAtlas(canvas, settings.width, settings.height);
+            if (used) return `사용 중인 영역(${used.width} × ${used.height} px)보다 작게 설정할 수 없습니다.`;
+            renamePlayerHeadAtlas(canvas, settings.name);
+            return null;
+        }));
+        const item = document.createElement('div');
+        item.className = 'player-head-atlas-item';
+        item.append(option, viewButton);
+        return item;
     }));
     refreshPlayerHeadAtlasThumbnails();
 };
+
+let thumbnailFrame = 0;
+window.addEventListener('pde:player-head-atlas-texture-updated', () => {
+    // Uploads arrive inside a render; batch them into one redraw per frame.
+    thumbnailFrame ||= requestAnimationFrame(() => {
+        thumbnailFrame = 0;
+        refreshPlayerHeadAtlasThumbnails();
+    });
+});
 
 window.addEventListener('pde:player-head-atlases-changed', event => {
     renderPlayerHeadAtlases((event as CustomEvent<HTMLCanvasElement[]>).detail);

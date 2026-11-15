@@ -20,7 +20,7 @@ import { setAtlasPartMaterial } from '../batching/atlas-part-material';
 import { appendPlayerHeadEntries, findAppendablePlayerHeadMesh } from '../batching/player-head-batch';
 import { restoreEditorState } from '../../save/project-state';
 import { trackProjectEdit } from '../../save/pending-edits';
-import { createImageHeadAtlasGeometry, getImageHeadAtlasMaterial } from './player-head-atlas';
+import { createImageHeadAtlasGeometry, ensurePlayerHeadAtlas, getImageHeadAtlasMaterial, setProjectPlayerHeadAtlasSizes } from './player-head-atlas';
 import { beginPlayerHeadLoading } from '../../ui/head-editor/head-texture-loading';
 import type { PdeNode } from '../../save/pde-format';
 import { yieldPreview } from '../../animation/yield-preview';
@@ -868,7 +868,10 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                 const playerHeadStartMs = performance.now();
                 if (!isMerge) {
                     loadedObjectGroup.userData.playerHeadAtlasMaterials = [];
-                    notifyPlayerHeadAtlasesChanged();
+                    setProjectPlayerHeadAtlasSizes(metadataPayload.editorState?.headAtlasSizes, metadataPayload.editorState?.headAtlasNames);
+                    // Heads create their atlases while loading; a project without heads still gets an empty one.
+                    if (playerHeadItems.length) notifyPlayerHeadAtlasesChanged();
+                    else ensurePlayerHeadAtlas();
                 }
                 if (playerHeadItems.length > 0) {
                     const playerHeadPromise = (async () => {

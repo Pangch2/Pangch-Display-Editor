@@ -1,5 +1,5 @@
 import { Matrix4, Vector3, Quaternion, type Group } from 'three/webgpu';
-import { getPlayerHeadTexture } from '../load-project/display/player-head-atlas';
+import { getPlayerHeadTexture, getProjectPlayerHeadAtlasNames, getProjectPlayerHeadAtlasSizes } from '../load-project/display/player-head-atlas';
 import { applySceneVisibility } from '../controls/scene-visibility';
 import { getMirrorPlane, setMirrorPlane, worldXReflection } from '../controls/transform/mirror-planes';
 import type { GroupData } from '../controls/grouping/group';
@@ -29,7 +29,9 @@ export function* serializeProjectSteps(root: Group, selection?: ProjectSelection
         hiddenGroupIds: [...(data.hiddenGroupIds ?? [])].filter(id => groups.has(id)),
         objectMirrorPairs: [...(data.objectMirrorPairs ?? [])].filter(([a, b]) => refs.has(a) && refs.has(b)),
         groupMirrorPairs: [...(data.groupMirrorPairs ?? [])].filter(([a, b]) => groups.has(a) && groups.has(b)),
-        globalBrightness: !selection && data.globalBrightness ? { ...data.globalBrightness } : undefined
+        globalBrightness: !selection && data.globalBrightness ? { ...data.globalBrightness } : undefined,
+        headAtlasSizes: selection ? undefined : getProjectPlayerHeadAtlasSizes(),
+        headAtlasNames: selection ? undefined : getProjectPlayerHeadAtlasNames()
     };
     root.updateWorldMatrix(true, true);
     const inverse = root.matrixWorld.clone().invert();

@@ -36,6 +36,10 @@ export type PdeEditorState = {
     /** Mirror planes that moved off world X=0, as [node id, column-major matrix]. */
     mirrorPlanes?: [string, number[]][];
     globalBrightness?: { enabled: boolean; sky: number; block: number };
+    /** Usable [width, height] of each head atlas, by atlas index. */
+    headAtlasSizes?: [number, number][];
+    /** Name of each head atlas, by atlas index ('' = default name). */
+    headAtlasNames?: string[];
     animation?: AnimationData;
 };
 export type PdeNode = {
@@ -305,6 +309,10 @@ export function* validatePdeProjectSteps(project: any): Generator<void, void> {
         && entry.length === 2 && (objectIds.has(entry[0]) || groupIds.has(entry[0])) && vector(entry[1], 16)))) throw new Error('잘못된 PDE 미러 기준면입니다.');
     if (state.globalBrightness !== undefined && (!record(state.globalBrightness) || !boolean(state.globalBrightness.enabled)
         || ![state.globalBrightness.sky, state.globalBrightness.block].every(value => Number.isInteger(value) && value >= 0 && value <= 15))) throw new Error('잘못된 PDE 전역 밝기입니다.');
+    if (state.headAtlasSizes !== undefined && (!Array.isArray(state.headAtlasSizes) || !state.headAtlasSizes.every(size => Array.isArray(size)
+        && size.length === 2 && size.every(value => Number.isInteger(value) && value >= 32 && value <= 2048)))) throw new Error('잘못된 PDE 헤드 아틀라스 크기입니다.');
+    if (state.headAtlasNames !== undefined && (!Array.isArray(state.headAtlasNames) || !state.headAtlasNames.every(name => typeof name === 'string' && name.length <= 64)))
+        throw new Error('잘못된 PDE 헤드 아틀라스 이름입니다.');
 }
 
 // The camera used to be its own track type (with an optional shake track); its keys now move a camera item.
@@ -398,7 +406,9 @@ export function* encodePdeProjectSteps(project: PdeProject): Generator<void, Uin
     const saved = indexed ? omitDefaults({ ...project, children, editorState: omitDefaults({
         version: animation ? 5 : 4,
         animation: savedAnimation,
-        globalBrightness: project.editorState.globalBrightness ? nonempty(omitDefaults(project.editorState.globalBrightness, globalBrightnessDefaults)) : undefined
+        globalBrightness: project.editorState.globalBrightness ? nonempty(omitDefaults(project.editorState.globalBrightness, globalBrightnessDefaults)) : undefined,
+        headAtlasSizes: project.editorState.headAtlasSizes,
+        headAtlasNames: project.editorState.headAtlasNames
     }, {}), ...(textures.length ? { refs: { paintTextures: textures } } : {}) }, { name: '', mainNBT: '', nbt: '' }) : project;
     const replace = (key: string, value: unknown) =>
         indexed && key === 'uuid' ? undefined : indexed && key === 'mirrorId' && typeof value === 'string' ? reference(value)

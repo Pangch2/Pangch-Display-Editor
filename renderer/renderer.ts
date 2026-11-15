@@ -29,6 +29,7 @@ import { installGpuDraw } from './gpu-draw/gpu-draw-pipeline';
 import { readSceneVertexCounts } from './gpu-draw/vertex-counts';
 import { initSceneColorCapture } from './ui/common/scene-color-capture';
 import { precompileDisplayModels } from './load-project/display/display-model-precompile';
+import { ensurePlayerHeadAtlas } from './load-project/display/player-head-atlas';
 import { getItemIconAtlas } from './ui/toolbar/item-icon-atlas';
 import { initTransformToolbar } from './ui/toolbar/transform-toolbar';
 import { ensureSpriteAtlases } from './load-project/scene/sprite-atlas';
@@ -528,6 +529,7 @@ async function initScene(): Promise<void> {
     scene = new Scene();
     scene.background = new Color(0x1F1F1F); // 어두운 회색 배경
     scene.add(loadedObjectGroup); // 로드된 객체 그룹을 씬에 추가
+    ensurePlayerHeadAtlas();
 
     // 2. 카메라(Camera)
     const mainContent = document.getElementById('main-content');

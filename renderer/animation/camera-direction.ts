@@ -1,5 +1,6 @@
 import { BufferGeometry, Float32BufferAttribute, LineBasicNodeMaterial, LineSegments, Quaternion, Vector3, type Group, type Scene } from 'three/webgpu';
 import { objectRef } from '../scene-store/object-access';
+import { isSceneObjectVisible } from '../controls/scene-visibility';
 import { animationCameraObject, gameViewQuaternion, isAnimationCameraPreview } from './animation-camera';
 import { animationCameraPose } from './animation-state';
 
@@ -22,7 +23,7 @@ export function addCameraDirection(scene: Scene): void { scene.add(helper); }
 /** Places the arrow on the animation camera object, or hides it (no camera object, or camera preview); it follows the object whatever model it shows. */
 export function updateCameraDirection(root: Group): void {
     const id = animationCameraObject(root), ref = id && objectRef(root, id);
-    if (!ref || isAnimationCameraPreview(root)) { helper.visible = false; return; }
+    if (!ref || isAnimationCameraPreview(root) || !isSceneObjectVisible(root, id)) { helper.visible = false; return; }
     const pose = animationCameraPose(root, id);
     if (!pose) { helper.visible = false; return; }
     const position = new Vector3(), quaternion = new Quaternion();

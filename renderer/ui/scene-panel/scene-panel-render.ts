@@ -19,7 +19,7 @@ import {
     isObjectUuidGrouped,
     resolveChildObjectUuid
 } from './scene-panel-model';
-import { isSceneItemEnabled, setSceneItemEnabled } from '../../controls/scene-visibility';
+import { isAnimationCameraHidden, isSceneItemEnabled, setSceneItemEnabled } from '../../controls/scene-visibility';
 import { objectDisplayType } from '../../scene-store/object-access';
 import { animationCameraObject } from '../../animation/animation-camera';
 
@@ -337,7 +337,7 @@ function appendGroupRows(rows: ScenePanelRow[], groupId: string, depth: number, 
         }
 
         const objectUuid = resolveChildObjectUuid(child, ud);
-        if (objectUuid && hasRenderableObject(objectUuid, ud)) {
+        if (objectUuid && hasRenderableObject(objectUuid, ud) && !isAnimationCameraHidden(loadedObjectGroup, objectUuid)) {
             rows.push({ type: 'object', id: objectUuid, depth: childDepth, parentGroupId: frame.group.id, visibleIndex: rows.length });
         }
     }
@@ -359,7 +359,7 @@ function rebuildSceneRows(): void {
 
     const appendRootObject = (uuid: string): void => {
         if (!uuid || renderedRootObjects.has(uuid)) return;
-        if (!hasRenderableObject(uuid, ud)) return;
+        if (!hasRenderableObject(uuid, ud) || isAnimationCameraHidden(loadedObjectGroup, uuid)) return;
         if (isObjectUuidGrouped(uuid, ud)) return;
         renderedRootObjects.add(uuid);
         rows.push({ type: 'object', id: uuid, depth: 0, parentGroupId: null, visibleIndex: rows.length });

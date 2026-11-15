@@ -61,7 +61,7 @@ import {
   updateHeadAtlasPainterGrid, updateHeadAtlasPaintPreview, type HeadAtlasPaintTarget
 } from './head-atlas-panel';
 import { getHeadAtlasUvRect, hasHeadAtlasUvs } from './head-atlas-uv';
-import { getProjectPlayerHeadAtlases, previewPlayerHeadTextures } from '../../load-project/display/player-head-atlas';
+import { getProjectPlayerHeadAtlases, PLAYER_HEAD_BLOCK_HEIGHT as blockHeight, PLAYER_HEAD_BLOCK_WIDTH as blockWidth, PlayerHeadAtlasFullError, playerHeadPartOffset, previewPlayerHeadTextures, unsharePlayerHeadSkin } from '../../load-project/display/player-head-atlas';
 import { recordStateChange } from '../../controls/undo-redo/scene-history';
 
 const generatorPlayerHeadIcon = playerHeadIcon.replace(/stroke="[^"]+"/, 'stroke="currentColor"');
@@ -105,8 +105,6 @@ type WorkSurface = {
   atlas?: { target: HeadAtlasPaintTarget; surfaces: PlayerHeadPaintSurface[]; changedRegion: Box2; sourceImage: ImageData };
 };
 const atlasSize = 2048;
-const blockWidth = 24;
-const blockHeight = 32;
 const partSize = 8;
 const facePartIndexes = [1, 0, 2, 3, 4, 5] as const;
 const faceGridAxes = [[2, 1], [2, 1], [0, 2], [0, 2], [0, 1], [0, 1]] as const;
@@ -174,6 +172,7 @@ let paintAtlasCanvas: HTMLCanvasElement | null = null;
 let deferredPaint: { pointerId: number; x: number; y: number } | null = null;
 let restoreCameraControls: (() => void) | null = null;
 let promotingImageHead = false;
+let lastPaintEvent: PointerEvent | null = null;
 let root: HTMLElement | null = null;
 let brushEditor: HTMLElement | null = null;
 let editingBrush: BrushAsset | null = null;
@@ -294,7 +293,8 @@ function interpolateColor(a: Rgba, b: Rgba, amount: number): Rgba {
 }
 
 function pixelOffset(part: number, x: number, y: number): number {
-  return ((Math.floor(part / 3) * partSize + y) * blockWidth + (part % 3) * partSize + x) * 4;
+  const [partX, partY] = playerHeadPartOffset(part);
+  return ((partY + y) * blockWidth + partX + x) * 4;
 }
 
 const gridBoundary = (index: number, count: number): number => Math.round(index * partSize / count);
@@ -476,8 +476,7 @@ function getRaycastHit(deselectOnMiss = false, images?: Map<string, ImageData>, 
   const surface = cachedFace?.surface ?? getPlayerHeadPaintSurface(mesh, intersection.instanceId);
   if (!surface) return null;
   const actualPart = facePartIndexes[face] + actualLayer * 6;
-  const partX = (actualPart % 3) * partSize;
-  const partY = Math.floor(actualPart / 3) * partSize;
+  const [partX, partY] = playerHeadPartOffset(actualPart);
   const pixelX = Math.min(7, Math.max(0, Math.floor(intersection.uv.x * atlasSize - partX + headPainterPixelEpsilon)));
   const pixelY = Math.min(7, Math.max(0, Math.floor(blockHeight - intersection.uv.y * atlasSize - partY + headPainterPixelEpsilon)));
   let layer: 0 | 1 = imageOverlay ? imageLayer : layerMode === 'layer' ? 1 : 0;
@@ -649,7 +648,8 @@ function flushWork(work: WorkSurface): void {
     region.expandByPoint(flushPoint.set(surface.x + (surface.denseLayer === undefined ? blockWidth : partSize),
       surface.y + (surface.denseLayer === undefined ? blockHeight : partSize)));
     for (let part = 0; remapped && part < (surface.denseLayer === undefined ? 12 : 1); part++) {
-      const rect = getHeadAtlasUvRect(surface.context.canvas, surface.x + part % 3 * partSize, surface.y + Math.floor(part / 3) * partSize);
+      const [partX, partY] = surface.denseLayer === undefined ? playerHeadPartOffset(part) : [0, 0];
+      const rect = getHeadAtlasUvRect(surface.context.canvas, surface.x + partX, surface.y + partY);
       region.expandByPoint(flushPoint.set(rect.x, rect.y));
       region.expandByPoint(flushPoint.set(rect.x + rect.width, rect.y + rect.height));
     }
@@ -1449,6 +1449,7 @@ function onPointerDown(event: PointerEvent): void {
     return;
   }
   if (!onAtlas && painterContext.isGizmoHovered()) return;
+  lastPaintEvent = event;
   const hit = getHit(event, true);
   if (!hit || promoteImageHeadAndPaint(event, hit, true)) return;
   paintPointerId = event.pointerId;
@@ -1483,13 +1484,46 @@ function paintAt(hit: PaintHit, fillMode?: FillMode): void {
     stroke = new Map();
     lastStrokeHit = null;
   }
-  if (lastTool === 'bucket') fillAt(hit, fillMode);
-  else continueStroke(hit);
+  try {
+    if (lastTool === 'bucket') fillAt(hit, fillMode);
+    else continueStroke(hit);
+  } catch (error) {
+    if (!(error instanceof PlayerHeadAtlasFullError) || !error.objectUuid) throw error;
+    relocateHeadAndPaint(error.objectUuid, fillMode);
+  }
+}
+
+/** The head shares a slot in a full atlas: rebuild it so the loader places it in another (or a new) atlas, then paint again. */
+function relocateHeadAndPaint(objectUuid: string, fillMode?: FillMode): void {
+  finishStroke();
+  // A head that still has no room right after its rebuild is left alone instead of being rebuilt in a loop.
+  if (promotingImageHead) {
+    console.error('Player head atlas is full and the head could not be moved to another atlas.');
+    return;
+  }
+  promotingImageHead = true;
+  const beforeUi = captureHistoryUiState();
+  const name = (loadedObjectGroup.userData.objectNames as Map<string, string> | undefined)?.get(objectUuid) ?? 'player_head';
+  const restoreSkin = unsharePlayerHeadSkin(objectUuid);
+  void replaceDisplayObjects([{ objectUuid, name }], false).then(result => {
+    restoreSkin();
+    if (result.history) recordReplacementChange(loadedObjectGroup, result.history, beforeUi);
+    const hit = lastPaintEvent && getHit(lastPaintEvent, true);
+    if (hit) paintAt(hit, fillMode);
+    if (paintPointerId === null) finishStroke();
+  }).catch(error => {
+    restoreSkin();
+    console.error('Player head atlas relocation failed:', error);
+    if (paintPointerId !== null) endPaintPointer();
+  }).finally(() => {
+    promotingImageHead = false;
+  });
 }
 
 function processPointerMove(event: PointerEvent): void {
   // The image head is still being replaced: painting it now would bypass the promotion.
   if (!active || !painterContext || promotingImageHead) return;
+  lastPaintEvent = event;
   if (isHeadAtlasPaintSelecting()) return hidePaintPreview();
   const onAtlas = event.target instanceof Element && !!event.target.closest('.player-head-atlas-stage');
   if (onAtlas && (event.buttons & 2)) return hidePaintPreview();
@@ -1871,6 +1905,7 @@ function onPointerUp(event: PointerEvent): void {
     const click = event.type === 'pointerup' && Math.hypot(event.clientX - deferredPaint.x, event.clientY - deferredPaint.y) < 6;
     deferredPaint = null;
     if (click) {
+      lastPaintEvent = event;
       const hit = getHit(event, true);
       if (hit) {
         if (promoteImageHeadAndPaint(event, hit)) return;
@@ -1917,9 +1952,8 @@ function getFaceGridCounts(objectUuid: string, face: number, worldMatrix: Matrix
   const surface = ref && getPlayerHeadPaintSurface(ref.mesh, ref.instanceId);
   if (!surface) return [...counts, partSize, partSize];
   const part = facePartIndexes[face] + (layer ?? surface.denseLayer ?? (layerMode === 'layer' ? 1 : 0)) * 6;
-  const rect = getHeadAtlasUvRect(surface.context.canvas,
-    surface.x + (surface.denseLayer === undefined ? part % 3 * partSize : 0),
-    surface.y + (surface.denseLayer === undefined ? Math.floor(part / 3) * partSize : 0));
+  const [partX, partY] = surface.denseLayer === undefined ? playerHeadPartOffset(part) : [0, 0];
+  const rect = getHeadAtlasUvRect(surface.context.canvas, surface.x + partX, surface.y + partY);
   return [Math.min(counts[0], rect.width), Math.min(counts[1], rect.height), rect.width, rect.height];
 }
 
@@ -3151,7 +3185,7 @@ if (import.meta.env.DEV) {
     && knifePixel(4, 0.125, 0.625) === 5,
     'Knife pieces must paint their visible texture region.'
   );
-  console.assert(pixelOffset(facePartIndexes[0], 0, 0) === 8 * 4 && pixelOffset(facePartIndexes[4] + 6, 7, 7) < blockWidth * blockHeight * 4, 'Head face to texture mapping failed.');
+  console.assert(pixelOffset(facePartIndexes[0], 0, 0) === (playerHeadPartOffset(1)[1] * blockWidth + playerHeadPartOffset(1)[0]) * 4 && pixelOffset(facePartIndexes[4] + 6, 7, 7) < blockWidth * blockHeight * 4, 'Head face to texture mapping failed.');
   console.assert(black[0] === 0 && black[1] === 0 && black[2] === 0 && redBlueMiddle[3] === 128, 'OKLCH conversion or alpha interpolation failed.');
   const [smartHorizontal, smartVertical] = smartCounts(8, 8, 1, 3);
   console.assert(smartHorizontal === 2 && smartVertical === 8 && partSize % smartHorizontal === 0 && partSize % smartVertical === 0 && smartCounts(0, 8, 1, 3)[0] === 0, 'Smart grid limits failed.');

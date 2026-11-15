@@ -204,7 +204,8 @@ export async function flipObjectUuids(
         onPreviewApplied?.();
     };
     if (previewSynchronously) applyPreview();
-    await playerHeadTextures;
+    // Heads whose atlas is full are rebuilt with their flipped texture, which moves them to another atlas.
+    const overflowHeads = await playerHeadTextures;
     if (!previewSynchronously) applyPreview();
     const nextNames = await nextNamesPromise;
 
@@ -212,12 +213,20 @@ export async function flipObjectUuids(
         const nextName = nextNames[entry.index];
         return isItemDisplay?.has(entry.uuid) || !nextName ? [] : [{ ...entry, nextName }];
     });
-    if (pending.length > 0) {
-        const replacement = replaceDisplayObjects(pending.map(({ uuid, nextName }) => ({
-            objectUuid: uuid,
-            name: nextName,
-            transformContext: { pivotMode: activePivotMode }
-        })), false);
+    if (pending.length > 0 || overflowHeads.length > 0) {
+        const replacement = replaceDisplayObjects([
+            ...pending.map(({ uuid, nextName }) => ({
+                objectUuid: uuid,
+                name: nextName,
+                transformContext: { pivotMode: activePivotMode }
+            })),
+            ...overflowHeads.map(({ objectUuid, texture }) => ({
+                objectUuid,
+                name: names?.get(objectUuid) ?? 'player_head',
+                transformContext: { pivotMode: activePivotMode },
+                paintTexture: texture
+            }))
+        ], false);
         let replacementResult: DisplayReplacementResult;
         try {
             replacementResult = await replacement;
