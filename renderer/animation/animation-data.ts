@@ -2,11 +2,10 @@ import { Euler, Matrix3, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import { decomposeDisplayMatrix, needsDecomposedTransformation, type DisplayTransformParts } from './display-transformation';
 import type { TextDisplayOptions } from '../load-project/display/text-display';
 import { compileMathExpression } from '../math-expression';
+import { curveAmount, validAnimationCurve, type AnimationCurve } from './animation-curve';
+export { animationEasings, curveAmount, type AnimationCurve } from './animation-curve';
 
 export type AnimationTransform = number[] | DisplayTransformParts;
-// The curve belongs to the segment ending at this key; absent means linear.
-export const animationEasings = ['sine-in', 'sine-out', 'sine-in-out', 'back-in', 'back-out', 'elastic-in', 'elastic-out', 'bounce-in', 'bounce-out'] as const;
-export type AnimationCurve = 'step' | typeof animationEasings[number] | [number, number, number, number];
 export type AnimationProperties = {
     nbt: string;
     brightness?: { sky: number; block: number } | null;
@@ -207,38 +206,6 @@ export function minecraftTransformParts(value: AnimationTransform): DisplayTrans
         scale: [a.elements[0], a.elements[4], a.elements[8]], right_rotation: right.conjugate().toArray() };
     transformPartsCache.set(value, { matrix: value.slice(), parts });
     return parts;
-}
-
-export function curveAmount(curve: AnimationCurve | undefined, amount: number): number {
-    if (curve === 'step') return amount < 1 ? 0 : 1;
-    if (!curve || amount <= 0 || amount >= 1) return amount;
-    if (typeof curve === 'string') {
-        const bounce = (t: number): number => {
-            if (t < 1 / 2.75) return 7.5625 * t * t;
-            if (t < 2 / 2.75) return 7.5625 * (t -= 1.5 / 2.75) * t + .75;
-            if (t < 2.5 / 2.75) return 7.5625 * (t -= 2.25 / 2.75) * t + .9375;
-            return 7.5625 * (t -= 2.625 / 2.75) * t + .984375;
-        };
-        switch (curve) {
-            case 'sine-in': return 1 - Math.cos(amount * Math.PI / 2);
-            case 'sine-out': return Math.sin(amount * Math.PI / 2);
-            case 'sine-in-out': return (1 - Math.cos(Math.PI * amount)) / 2;
-            case 'back-in': return 2.70158 * amount ** 3 - 1.70158 * amount ** 2;
-            case 'back-out': return 1 + 2.70158 * (amount - 1) ** 3 + 1.70158 * (amount - 1) ** 2;
-            case 'elastic-in': return -(2 ** (10 * amount - 10)) * Math.sin((10 * amount - 10.75) * 2 * Math.PI / 3);
-            case 'elastic-out': return 2 ** (-10 * amount) * Math.sin((10 * amount - .75) * 2 * Math.PI / 3) + 1;
-            case 'bounce-in': return 1 - bounce(1 - amount);
-            case 'bounce-out': return bounce(amount);
-        }
-    }
-    const cubic = (t: number, a: number, b: number) => 3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t ** 2 * b + t ** 3;
-    let low = 0, high = 1;
-    for (let i = 0; i < 32; i++) {
-        const t = (low + high) / 2;
-        if (cubic(t, curve[0], curve[2]) < amount) low = t;
-        else high = t;
-    }
-    return cubic((low + high) / 2, curve[1], curve[3]);
 }
 
 export function channelValue(transform: AnimationTransform, channel: AnimationChannel, axis: number): number {
@@ -466,8 +433,6 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
         || ['loopDelay', 'endTick', 'transitionTicks'].some(name => value[name] !== undefined && (!Number.isSafeInteger(value[name]) || value[name] < 0))
         || value.excludedNodes !== undefined && (!Array.isArray(value.excludedNodes) || new Set(value.excludedNodes).size !== value.excludedNodes.length
             || value.excludedNodes.some(id => !objects.has(id) && !groups.has(id)))) throw new Error('잘못된 애니메이션 설정입니다.');
-    const validCurve = (curve: unknown) => curve === 'step' || animationEasings.includes(curve as typeof animationEasings[number])
-        || vector(curve, 4) && curve[0] >= 0 && curve[2] <= 1 && curve[0] <= curve[2];
     const seen = new Set<string>();
     for (const track of value.tracks) {
         if (!track || !['object', 'group'].includes(track.type) || !(track.type === 'group' ? groups : objects).has(track.id)
@@ -483,7 +448,7 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
                 const values = key[field];
                 if (!values || typeof values !== 'object' || Array.isArray(values) || Object.entries(values).some(([channel, value]) =>
                     !animationChannels.includes(channel as AnimationChannel) || !keyHasChannel(key, channel as AnimationChannel)
-                    || (field === 'curves' ? !validCurve(value) : !Array.isArray(value) || value.length !== 3 || value.some(component =>
+                    || (field === 'curves' ? !validAnimationCurve(value) : !Array.isArray(value) || value.length !== 3 || value.some(component =>
                         typeof component === 'number' ? !Number.isFinite(component) || !Number.isFinite(Math.fround(component))
                             : typeof component !== 'string' || !compileMathExpression(component, ['time', 'tick', 't', 'value']))))) {
                     throw new Error('잘못된 애니메이션 채널 값 또는 수식입니다.');
@@ -504,7 +469,7 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
             }
             if (key.texture !== undefined && (track.type !== 'object' || typeof key.texture !== 'string'
                 || !/^(data:image\/png;base64,|https?:\/\/)/.test(key.texture))) throw new Error('잘못된 키프레임 텍스처입니다.');
-            if (key.curve !== undefined && !validCurve(key.curve)) throw new Error('잘못된 키프레임 곡선입니다.');
+            if (key.curve !== undefined && !validAnimationCurve(key.curve)) throw new Error('잘못된 키프레임 곡선입니다.');
             const t = key.transform;
             // Inverting affine transforms can leave roundoff in the homogeneous row.
             if (Array.isArray(t) ? !vector(t, 16) || t.slice(12).some((component, index) => Math.abs(component - (index === 3 ? 1 : 0)) > 1e-8)

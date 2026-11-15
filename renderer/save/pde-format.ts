@@ -417,6 +417,8 @@ export function* encodePdeProjectSteps(project: PdeProject): Generator<void, Uin
                 : typeof value === 'number' ? Number.isInteger(value) ? value : Number(value.toFixed(8)) : value;
     // Applies replace like a JSON.stringify replacer would, without the replacer's slow path (seconds on large scenes).
     const prepare = (key: string, value: unknown): unknown => {
+        // Curve points may sit closer than toFixed(8) resolves; rounding would merge them into a curve that fails validation.
+        if (key === 'curve' || key === 'curves') return value;
         value = replace(key, value);
         if (Array.isArray(value)) return value.map(item => prepare('', item));
         if (!value || typeof value !== 'object') return value;

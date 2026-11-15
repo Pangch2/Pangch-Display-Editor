@@ -1,7 +1,7 @@
-import { Group, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
+import { Group, Matrix3, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import { deferredPlayerHeadTexture, getPlayerHeadRenderMatrix, getPlayerHeadTexture, previewPlayerHeadTextures } from '../load-project/display/player-head-atlas';
 import { getGroupWorldMatrix, shouldUseGroupPivot, normalizePivotToVector3, type GroupData } from '../controls/grouping/group';
-import { activeAnimation, animationClips, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyTransform, putKey, sampleTrack, setKeyCurve,
+import { activeAnimation, animationClips, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyCurve, keyTransform, putKey, sampleTrack, setKeyCurve,
     sampleChannelValues, offsetAnimationChannel, sampleTexture, sampleProperties, samplePivot, transformMatrix, type AnimationData, type AnimationClip, type AnimationChannel,
     type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationTransform } from './animation-data';
 import { decomposeDisplayMatrix } from './display-transformation';
@@ -608,15 +608,35 @@ export function recordAnimationTransform(root: Group, before?: AnimationSnapshot
         }
         if (first && session.tick > 0 && old.texture !== undefined) track.keys[0].texture = old.texture;
         if (node.texture !== undefined) track.keys.find(key => key.tick === session.tick)!.texture = node.texture;
-        if (first && session.tick > 0 && old.properties) track.keys[0].properties = structuredClone(old.properties);
+        // Replacement keys are recognized against an earlier model key, so an existing track gets the base model too.
+        if (session.tick > 0 && old.properties && (first || propertiesChanged
+            && !track.keys.some(key => key.tick < session.tick && key.properties))) track.keys[0].properties = structuredClone(old.properties);
         if (node.properties) track.keys.find(key => key.tick === session.tick)!.properties = structuredClone(node.properties);
         const index = track.keys.findIndex(key => key.tick === session.tick);
-        // A stationary replacement's center/size fitting must arrive together with its model.
-        if (unchanged && propertiesChanged && index > 0 && isDisplayReplacement(track.keys, index)
-            && close(previousLocal, transformMatrix(track.keys[index - 1].transform))) setKeyCurve(track.keys[index], 'all', 'step');
+        if (unchanged && propertiesChanged && index > 0 && isDisplayReplacement(track.keys, index)) {
+            // A stationary replacement's center/size fitting must arrive together with its model.
+            if (close(previousLocal, transformMatrix(track.keys[index - 1].transform))) setKeyCurve(track.keys[index], 'all', 'step');
+            fitReplacementTranslation(track, index, previousLocal, value, data.tickRate, keyTransform(matrix(old)));
+        }
     }
     root.userData.animation = project;
     window.dispatchEvent(new Event('pde:animation-changed'));
+}
+
+// The fitting offset belongs to the new model only: the old model keeps its path into the key,
+// and later keys recorded for the old model take the same offset in their own local frame.
+function fitReplacementTranslation(track: AnimationTrack, index: number, unfitted: Matrix4, fitted: Matrix4, rate: number | undefined, base: AnimationTransform): void {
+    const from = new Vector3().setFromMatrixPosition(unfitted), delta = new Vector3().setFromMatrixPosition(fitted).sub(from);
+    if (delta.lengthSq() < 1e-20) return;
+    const key = track.keys[index];
+    if (keyCurve(key, 'translation') !== 'step') (key.pre ??= {}).translation = from.toArray() as AnimationVector;
+    const linear = new Matrix3().setFromMatrix4(unfitted);
+    if (linear.determinant() === 0) return;
+    const local = delta.applyMatrix3(linear.invert());
+    const later: typeof track.keys = [];
+    for (let i = index + 1; i < track.keys.length && !track.keys[i].properties; i++) later.push(track.keys[i]);
+    const offsets = later.map(entry => local.clone().applyMatrix3(new Matrix3().setFromMatrix4(sampleTrack(track.keys, entry.tick, rate, base))).toArray());
+    later.forEach((entry, i) => offsetAnimationChannel({ ...track, keys: [entry] }, 'translation', [0, 0, 0], offsets[i]));
 }
 
 function sameProperties(a?: AnimationProperties, b?: AnimationProperties): boolean {

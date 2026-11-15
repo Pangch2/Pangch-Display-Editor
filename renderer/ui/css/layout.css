@@ -87,6 +87,8 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-camera-tools label { justify-content: flex-start; }
 .animation-camera-tools button { width: 100%; }
 #animation-camera-add { color: #9fd5f7; }
+#animation-curve-add { width: 100%; }
+#animation-curve-add[hidden] { display: none; }
 .animation-scroll { overflow-x: scroll; overflow-y: auto; min-width: 0; min-height: 28px; flex: 1; contain: paint; color-scheme: dark; }
 .animation-ruler, .animation-row { display: grid; grid-template-columns: 220px var(--animation-timeline-width, 618px); width: max-content; }
 .animation-ruler { height: 28px; position: sticky; top: 0; background: #2c2c30; z-index: 2; }
@@ -132,6 +134,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-graph-hold { stroke: #82a1b5; stroke-width: 1; stroke-dasharray: 4 4; }
 .animation-graph-tangent { stroke: #d4ad6a; stroke-width: 1; }
 .animation-curve-handle { position: absolute; width: 9px; height: 9px; padding: 0; border: 1px solid #ffe0a5; border-radius: 50%; background: #a67b38; transform: translate(-50%, -50%); cursor: move; touch-action: none; z-index: 1; }
+.animation-curve-point { width: 11px; height: 11px; border-radius: 2px; background: #f0c674; border-color: #fff3d6; z-index: 2; }
 .animation-curve-handle:focus-visible, .animation-key:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .animation-graph-value { position: absolute; left: 4px; transform: translateY(-50%); font-size: 10px; color: #aaa; pointer-events: none; }
 .animation-selection-box { position: fixed; pointer-events: none; border: 1px solid #70c7ff; background: rgb(112 199 255 / 15%); z-index: 3; }

@@ -1,8 +1,15 @@
 import { channelKeys, curveAmount, isDisplayReplacement, keyChannelValues, keyCurve, sampleChannelValues, type AnimationChannel, type AnimationKey, type AnimationTrack } from '../animation/animation-data';
+import { toBezierCurve, type AnimationCurve, type CurveTarget } from '../animation/animation-curve';
+import { matchesShortcut } from '../controls/input/shortcuts';
 
 export const graphHeight = 160;
 export type GraphChannel = AnimationChannel | 'all';
 export type GraphLayout = ReturnType<typeof animationGraphLayout>;
+
+// Presets and point curves show every point; plain Bezier curves keep their two handles.
+function curvePoints(curve: AnimationCurve | undefined) {
+    return curve === undefined || curve === 'step' || Array.isArray(curve) ? undefined : toBezierCurve(curve).points;
+}
 
 export function animationGraphLayout(track: AnimationTrack | undefined, channel: GraphChannel, axis: number, rate = 20) {
     const firstTick = track?.keys[0]?.tick ?? 0;
@@ -17,7 +24,8 @@ export function animationGraphLayout(track: AnimationTrack | undefined, channel:
             : sampleChannelValues(track!.keys, channel, previous.tick + (key.tick - previous.tick) * sample / 24, rate)[axis]);
         // Bezier handles can extend beyond the sampled curve; keep them inside the row too.
         const curve = keyCurve(key, channel);
-        if (Array.isArray(curve)) for (const handle of [1, 3]) samples.push(value(previous) + (value(key) - value(previous)) * curve[handle]);
+        const controls = Array.isArray(curve) ? [curve[1], curve[3]] : curvePoints(curve)?.flatMap(point => [point.y, point.in?.[1] ?? 0, point.out?.[1] ?? 0]) ?? [];
+        for (const amount of controls) samples.push(value(previous) + (value(key) - value(previous)) * amount);
         return samples;
     });
     const minimum = values.reduce((min, value) => Math.min(min, value), 0);
@@ -27,8 +35,8 @@ export function animationGraphLayout(track: AnimationTrack | undefined, channel:
 }
 
 export function renderAnimationGraph(lane: HTMLElement, track: AnimationTrack, pixelsPerTick: number, layout: GraphLayout,
-    selected: Set<number> | undefined, beginHandleDrag: (event: PointerEvent, key: AnimationKey, handle: 0 | 2) => void,
-    editHandle: (key: AnimationKey, handle: 0 | 2, dx: number, dy: number) => void): void {
+    selected: Set<number> | undefined, beginHandleDrag: (event: PointerEvent, key: AnimationKey, target: CurveTarget) => void,
+    editHandle: (key: AnimationKey, target: CurveTarget, dx: number, dy: number) => void, removePoint: (key: AnimationKey, point: number) => void): void {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.classList.add('animation-graph'); svg.setAttribute('aria-hidden', 'true');
     const path = (d: string, className: string) => {
@@ -68,23 +76,44 @@ export function renderAnimationGraph(lane: HTMLElement, track: AnimationTrack, p
         hit.onpointerdown = event => beginHandleDrag(event, key,
             event.clientX - svg.getBoundingClientRect().left < (x1 + x2) / 2 ? 0 : 2);
         if (!selected?.has(key.tick) && !selected?.has(previous.tick)) continue;
-        const curve = Array.isArray(interpolation) ? interpolation : [1 / 3, 1 / 3, 2 / 3, 2 / 3];
-        for (const handle of [0, 2] as const) {
-            const x = x1 + (x2 - x1) * curve[handle], top = y1 + (y2 - y1) * curve[handle + 1];
-            path(`M${handle === 0 ? x1 : x2} ${handle === 0 ? y1 : y2} L${x} ${top}`, 'animation-graph-tangent');
+        const at = (x: number, y: number) => [x1 + (x2 - x1) * x, y1 + (y2 - y1) * y];
+        const control = (target: CurveTarget, [x, top]: number[], from: number[] | undefined, label: string) => {
+            const point = typeof target === 'object' && !target.handle;
+            if (from) path(`M${from[0]} ${from[1]} L${x} ${top}`, 'animation-graph-tangent');
             const button = document.createElement('button'); button.type = 'button';
-            button.className = 'animation-curve-handle'; button.dataset.tick = String(key.tick); button.dataset.handle = String(handle);
+            button.className = point ? 'animation-curve-handle animation-curve-point' : 'animation-curve-handle';
+            button.dataset.tick = String(key.tick);
+            if (typeof target === 'number') button.dataset.handle = String(target);
+            else { button.dataset.point = String(target.point); if (target.handle) button.dataset.side = target.handle; }
             button.style.left = `${x}px`; button.style.top = `${top}px`;
-            button.setAttribute('aria-label', `${key.tick}틱 ${handle === 0 ? '시작' : '끝'} 곡선 핸들`);
-            button.title = '드래그 또는 방향키로 선택 채널의 곡선 조절';
-            button.onpointerdown = event => beginHandleDrag(event, key, handle);
+            button.setAttribute('aria-label', `${key.tick}틱 ${label}`);
+            button.title = point ? '드래그 또는 방향키로 곡선 점 이동 · 삭제 단축키로 점 제거' : '드래그 또는 방향키로 선택 채널의 곡선 조절';
+            button.onpointerdown = event => beginHandleDrag(event, key, target);
             button.onkeydown = event => {
+                if (point && matchesShortcut(event, 'deleteSelection')) {
+                    event.preventDefault(); event.stopPropagation();
+                    removePoint(key, (target as { point: number }).point);
+                    return;
+                }
                 if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
                 event.preventDefault(); event.stopPropagation();
-                editHandle(key, handle, event.key === 'ArrowLeft' ? -.05 : event.key === 'ArrowRight' ? .05 : 0,
+                editHandle(key, target, event.key === 'ArrowLeft' ? -.05 : event.key === 'ArrowRight' ? .05 : 0,
                     (event.key === 'ArrowUp' ? .05 : event.key === 'ArrowDown' ? -.05 : 0) * (y2 > y1 ? -1 : 1));
             };
             lane.append(button);
+        };
+        const points = curvePoints(interpolation);
+        if (!points) {
+            const curve = Array.isArray(interpolation) ? interpolation : [1 / 3, 1 / 3, 2 / 3, 2 / 3];
+            for (const handle of [0, 2] as const) control(handle, at(curve[handle], curve[handle + 1]),
+                handle === 0 ? [x1, y1] : [x2, y2], `${handle === 0 ? '시작' : '끝'} 곡선 핸들`);
+            continue;
+        }
+        for (const [index, point] of points.entries()) {
+            const anchor = at(point.x, point.y);
+            if (point.in) control({ point: index, handle: 'in' }, at(...point.in), anchor, `곡선 점 ${index} 들어오는 핸들`);
+            if (point.out) control({ point: index, handle: 'out' }, at(...point.out), anchor, `곡선 점 ${index} 나가는 핸들`);
+            if (index > 0 && index < points.length - 1) control({ point: index }, anchor, undefined, `곡선 점 ${index}`);
         }
     }
     lane.prepend(svg);

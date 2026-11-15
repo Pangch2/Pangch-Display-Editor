@@ -9,6 +9,7 @@ import { animationData, animationSession, captureAnimationSnapshot, previewAnima
 import { animationEasings, animationChannels, animationEndTick, animationLayers, animationPlayback, channelKeys, keyHasChannel, keyCurve, setKeyCurve, keyChannelValues, animationExpression,
     copyKeyChannels, removeKeyChannels, mergeAnimationKey, offsetAnimationChannel, keyTransform, animationTimelineEnd, ticksPerSecond, type AnimationChannel, type AnimationClip, type AnimationCurve, type AnimationKey, type AnimationTrack, type AnimationVector } from '../animation/animation-data';
 import { animationGraphLayout, renderAnimationGraph, type GraphChannel, type GraphLayout } from './animation-graph';
+import { insertCurvePoint, moveCurveControl, removeCurvePoint, toBezierCurve, type CurveTarget } from '../animation/animation-curve';
 import { initAnimationClipControls } from './animation-clips';
 import { renderAnimationLayerRow } from './animation-layer-timeline';
 import { captureHistoryUiState, recordCreationChange, recordReplacementChange, recordStateChange, refreshHistory } from '../controls/undo-redo/scene-history';
@@ -73,6 +74,7 @@ panel.innerHTML = `<div class="details-resizer animation-resizer" role="separato
             ${animationEasings.map(value => `<option value="${value}">${value}</option>`).join('')}
             <option value="custom" disabled>사용자 지정 / 혼합</option>
         </select></label>
+        <button id="animation-curve-add" type="button" title="선택한 구간 곡선의 가장 넓은 간격에 점을 추가합니다. 그래프 선을 더블클릭해도 추가됩니다." hidden disabled>곡선 점 추가</button>
     <div class="animation-key-values" hidden><span>선택 키 값</span>
         ${['X', 'Y', 'Z'].map((axis, index) => `<label>${axis} <input class="pde-input" data-animation-axis="${index}" aria-label="키프레임 ${axis} 값 또는 수식" maxlength="1024"></label>`).join('')}
         <label><input id="animation-pre-enabled" type="checkbox">진입 값 분리</label>
@@ -149,6 +151,7 @@ cameraPreviewInput.onchange = () => {
 };
 const duplicateButton = panel.querySelector<HTMLButtonElement>('#animation-duplicate')!;
 const interpolationSelect = panel.querySelector<HTMLSelectElement>('#animation-interpolation')!;
+const curveAddButton = panel.querySelector<HTMLButtonElement>('#animation-curve-add')!;
 const startButton = panel.querySelector<HTMLButtonElement>('#animation-start')!;
 const endButton = panel.querySelector<HTMLButtonElement>('#animation-end')!;
 const loopButton = panel.querySelector<HTMLButtonElement>('#animation-loop')!;
@@ -645,12 +648,16 @@ keyValues.querySelector<HTMLInputElement>('#animation-pre-enabled')!.onchange = 
     });
 };
 
+// Keys whose incoming segment the selection edits; in the graph, a first key stands for the segment it starts.
+function selectedSegmentEntries() {
+    return selectedKeyEntries().map(entry => ({ ...entry,
+        key: graphMode && visibleKeys(entry.track).indexOf(entry.key) === 0 ? visibleKeys(entry.track)[1] : entry.key }))
+        .filter(({ track, key }) => key && visibleKeys(track).indexOf(key) > 0);
+}
+
 async function connectSelectedKeys(connected: boolean): Promise<void> {
     if (!await settle()) return;
-    const entries = selectedKeyEntries().map(entry => ({ ...entry,
-        key: graphMode && visibleKeys(entry.track).indexOf(entry.key) === 0 ? visibleKeys(entry.track)[1] : entry.key }))
-        .filter(({ track, key }) => key && visibleKeys(track).indexOf(key) > 0
-        && (connected ? keyCurve(key, editChannel()) === 'step' : keyCurve(key, editChannel()) !== 'step'));
+    const entries = selectedSegmentEntries().filter(({ key }) => connected ? keyCurve(key, editChannel()) === 'step' : keyCurve(key, editChannel()) !== 'step');
     if (!entries.length) return;
     const before = captureAnimationSnapshot(root)!;
     for (const { key } of entries) {
@@ -659,15 +666,12 @@ async function connectSelectedKeys(connected: boolean): Promise<void> {
     recordKeyEdit(before); panel.focus();
 }
 
-function handleCurve(key: AnimationKey, handle: 0 | 2, x: number, y: number): AnimationCurve {
-    const original = keyCurve(key, editChannel());
-    const curve: [number, number, number, number] = Array.isArray(original) ? [...original] : [1 / 3, 1 / 3, 2 / 3, 2 / 3];
-    curve[handle] = Math.max(handle === 0 ? 0 : curve[0], Math.min(handle === 0 ? curve[2] : 1, x));
-    curve[handle + 1] = y;
-    return curve;
+function curveControlSelector(tick: number, target: CurveTarget): string {
+    return typeof target === 'number' ? `.animation-curve-handle[data-tick="${tick}"][data-handle="${target}"]`
+        : `.animation-curve-handle[data-tick="${tick}"][data-point="${target.point}"]${target.handle ? `[data-side="${target.handle}"]` : '.animation-curve-point'}`;
 }
 
-function beginCurveDrag(event: PointerEvent, id: string, tick: number, handle: 0 | 2, layout: GraphLayout, diamondTick?: number): void {
+function beginCurveDrag(event: PointerEvent, id: string, tick: number, target: CurveTarget, layout: GraphLayout, diamondTick?: number): void {
     if (event.button !== 0 || !event.isPrimary || matchesPointerShortcut(event, 'boxSelect')) return;
     event.stopPropagation();
     const startX = event.clientX, startY = event.clientY, startScroll = timelineScroll.scrollLeft;
@@ -688,7 +692,6 @@ function beginCurveDrag(event: PointerEvent, id: string, tick: number, handle: 0
             const interpolation = keyCurve(key, editChannel());
             if (interpolation === 'step') return;
             const original = JSON.stringify(interpolation);
-            const curve = Array.isArray(interpolation) ? interpolation : [1 / 3, 1 / 3, 2 / 3, 2 / 3];
             const before = captureAnimationSnapshot(root)!;
             const width = (key.tick - previous.tick) * pixelsPerTick;
             const height = layout.y(layout.value(key)) - layout.y(layout.value(previous));
@@ -699,40 +702,64 @@ function beginCurveDrag(event: PointerEvent, id: string, tick: number, handle: 0
                 if (Math.hypot(dx, dy) >= 3) dragging = true;
                 if (dragging && (dx !== lastX || dy !== lastY)) {
                     lastX = dx; lastY = dy;
-                    setKeyCurve(key, editChannel(), handleCurve(key, handle, curve[handle] + dx / width, curve[handle + 1] + dy / (Math.abs(height) > 1e-6 ? height : -120)));
-                    if (dx === 0 && dy === 0 && original === undefined) setKeyCurve(key, editChannel(), undefined);
+                    // Back at the start, restore the exact original so an untouched preset stays a preset.
+                    setKeyCurve(key, editChannel(), dx === 0 && dy === 0 ? interpolation
+                        : moveCurveControl(interpolation, target, dx / width, dy / (Math.abs(height) > 1e-6 ? height : -120)));
                     previewAnimation(root); changed(false);
                 }
                 if (drag.released) break;
                 await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
             }
             if (!drag.canceled && animationData(root) === data && JSON.stringify(keyCurve(key, editChannel())) !== original) recordKeyEdit(before);
-            panel.focus();
+            const control = drag.canceled || diamondTick !== undefined ? null
+                : rows.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"] ${curveControlSelector(tick, target)}`);
+            (control ?? panel).focus();
         } catch (error) { drag.rollback?.(); throw error; }
         finally { drag.cleanup(); }
     });
 }
 
-function editCurveHandle(id: string, tick: number, handle: 0 | 2, dx: number, dy: number, diamondTick?: number): void {
+// Applies one edit to the curves entering the given keys as one undo step, then focuses the control `focus` names in the first.
+function editKeyCurves(targets: Array<{ id: string; tick: number }>, edit: (curve: AnimationCurve | undefined) => AnimationCurve | undefined,
+    focus: (tick: number) => string, selectTick?: number): void {
     void enqueue(async () => {
         if (!await settle()) return;
-        const track = animationData(root)?.tracks.find(track => track.id === id);
-        const keys = track && visibleKeys(track);
-        const index = keys?.findIndex(key => key.tick === tick) ?? -1;
-        if (!track || index < 1) return;
-        const key = keys[index], interpolation = keyCurve(key, editChannel());
-        if (interpolation === 'step') return;
-        const curve = Array.isArray(interpolation) ? interpolation : [1 / 3, 1 / 3, 2 / 3, 2 / 3];
-        const next = handleCurve(key, handle, curve[handle] + dx, curve[handle + 1] + dy);
-        if (JSON.stringify(next) === JSON.stringify(interpolation)) return;
-        selectKey(id, diamondTick ?? tick, false, true);
+        const edits = targets.flatMap(({ id, tick }) => {
+            const track = animationData(root)?.tracks.find(track => track.id === id), keys = track && visibleKeys(track);
+            const index = keys?.findIndex(key => key.tick === tick) ?? -1;
+            if (!keys || index < 1) return [];
+            const key = keys[index], curve = keyCurve(key, editChannel());
+            const next = curve === 'step' ? curve : edit(curve);
+            return JSON.stringify(next) === JSON.stringify(curve) ? [] : [{ id, tick, key, next }];
+        });
+        if (!edits.length) return;
+        if (selectTick !== undefined) selectKey(edits[0].id, selectTick, false, true);
         const before = captureAnimationSnapshot(root)!;
-        setKeyCurve(key, editChannel(), next);
+        for (const { key, next } of edits) setKeyCurve(key, editChannel(), next);
         recordKeyEdit(before);
-        const selector = diamondTick === undefined ? `.animation-curve-handle[data-tick="${tick}"][data-handle="${handle}"]`
-            : `.animation-key[data-tick="${diamondTick}"]`;
-        rows.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"] ${selector}`)?.focus();
+        (rows.querySelector<HTMLElement>(`[data-id="${CSS.escape(edits[0].id)}"] ${focus(edits[0].tick)}`) ?? panel).focus();
     });
+}
+
+function editCurveHandle(id: string, tick: number, target: CurveTarget, dx: number, dy: number, diamondTick?: number): void {
+    editKeyCurves([{ id, tick }], curve => moveCurveControl(curve, target, dx, dy),
+        () => diamondTick === undefined ? curveControlSelector(tick, target) : `.animation-key[data-tick="${diamondTick}"]`, diamondTick ?? tick);
+}
+
+// Without x, each curve gets a point in its widest span.
+function addCurvePoints(targets: Array<{ id: string; tick: number }>, x?: number, selectTick?: number): void {
+    let point: number | undefined;
+    editKeyCurves(targets, curve => {
+        const old = toBezierCurve(curve).points, next = insertCurvePoint(curve, x);
+        // A conversion without a new point would silently turn a preset into points.
+        if (next.points.length === old.length) return curve;
+        point ??= next.points.findIndex((entry, index) => entry.x !== old[index]?.x);
+        return next;
+    }, tick => curveControlSelector(tick, { point: point! }), selectTick);
+}
+
+function removeCurvePointAt(id: string, tick: number, point: number): void {
+    editKeyCurves([{ id, tick }], curve => removeCurvePoint(curve, point), () => curveControlSelector(tick, { point: point - 1 }), tick);
 }
 
 function beginKeyBoxSelection(event: PointerEvent): void {
@@ -910,6 +937,8 @@ function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
     }));
     interpolationSelect.disabled = curves.size === 0;
     interpolationSelect.value = curves.size === 0 ? '' : curves.size === 1 ? [...curves][0] : 'custom';
+    curveAddButton.hidden = !graphMode;
+    curveAddButton.disabled = !selectedSegmentEntries().some(({ key }) => keyCurve(key, editChannel()) !== 'step');
     emptyMessage.hidden = timelineRows.length > 0;
 }
 
@@ -1002,14 +1031,14 @@ function renderVisibleAnimationRows(): void {
         const graph = graphMode ? animationGraphLayout(track, channel as GraphChannel, Number(axis), animationData(root)?.tickRate) : undefined;
         if (graph && track) renderAnimationGraph(lane, track, pixelsPerTick, graph, selectedKeys.get(id),
             (event, key, handle) => beginCurveDrag(event, id, key.tick, handle, graph),
-            (key, handle, dx, dy) => editCurveHandle(id, key.tick, handle, dx, dy));
+            (key, handle, dx, dy) => editCurveHandle(id, key.tick, handle, dx, dy), (key, point) => removeCurvePointAt(id, key.tick, point));
         const keys = track ? visibleKeys(track) : [];
         for (const [index, key] of keys.entries()) {
             const interpolation = keyCurve(key, editChannel());
             const marker = document.createElement('button'); marker.type = 'button'; marker.className = 'animation-key';
             marker.dataset.tick = String(key.tick); marker.style.left = `${key.tick * pixelsPerTick}px`;
             marker.classList.toggle('disconnected', interpolation === 'step');
-            marker.classList.toggle('curved', Array.isArray(interpolation));
+            marker.classList.toggle('curved', typeof interpolation === 'object');
             marker.title = `${key.tick}틱 · ${(key.tick / (animationData(root)!.tickRate ?? ticksPerSecond)).toFixed(2)}초 · ${interpolation === 'step' ? '단계' : interpolation ? '곡선' : '선형'} 보간 · 드래그하여 이동`;
             if (graph) {
                 const value = graph.value(key);
@@ -1118,6 +1147,10 @@ addButton.onclick = () => {
     });
 };
 duplicateButton.onclick = () => { cancelScrub?.(); void enqueue(duplicateKeys); };
+curveAddButton.onclick = () => {
+    cancelScrub?.();
+    addCurvePoints(selectedSegmentEntries().map(({ track, key }) => ({ id: track.id, tick: key.tick })));
+};
 interpolationSelect.onchange = () => {
     const value = interpolationSelect.value;
     if (!['linear', 'step', 'smooth', ...animationEasings].includes(value)) return;
@@ -1370,6 +1403,17 @@ timelineScroll.addEventListener('pointerdown', event => {
     void enqueue(() => { selectedKeys.clear(); selectKeyParts(); syncAnimationPanel(); panel.focus(); });
 });
 timelineScroll.addEventListener('pointerdown', beginKeyBoxSelection);
+// Read the curve under the pointer: the click may land on the capturing scroll container after rows re-render.
+timelineScroll.addEventListener('dblclick', event => {
+    const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest<SVGPathElement>('.animation-graph-hit');
+    const id = hit?.closest<HTMLElement>('.animation-row')?.dataset.id, tick = Number(hit?.dataset.tick);
+    const track = animationData(root)?.tracks.find(track => track.id === id);
+    const keys = track && visibleKeys(track), index = keys?.findIndex(key => key.tick === tick) ?? -1;
+    if (!hit || !keys || index < 1) return;
+    event.preventDefault();
+    const start = keys[index - 1].tick, at = (event.clientX - hit.ownerSVGElement!.getBoundingClientRect().left) / pixelsPerTick;
+    addCurvePoints([{ id: track!.id, tick }], (at - start) / (tick - start), tick);
+});
 timelineScroll.addEventListener('wheel', event => {
     if (event.shiftKey && (event.deltaX || event.deltaY)) {
         event.preventDefault(); followPlayback = false; zoomAnchor = undefined;
@@ -1470,6 +1514,7 @@ window.addEventListener('pde:animation-properties-updated', () => {
     if (panel.hidden) return;
     if (nameFilter) { syncAnimationPanel(); return; }
     for (const row of rows.children as HTMLCollectionOf<HTMLElement>) {
+        if (row.dataset.clipId !== undefined) continue; // clip rows keep their 동작 label
         const id = row.dataset.id!;
         const group = root.userData.groups?.get(id);
         const name = group ? group.name : getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;

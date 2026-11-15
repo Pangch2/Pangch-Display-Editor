@@ -41,7 +41,11 @@ function disposeMesh(mesh: ObjectBatch): void {
 
 function dropPool(entry: PreparedProject): void {
     if (!entry.pool) return;
-    for (const { mesh } of entry.pool.meshes) { meshPools.delete(mesh); disposeMesh(mesh); }
+    for (const { mesh } of entry.pool.meshes) {
+        meshPools.delete(mesh);
+        // Idle pool batches stay in the scene; a detached empty one belongs to the history delta that emptied it (it may restore into it).
+        if (mesh.parent) disposeMesh(mesh);
+    }
     delete entry.pool;
 }
 
