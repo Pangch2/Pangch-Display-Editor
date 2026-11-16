@@ -843,7 +843,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
   border: 0;
   background: transparent;
   color: inherit;
-  font: 22px/1 sans-serif;
+  font: normal 400 18.75px/1 'lucide';
   cursor: pointer;
 }
 

@@ -12,6 +12,7 @@ import {
     Object3D,
     Matrix4,
     type Plane,
+    type PerspectiveCamera,
     Quaternion,
     Box3,
     Vector2,
@@ -269,6 +270,11 @@ let finePositionDragValue: number | null = null;
 let fineRotationDragValue: number | null = null;
 let fineScaleDragValue: number | null = null;
 let dragAlign = false;
+let rotationSensitivity = 1;
+let rotateStartPointer: { x: number; y: number } | null = null;
+let gizmoDistanceScale = true;
+// Handle scale used when distance scaling is off; the translate arrows end up roughly one block long.
+const fixedGizmoHandleScale = 1.6;
 
 function applyRotationDragValue(): void {
     const step = isShortcutPressed('fineAdjust') ? fineRotationDragValue : rotationDragValue;
@@ -287,6 +293,8 @@ function applyGizmoDragValues(): void {
     fineRotationDragValue = value('pdeFineRotationDragValue', '0');
     fineScaleDragValue = value('pdeFineScaleDragValue', '0');
     dragAlign = localStorage.getItem('pdeDragAlign') === 'true';
+    rotationSensitivity = value('pdeRotationSensitivity', '1') ?? 1;
+    gizmoDistanceScale = localStorage.getItem('pdeGizmoDistanceScale') !== 'false';
     transformControls?.setTranslationSnap(null);
     applyRotationDragValue();
     transformControls?.setScaleSnap(null);
@@ -1474,11 +1482,38 @@ export function initGizmo({
     const gizmoContainer = transformControls.getHelper().children[0];
     const updateGizmoMatrixWorld = gizmoContainer.updateMatrixWorld.bind(gizmoContainer);
     gizmoContainer.updateMatrixWorld = (force?: boolean): void => {
+        const tc = transformControls!;
+        const camera = tc.camera as PerspectiveCamera;
+        // TransformControls scales handles by camera distance; cancel that factor to keep a fixed world size.
+        const factor = !gizmoDistanceScale && camera.isPerspectiveCamera
+            ? tc.worldPosition.distanceTo(tc.cameraPosition) * Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360) / camera.zoom, 7)
+            : 0;
+        (gizmoContainer as Object3D & { size: number }).size = factor > 0 ? 4 * fixedGizmoHandleScale / factor : tc.size;
         const dragStartPivot = transformControls!.worldPositionStart.clone();
         const smartScaleVisualPivot = getSmartScaleVisualPivot();
         if (smartScaleVisualPivot) transformControls!.worldPositionStart.copy(smartScaleVisualPivot);
         updateGizmoMatrixWorld(force);
         transformControls!.worldPositionStart.copy(dragStartPivot);
+    };
+    // TransformControls hardcodes its rotate speed, so scale the pointer's offset from the drag start instead.
+    type GizmoPointer = { x: number; y: number; button: number } | null;
+    const pointerDown = transformControls.pointerDown.bind(transformControls);
+    const pointerMove = transformControls.pointerMove.bind(transformControls);
+    transformControls.pointerDown = (pointer: GizmoPointer): void => {
+        rotateStartPointer = pointer && { x: pointer.x, y: pointer.y };
+        pointerDown(pointer);
+    };
+    transformControls.pointerMove = (pointer: GizmoPointer): void => {
+        const tc = transformControls!;
+        // The screen ring ('E') uses the true pointer angle, which is already 1:1.
+        if (pointer && rotateStartPointer && tc.dragging && tc.mode === 'rotate' && tc.axis !== 'E') {
+            pointer = {
+                ...pointer,
+                x: rotateStartPointer.x + (pointer.x - rotateStartPointer.x) * rotationSensitivity,
+                y: rotateStartPointer.y + (pointer.y - rotateStartPointer.y) * rotationSensitivity
+            };
+        }
+        pointerMove(pointer);
     };
     applyGizmoDragValues();
     gizmoLines = setupResult.gizmoLines;

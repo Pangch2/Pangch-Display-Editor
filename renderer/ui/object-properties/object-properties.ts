@@ -1660,6 +1660,14 @@ function renderObject(mesh: ObjectBatch, instanceId: number, index: number, pivo
     return section;
 }
 
+/** A group's displayed position: bottom center of its current world box, so 0,0,0 centers it on the floor whatever its origin, scale or children. */
+function groupFloorAnchor(groupId: string, groupMatrix: Matrix4): Vector3 {
+    const box = Overlay.getGroupLocalBoundingBox(groupId);
+    if (box.isEmpty()) return new Vector3().setFromMatrixPosition(groupMatrix);
+    box.applyMatrix4(groupMatrix);
+    return box.getCenter(new Vector3()).setY(box.min.y);
+}
+
 function renderGroup(groupId: string, group: GroupData, index: number, pivotWorld?: Vector3): HTMLElement {
     const groupPosition = new Vector3(group.position.x, group.position.y, group.position.z);
     const groupQuaternion = new Quaternion(group.quaternion.x, group.quaternion.y, group.quaternion.z, group.quaternion.w);
@@ -1688,7 +1696,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
         }
     }));
     const transformSection = propertySection('transform', '변환');
-    const values = [groupPosition.clone(), groupRotation.clone(), groupScale.clone()];
+    const values = [groupFloorAnchor(groupId, groupMatrix), groupRotation.clone(), groupScale.clone()];
     ['위치', '회전', '크기'].forEach((label, rowIndex) => {
         const row = document.createElement('div');
         row.className = 'object-property-row';
@@ -1698,18 +1706,22 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
         (['x', 'y', 'z'] as const).forEach(axis => {
             const value = rowIndex === 1 ? values[rowIndex][axis] * 180 / Math.PI : values[rowIndex][axis];
             const change = (next: number, direction: '+' | '-' = '+') => {
+                if (rowIndex === 0) {
+                    const shift = new Vector3().setComponent('xyz'.indexOf(axis), next - groupFloorAnchor(groupId, groupMatrix)[axis]);
+                    commitMatrix(new Matrix4().makeTranslation(shift).multiply(groupMatrix));
+                    return;
+                }
                 groupMatrix.decompose(groupPosition, groupQuaternion, groupScale);
                 const previousScale = groupScale[axis];
                 groupRotation.setFromQuaternion(groupQuaternion);
-                if (rowIndex === 0) groupPosition[axis] = next;
-                else if (rowIndex === 1) groupRotation[axis] = next * Math.PI / 180;
+                if (rowIndex === 1) groupRotation[axis] = next * Math.PI / 180;
                 else groupScale[axis] = next;
                 const nextMatrix = rowIndex === 2 && previousScale !== 0
                     ? groupMatrix.clone().scale(new Vector3(1, 1, 1).setComponent('xyz'.indexOf(axis), next / previousScale))
                     : new Matrix4().compose(groupPosition, groupQuaternion.setFromEuler(groupRotation), groupScale);
                 let transformPivot = currentPivotWorld?.clone().applyMatrix4(groupMatrix.clone().invert()) ?? localPivot;
                 if (rowIndex === 2) transformPivot = getScalePivot(transformPivot, Overlay.getGroupLocalBoundingBox(groupId), axis, direction);
-                commitMatrix(rowIndex === 0 ? nextMatrix : keepPivotFixed(groupMatrix, nextMatrix, transformPivot));
+                commitMatrix(keepPivotFixed(groupMatrix, nextMatrix, transformPivot));
             };
             row.append(rowIndex === 2
                 ? scaleInput(value, change, captureTransformHistory)
@@ -1718,7 +1730,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
         transformSection.append(row);
     });
 
-    const pivot = worldPivot.clone();
+    const pivot = localPivot.clone();
     const pivotRow = document.createElement('div');
     pivotRow.className = 'object-property-row';
     const pivotLabel = document.createElement('label');
@@ -1726,10 +1738,11 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
     pivotRow.append(pivotLabel);
     (['x', 'y', 'z'] as const).forEach(axis => pivotRow.append(numberInput(pivot[axis], next => {
         pivot[axis] = next;
-        group.pivot = [pivot.x, pivot.y, pivot.z];
+        localPivot.copy(pivot);
+        const world = pivot.clone().applyMatrix4(groupMatrix);
+        group.pivot = [world.x, world.y, world.z];
         group.isCustomPivot = true;
-        localPivot.copy(pivot).applyMatrix4(groupMatrix.clone().invert());
-        syncLinkedMirrorGroupPivot(loadedObjectGroup, groupId, pivot);
+        syncLinkedMirrorGroupPivot(loadedObjectGroup, groupId, world);
         window.dispatchEvent(new CustomEvent('pde:scene-updated', { detail: { pivotChanged: true } }));
     }, captureTransformHistory)));
     transformSection.append(pivotRow);
@@ -1772,7 +1785,8 @@ function updateSection(section: Element, item: PropertySelection, pivotWorld?: V
         if (previewDelta) nextMatrix.premultiply(previewDelta);
         groupMatrices.get(section)?.copy(nextMatrix);
         nextMatrix.decompose(nextPosition, nextQuaternion, nextScale);
-        if (!previewDelta) pivot = pivotWorld?.clone() ?? GroupUtils.normalizePivotToVector3(group.pivot) ?? new Vector3();
+        nextPosition.copy(groupFloorAnchor(item.groupId, nextMatrix));
+        if (!previewDelta) pivot = (pivotWorld?.clone() ?? GroupUtils.normalizePivotToVector3(group.pivot) ?? new Vector3()).applyMatrix4(nextMatrix.clone().invert());
     } else {
         const uuid = objectUuidAt(loadedObjectGroup, item.mesh, item.instanceId) ?? '';
         const modelTransform = renderModelTransform(loadedObjectGroup, uuid, item.mesh, item.instanceId);

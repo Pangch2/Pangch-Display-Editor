@@ -188,10 +188,6 @@
   background: url('../../../resources/player_head.svg') center / contain no-repeat;
 }
 
-.user-guide-menu-icon {
-  font-family: sans-serif;
-}
-
 .user-guide-page p {
   margin: 10px 0;
 }

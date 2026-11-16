@@ -47,6 +47,8 @@ overlay.innerHTML = `
             <label class="settings-row"><span>스케일 조작 모드</span><span class="settings-select"><select id="scale-mode"><option value="default">기본</option><option value="blockbench">블록벤치 스케일 모드</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>오브젝트 교체 모드</span><span class="settings-select"><select id="object-replace-mode"><option value="default">기본</option><option value="preserve-visible-size">보이는 크기 유지</option></select><span class="lucide-icon">&#xE06D;</span></span></label>
             <label class="settings-row"><span>드래그 정렬</span><span class="settings-row-toggle"><input id="drag-align" type="checkbox"></span></label>
+            <label class="settings-row" title="끄면 카메라와의 거리에 상관없이 기즈모가 같은 월드 크기로 표시됩니다"><span>멀어질수록 기즈모 확대</span><span class="settings-row-toggle"><input id="gizmo-distance-scale" type="checkbox"></span></label>
+            <label class="settings-row"><span>회전 민감도</span><span class="settings-row-toggle"><input id="rotation-sensitivity" type="text" inputmode="decimal" value="1"></span></label>
             <label class="settings-row"><span>위치 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdePositionDragValue"><button type="button" aria-label="위치 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>각도 드래그값</span><span class="settings-drag-value" data-values="0,180,90,45,30,15,10,5,2,1,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeRotationDragValue"><button type="button" aria-label="각도 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
             <label class="settings-row"><span>스케일 드래그값</span><span class="settings-drag-value" data-values="0,1,0.5,0.25,0.125,0.0625,0.0001"><input type="text" inputmode="decimal" value="0.0001" data-storage-key="pdeScaleDragValue"><button type="button" aria-label="스케일 드래그값 메뉴" aria-expanded="false"><span class="lucide-icon">&#xE06D;</span></button><span class="settings-drag-menu" hidden></span></span></label>
@@ -623,6 +625,25 @@ headAtlasLayout.addEventListener('change', () => {
 });
 window.addEventListener('pde:blockbench-scale-mode-changed', () => {
   scaleMode.value = blockbenchScaleMode ? 'blockbench' : 'default';
+});
+const rotationSensitivityInput = overlay.querySelector<HTMLInputElement>('#rotation-sensitivity')!;
+rotationSensitivityInput.value = localStorage.getItem('pdeRotationSensitivity') ?? '1';
+rotationSensitivityInput.addEventListener('change', () => {
+  const value = Number(rotationSensitivityInput.value);
+  if (!Number.isFinite(value) || value <= 0) {
+    rotationSensitivityInput.value = localStorage.getItem('pdeRotationSensitivity') ?? '1';
+    return;
+  }
+  rotationSensitivityInput.value = String(value);
+  localStorage.setItem('pdeRotationSensitivity', rotationSensitivityInput.value);
+  window.dispatchEvent(new Event('pde:gizmo-drag-values-changed'));
+});
+rotationSensitivityInput.addEventListener('keydown', event => { if (event.key === 'Enter') rotationSensitivityInput.blur(); });
+const gizmoDistanceScaleInput = overlay.querySelector<HTMLInputElement>('#gizmo-distance-scale')!;
+gizmoDistanceScaleInput.checked = localStorage.getItem('pdeGizmoDistanceScale') !== 'false';
+gizmoDistanceScaleInput.addEventListener('change', () => {
+  localStorage.setItem('pdeGizmoDistanceScale', String(gizmoDistanceScaleInput.checked));
+  window.dispatchEvent(new Event('pde:gizmo-drag-values-changed'));
 });
 initDragAlignInput(overlay.querySelector<HTMLInputElement>('#drag-align')!);
 overlay.querySelectorAll<HTMLElement>('.settings-drag-value').forEach(initDragValueInput);

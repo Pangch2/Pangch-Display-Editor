@@ -20,23 +20,23 @@
       <div class="menu-bar-dropdown">
         <button id="file-menu-button" class="menu-bar-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="file-menu">파일</button>
         <div id="file-menu" class="menu-bar-popup" role="menu" aria-labelledby="file-menu-button" hidden>
-          <button type="button" role="menuitem" data-file-action="new"><span class="lucide-icon" aria-hidden="true">&#xE0C9;</span>새 프로젝트</button>
-          <button type="button" role="menuitem" data-file-action="newTab"><span class="lucide-icon" aria-hidden="true">&#xE426;</span>새 프로젝트 탭</button>
-          <button type="button" role="menuitem" data-file-action="open"><span class="lucide-icon" aria-hidden="true">&#xE247;</span>프로젝트 열기</button>
-          <button type="button" role="menuitem" data-file-action="save"><span class="lucide-icon" aria-hidden="true">&#xE14D;</span>저장</button>
+          <button type="button" role="menuitem" data-file-action="new" data-shortcut="replaceProject"><span class="lucide-icon" aria-hidden="true">&#xE0C9;</span>새 프로젝트</button>
+          <button type="button" role="menuitem" data-file-action="newTab" data-shortcut="newProject"><span class="lucide-icon" aria-hidden="true">&#xE426;</span>새 프로젝트 탭</button>
+          <button type="button" role="menuitem" data-file-action="open" data-shortcut="openProject"><span class="lucide-icon" aria-hidden="true">&#xE247;</span>프로젝트 열기</button>
+          <button type="button" role="menuitem" data-file-action="save" aria-keyshortcuts="Control+S" title="Ctrl + S"><span class="lucide-icon" aria-hidden="true">&#xE14D;</span>저장</button>
           <button type="button" role="menuitem" data-file-action="saveAs" aria-keyshortcuts="Control+Shift+S" title="Ctrl + Shift + S"><span class="lucide-icon" aria-hidden="true">&#xE14D;</span>다른 이름으로 저장</button>
-          <button type="button" role="menuitem" data-file-action="export"><span class="lucide-icon" aria-hidden="true">&#xE0B2;</span>내보내기</button>
+          <button type="button" role="menuitem" data-file-action="export" title="소환 명령어로 내보내기"><span class="lucide-icon" aria-hidden="true">&#xE0B2;</span>내보내기</button>
         </div>
       </div>
       <div class="menu-bar-dropdown">
         <button id="edit-menu-button" class="menu-bar-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="edit-menu">편집</button>
         <div id="edit-menu" class="menu-bar-popup" role="menu" aria-labelledby="edit-menu-button" hidden></div>
       </div>
-      <button id="summon-menu-button" class="menu-bar-button" type="button">소환</button>
+      <button id="summon-menu-button" class="menu-bar-button" type="button" title="소환 명령어 생성">소환</button>
       <div class="menu-bar-dropdown">
         <button id="help-menu-button" class="menu-bar-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu">도움!</button>
         <div id="help-menu" class="menu-bar-popup" role="menu" aria-labelledby="help-menu-button" hidden>
-          <button id="user-guide-button" type="button" role="menuitem"><span class="menu-bar-logo" aria-hidden="true"></span>PDE 사용설명서</button>
+          <button id="user-guide-button" type="button" role="menuitem" title="PDE 사용설명서 열기"><span class="menu-bar-logo" aria-hidden="true"></span>PDE 사용설명서</button>
         </div>
       </div>
     </div>
@@ -50,11 +50,11 @@
   <div id="main-content">
     <canvas id="renderCanvas"></canvas>
     <div id="scene-toolbar" class="horizontal-toolbar">
-      <i>&#xE061;</i><i>&#xE5C6;</i><i class="player-head-icon"></i><i>&#xE198;</i>
-      <div class="toolbar-dimensions"><button type="button" class="toolbar-dimensions-toggle lucide-icon" aria-label="크기 설정" aria-expanded="false">&#xE2F0;</button><div class="toolbar-dimensions-menu" hidden><label>X <input class="pde-input" name="x" inputmode="numeric" pattern="[0-9]*"></label><label>Y <input class="pde-input" name="y" inputmode="numeric" pattern="[0-9]*"></label><label>Z <input class="pde-input" name="z" inputmode="numeric" pattern="[0-9]*"></label></div></div>
-      <i>&#xE1D3;</i>
+      <i title="블록 디스플레이 추가">&#xE061;</i><i title="아이템 디스플레이 추가">&#xE5C6;</i><i class="player-head-icon" title="플레이어 헤드 추가"></i><i title="텍스트 디스플레이 추가">&#xE198;</i>
+      <div class="toolbar-dimensions"><button type="button" class="toolbar-dimensions-toggle lucide-icon" title="나이프 범위 설정" aria-label="나이프 범위 설정" aria-expanded="false">&#xE2F0;</button><div class="toolbar-dimensions-menu" hidden><label>X <input class="pde-input" name="x" inputmode="numeric" pattern="[0-9]*"></label><label>Y <input class="pde-input" name="y" inputmode="numeric" pattern="[0-9]*"></label><label>Z <input class="pde-input" name="z" inputmode="numeric" pattern="[0-9]*"></label></div></div>
+      <i title="헤드 페인터">&#xE1D3;</i>
       <button id="animation-button" class="lucide-icon" type="button" title="애니메이션" aria-label="애니메이션">&#xE29B;</button>
-      <button id="settings-button" class="menu-icon" type="button" aria-label="설정">≡</button>
+      <button id="settings-button" class="menu-icon" type="button" title="설정" aria-label="설정">&#xE154;</button>
     </div>
   </div>
 

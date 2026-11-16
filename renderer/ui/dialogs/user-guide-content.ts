@@ -1,6 +1,6 @@
 const i = (code: string): string => `<span class="user-guide-icon lucide-icon" aria-hidden="true">&#x${code};</span>`;
 const headIcon = '<span class="user-guide-icon user-guide-head-icon" aria-hidden="true"></span>';
-const menuIcon = '<span class="user-guide-icon user-guide-menu-icon" aria-hidden="true">≡</span>';
+const menuIcon = i('E154');
 const mask = (name: string): string => `<span class="user-guide-icon transform-icon ${name}" aria-hidden="true"></span>`;
 
 export const userGuideSections = [

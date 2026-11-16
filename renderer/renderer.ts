@@ -671,10 +671,10 @@ async function initScene(): Promise<void> {
     coordinateAxes.visible = gridAxesVisible;
     scene.add(coordinateAxes);
 
-    const detailGrid = new GridHelper(20, 320, 0x2C2C2C, 0x2C2C2C);
+    const detailGrid = new GridHelper(150, 150 * 16,0x2C2C2C, 0x2C2C2C);
     detailGrid.renderOrder = -2; 
 
-    const Grid = new GridHelper(20, 20, 0x3D3D3D, 0x3D3D3D);
+    const Grid = new GridHelper(150, 150, 0x3D3D3D, 0x3D3D3D);
     Grid.renderOrder = -1; 
     zSymbol = createZGreaterSymbol(new Vector3(0.5, 0, -0.25), 0.125, 0x515151);
     zSymbol.renderOrder = 10;

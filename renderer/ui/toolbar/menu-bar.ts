@@ -1,4 +1,4 @@
-import { matchesShortcut } from '../../controls/input/shortcuts';
+import { getShortcuts, matchesShortcut, type ShortcutId } from '../../controls/input/shortcuts';
 import { addProject, openProjects } from '../../load-project/pbde/upload-pbde';
 import { saveProject } from '../../save/save-project';
 import { openNewProjectDialog } from '../dialogs/new-project';
@@ -81,6 +81,14 @@ const fileActions = {
 for (const button of menuBar.querySelectorAll<HTMLButtonElement>('[data-file-action]')) {
     button.addEventListener('click', () => { void fileActions[button.dataset.fileAction as keyof typeof fileActions](); });
 }
+// Shortcuts are user-editable, so the hover text follows the current bindings.
+const updateFileShortcutTitles = (): void => {
+    for (const button of menuBar.querySelectorAll<HTMLButtonElement>('[data-shortcut]')) {
+        button.title = getShortcuts(button.dataset.shortcut as ShortcutId).join(' / ');
+    }
+};
+window.addEventListener('pde:shortcuts-changed', updateFileShortcutTitles);
+updateFileShortcutTitles();
 window.addEventListener('keydown', event => {
     if (document.querySelector('dialog[open], .settings-overlay:not([hidden])')) return;
     const action = matchesShortcut(event, 'openProject') ? fileActions.open
