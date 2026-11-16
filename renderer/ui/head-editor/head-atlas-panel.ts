@@ -583,7 +583,7 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
     stage.addEventListener('pointerdown', event => {
         refreshFaces();
         if (clearHeadAtlasPaintSelectionOutside(event)) return;
-        if (startHeadAtlasPaintSelection(event)) return;
+        if (!isAtlasPainting() && startHeadAtlasPaintSelection(event)) return;
         if (event.button !== 0 || cancelUvDrag || isAtlasPainting()) return;
         refreshUvEditor();
         const bounds = canvas.getBoundingClientRect();
@@ -886,6 +886,7 @@ window.addEventListener('keydown', event => {
     event.preventDefault();
     event.stopImmediatePropagation();
     if (cancelUvDrag || cancelPaintSelection || cancelAtlasPan || isApplying()) return;
+    if ((action === 'selectAll' || action === 'selectAllObjects') && isAtlasPainting()) return;
     if (action === 'undo' || action === 'redo') {
         void (action === 'undo' ? undo() : redo()).catch(error => console.error('Undo/Redo failed.', error));
     } else if (!event.repeat) runAtlasAction(action === 'selectAllObjects' ? 'selectAll' : action);

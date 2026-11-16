@@ -14,6 +14,7 @@ export const shortcutDefinitions = [
   { id: 'fineAdjust', category: '일반', label: '미세조정', defaults: ['Shift'] },
   { id: 'toggleFineAdjust', category: '일반', label: '미세조정 토글', defaults: [] },
   { id: 'headPainterCopyStamp', category: '헤드 페인터', label: '스탬프 복사', defaults: ['Shift'] },
+  { id: 'headPainterAlignStamp', category: '헤드 페인터', label: '스탬프 정렬 배치', defaults: ['Ctrl'] },
   { id: 'headPainterSameColorFill', category: '헤드 페인터', label: '한 면 같은 색 채우기', defaults: ['Shift'] },
   { id: 'headPainterFillFace', category: '헤드 페인터', label: '한 면 채우기', defaults: ['Ctrl'] },
   { id: 'headPainterFillAllFaces', category: '헤드 페인터', label: '6면 전체 채우기', defaults: ['Ctrl+Shift'] },
@@ -177,6 +178,11 @@ export function matchesPointerShortcut(event: { ctrlKey?: boolean; metaKey?: boo
 
 export function isShortcutPressed(id: ShortcutId): boolean {
   return (id === 'fineAdjust' && fineAdjustToggled) || matchesShortcutKeys(pressedKeys, id);
+}
+
+// Unlike isShortcutPressed, extra held keys are allowed (Ctrl+Shift holds both Ctrl and Shift shortcuts).
+export function isShortcutHeld(id: ShortcutId): boolean {
+  return getShortcuts(id).some(shortcut => shortcut.split('+').every(key => pressedKeys.has(key)));
 }
 
 if (import.meta.env.DEV) {

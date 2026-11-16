@@ -15,7 +15,9 @@
 body.animation-active #main-content { bottom: var(--animation-panel-height, 360px); }
 #animation-panel { position: absolute; inset: auto var(--panel-dock-right-width, 0px) 0 var(--panel-dock-left-width, 0px); height: var(--animation-panel-height, 360px); box-sizing: border-box; z-index: 15; background: #252528; border-top: 1px solid #48484e; color: #ddd; font-size: 12px; display: flex; flex-direction: column; container-type: inline-size; }
 #animation-panel[hidden] { display: none; }
-#animation-panel:focus-visible, .animation-resizer:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
+/* The panel takes focus programmatically for its shortcuts; a ring there is only noise. */
+#animation-panel:focus, #animation-panel:focus-visible { outline: none; }
+.animation-resizer:focus-visible { outline: 1px solid #70c7ff; outline-offset: -1px; }
 .animation-resizer { touch-action: none; user-select: none; }
 .animation-header { flex: none; min-height: 0; max-height: calc(var(--animation-panel-height, 360px) - 74px); overflow: auto; scrollbar-width: thin; }
 .animation-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px 12px; padding: 6px 10px; border-bottom: 1px solid #414149; background: #2c2c31; }
@@ -63,6 +65,10 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-layer-control, .animation-layer-timing { display: grid; gap: 6px; }
 .animation-layer-control { padding: 8px 0; border-bottom: 1px solid #45454f; }
 .animation-layer-timing { padding-left: 24px; }
+#animation-clip-list { display: grid; gap: 4px; max-height: 220px; overflow: auto; }
+.animation-clip-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.animation-clip-row [data-clip-select] { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.animation-clip-row [data-clip-select][aria-current] { color: var(--ui-accent); background: var(--ui-selected-bg); opacity: 1; }
 .animation-layer-timing [data-layer-starts] { width: 160px; min-width: 0; }
 .animation-layer-timing button { justify-self: start; }
 .animation-workspace { display: flex; flex: 1; min-height: 0; }
@@ -105,6 +111,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-row.selected:not(.animation-graph-row) { background: #344551; }
 .animation-part-cell { position: sticky; left: 0; z-index: 1; display: flex; min-width: 0; border-right: 1px solid #48484e; background: #252528; }
 .animation-part { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; padding: 0 4px 0 14px; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.animation-layer-row .animation-part { align-self: center; }
 .animation-group-toggle { padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .animation-group-toggle + .animation-part { padding-left: 0; }
 .animation-part-cell.has-animation .animation-part { flex: 0 1 auto; }
@@ -113,6 +120,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 .animation-visibility { flex: none; order: 1; align-self: center; margin-left: auto; padding: 4px; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .animation-visibility[aria-pressed="false"] { color: #888; }
 .animation-visibility:focus-visible { outline: 1px solid #70c7ff; }
+.animation-target-filter .animation-settings-body label { justify-content: flex-start; }
 .animation-target-filter summary { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
 .animation-filter-targets { display: flex; flex-wrap: wrap; gap: 4px; max-height: 80px; overflow: auto; }
 .animation-row.selected:not(.animation-graph-row) .animation-part-cell { background: #344551; }

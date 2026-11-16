@@ -119,6 +119,31 @@
   opacity: 0.65;
 }
 
+.user-guide-search {
+  box-sizing: border-box;
+  width: calc(100% - 20px);
+  margin: 0 10px 12px;
+  padding: 7px 10px;
+  border: 1px solid #45454a;
+  border-radius: 6px;
+  background: #151517;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+.user-guide-count {
+  margin-left: auto;
+  color: #a9ddff;
+  font-size: 11px;
+}
+
+.user-guide-page mark {
+  border-radius: 3px;
+  background: #e9c46a;
+  color: #1e1e21;
+}
+
 .user-guide-toc p {
   margin: 12px 10px 0;
   color: #a5a5ad;

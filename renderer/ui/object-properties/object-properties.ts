@@ -30,6 +30,7 @@ import {
     recordStateChange,
     recordTransformChange,
     refreshHistory,
+    setHistoryMultiSelectionFrame,
     type TransformHistoryState
 } from '../../controls/undo-redo/scene-history';
 import { getHeadGridValue, setHeadGridOverride } from '../head-editor/head-painter';
@@ -83,6 +84,7 @@ type PropertySelection = { key: string; groupId: string; group: GroupData } | { 
 let selectionOrder: PropertySelection[] = [];
 let multiSelectionKey = '';
 const multiSelectionMatrix = new Matrix4();
+setHistoryMultiSelectionFrame(() => multiSelectionMatrix, frame => { multiSelectionMatrix.copy(frame); });
 const dragPreviewDelta = new Matrix4();
 const renderedSections = new Map<number, HTMLElement>();
 const propertySectionHeights = new Map<string, number>();

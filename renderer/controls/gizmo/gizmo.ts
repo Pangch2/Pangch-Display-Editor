@@ -2095,7 +2095,7 @@ export function initGizmo({
         if (isGizmoBusy) return;
         if (event.button !== 0) return;
         const headPainterTool = renderer.domElement.dataset.headPainterTool;
-        if (headPainterTool && headPainterTool !== 'select' && !(event.ctrlKey || event.metaKey)) {
+        if (headPainterTool && headPainterTool !== 'select') {
             mouseDownPos = null;
             return;
         }

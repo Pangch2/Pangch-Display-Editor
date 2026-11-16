@@ -38,7 +38,7 @@ import {
   updateHeadPainterGridOverlay
 } from '../../controls/selection/overlay';
 import { commitFocusedProjectEdit, settleCurrentProjectEdits } from '../../save/pending-edits';
-import { isShortcutPressed, matchesShortcut } from '../../controls/input/shortcuts';
+import { isShortcutHeld, isShortcutPressed, matchesShortcut } from '../../controls/input/shortcuts';
 import { dragDeltaMatrix, dragSelectedAttributeName } from '../../entity-material';
 import { oklchToRgb, openColorPicker, rgbToOklch } from '../common/color-picker';
 import { closeWithAnimation, openWithAnimation } from '../common/ui-open-close.js';
@@ -57,7 +57,7 @@ import playerHeadIcon from '../../../resources/player_head.svg?raw';
 import { initHeadTextureGenerator } from './head-texture-generator';
 import { readTextureColor } from './texture-color-pick';
 import {
-  clearHeadAtlasPaintSelectionOutside, getHeadAtlasPaintTarget, isHeadAtlasPaintPixelSelected, isHeadAtlasPaintSelecting, startHeadAtlasPaintSelection,
+  clearHeadAtlasPaintSelectionOutside, getHeadAtlasPaintTarget, isHeadAtlasPaintPixelSelected, isHeadAtlasPaintSelecting,
   updateHeadAtlasPainterGrid, updateHeadAtlasPaintPreview, type HeadAtlasPaintTarget
 } from './head-atlas-panel';
 import { getHeadAtlasUvRect, hasHeadAtlasUvs } from './head-atlas-uv';
@@ -169,7 +169,6 @@ let strokeAtlasLayout = '';
 let lastStrokeHit: PaintHit | null = null;
 let paintPointerId: number | null = null;
 let paintAtlasCanvas: HTMLCanvasElement | null = null;
-let deferredPaint: { pointerId: number; x: number; y: number } | null = null;
 let restoreCameraControls: (() => void) | null = null;
 let promotingImageHead = false;
 let lastPaintEvent: PointerEvent | null = null;
@@ -723,7 +722,6 @@ function endPaintPointer(): void {
   restoreCameraControls = null;
   paintPointerId = null;
   paintAtlasCanvas = null;
-  deferredPaint = null;
 }
 
 function brushCoverage(dx: number, dy: number, width: number, height: number, hardness: number, circle: boolean): number {
@@ -1287,7 +1285,7 @@ function copyStamp(hit: PaintHit): void {
 
 // Snaps the stamp's top-left to multiples of its size so repeated clicks tile without gaps or overlap.
 function alignStampHit(hit: PaintHit): PaintHit {
-  if (lastTool !== 'stamp' || !stampAlign) return hit;
+  if (lastTool !== 'stamp' || !(stampAlign || isShortcutHeld('headPainterAlignStamp'))) return hit;
   return {
     ...hit,
     x: Math.floor(hit.x / stampWidth) * stampWidth + Math.floor(stampWidth / 2),
@@ -1423,23 +1421,7 @@ function onPointerDown(event: PointerEvent): void {
     endPaintPointer();
     return;
   }
-  if (onAtlas && (event.ctrlKey || event.metaKey)) {
-    const tool = lastTool;
-    const mode = getFillMode();
-    startHeadAtlasPaintSelection(event, () => {
-      if (!active || lastTool !== tool || tool === 'select' || tool === 'picker') return;
-      const hit = getHit(event, true);
-      if (!hit) return;
-      paintAt(hit, mode);
-      finishStroke();
-    });
-    return;
-  }
   if (lastTool === 'select') return;
-  if (event.ctrlKey || event.metaKey) {
-    if (lastTool !== 'picker' && (onAtlas || !painterContext.isGizmoHovered())) deferredPaint = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
-    return;
-  }
   if (lastTool === 'picker') {
     // A viewport miss keeps left-drag camera rotation, like the brush does off-head.
     if (pickColor(event) || onAtlas) {
@@ -1475,7 +1457,7 @@ function refreshStampPreview(event: KeyboardEvent): void {
 }
 
 function paintAt(hit: PaintHit, fillMode?: FillMode): void {
-  if (lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp')) {
+  if (lastTool === 'stamp' && isShortcutHeld('headPainterCopyStamp')) {
     finishStroke();
     copyStamp(hit);
     return;
@@ -1817,7 +1799,7 @@ function updatePaintPreview(hit: PaintHit | null): void {
   if (!painterContext || (lastTool !== 'brush' && lastTool !== 'stamp')) return removeHeadPainterStampPreview();
   previewSourceHit = hit;
   if (!hit) return hidePaintPreview();
-  const copy = lastTool === 'stamp' && isShortcutPressed('headPainterCopyStamp');
+  const copy = lastTool === 'stamp' && isShortcutHeld('headPainterCopyStamp');
   if (hit.atlas) {
     if (!copy && paintAtlasCanvas !== hit.atlas.canvas && !isHeadAtlasPaintPixelSelected(hit.atlas.canvas, hit.x, hit.y)) return hidePaintPreview();
     hidePaintPreview();
@@ -1901,20 +1883,6 @@ function onPointerLeave(event: PointerEvent): void {
 
 function onPointerUp(event: PointerEvent): void {
   flushPointerMove();
-  if (event.pointerId === deferredPaint?.pointerId) {
-    const click = event.type === 'pointerup' && Math.hypot(event.clientX - deferredPaint.x, event.clientY - deferredPaint.y) < 6;
-    deferredPaint = null;
-    if (click) {
-      lastPaintEvent = event;
-      const hit = getHit(event, true);
-      if (hit) {
-        if (promoteImageHeadAndPaint(event, hit)) return;
-        paintAt(hit);
-        finishStroke();
-      }
-    }
-    return;
-  }
   if (event.pointerId !== paintPointerId) return;
   endPaintPointer();
 }

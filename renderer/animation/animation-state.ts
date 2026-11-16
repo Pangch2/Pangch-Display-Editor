@@ -1,9 +1,9 @@
 import { Group, Matrix3, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import { deferredPlayerHeadTexture, getPlayerHeadRenderMatrix, getPlayerHeadTexture, previewPlayerHeadTextures } from '../load-project/display/player-head-atlas';
 import { getGroupWorldMatrix, shouldUseGroupPivot, normalizePivotToVector3, type GroupData } from '../controls/grouping/group';
-import { activeAnimation, animationClips, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyCurve, keyTransform, putKey, sampleTrack, setKeyCurve,
+import { activeAnimation, animationClips, minecraftTransformParts, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyCurve, keyTransform, putKey, sampleTrack, setKeyCurve,
     sampleChannelValues, offsetAnimationChannel, sampleTexture, sampleProperties, samplePivot, transformMatrix, type AnimationData, type AnimationClip, type AnimationChannel,
-    type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationTransform } from './animation-data';
+    type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationTransform, type AnimationLayerTiming, type AnimationLayerCarry, layerRanges, setLayerRanges } from './animation-data';
 import { decomposeDisplayMatrix } from './display-transformation';
 import { animationCameraObject, isAnimationCameraPreview, previewAnimationCamera, setAnimationCameraPreview } from './animation-camera';
 import { applySceneVisibility } from '../controls/scene-visibility';
@@ -88,6 +88,24 @@ function localTransform(node: PoseNode): AnimationTransform {
 function close(a: Matrix4, b: Matrix4): boolean {
     return a.elements.every((value, i) => Math.abs(value - b.elements[i]) <= 2e-5 * Math.max(1, Math.abs(value), Math.abs(b.elements[i])));
 }
+// base + Σ (to - from) * times per channel: translation and scale add their difference, rotation applies its turn.
+// Changes are summed before composing so a sign-crossing scale is never decomposed midway.
+function layerOffset(base: Matrix4, from: Matrix4, changes: Array<[to: Matrix4, times: number]>): Matrix4 {
+    const [b, f] = [base, from].map(value => minecraftTransformParts(keyTransform(value)));
+    const translation = [...b.translation], scale = [...b.scale], rotation = new Quaternion().fromArray(b.left_rotation);
+    for (const [to, times] of changes) {
+        const t = minecraftTransformParts(keyTransform(to));
+        for (let axis = 0; axis < 3; axis++) {
+            translation[axis] += (t.translation[axis] - f.translation[axis]) * times;
+            scale[axis] += (t.scale[axis] - f.scale[axis]) * times;
+        }
+        const turn = new Quaternion().fromArray(f.left_rotation).invert().multiply(new Quaternion().fromArray(t.left_rotation));
+        const sin = Math.hypot(turn.x, turn.y, turn.z);
+        if (times !== 1) turn.setFromAxisAngle(sin < 1e-12 ? new Vector3(1, 0, 0) : new Vector3(turn.x / sin, turn.y / sin, turn.z / sin), 2 * Math.atan2(sin, turn.w) * times);
+        rotation.multiply(turn);
+    }
+    return transformMatrix({ translation, left_rotation: rotation.toArray(), scale, right_rotation: b.right_rotation });
+}
 function relative(world: Matrix4, parent?: PoseNode, allowSingular = false): Matrix4 {
     if (!parent) return world.clone();
     const inverse = matrix(parent);
@@ -166,14 +184,15 @@ function isUnchangedObjectTrack(track: AnimationTrack, tick: number, node: PoseN
 }
 
 export function evaluateAnimation(local: AnimationPose, data: AnimationClip | undefined, tick: number, base?: AnimationPose,
-    layers: Array<{ clip: AnimationClip; tick: number }> = data ? [{ clip: data, tick }] : []): AnimationPose {
+    layers: Array<{ clip: AnimationClip; tick: number; carry?: AnimationLayerCarry }> = data ? [{ clip: data, tick }] : []): AnimationPose {
     const world: AnimationPose = new Map();
     base = layers.some(layer => layer.clip.tracks.length) ? base ?? evaluateAnimation(local, undefined, 0) : undefined;
-    const tracks = new Map<string, { track: AnimationTrack; tick: number; rate: number }>();
+    type TrackEntry = { track: AnimationTrack; tick: number; rate: number; carry?: AnimationLayerCarry; below?: TrackEntry };
+    const tracks = new Map<string, TrackEntry>();
     for (const layer of layers) {
         const excluded = new Set(layer.clip.excludedNodes);
         for (const track of layer.clip.tracks) {
-            if (!excluded.has(track.id)) tracks.set(track.id, { track, tick: layer.tick, rate: layer.clip.tickRate ?? 20 });
+            if (!excluded.has(track.id)) tracks.set(track.id, { track, tick: layer.tick, rate: layer.clip.tickRate ?? 20, carry: layer.carry, below: tracks.get(track.id) });
         }
     }
     const matrices = new Map<string, Matrix4>();
@@ -190,8 +209,17 @@ export function evaluateAnimation(local: AnimationPose, data: AnimationClip | un
             world.set(id, baseNode); visiting.delete(id);
             return baseNode;
         }
-        const value = track?.keys.length ? sampleTrack(track.keys, trackTick, entry.rate,
-            track.keys.some(key => key.channels || key.values || key.pre || key.curves) ? localTransform(node) : undefined, pivotKey(baseNode ?? node)) : matrix(node);
+        const sample = ({ track, rate }: TrackEntry, at: number) => sampleTrack(track.keys, at, rate,
+            track.keys.some(key => key.channels || key.values || key.pre || key.curves) ? localTransform(node) : undefined, pivotKey(baseNode ?? node));
+        // A layer over a part that a lower clip also keys adds its change since its first key on top of that clip's pose.
+        const sampleEntry = (entry: TrackEntry): Matrix4 => {
+            const value = sample(entry, entry.tick), below = entry.below?.track.keys.length ? entry.below : undefined;
+            if (!below && !entry.carry) return value;
+            const first = sample(entry, entry.track.keys[0].tick);
+            const changes: Array<[Matrix4, number]> = entry.carry ? [[sample(entry, entry.carry.tick), entry.carry.weight]] : [];
+            return below ? layerOffset(sampleEntry(below), first, [[value, 1], ...changes]) : layerOffset(value, first, changes);
+        };
+        const value = track?.keys.length ? sampleEntry(entry!) : matrix(node);
         if (parent) {
             let parentMatrix = matrices.get(node.parent);
             if (!parentMatrix) matrices.set(node.parent, parentMatrix = matrix(parent));
@@ -327,7 +355,7 @@ export function setAnimationEnabled(root: Group, enabled: boolean): void {
     window.dispatchEvent(new Event('pde:animation-mode-changed'));
 }
 
-function applyPreview(root: Group, tick: number, layers?: Array<{ clip: AnimationClip; tick: number }>, elapsed = 0): void {
+function applyPreview(root: Group, tick: number, layers?: Array<{ clip: AnimationClip; tick: number; carry?: AnimationLayerCarry }>, elapsed = 0): void {
     const session = animationSession(root);
     if (!session.enabled) return;
     const nextTick = Math.max(0, Math.floor(tick));
@@ -456,7 +484,8 @@ export function previewAnimationPlayback(root: Group, elapsed: number, seconds?:
     const frames = clips.map(clip => {
         if (clip === primary) return { clip, ...animationPlayback(clip, tick) };
         const timing = primary.layerTimings?.find(timing => timing.id === (clip.id ?? 'default'));
-        const independent = !timing || timing.interval !== undefined;
+        // Endless repeats run on real time; bounded ranges follow the looped timeline like fixed starts.
+        const independent = !timing || timing.interval !== undefined && timing.ends?.length !== timing.starts.length;
         return { clip, ...animationLayerPlayback(primary, clip, independent ? elapsed : tick, independent ? seconds : layerSeconds) };
     });
     const session = animationSession(root);
@@ -470,7 +499,7 @@ export function placeAnimationLayer(root: Group, id: string, tick = animationSes
     if (!project || !primary || !animationLayers(project, primary).some(clip => (clip.id ?? 'default') === id)
         || !Number.isSafeInteger(tick) || tick < 0) throw new Error('동작을 선택하고 0 이상의 정수 틱에 배치해 주세요.');
     const timing = primary.layerTimings?.find(timing => timing.id === id) ?? { id, starts: [] };
-    timing.starts = timing.interval === undefined ? [...new Set([...timing.starts, tick])].sort((a, b) => a - b) : [tick];
+    setLayerRanges(timing, [[tick, undefined], ...layerRanges(timing)]);
     primary.layerTimings = [...(primary.layerTimings ?? []).filter(entry => entry.id !== id), timing];
 }
 
@@ -485,12 +514,14 @@ export function selectAnimationClip(root: Group, id: string, transitionTicks = 0
     if (session.enabled) previewAnimationPlayback(root, 0);
 }
 
-export function createAnimationClip(root: Group, name: string, duplicate = false): string {
+// `duplicate`: true copies the current clip, a clip copies that clip.
+export function createAnimationClip(root: Group, name: string, duplicate: boolean | AnimationClip = false): string {
     const project = animationProjectData(root), current = animationData(root);
     name = name.trim();
     if (!project || !current || !name || name.length > 120 || animationClips(project).some(clip => (clip.name ?? '기본') === name)) throw new Error('애니메이션 이름은 중복되지 않는 1~120자여야 합니다.');
-    const clip: AnimationClip = duplicate ? structuredClone({ ...current, clips: undefined, activeClip: undefined,
-        layers: animationLayers(project, current).map(clip => clip.id ?? 'default') })
+    const source = duplicate === true ? current : duplicate || undefined;
+    const clip: AnimationClip = source ? structuredClone({ ...source, clips: undefined, activeClip: undefined, camera: undefined,
+        layers: animationLayers(project, source).map(clip => clip.id ?? 'default') })
         : { duration: 100, tickRate: current.tickRate, tracks: [], loopMode: 'hold', layers: [] };
     clip.id = crypto.randomUUID(); clip.name = name;
     (project.clips ??= []).push(clip);
@@ -498,18 +529,37 @@ export function createAnimationClip(root: Group, name: string, duplicate = false
     return clip.id;
 }
 
-export function deleteAnimationClip(root: Group): void {
+// The first clip is the project object itself, so reordering rebuilds it; project-only fields must not leak into sub-clips.
+function setAnimationClips(root: Group, clips: AnimationClip[], activeClip: string): void {
+    const { camera } = animationProjectData(root)!;
+    const [first, ...rest] = clips.map(({ clips: _clips, activeClip: _active, camera: _camera, ...clip }: AnimationData) => clip);
+    root.userData.animation = { ...first, clips: rest, activeClip, ...camera === undefined ? {} : { camera } } satisfies AnimationData;
+}
+
+export function deleteAnimationClip(root: Group, id?: string): void {
     const project = animationProjectData(root), current = animationData(root);
     if (!project || !current) return;
-    const remaining = animationClips(project).filter(clip => clip !== current);
+    const target = id === undefined ? current : animationClips(project).find(clip => (clip.id ?? 'default') === id);
+    if (!target) throw new Error('애니메이션을 찾을 수 없습니다.');
+    const remaining = animationClips(project).filter(clip => clip !== target), targetId = target.id ?? 'default';
     if (!remaining.length) throw new Error('마지막 애니메이션은 삭제할 수 없습니다.');
     for (const clip of remaining) {
-        clip.layers = (clip.layers ?? project.layers ?? []).filter(id => id !== (current.id ?? 'default'));
-        if (clip.layerTimings) clip.layerTimings = clip.layerTimings.filter(timing => timing.id !== (current.id ?? 'default'));
+        if (clip.layers) clip.layers = clip.layers.filter(id => id !== targetId);
+        if (clip.layerTimings) clip.layerTimings = clip.layerTimings.filter(timing => timing.id !== targetId);
     }
-    const first = remaining[0];
-    root.userData.animation = { ...first, clips: remaining.slice(1), activeClip: first.id ?? 'default' } satisfies AnimationData;
-    selectAnimationClip(root, first.id ?? 'default');
+    const active = target === current ? remaining[0] : current;
+    setAnimationClips(root, remaining, active.id ?? 'default');
+    if (target === current) selectAnimationClip(root, active.id ?? 'default');
+}
+
+// List order is layer priority: later clips win where parts overlap.
+export function moveAnimationClip(root: Group, id: string, offset: number): void {
+    const project = animationProjectData(root), current = animationData(root);
+    if (!project || !current) return;
+    const clips = animationClips(project), from = clips.findIndex(clip => (clip.id ?? 'default') === id), to = from + offset;
+    if (from < 0 || to < 0 || to >= clips.length) return;
+    clips.splice(to, 0, ...clips.splice(from, 1));
+    setAnimationClips(root, clips, current.id ?? 'default');
 }
 
 export function captureAnimationSnapshot(root: Group): AnimationSnapshot | undefined {
@@ -556,13 +606,18 @@ export function recordAnimationTransform(root: Group, before?: AnimationSnapshot
         const propertiesChanged = !sameProperties(node.properties, oldTrack ? sampleProperties(oldTrack.keys, session.tick, old.properties) : old.properties);
         if (unchanged && !textureChanged && !propertiesChanged && !pivotChanged && !forced.has(id)) continue;
         const previousLocal = oldTrack ? sampleTrack(oldTrack.keys, session.tick, data.tickRate, keyTransform(matrix(old)), pivotKey(before.base.get(id) ?? old)) : localValue.fromArray(old.matrix);
+        // Compare against the displayed local, which includes playing layers, so a layer's pose is never baked into this clip.
         expected.copy(previousLocal);
+        if (previous) try { expected.copy(relative(new Matrix4().fromArray(previous.matrix), before.pose.get(node.parent), true)); } catch { /* singular parent: use the clip sample */ }
+        const shown = expected.clone();
         if (node.parent && after.has(node.parent)) expected.premultiply(parentValue.fromArray(after.get(node.parent)!.matrix));
         const parentBefore = before.pose.get(node.parent), parentAfter = after.get(node.parent);
         const parentChanged = parentBefore && parentAfter && !parentBefore.matrix.every((component, index) => component === parentAfter.matrix[index]);
         worldValue.fromArray(node.matrix);
         if (parentChanged && close(expected, worldValue) && !textureChanged && !propertiesChanged && !pivotChanged && !forced.has(id)) continue;
-        const value = unchanged && close(expected, worldValue) ? previousLocal : relative(worldValue, after.get(node.parent));
+        // The shown pose is this clip's sample plus a playing layer's offset; keep only the edit in this clip's key.
+        const value = close(expected, worldValue) ? previousLocal : close(shown, previousLocal) ? relative(worldValue, after.get(node.parent))
+            : layerOffset(relative(worldValue, after.get(node.parent)), shown, [[previousLocal, 1]]);
         let track = data.tracks.find(entry => entry.id === id);
         if (!track) data.tracks.push(track = { type: node.type, id, keys: [] });
         const first = !track.keys.length;
@@ -849,7 +904,6 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
     if (merge && old && data) {
         const destination = activeAnimation(old), source = activeAnimation(data);
         if (data.camera && !animationCameraObject(root)) old.camera = data.camera;
-        for (const clip of animationClips(old)) clip.layers ??= [...(old.layers ?? [])];
         const ids = new Map<string, string>();
         const legacy = !data.clips?.length && !data.name && !data.id && !data.loopMode && data.endTick === undefined;
         const compatible = (a: AnimationClip, b: AnimationClip) =>
@@ -878,7 +932,7 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
         }
         for (const clip of animationClips(data)) {
             const target = animationClips(old).find(entry => (entry.id ?? 'default') === ids.get(clip.id ?? 'default'))!;
-            const layers = (clip.layers ?? data.layers ?? []).map(id => ids.get(id)!);
+            const layers = (clip.layers ?? []).map(id => ids.get(id)!);
             target.layers = [...new Set([...(target.layers ?? []), ...layers])];
             for (const timing of clip.layerTimings ?? []) {
                 const id = ids.get(timing.id)!;
@@ -886,14 +940,14 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
             }
         }
         const sourceId = ids.get(source.id ?? 'default')!;
-        const layers = [...destination.layers, ...animationLayers(data, source).map(clip => ids.get(clip.id ?? 'default')!)];
+        const layers = [...(destination.layers ?? []), ...animationLayers(data, source).map(clip => ids.get(clip.id ?? 'default')!)];
         if (sourceId !== (destination.id ?? 'default')) layers.push(sourceId);
         destination.layers = [...new Set(layers)];
         if (source !== data || sourceId !== (destination.id ?? 'default')) for (const timing of source.layerTimings ?? []) {
             const id = ids.get(timing.id)!, ratio = (destination.tickRate ?? 20) / (source.tickRate ?? 20);
-            destination.layerTimings = [...(destination.layerTimings ?? []).filter(entry => entry.id !== id), { id,
-                starts: [...new Set(timing.starts.map(tick => Math.round(tick * ratio)))],
-                interval: timing.interval === undefined ? undefined : Math.max(1, Math.round(timing.interval * ratio)) }];
+            const next: AnimationLayerTiming = { id, starts: [], interval: timing.interval === undefined ? undefined : Math.max(1, Math.round(timing.interval * ratio)) };
+            setLayerRanges(next, layerRanges(timing).map(([start, end]) => [Math.round(start * ratio), end === undefined ? undefined : Math.round(end * ratio)]));
+            destination.layerTimings = [...(destination.layerTimings ?? []).filter(entry => entry.id !== id), next];
         }
     }
     else if (!merge || data) root.userData.animation = data;

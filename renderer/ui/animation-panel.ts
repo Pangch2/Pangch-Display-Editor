@@ -191,9 +191,9 @@ let targetFilter: Set<string> | undefined;
 let nameFilter = '';
 const filterControls = document.createElement('details');
 filterControls.className = 'animation-target-filter animation-settings';
-filterControls.innerHTML = `<summary>필터: 전체</summary><div class="animation-settings-body">
+filterControls.innerHTML = `<summary>필터: 전체</summary><div class="animation-settings-body" tabindex="-1">
     <label>이름 <input type="search" class="pde-input" id="animation-name-filter" placeholder="그룹·오브젝트 이름" aria-label="그룹·오브젝트 이름 검색"></label>
-    <label><input type="checkbox" id="animation-keyframes-only">키프레임이 있는 항목만</label>
+    <label>키프레임이 있는 항목만<input type="checkbox" id="animation-keyframes-only" checked></label>
     <button type="button" data-filter="replace">선택 항목만 표시</button>
     <button type="button" data-filter="add">선택 항목 추가</button>
     <button type="button" data-filter="reset">필터 해제</button>
@@ -229,7 +229,7 @@ filterControls.addEventListener('click', event => {
     const action = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-filter]')?.dataset.filter;
     if (!action) return;
     cancelScrub?.();
-    if (action === 'reset') { targetFilter = undefined; nameFilter = ''; nameFilterInput.value = ''; keyframesOnlyInput.checked = false; }
+    if (action === 'reset') { targetFilter = undefined; nameFilter = ''; nameFilterInput.value = ''; keyframesOnlyInput.checked = true; }
     else {
         if (action === 'replace' || !targetFilter) targetFilter = new Set();
         for (const id of selectionIds) if (root.userData.groups?.has(id) || root.userData.objectUuidToInstance?.has(id)) targetFilter.add(id);
@@ -257,7 +257,7 @@ function syncTargetFilter(): void {
         + (keyframesOnlyInput.checked ? ' · 키프레임 있음' : '');
     filterControls.querySelector('summary')!.title = filterControls.querySelector('summary')!.textContent!;
     for (const button of filterControls.querySelectorAll<HTMLButtonElement>('[data-filter]')) {
-        button.disabled = button.dataset.filter === 'reset' ? !targetFilter && !nameFilter && !keyframesOnlyInput.checked : selectionIds.size === 0;
+        button.disabled = button.dataset.filter === 'reset' ? !targetFilter && !nameFilter && keyframesOnlyInput.checked : selectionIds.size === 0;
     }
 }
 const keyValues = panel.querySelector<HTMLElement>('.animation-key-values')!;
@@ -897,7 +897,8 @@ function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
     const visited = new Set<string>();
     const matchingRows = new Set<string>();
     timelineRows = [];
-    if (!graphMode && !filtering) for (const clip of animationLayers(root.userData.animation)) {
+    // Layer rows are not parts, so only part-targeting filters hide them.
+    if (!graphMode && !targetFilter && !nameFilter) for (const clip of animationLayers(root.userData.animation)) {
         timelineRows.push({ type: 'clip', id: `clip:${clip.id ?? 'default'}`, depth: 0, clip });
     }
     const visit = (type: 'group' | 'object', id: string, depth: number, visible = true, inheritedAnimation = false): boolean => {
@@ -920,7 +921,7 @@ function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
     for (const entry of root.userData.sceneOrder ?? []) visit(entry.type, entry.id, 0);
     for (const [id, group] of groups) if (!group.parent) visit('group', id, 0);
     for (const id of refs.keys()) visit('object', id, 0);
-    timelineRows = timelineRows.filter(row => filtering ? matchingRows.has(row.id) : row.type === 'clip' || row.animated || row.inheritedAnimation);
+    timelineRows = timelineRows.filter(row => row.type === 'clip' || (filtering ? matchingRows.has(row.id) : row.animated || row.inheritedAnimation));
     timelineTracks = filtering ? new Map([...tracks].filter(([id]) => matchesTargetFilter(id))) : tracks;
     renderedRows.clear(); rows.replaceChildren();
     rows.style.height = `${timelineRows.length * (graphMode ? 160 : 28)}px`;
@@ -975,7 +976,8 @@ function renderVisibleAnimationRows(): void {
         label.title = label.textContent;
         label.onclick = event => {
             selectedKeys.clear();
-            selectPart(type, id, matchesPointerShortcut(event, 'multiSelect') || matchesPointerShortcut(event, 'boxSelect'));
+            const additive = matchesPointerShortcut(event, 'multiSelect'), boxSelect = matchesPointerShortcut(event, 'boxSelect');
+            if (!(additive && boxSelect && selectPartRange(type, id))) selectPart(type, id, additive || boxSelect);
             syncAnimationPanel(); panel.focus();
         };
         if (type === 'group') {
@@ -1078,7 +1080,27 @@ function renderVisibleAnimationRows(): void {
         renderedRows.set(index, row);
     }
 }
+let lastClickedPart: { type: string; id: string } | undefined;
+// Ctrl+Shift+click mirrors the scene panel: add the visible rows between the last clicked part and this one.
+function selectPartRange(type: string, id: string): boolean {
+    const anchor = lastClickedPart;
+    const from = anchor ? timelineRows.findIndex(row => row.type === anchor.type && row.id === anchor.id) : -1;
+    const to = timelineRows.findIndex(row => row.type === type && row.id === id);
+    if (from < 0 || to < 0 || from === to) return false;
+    const groupIds = root.userData.groups, objectIds = root.userData.objectUuidToInstance;
+    const groups = new Set<string>(), objects = new Set<string>();
+    const add = (rowType: string, rowId: string) => {
+        if (rowType === 'group' && groupIds?.has(rowId)) groups.add(rowId);
+        else if (rowType === 'object' && objectIds?.has(rowId)) objects.add(rowId);
+    };
+    add(anchor!.type, anchor!.id); // range start first so it becomes the primary
+    for (const selected of selectionIds) add(groupIds?.has(selected) ? 'group' : 'object', selected);
+    for (let index = Math.min(from, to); index <= Math.max(from, to); index++) add(timelineRows[index].type, timelineRows[index].id);
+    root.userData.replaceSelectionWithGroupsAndObjects?.(groups, objects, { anchorMode: 'default', primaryIsRangeStart: true });
+    return true;
+}
 function selectPart(type: string, id: string, additive = false): void {
+    lastClickedPart = { type, id };
     const groups = new Set(type === 'group' ? [id] : []);
     const objects = new Set(type === 'object' && root.userData.objectUuidToInstance?.has(id) ? [id] : []);
     if (additive) root.userData.addOrToggleInSelection?.(groups, objects);
@@ -1533,7 +1555,7 @@ window.addEventListener('pde:before-project-load', (event: CustomEvent<{ isMerge
     if (event.detail?.isMerge) return;
     targetFilter = undefined;
     nameFilter = ''; nameFilterInput.value = '';
-    keyframesOnlyInput.checked = false;
+    keyframesOnlyInput.checked = true;
     copiedKeys = [];
     expandedGroupIds.clear();
     timelineEnd = 100; pixelsPerTick = 6; timelineScroll.scrollLeft = 0; zoomAnchor = undefined;
@@ -1545,7 +1567,7 @@ window.addEventListener('pde:active-project-changed', () => {
     setAnimationCameraPreview(root, false);
     targetFilter = undefined;
     nameFilter = ''; nameFilterInput.value = '';
-    keyframesOnlyInput.checked = false;
+    keyframesOnlyInput.checked = true;
     pausePlayback(); revision++; cancelScrub?.();
     copiedKeys = [];
     expandedGroupIds.clear();

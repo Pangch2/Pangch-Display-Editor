@@ -38,6 +38,8 @@ export interface HistoryGizmoState {
 export interface HistoryUiState {
     selection: HistorySelection | null;
     gizmo: HistoryGizmoState | null;
+    /** The property panel's multi-selection frame; its rotation and scale are not derivable from the objects. */
+    multiSelectionFrame?: Matrix4 | null;
 }
 
 /** Per-object transforms by uuid. Restoring writes each object's current slot, wherever slot moves put it. */
@@ -109,6 +111,8 @@ export interface GroupStructureHistoryState {
 let currentSelection: HistorySelection | null = null;
 let captureGizmoState: (() => HistoryGizmoState) | null = null;
 let restoreGizmoState: ((state: HistoryGizmoState) => void) | null = null;
+let captureMultiSelectionFrame: (() => Matrix4) | null = null;
+let restoreMultiSelectionFrame: ((frame: Matrix4) => void) | null = null;
 function cloneValue<T>(value: T, seen = new Map<object, unknown>()): T {
     if (!value || typeof value !== 'object') return value;
     const object = value as object & { isObject3D?: boolean; isMaterial?: boolean; isTexture?: boolean; isBufferGeometry?: boolean; clone?: () => unknown };
@@ -151,7 +155,11 @@ function cloneSelection(selection: HistorySelection): HistorySelection {
 }
 
 export function captureHistoryUiState(): HistoryUiState {
-    return { selection: captureSelection(), gizmo: captureGizmoState ? cloneValue(captureGizmoState()) : null };
+    return {
+        selection: captureSelection(),
+        gizmo: captureGizmoState ? cloneValue(captureGizmoState()) : null,
+        multiSelectionFrame: captureMultiSelectionFrame?.().clone() ?? null
+    };
 }
 
 export function restoreHistoryUiState(state: HistoryUiState): void {
@@ -172,6 +180,7 @@ export function restoreHistoryUiState(state: HistoryUiState): void {
         }
     }
     if (restoreGizmoState && state.gizmo) restoreGizmoState(cloneValue(state.gizmo));
+    if (restoreMultiSelectionFrame && state.multiSelectionFrame) restoreMultiSelectionFrame(state.multiSelectionFrame.clone());
 }
 
 export function setHistorySelection(selection: HistorySelection): void {
@@ -181,6 +190,11 @@ export function setHistorySelection(selection: HistorySelection): void {
 export function setHistoryGizmoState(capture: () => HistoryGizmoState, restore: (state: HistoryGizmoState) => void): void {
     captureGizmoState = capture;
     restoreGizmoState = restore;
+}
+
+export function setHistoryMultiSelectionFrame(capture: () => Matrix4, restore: (frame: Matrix4) => void): void {
+    captureMultiSelectionFrame = capture;
+    restoreMultiSelectionFrame = restore;
 }
 
 export function refreshHistory(root?: Group): void {

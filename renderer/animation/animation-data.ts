@@ -22,7 +22,22 @@ export type AnimationKey = { tick: number; transform: AnimationTransform; curve?
 // Item name of the camera object's default model, drawn from the lucide camera glyph (pbde/camera-item-assets.ts).
 export const animationCameraItem = 'pde:camera';
 export type AnimationTrack = { type: 'group' | 'object'; id: string; keys: AnimationKey[] };
-export type AnimationLayerTiming = { id: string; starts: number[]; interval?: number };
+// With `interval`, each start opens a repeat range; `ends[i]` (inclusive) bounds it, a missing last end repeats forever.
+export type AnimationLayerTiming = { id: string; starts: number[]; interval?: number; ends?: number[] };
+export type AnimationLayerRange = [start: number, end: number | undefined];
+export function layerRanges(timing: AnimationLayerTiming): AnimationLayerRange[] { return timing.starts.map((start, index) => [start, timing.ends?.[index]]); }
+// Sorts and dedupes ranges by start and clips each end before the next start so the stored form stays valid.
+export function setLayerRanges(timing: AnimationLayerTiming, ranges: AnimationLayerRange[]): void {
+    const sorted = [...new Map(ranges.map(range => [range[0], range])).values()].sort((a, b) => a[0] - b[0]);
+    timing.starts = sorted.map(([start]) => start);
+    const ends = timing.interval === undefined ? [] : sorted.map(([, end], index) => index < sorted.length - 1 ? Math.min(end ?? Infinity, sorted[index + 1][0] - 1) : end);
+    if (ends.length && ends[ends.length - 1] === undefined) ends.pop();
+    if (ends.length) timing.ends = ends as number[]; else delete timing.ends;
+}
+function lastLayerStart(timing: AnimationLayerTiming, index = timing.starts.length - 1): number {
+    const start = timing.starts[index], end = timing.ends?.[index];
+    return timing.interval === undefined || end === undefined ? start : start + Math.floor((end - start) / timing.interval) * timing.interval;
+}
 export type AnimationClip = { id?: string; name?: string; duration: number; tickRate?: number; tracks: AnimationTrack[];
     loopMode?: 'once' | 'hold' | 'loop'; loopDelay?: number; endTick?: number; transitionTicks?: number; excludedNodes?: string[];
     layers?: string[]; layerTimings?: AnimationLayerTiming[] };
@@ -35,9 +50,8 @@ export function activeAnimation(data: AnimationData): AnimationClip {
     return animationClips(data).find(clip => (clip.id ?? 'default') === data.activeClip) ?? data;
 }
 export function animationLayers(data: AnimationData, primary = activeAnimation(data)): AnimationClip[] {
-    // Older projects shared the first clip's layers across all clips.
-    const ids = primary.layers ?? data.layers;
-    return animationClips(data).filter(clip => clip !== primary && ids?.includes(clip.id ?? 'default'));
+    // Each clip plays only the clips it lists itself; nothing is inherited from the first clip.
+    return animationClips(data).filter(clip => clip !== primary && primary.layers?.includes(clip.id ?? 'default'));
 }
 export function animationEndTick(clip: AnimationClip): number {
     return clip.endTick ?? clip.tracks.reduce((last, track) => Math.max(last, track.keys[track.keys.length - 1]?.tick ?? 0), 0);
@@ -47,23 +61,35 @@ export function animationPlayback(clip: AnimationClip, elapsed: number): { tick:
     if (clip.loopMode === 'loop') return { tick: Math.min(end, tick % (end + 1 + (clip.loopDelay ?? 0))), finished: false };
     return { tick: finished && clip.loopMode === 'once' ? 0 : Math.min(end, tick), finished };
 }
+// A run that restarts a layer before or as the previous run ends keeps that run's change at `tick`, fading by `weight` to 0
+// by the next restart or its own end, so restarts never snap and repeats never accumulate.
+export type AnimationLayerCarry = { tick: number; weight: number };
 export function animationLayerPlayback(primary: AnimationClip, layer: AnimationClip, elapsed: number, seconds = elapsed / (primary.tickRate ?? ticksPerSecond)):
-    { tick: number | undefined; finished: boolean } {
+    { tick: number | undefined; finished: boolean; carry?: AnimationLayerCarry } {
     const timing = primary.layerTimings?.find(timing => timing.id === (layer.id ?? 'default'));
     if (!timing) return animationPlayback(layer, seconds * (layer.tickRate ?? ticksPerSecond));
     const rate = (layer.tickRate ?? ticksPerSecond) / (primary.tickRate ?? ticksPerSecond), end = animationEndTick(layer);
-    const finished = timing.interval === undefined && (!timing.starts.length || elapsed >= timing.starts[timing.starts.length - 1] + (end + 1) / rate);
-    let start: number | undefined;
-    for (const tick of timing.starts) { if (tick > elapsed) break; start = tick; }
-    if (start === undefined) return { tick: undefined, finished };
-    const tick = (timing.interval === undefined ? elapsed - start : (elapsed - start) % timing.interval) * rate;
-    return { tick: tick < end + 1 ? Math.min(end, tick) : undefined, finished };
+    const finished = (timing.interval === undefined || timing.ends?.length === timing.starts.length)
+        && (!timing.starts.length || elapsed >= lastLayerStart(timing) + (end + 1) / rate);
+    let index = -1;
+    while (index + 1 < timing.starts.length && timing.starts[index + 1] <= elapsed) index++;
+    if (index < 0) return { tick: undefined, finished };
+    const start = timing.starts[index], until = Math.min(elapsed, timing.ends?.[index] ?? Infinity);
+    const trigger = timing.interval === undefined ? start : start + Math.floor((until - start) / timing.interval) * timing.interval;
+    const tick = (elapsed - trigger) * rate;
+    if (tick >= end + 1) return { tick: undefined, finished };
+    const prior = trigger > start ? trigger - timing.interval! : index > 0 ? lastLayerStart(timing, index - 1) : undefined;
+    const next = timing.interval !== undefined && trigger + timing.interval <= (timing.ends?.[index] ?? Infinity) ? trigger + timing.interval : timing.starts[index + 1];
+    // A previous run still showing up to this restart (its tick < end + 1) hands over its change.
+    const gap = prior === undefined ? Infinity : (trigger - prior) * rate, fade = Math.min(end, next === undefined ? Infinity : (next - trigger) * rate);
+    const weight = gap <= end + 1 && fade > 0 ? Math.max(0, 1 - tick / fade) : 0;
+    return { tick: Math.min(end, tick), finished, ...weight > 0 ? { carry: { tick: Math.min(end, gap), weight } } : {} };
 }
 export function animationTimelineEnd(data: AnimationData, primary = activeAnimation(data)): number {
     return animationLayers(data, primary).reduce((end, layer) => {
         const timing = primary.layerTimings?.find(timing => timing.id === (layer.id ?? 'default'));
         if (!timing?.starts.length) return end;
-        return Math.max(end, timing.starts[timing.starts.length - 1] + Math.ceil((animationEndTick(layer) + 1)
+        return Math.max(end, lastLayerStart(timing) + Math.ceil((animationEndTick(layer) + 1)
             * (primary.tickRate ?? ticksPerSecond) / (layer.tickRate ?? ticksPerSecond)) - 1);
     }, animationEndTick(primary));
 }
@@ -500,8 +526,11 @@ export function validateAnimation(value: any, objects: Set<string>, groups: Set<
         for (const timing of clip.layerTimings) {
             if (!timing || !ids.has(timing.id) || seen.has(timing.id) || !Array.isArray(timing.starts)
                 || timing.starts.some((tick, index) => !Number.isSafeInteger(tick) || tick < 0 || index > 0 && tick <= timing.starts[index - 1])
-                || timing.interval !== undefined && (!Number.isSafeInteger(timing.interval) || timing.interval < 1 || timing.starts.length !== 1)) {
-                throw new Error('동작 시점은 중복 없는 0 이상의 정수, 반복 간격은 1 이상의 정수여야 합니다.');
+                || timing.interval !== undefined && (!Number.isSafeInteger(timing.interval) || timing.interval < 1 || !timing.starts.length)
+                || timing.ends !== undefined && (timing.interval === undefined || !Array.isArray(timing.ends)
+                    || timing.ends.length < timing.starts.length - 1 || timing.ends.length > timing.starts.length
+                    || timing.ends.some((tick, index) => !Number.isSafeInteger(tick) || tick < timing.starts[index] || tick >= (timing.starts[index + 1] ?? Infinity)))) {
+                throw new Error('동작 시점은 중복 없는 0 이상의 정수, 반복 간격은 1 이상의 정수, 반복 구간 끝은 시작 이상이며 다음 구간 전이어야 합니다.');
             }
             seen.add(timing.id);
         }

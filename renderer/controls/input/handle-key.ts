@@ -464,6 +464,11 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
             return;
         }
 
+        if (matchesShortcut(event, 'selectAllObjects') || matchesShortcut(event, 'selectAll')) {
+            const tool = p.renderer.domElement.dataset.headPainterTool;
+            if (tool && tool !== 'select') { event.preventDefault(); return; }
+        }
+
         if (matchesShortcut(event, 'selectAllObjects')) {
             event.preventDefault();
             const all = p.selectAllObjectsVisibleInScene();
