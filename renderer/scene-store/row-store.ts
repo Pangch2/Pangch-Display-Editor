@@ -105,8 +105,10 @@ export class RowLayout {
         for (const live of this.ranges) { used += live.capacity; end = Math.max(end, live.start + live.capacity); }
         this.end = end;
         this.version++;
+        // An empty layout drops its array: the next scene's batches would otherwise reuse the largest one ever held.
+        if (!this.ranges.size) this.resize(0);
         // Past half free, move the live ranges down.
-        if (used * 2 < end) this.compact();
+        else if (used * 2 < end) this.compact();
     }
 
     private compact(): void {

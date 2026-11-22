@@ -713,7 +713,7 @@ window.addEventListener('drop', (e) => {
                 const file = item.getAsFile();
                 if (file) {
                     const extension = file.name.split('.').pop()?.toLowerCase();
-                    if (extension === 'bdengine' || extension === 'pde' || extension === 'mcfunction') {
+                    if (['bdengine', 'pde', 'mcfunction', 'schem', 'schematic'].includes(extension!)) {
                         validFiles.push(file);
                     }
                 }
@@ -722,7 +722,7 @@ window.addEventListener('drop', (e) => {
     } else {
         for (const file of e.dataTransfer.files) {  
             const extension = file.name.split('.').pop()?.toLowerCase();
-            if (extension === 'bdengine' || extension === 'pde' || extension === 'mcfunction') {
+            if (['bdengine', 'pde', 'mcfunction', 'schem', 'schematic'].includes(extension!)) {
                 validFiles.push(file);
             }
         }

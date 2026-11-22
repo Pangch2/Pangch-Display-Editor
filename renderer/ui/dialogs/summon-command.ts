@@ -3,6 +3,8 @@ import { loadedObjectGroup } from '../../load-project/display/display-instancing
 import { getPlayerHeadTexture } from '../../load-project/display/player-head-atlas';
 import { matchesShortcut } from '../../controls/input/shortcuts';
 import { openWithAnimation, closeWithAnimation } from '../common/ui-open-close.js';
+import { animationSession } from '../../animation/animation-state';
+import { openAnimationExport } from './animation-export';
 
 const dialog = document.createElement('dialog');
 dialog.id = 'summon-command-dialog';
@@ -17,6 +19,7 @@ dialog.innerHTML = `
       <button type="button" data-mode="datapack" aria-pressed="false" title="mcfunction 한 줄 · 최대 2,000,000자">DataPack</button>
       <button type="button" data-mode="separate" aria-pressed="false" title="엔티티 하나당 summon 명령어 하나 · 최대 32,500자">Separate</button>
     </div>
+    <label class="summon-command-expand" title="부모 하나에 디스플레이가 많으면 MSPT가 급증하므로, 디스플레이를 여러 보조 부모(item_display)에 나눠 태우고 그 부모들을 루트에 태웁니다. 루트의 on passengers는 보조 부모를 가리킵니다."><input id="summon-command-expand" type="checkbox"><span>루트 확장</span></label>
     <button type="button" id="summon-command-save" aria-label="mcfunction 저장" title="mcfunction 저장" hidden disabled><span class="lucide-icon" aria-hidden="true">&#xE14D;</span></button>
     </div>
     <div id="summon-command-list">
@@ -32,6 +35,8 @@ const text = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
 const list = dialog.querySelector<HTMLDivElement>('#summon-command-list')!;
 const status = dialog.querySelector<HTMLElement>('[role="status"]')!;
 const save = dialog.querySelector<HTMLButtonElement>('#summon-command-save')!;
+const expandRoot = dialog.querySelector<HTMLInputElement>('#summon-command-expand')!;
+expandRoot.onchange = () => void renderCommands();
 let mode: SummonExportMode = 'command';
 let saving = false;
 let exportedCommands: string[] = [];
@@ -117,6 +122,9 @@ async function renderCommands(): Promise<void> {
   generation?.abort();
   const current = generation = new AbortController();
   const exportMode = mode;
+  // Separate mode summons each display alone, so there is no root to expand.
+  expandRoot.disabled = exportMode === 'separate';
+  const expand = expandRoot.checked && !expandRoot.disabled;
   exportedCommands = [];
   save.hidden = exportMode === 'command';
   save.disabled = true;
@@ -147,8 +155,8 @@ async function renderCommands(): Promise<void> {
         deadline = performance.now() + 8;
       }
     }
-    commands = large ? await generateSummonCommandsAsync(loadedObjectGroup, exportMode, current.signal)
-      : generateSummonCommands(loadedObjectGroup, exportMode);
+    commands = large ? await generateSummonCommandsAsync(loadedObjectGroup, exportMode, expand, current.signal)
+      : generateSummonCommands(loadedObjectGroup, exportMode, expand);
     if (current.signal.aborted) return;
     exportedCommands = commands;
     status.textContent = '';
@@ -226,6 +234,12 @@ export function openSummonCommand(): void {
   text.focus();
 }
 
+// Exports what the current mode edits: datapack in animation mode, summon command otherwise.
+export function openExport(): void {
+  if (animationSession(loadedObjectGroup).enabled) openAnimationExport();
+  else openSummonCommand();
+}
+
 document.addEventListener('keydown', event => {
   const target = event.target;
   if (event.defaultPrevented || event.repeat || event.isComposing || document.querySelector('dialog[open], .settings-overlay:not([hidden])')) return;
@@ -233,6 +247,6 @@ document.addEventListener('keydown', event => {
   if (matchesShortcut(event, 'openSummonCommand')) {
     event.preventDefault();
     event.stopPropagation();
-    openSummonCommand();
+    openExport();
   }
 });

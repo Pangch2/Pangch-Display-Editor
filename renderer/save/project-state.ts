@@ -148,6 +148,7 @@ export function* serializeProjectSteps(root: Group, selection?: ProjectSelection
         nbt: data.projectDetails?.nbt ?? '',
         parentEntity: data.projectDetails?.parentEntity ?? 'item_display',
         summonPosition: data.projectDetails?.summonPosition ?? '~ ~ ~',
+        datapackName: data.projectDetails?.datapackName || undefined,
         children, editorState: state
     };
     return project;

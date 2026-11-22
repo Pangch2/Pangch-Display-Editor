@@ -2,7 +2,7 @@ import { channelKeys, curveAmount, isDisplayReplacement, keyChannelValues, keyCu
 import { toBezierCurve, type AnimationCurve, type CurveTarget } from '../animation/animation-curve';
 import { matchesShortcut } from '../controls/input/shortcuts';
 
-export const graphHeight = 160;
+export const graphHeight = 100;
 export type GraphChannel = AnimationChannel | 'all';
 export type GraphLayout = ReturnType<typeof animationGraphLayout>;
 

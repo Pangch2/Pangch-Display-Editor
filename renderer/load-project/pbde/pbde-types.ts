@@ -104,6 +104,8 @@ export interface ProjectDetails {
     nbt: string;
     parentEntity: string;
     summonPosition: string;
+    /** Animation export name; empty follows `name`. */
+    datapackName?: string;
 }
 
 export interface WorkerMetadata {

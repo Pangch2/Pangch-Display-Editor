@@ -15,11 +15,6 @@ export type HeadAtlasPaintTarget = {
     x: number;
     y: number;
 };
-type HeadAtlasPainterGrid = {
-    enabled: boolean;
-    color: string;
-    getFaceGridCounts: (face: PlayerHeadAtlasFace) => [number, number];
-};
 type AtlasRegion = { faceX: number; faceY: number; rect: HeadUvRect };
 
 const playerHeadAtlasScroll = document.getElementById('player-head-atlas-scroll')!;
@@ -45,8 +40,6 @@ type AtlasAction = 'duplicate' | 'deleteSelection' | 'selectAll' | 'flipX' | 'fl
 let runAtlasAction: (action: AtlasAction) => void = () => {};
 let selectAtlasRegion: (canvas: HTMLCanvasElement, rect: HeadUvRect, append: boolean, toggle: boolean) => void = () => {};
 let readPaintTarget: (event: PointerEvent) => HeadAtlasPaintTarget | null = () => null;
-let painterGrid: HeadAtlasPainterGrid | null = null;
-let refreshPainterGrid = () => {};
 let refreshPainterPreview: (canvas: HTMLCanvasElement | null, pixels: readonly { x: number; y: number }[]) => void = () => {};
 const isAtlasPainting = (): boolean => !!playerHeadAtlasScroll.dataset.headPainterTool && playerHeadAtlasScroll.dataset.headPainterTool !== 'select';
 const moveTools = playerHeadAtlasScroll.querySelector<HTMLElement>('.player-head-atlas-tools')!;
@@ -130,11 +123,6 @@ const selectionBounds = (rects: HeadUvRect[]): HeadUvRect => {
 
 export function getHeadAtlasPaintTarget(event: PointerEvent): HeadAtlasPaintTarget | null {
     return readPaintTarget(event);
-}
-
-export function updateHeadAtlasPainterGrid(grid: HeadAtlasPainterGrid): void {
-    painterGrid = grid;
-    refreshPainterGrid();
 }
 
 export function updateHeadAtlasPaintPreview(canvas: HTMLCanvasElement | null = null, pixels: readonly { x: number; y: number }[] = []): void {
@@ -283,14 +271,6 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
         paintSelection.style.height = `${rect.height / canvas.height * 100}%`;
     };
     refreshPaintSelection();
-    const grid = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    grid.classList.add('player-head-paint-grid');
-    grid.setAttribute('viewBox', `0 0 ${canvas.width} ${canvas.height}`);
-    grid.setAttribute('aria-hidden', 'true');
-    const gridLines = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    gridLines.setAttribute('vector-effect', 'non-scaling-stroke');
-    grid.append(gridLines);
-    stage.append(grid);
     const preview = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     preview.classList.add('player-head-paint-preview');
     preview.setAttribute('viewBox', `0 0 ${canvas.width} ${canvas.height}`);
@@ -327,7 +307,6 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
     outlines.append(outlineRects);
     stage.append(outlines);
     const refresh = () => {
-        refreshPainterGrid();
         updateActionButtons();
         const label = moveLabels[moveMode];
         const entries = getSelectedEntries();
@@ -539,27 +518,6 @@ function attachUvEditor(canvas: HTMLCanvasElement, stage: HTMLElement): void {
         edit.finish(false);
         selection.focus({ preventScroll: true });
     };
-    refreshPainterGrid = () => {
-        const visible = isAtlasPainting() && !!painterGrid?.enabled;
-        grid.style.display = visible ? '' : 'none';
-        if (!visible) return;
-        refreshFaces();
-        grid.style.color = painterGrid!.color;
-        const lines: string[] = [];
-        for (const face of faces) {
-            const rect = getHeadAtlasUvRect(canvas, face.x, face.y);
-            const [columns, rows] = painterGrid!.getFaceGridCounts(face);
-            if (columns) for (let column = 0; column <= columns; column++) {
-                const x = rect.x + Math.round(column * rect.width / columns);
-                lines.push(`M${x} ${rect.y}V${rect.y + rect.height}`);
-            }
-            if (rows) for (let row = 0; row <= rows; row++) {
-                const y = rect.y + Math.round(row * rect.height / rows);
-                lines.push(`M${rect.x} ${y}H${rect.x + rect.width}`);
-            }
-        }
-        gridLines.setAttribute('d', lines.join(''));
-    };
     readPaintTarget = event => {
         if (!(event.target instanceof Element) || !stage.contains(event.target)) return null;
         refreshFaces();
@@ -728,7 +686,6 @@ const renderPlayerHeadAtlases = (canvases: HTMLCanvasElement[]): void => {
         selectedFace = selectedCanvas = null;
         refreshUvEditor = () => {};
         readPaintTarget = () => null;
-        refreshPainterGrid = () => {};
         refreshPainterPreview = () => {};
         refreshPaintSelection = () => {};
         runAtlasAction = () => {};

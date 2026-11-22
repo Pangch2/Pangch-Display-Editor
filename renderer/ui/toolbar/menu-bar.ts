@@ -2,7 +2,7 @@ import { getShortcuts, matchesShortcut, type ShortcutId } from '../../controls/i
 import { addProject, openProjects } from '../../load-project/pbde/upload-pbde';
 import { saveProject } from '../../save/save-project';
 import { openNewProjectDialog } from '../dialogs/new-project';
-import { openSummonCommand } from '../dialogs/summon-command';
+import { openExport } from '../dialogs/summon-command';
 import { openUserGuide } from '../dialogs/user-guide';
 
 const menuBar = document.querySelector<HTMLElement>('.menu-bar-items')!;
@@ -67,7 +67,7 @@ window.addEventListener('blur', closeMenus);
 
 const fileInput = document.createElement('input');
 fileInput.type = 'file';
-fileInput.accept = '.pde,.bdengine,.mcfunction';
+fileInput.accept = '.pde,.bdengine,.mcfunction,.schem,.schematic';
 fileInput.multiple = true;
 fileInput.addEventListener('change', () => {
     const files = [...fileInput.files ?? []];
@@ -76,7 +76,7 @@ fileInput.addEventListener('change', () => {
 });
 const fileActions = {
     new: openNewProjectDialog, newTab: addProject, open: () => fileInput.click(), save: saveProject,
-    saveAs: () => saveProject(true), export: openSummonCommand
+    saveAs: () => saveProject(true), export: openExport
 };
 for (const button of menuBar.querySelectorAll<HTMLButtonElement>('[data-file-action]')) {
     button.addEventListener('click', () => { void fileActions[button.dataset.fileAction as keyof typeof fileActions](); });
@@ -106,5 +106,5 @@ window.addEventListener('keydown', event => {
 }, true);
 const summonButton = document.getElementById('summon-menu-button')!;
 summonButton.addEventListener('pointerenter', () => scheduleMenu(closeMenus));
-summonButton.addEventListener('click', () => { closeMenus(); openSummonCommand(); });
+summonButton.addEventListener('click', () => { closeMenus(); openExport(); });
 document.getElementById('user-guide-button')!.addEventListener('click', openUserGuide);

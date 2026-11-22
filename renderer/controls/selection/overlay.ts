@@ -324,6 +324,8 @@ export function getGroupLocalBoundingBox(groupId: string): Box3 {
     }
 
     // Each batch's part is kept until the slots, the group transform or that batch's matrices or boxes change.
+    let groupBounds = projectGroupBounds.get(groups);
+    if (!groupBounds) projectGroupBounds.set(groups, groupBounds = new Map());
     let bounds = groupBounds.get(groupId);
     if (!bounds || bounds.children !== children || !bounds.inverse.equals(groupInverse)) {
         bounds = { children, inverse: groupInverse, ids: childIdsByBatch(children), parts: new Map() };
@@ -341,7 +343,8 @@ export function getGroupLocalBoundingBox(groupId: string): Box3 {
 }
 
 type GroupBounds = { children: readonly GroupObjectSlot[]; inverse: Matrix4; ids: Map<ObjectBatch, number[]>; parts: Map<ObjectBatch, { key: string; box: Box3 }> };
-const groupBounds = new Map<string, GroupBounds>();
+// Per project groups map: entries hold that project's meshes, so they go when the project does.
+const projectGroupBounds = new WeakMap<object, Map<string, GroupBounds>>();
 const maxCachedGroupBounds = 8;
 const _BOUNDS_LOCAL = new Box3();
 const _BOUNDS_BATCH = new Matrix4();

@@ -45,6 +45,7 @@ type CachedAtlasBuild = TextureAtlasInfo & {
 
 const MAX_ATLAS_TEXTURE_LOAD_CONCURRENCY = 256;
 const atlasBuildCache = new Map<string, CachedAtlasBuild>();
+const MAX_ATLAS_CACHE_BYTES = 64 * 2 ** 20;
 
 function getTransparencyType(pixels: TexturePixelData): number {
     const data = pixels.data;
@@ -119,6 +120,8 @@ export async function buildTextureAtlasForRenderList(
     const atlasCacheKey = texturePaths.join('|');
     const cachedAtlas = atlasBuildCache.get(atlasCacheKey);
     if (cachedAtlas) {
+        atlasBuildCache.delete(atlasCacheKey);
+        atlasBuildCache.set(atlasCacheKey, cachedAtlas);
         applyAtlasUvTransforms(renderList, cachedAtlas.packed, cachedAtlas.textureTypes, cachedAtlas.width, cachedAtlas.height);
         return cachedAtlas;
     }
@@ -177,6 +180,14 @@ export async function buildTextureAtlasForRenderList(
         textureTypes
     };
     atlasBuildCache.set(atlasCacheKey, atlasInfo);
+    // Map order is LRU order (hits re-insert): drop the oldest builds past the byte budget, keeping the newest.
+    let cachedBytes = 0;
+    for (const cached of atlasBuildCache.values()) cachedBytes += cached.data.byteLength;
+    for (const [key, cached] of atlasBuildCache) {
+        if (cachedBytes <= MAX_ATLAS_CACHE_BYTES || key === atlasCacheKey) break;
+        atlasBuildCache.delete(key);
+        cachedBytes -= cached.data.byteLength;
+    }
 
     return atlasInfo;
 }

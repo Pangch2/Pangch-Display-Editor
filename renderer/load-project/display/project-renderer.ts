@@ -20,9 +20,10 @@ import { setAtlasPartMaterial } from '../batching/atlas-part-material';
 import { appendPlayerHeadEntries, findAppendablePlayerHeadMesh } from '../batching/player-head-batch';
 import { restoreEditorState } from '../../save/project-state';
 import { trackProjectEdit } from '../../save/pending-edits';
-import { createImageHeadAtlasGeometry, ensurePlayerHeadAtlas, getImageHeadAtlasMaterial, setProjectPlayerHeadAtlasSizes } from './player-head-atlas';
+import { createImageHeadAtlasGeometry, disposeProjectPlayerHeadAtlases, ensurePlayerHeadAtlas,getImageHeadAtlasMaterial, setProjectPlayerHeadAtlasSizes } from './player-head-atlas';
 import { beginPlayerHeadLoading } from '../../ui/head-editor/head-texture-loading';
 import type { PdeNode } from '../../save/pde-format';
+import { parseSchematic, schematicFilePattern } from '../schematic/schematic-import';
 import { yieldPreview } from '../../animation/yield-preview';
 import { ObjectStore } from '../../scene-store/object-store';
 
@@ -204,7 +205,8 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
 
         const parseStartMs = performance.now();
         const bytes = fileBuffer && new Uint8Array(fileBuffer);
-        const raw = Array.isArray(file) ? { children: file } : file instanceof File ? file.name.toLowerCase().endsWith('.pde')
+        const raw = Array.isArray(file) ? { children: file } : file instanceof File ? schematicFilePattern.test(file.name)
+            ? await parseSchematic(bytes!, file.name.replace(schematicFilePattern, '')) : file.name.toLowerCase().endsWith('.pde')
             ? await window.ipcApi.decompressPdeProject(bytes) : gunzipSync(bytes) : undefined;
         if (myGen !== currentLoadGen) return new Map<Object3D, Set<number>>();
         const { metadata, geometryBuffer } = 'geometryBuffer' in file ? file : await parsePbdeProject(raw, mainThreadAssetProvider);
@@ -867,7 +869,7 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
 
                 const playerHeadStartMs = performance.now();
                 if (!isMerge) {
-                    loadedObjectGroup.userData.playerHeadAtlasMaterials = [];
+                    disposeProjectPlayerHeadAtlases();
                     setProjectPlayerHeadAtlasSizes(metadataPayload.editorState?.headAtlasSizes, metadataPayload.editorState?.headAtlasNames);
                     // Heads create their atlases while loading; a project without heads still gets an empty one.
                     if (playerHeadItems.length) notifyPlayerHeadAtlasesChanged();

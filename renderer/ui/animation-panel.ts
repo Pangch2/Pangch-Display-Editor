@@ -8,7 +8,8 @@ import { animationData, animationSession, captureAnimationSnapshot, previewAnima
     recordAnimationTransform, setAnimationEnabled, syncAnimationTargets, selectAnimationClip, previewAnimationPlayback, previewCamera } from '../animation/animation-state';
 import { animationEasings, animationChannels, animationEndTick, animationLayers, animationPlayback, channelKeys, keyHasChannel, keyCurve, setKeyCurve, keyChannelValues, animationExpression,
     copyKeyChannels, removeKeyChannels, mergeAnimationKey, offsetAnimationChannel, keyTransform, animationTimelineEnd, ticksPerSecond, type AnimationChannel, type AnimationClip, type AnimationCurve, type AnimationKey, type AnimationTrack, type AnimationVector } from '../animation/animation-data';
-import { animationGraphLayout, renderAnimationGraph, type GraphChannel, type GraphLayout } from './animation-graph';
+import { openAnimationExport } from './dialogs/animation-export';
+import { animationGraphLayout, graphHeight, renderAnimationGraph, type GraphChannel, type GraphLayout } from './animation-graph';
 import { insertCurvePoint, moveCurveControl, removeCurvePoint, toBezierCurve, type CurveTarget } from '../animation/animation-curve';
 import { initAnimationClipControls } from './animation-clips';
 import { renderAnimationLayerRow } from './animation-layer-timeline';
@@ -45,6 +46,7 @@ panel.innerHTML = `<div class="details-resizer animation-resizer" role="separato
     <div class="animation-tools animation-toolbar" role="toolbar" aria-label="타임라인 편집">
         <div class="animation-view-tools" role="group" aria-label="타임라인 보기">
             <button id="animation-graph-toggle" type="button" aria-pressed="false" title="키프레임 / 그래프 보기 전환">그래프</button>
+            <button id="animation-export" type="button" title="애니메이션 내보내기 창 열기 (애니메이션 모드에서는 소환 명령어 단축키)">데이터팩</button>
         </div>
         <div class="animation-actions" role="group" aria-label="키프레임 편집">
         <button id="animation-add" type="button" title="선택한 파츠의 현재 포즈를 키프레임으로 추가" disabled>◇ 키 추가</button>
@@ -187,6 +189,8 @@ let timelineRows: Array<{ type: 'group' | 'object' | 'clip'; id: string; depth: 
 let timelineTracks = new Map<string, AnimationTrack>();
 const renderedRows = new Map<number, HTMLElement>();
 const expandedGroupIds = new Set<string>();
+let keyCountClip: string | undefined;
+let keyCounts = new Map<string, number>();
 let targetFilter: Set<string> | undefined;
 let nameFilter = '';
 const filterControls = document.createElement('details');
@@ -704,7 +708,7 @@ function beginCurveDrag(event: PointerEvent, id: string, tick: number, target: C
                     lastX = dx; lastY = dy;
                     // Back at the start, restore the exact original so an untouched preset stays a preset.
                     setKeyCurve(key, editChannel(), dx === 0 && dy === 0 ? interpolation
-                        : moveCurveControl(interpolation, target, dx / width, dy / (Math.abs(height) > 1e-6 ? height : -120)));
+                        : moveCurveControl(interpolation, target, dx / width, dy / (Math.abs(height) > 1e-6 ? height : 40 - graphHeight)));
                     previewAnimation(root); changed(false);
                 }
                 if (drag.released) break;
@@ -802,7 +806,7 @@ function beginKeyBoxSelection(event: PointerEvent): void {
                     width: `${Math.max(0, Math.min(bounds.left + timelineScroll.clientWidth, right) - visibleLeft)}px`,
                     height: `${Math.max(0, Math.min(viewportBottom, bottom) - visibleTop)}px` });
                 const keys = [...previous];
-                const rowTop = rows.getBoundingClientRect().top, height = graphMode ? 160 : 28;
+                const rowTop = rows.getBoundingClientRect().top, height = graphMode ? graphHeight : 28;
                 const laneLeft = ruler.getBoundingClientRect().left + ruler.clientLeft;
                 // Virtual rows outside the viewport still belong to the selection rectangle.
                 const radius = 10 / Math.SQRT2;
@@ -855,6 +859,7 @@ export function syncAnimationPanel(): void {
     syncAnimationTime();
     const tracks = new Map(data!.tracks.map(track => [track.id, track]));
     syncTargetFilter();
+    expandAddedKeyParents(data!);
     renderAnimationRows(tracks);
     clipControls.sync();
     syncKeyValues();
@@ -886,6 +891,20 @@ function syncAnimationTime(): void {
     ruler.setAttribute('aria-valuetext', `${session.tick}틱 · ${(session.tick / (data!.tickRate ?? ticksPerSecond)).toFixed(2)}초`);
     panel.style.setProperty('--animation-playhead-left', `${session.tick * pixelsPerTick}px`);
     renderTimelineRuler();
+}
+
+// Diffs key counts against the last sync so every key-adding path reveals its row; a new clip or project only seeds the counts.
+function expandAddedKeyParents(clip: AnimationClip): void {
+    const clipId = clip.id ?? 'default', seeding = clipId !== keyCountClip;
+    const groups = root.userData.groups ?? new Map(), next = new Map<string, number>();
+    for (const track of clip.tracks) {
+        next.set(track.id, track.keys.length);
+        if (seeding || track.keys.length <= (keyCounts.get(track.id) ?? 0)) continue;
+        const seen = new Set<string>();
+        let parent: string | null | undefined = track.type === 'group' ? groups.get(track.id)?.parent : root.userData.objectToGroup?.get(track.id);
+        for (; parent && !seen.has(parent); parent = groups.get(parent)?.parent) { seen.add(parent); expandedGroupIds.add(parent); }
+    }
+    keyCountClip = clipId; keyCounts = next;
 }
 
 function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
@@ -924,7 +943,7 @@ function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
     timelineRows = timelineRows.filter(row => row.type === 'clip' || (filtering ? matchingRows.has(row.id) : row.animated || row.inheritedAnimation));
     timelineTracks = filtering ? new Map([...tracks].filter(([id]) => matchesTargetFilter(id))) : tracks;
     renderedRows.clear(); rows.replaceChildren();
-    rows.style.height = `${timelineRows.length * (graphMode ? 160 : 28)}px`;
+    rows.style.height = `${timelineRows.length * (graphMode ? graphHeight : 28)}px`;
     renderVisibleAnimationRows();
     deleteButton.disabled = !selectedKeys.size;
     duplicateButton.disabled = !selectedKeys.size;
@@ -945,7 +964,7 @@ function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
 
 function renderVisibleAnimationRows(): void {
     if (panel.hidden) return;
-    const height = graphMode ? 160 : 28;
+    const height = graphMode ? graphHeight : 28;
     const first = Math.max(0, Math.floor((timelineScroll.scrollTop - 28) / height) - 8);
     const last = Math.min(timelineRows.length - 1, Math.ceil((timelineScroll.scrollTop + timelineScroll.clientHeight) / height) + 8);
     for (const [index, row] of renderedRows) {
@@ -1212,6 +1231,7 @@ zoomValue.onkeydown = event => {
 };
 panel.querySelector<HTMLButtonElement>('#animation-zoom-in')!.onclick = () => setTimelineZoom(pixelsPerTick * 1.25);
 panel.querySelector<HTMLButtonElement>('#animation-zoom-out')!.onclick = () => setTimelineZoom(pixelsPerTick / 1.25);
+panel.querySelector<HTMLButtonElement>('#animation-export')!.onclick = openAnimationExport;
 panel.querySelector<HTMLButtonElement>('#animation-fit')!.onclick = () => {
     setTimelineZoom(Math.max(1, timelineScroll.clientWidth - 258) / Math.max(20, lastKeyTick), 0);
     timelineScroll.scrollLeft = 0;
@@ -1552,6 +1572,7 @@ window.addEventListener('pde:head-painter-enabling', () => {
 window.addEventListener('pde:before-project-load', (event: CustomEvent<{ isMerge?: boolean }>) => {
     pausePlayback();
     revision++; cancelScrub?.();
+    keyCountClip = undefined;
     if (event.detail?.isMerge) return;
     targetFilter = undefined;
     nameFilter = ''; nameFilterInput.value = '';
@@ -1570,7 +1591,7 @@ window.addEventListener('pde:active-project-changed', () => {
     keyframesOnlyInput.checked = true;
     pausePlayback(); revision++; cancelScrub?.();
     copiedKeys = [];
-    expandedGroupIds.clear();
+    expandedGroupIds.clear(); keyCountClip = undefined;
     selectedKeys.clear(); selectionIds.clear(); selectionPrimary = null;
     timelineEnd = 100; pixelsPerTick = 6; timelineScroll.scrollLeft = 0; zoomAnchor = undefined;
     if (!resumeAnimationAfterLoad) syncAnimationPanel();

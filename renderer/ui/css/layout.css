@@ -132,7 +132,7 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
 #animation-panel [hidden] { display: none; }
 :is(.animation-controls, .animation-tools) button[aria-pressed="true"] { border-color: var(--ui-accent); background: var(--ui-selected-bg); color: var(--ui-accent); }
 .animation-tools select { color-scheme: dark; max-width: 130px; font-size: 11px; }
-.animation-graph-row { height: 160px; }
+.animation-graph-row { height: 100px; }
 .animation-graph-row .animation-key { transform: translate(-50%, -50%) rotate(45deg); cursor: move; }
 .animation-graph { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .animation-graph path { fill: none; vector-effect: non-scaling-stroke; }
@@ -571,7 +571,6 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
   cursor: grabbing !important;
 }
 
-.player-head-paint-grid,
 .player-head-paint-preview,
 .player-head-uv-outlines {
   position: absolute;
@@ -580,14 +579,6 @@ body.animation-active #main-content { bottom: var(--animation-panel-height, 360p
   height: 100%;
   pointer-events: none;
   fill: none;
-}
-
-.player-head-paint-grid {
-  stroke: currentColor;
-  stroke-width: 1;
-  stroke-opacity: 0.65;
-  /* Own layer: the path has a line per grid cell of every head, and repainting it with each stroke's canvas update stalls frames. */
-  will-change: transform;
 }
 
 .player-head-paint-preview {

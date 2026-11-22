@@ -211,7 +211,7 @@ export const userGuideSections = [
                 content: `
                     <p>계속 편집할 작업은 프로젝트 파일(<code>.pde</code>)로 저장하고, Minecraft에서 쓸 결과는 소환 명령어로 내보냅니다. 두 가지는 용도가 다르니 둘 다 챙기세요.</p>
                     <h3>프로젝트 열기</h3>
-                    <p>파일 → ${i('E247')}프로젝트 열기 또는 <kbd>Ctrl + O</kbd>로 파일을 고릅니다. 여러 파일을 한 번에 선택할 수 있습니다. 열 수 있는 형식은 <code>.pde</code>(PDE 프로젝트), <code>.bdengine</code>, <code>.mcfunction</code>입니다.</p>
+                    <p>파일 → ${i('E247')}프로젝트 열기 또는 <kbd>Ctrl + O</kbd>로 파일을 고릅니다. 여러 파일을 한 번에 선택할 수 있습니다. 열 수 있는 형식은 <code>.pde</code>(PDE 프로젝트), <code>.bdengine</code>, <code>.mcfunction</code>, <code>.schem</code>(Sponge 스키매틱)입니다.</p>
                     <h3>끌어놓아 열기와 합치기</h3>
                     <p>파일을 PDE 창에 끌어다 놓으면 '프로젝트 파일 감지됨' 창이 나타납니다.</p>
                     <ul>

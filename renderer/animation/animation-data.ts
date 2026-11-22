@@ -181,6 +181,8 @@ export function transformMatrix(value: AnimationTransform): Matrix4 {
 }
 
 const transformPartsCache = new WeakMap<number[], { matrix: number[]; parts: DisplayTransformParts }>();
+const basisIndices = [0, 1, 2, 4, 5, 6, 8, 9, 10];
+let lastBasis: { value: number[]; parts: DisplayTransformParts } | undefined;
 
 // MatrixUtil.svdDecompose in resources/client: five Jacobi sweeps followed by QR.
 // The lossless parts form bypasses Minecraft's absolute cutoffs for tiny axes/shear.
@@ -188,6 +190,13 @@ export function minecraftTransformParts(value: AnimationTransform): DisplayTrans
     if (!Array.isArray(value)) return value;
     const cached = transformPartsCache.get(value);
     if (cached && cached.matrix.every((component, index) => component === value[index])) return cached.parts;
+    // Only the 3×3 basis is decomposed, so a value moved from the last one (zero signs included) shares its rotations and scale.
+    if (lastBasis && basisIndices.every(index => Object.is(lastBasis!.value[index], value[index]))) {
+        const { left_rotation, scale, right_rotation } = lastBasis.parts;
+        const moved = { translation: [value[3], value[7], value[11]], left_rotation: left_rotation.slice(), scale: scale.slice(), right_rotation: right_rotation.slice() };
+        transformPartsCache.set(value, { matrix: value.slice(), parts: moved });
+        return moved;
+    }
     const matrix = transformMatrix(value);
     const a = new Matrix3().setFromMatrix4(matrix);
     const symmetric = a.clone().transpose().multiply(a);
@@ -231,6 +240,7 @@ export function minecraftTransformParts(value: AnimationTransform): DisplayTrans
     const parts = { translation: [value[3], value[7], value[11]], left_rotation: left.normalize().toArray(),
         scale: [a.elements[0], a.elements[4], a.elements[8]], right_rotation: right.conjugate().toArray() };
     transformPartsCache.set(value, { matrix: value.slice(), parts });
+    lastBasis = { value: value.slice(), parts };
     return parts;
 }
 

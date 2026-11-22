@@ -10,6 +10,7 @@ import { initHeadTextureService } from './renderer/player-head-service/head-text
 import { ProjectFileStore } from './renderer/save/project-file-store.js';
 import { AutoSaveFileStore } from './renderer/save/auto/auto-save-file-store.js';
 import { saveMcfunctionFile } from './renderer/save/mcfunction-file-store.js';
+import { saveDatapackFile } from './renderer/save/datapack-file-store.js';
 import { registerProjectClipboard } from './renderer/save/project-clipboard.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -540,7 +541,24 @@ function createWindow() {
     });
   });
 
-  ipcMain.handle('get-asset-content', async (_event, assetPath: string) => {
+  ipcMain.handle('save-datapack', (event, name: string, data: Uint8Array, folder: boolean, lastPath?: string) => {
+    if (event.sender !== win.webContents) return { success: false, error: 'Invalid datapack save sender' };
+    // Both formats open where the last pack (zip or folder) was saved, so switching format keeps the location.
+    const directory = typeof lastPath === 'string' && path.isAbsolute(lastPath) ? path.dirname(lastPath) : undefined;
+    return saveDatapackFile(name, data, folder === true, async defaultName => {
+      if (folder === true) {
+        const result = await dialog.showOpenDialog(win, { title: `데이터팩 폴더(${defaultName})를 만들 위치`, defaultPath: directory, properties: ['openDirectory', 'createDirectory'] });
+        return result.canceled ? undefined : result.filePaths[0];
+      }
+      const result = await dialog.showSaveDialog(win, {
+        title: '애니메이션 데이터팩 저장', defaultPath: directory ? path.join(directory, `${defaultName}.zip`) : `${defaultName}.zip`,
+        filters: [{ name: 'Minecraft Data Pack', extensions: ['zip'] }]
+      });
+      return result.canceled ? undefined : result.filePath;
+    });
+  });
+
+  ipcMain.handle('get-asset-content',async (_event, assetPath: string) => {
     const fullPath = path.join(CACHE_DIR, assetPath);
     try {
       const resolvedPath = path.resolve(fullPath);

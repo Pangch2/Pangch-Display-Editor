@@ -220,7 +220,7 @@ export async function prepareMcfunctionFiles(files: File[]): Promise<PreparedSce
     return imports;
 }
 
-async function displayNode(type: string, nbt: Compound): Promise<PdeNode | undefined> {
+export async function displayNode(type: string, nbt: Compound): Promise<PdeNode | undefined> {
     const node: PdeNode = { uuid: MathUtils.generateUUID(), name: '', transforms: [] };
     let correction = new Matrix4();
     if (type === 'block_display') {

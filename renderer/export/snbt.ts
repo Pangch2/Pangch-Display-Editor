@@ -35,15 +35,16 @@ export function shortestFloat(value: number): string {
     const plain = sign + (point <= 0 ? '.' + '0'.repeat(-point) + digits
       : point >= digits.length ? digits + '0'.repeat(point - digits.length)
         : digits.slice(0, point) + '.' + digits.slice(point));
-    const candidates = [plain];
+    // Every candidate writes the mantissa's decimal, so each parses back to `value`; only the shortest is built.
+    // Unsuffixed integers outside int32 are rejected by the SNBT grammar.
+    const fits = (candidate: string) => /[.e]/.test(candidate) || (Number(candidate) >= -2147483648 && Number(candidate) <= 2147483647);
+    if (fits(plain)) shortest = plain;
     for (let split = 1; split <= digits.length; split++) {
       const exponent = point - split;
-      candidates.push(sign + digits.slice(0, split) + (split < digits.length ? '.' + digits.slice(split) : '') + (exponent ? 'e' + exponent : ''));
-    }
-    for (const candidate of candidates) {
-      // Unsuffixed integers outside int32 are rejected by the SNBT grammar.
-      if (!/[.e]/.test(candidate) && (Number(candidate) < -2147483648 || Number(candidate) > 2147483647)) continue;
-      if (Math.fround(Number(candidate)) === value && (!shortest || candidate.length < shortest.length)) shortest = candidate;
+      const length = sign.length + split + (split < digits.length ? 1 + digits.length - split : 0) + (exponent ? 1 + String(exponent).length : 0);
+      if (shortest && length >= shortest.length) continue;
+      const candidate = sign + digits.slice(0, split) + (split < digits.length ? '.' + digits.slice(split) : '') + (exponent ? 'e' + exponent : '');
+      if (fits(candidate)) shortest = candidate;
     }
     if (shortest) break;
   }
@@ -55,9 +56,14 @@ export function stringifySnbt(value: SnbtValue, floatCache?: Map<number, string>
   if (typeof value === 'string') return quoteSnbt(value);
   if (typeof value === 'number') {
     const number = Math.fround(value);
-    const literal = floatCache?.get(number) ?? shortestFloat(number);
-    // Bound memoization so unique translations don't retain hundreds of thousands of strings.
-    if (floatCache && floatCache.size < 16_384) floatCache.set(number, literal);
+    const cached = floatCache?.get(number);
+    if (cached !== undefined) return cached;
+    const literal = shortestFloat(number);
+    // Bound memoization so unique translations don't retain hundreds of thousands of strings; starting over keeps recent values.
+    if (floatCache) {
+      if (floatCache.size >= 16_384) floatCache.clear();
+      floatCache.set(number, literal);
+    }
     return literal;
   }
   if (Array.isArray(value)) return '[' + value.map(entry => stringifySnbt(entry, floatCache)).join(',') + ']';

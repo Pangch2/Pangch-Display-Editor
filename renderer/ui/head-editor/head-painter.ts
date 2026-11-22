@@ -58,7 +58,7 @@ import { initHeadTextureGenerator } from './head-texture-generator';
 import { readTextureColor } from './texture-color-pick';
 import {
   clearHeadAtlasPaintSelectionOutside, getHeadAtlasPaintTarget, isHeadAtlasPaintPixelSelected, isHeadAtlasPaintSelecting,
-  updateHeadAtlasPainterGrid, updateHeadAtlasPaintPreview, type HeadAtlasPaintTarget
+  updateHeadAtlasPaintPreview, type HeadAtlasPaintTarget
 } from './head-atlas-panel';
 import { getHeadAtlasUvRect, hasHeadAtlasUvs } from './head-atlas-uv';
 import { getProjectPlayerHeadAtlases, PLAYER_HEAD_BLOCK_HEIGHT as blockHeight, PLAYER_HEAD_BLOCK_WIDTH as blockWidth, PlayerHeadAtlasFullError, playerHeadPartOffset, previewPlayerHeadTextures, unsharePlayerHeadSkin } from '../../load-project/display/player-head-atlas';
@@ -218,18 +218,6 @@ function invalidateHeadPainterGridOverlay(): void {
   previewAdjacentColumns.clear();
   previewPaintImages.clear();
   invalidateHeadPainterGrid();
-  if (active && gridEnabled) loadedObjectGroup.updateMatrixWorld(true);
-  updateHeadAtlasPainterGrid({
-    enabled: active && gridEnabled,
-    color: formatHexColor(gridColor),
-    getFaceGridCounts: face => {
-      const surface = face.surfaces[0];
-      const [columns, rows] = getFaceGridCounts(surface.objectUuid,
-        facePartIndexes.indexOf(face.part % 6 as typeof facePartIndexes[number]),
-        getInstanceWorldMatrix(surface.mesh, surface.instanceId, new Matrix4()), face.part < 6 ? 0 : 1);
-      return [columns, rows];
-    }
-  });
 }
 
 function removeHeadPainterStampPreview(): void {
@@ -1904,8 +1892,9 @@ function getInstanceWorldMatrix(mesh: ObjectBatch, instanceId: number, target: M
   return target;
 }
 
-function getFaceGridCounts(objectUuid: string, face: number, worldMatrix: Matrix4, layer?: 0 | 1): [number, number, number, number] {
-  const override = gridOverrides.get(objectUuid);
+function getFaceGridCounts(objectUuid: string, face: number, worldMatrix: Matrix4, layer?: 0 | 1, pixels = lastTool === 'bucket'): [number, number, number, number] {
+  // The bucket matches the clicked pixel's color: a (smart) grid cell would compare its centre pixel and paint whole cells.
+  const override = pixels ? { horizontal: partSize, vertical: partSize } : gridOverrides.get(objectUuid);
   const configuredHorizontal = override?.horizontal ?? gridHorizontal;
   const configuredVertical = override?.vertical ?? gridVertical;
   let counts: [number, number] = [configuredHorizontal, configuredVertical];
@@ -1933,7 +1922,7 @@ export function updateHeadPainter(): void {
     gridEnabled,
     layerMode,
     (gridColor[0] << 16) | (gridColor[1] << 8) | gridColor[2],
-    getFaceGridCounts
+    (objectUuid, face, worldMatrix, layer) => getFaceGridCounts(objectUuid, face, worldMatrix, layer, false)
   );
 }
 
@@ -3165,9 +3154,11 @@ if (import.meta.env.DEV) {
   const [topOrigin, topHorizontal, topVertical] = getHeadPainterFaceAxes(2, 1);
   console.assert(sideOrigin.x === 0.5 && sideHorizontal.z === -1 && topOrigin.x === 0.5 && topHorizontal.x === -1 && topVertical.z === 1, 'Head painter face axes failed.');
   gridOverrides.set('__grid_override_check__', { horizontal: 3, vertical: 5 });
-  const [manualHorizontal, manualVertical] = getFaceGridCounts('__grid_override_check__', 0, new Matrix4());
+  const [manualHorizontal, manualVertical] = getFaceGridCounts('__grid_override_check__', 0, new Matrix4(), undefined, false);
+  const [bucketHorizontal, bucketVertical] = getFaceGridCounts('__grid_override_check__', 0, new Matrix4().makeScale(1, 3, 1), undefined, true);
   gridOverrides.delete('__grid_override_check__');
   console.assert(manualHorizontal === 3 && manualVertical === 5, 'Per-head grid override was ignored.');
+  console.assert(bucketHorizontal === partSize && bucketVertical === partSize, 'Bucket fill must match single pixels, not grid cells.');
   console.assert(clampGrid(-1) === 0 && clampGrid(9) === 8 && clampByte(300) === 255, 'Head Painter input limits failed.');
   const savedStamp = { width: stampWidth, height: stampHeight, pixels: stampPixels };
   stampWidth = 2; stampHeight = 1; stampPixels = [[1, 0, 0, 255], [2, 0, 0, 255]];

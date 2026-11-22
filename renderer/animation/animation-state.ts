@@ -1,7 +1,7 @@
 import { Group, Matrix3, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import { deferredPlayerHeadTexture, getPlayerHeadRenderMatrix, getPlayerHeadTexture, previewPlayerHeadTextures } from '../load-project/display/player-head-atlas';
 import { getGroupWorldMatrix, shouldUseGroupPivot, normalizePivotToVector3, type GroupData } from '../controls/grouping/group';
-import { activeAnimation, animationClips, minecraftTransformParts, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyCurve, keyTransform, putKey, sampleTrack, setKeyCurve,
+import { activeAnimation, animationClips, minecraftTransformParts, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyCurve, keyHasChannel, keyTransform, putKey, sampleTrack, setKeyCurve,
     sampleChannelValues, offsetAnimationChannel, sampleTexture, sampleProperties, samplePivot, transformMatrix, type AnimationData, type AnimationClip, type AnimationChannel,
     type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationTransform, type AnimationLayerTiming, type AnimationLayerCarry, layerRanges, setLayerRanges } from './animation-data';
 import { decomposeDisplayMatrix } from './display-transformation';
@@ -603,12 +603,16 @@ export function recordAnimationTransform(root: Group, before?: AnimationSnapshot
             pivotChanged = !samePivot(previousPivot, pivot);
         }
         const textureChanged = node.texture !== (oldTrack ? sampleTexture(oldTrack.keys, session.tick, old.texture) : old.texture);
-        const propertiesChanged = !sameProperties(node.properties, oldTrack ? sampleProperties(oldTrack.keys, session.tick, old.properties) : old.properties);
+        const oldProperties = oldTrack ? sampleProperties(oldTrack.keys, session.tick, old.properties) : old.properties;
+        const propertiesChanged = !sameProperties(node.properties, oldProperties);
+        // History snapshots a model swap after it ran, so `previous` already shows the new model's fit; only the clip sample tells the fit apart.
+        // shortcut: a swap while a layer clip plays bakes that layer's offset into the key; pass the pose from before the swap to separate them.
+        const swapped = unchanged && (node.properties?.name !== oldProperties?.name || node.properties?.displayType !== oldProperties?.displayType);
         if (unchanged && !textureChanged && !propertiesChanged && !pivotChanged && !forced.has(id)) continue;
         const previousLocal = oldTrack ? sampleTrack(oldTrack.keys, session.tick, data.tickRate, keyTransform(matrix(old)), pivotKey(before.base.get(id) ?? old)) : localValue.fromArray(old.matrix);
         // Compare against the displayed local, which includes playing layers, so a layer's pose is never baked into this clip.
         expected.copy(previousLocal);
-        if (previous) try { expected.copy(relative(new Matrix4().fromArray(previous.matrix), before.pose.get(node.parent), true)); } catch { /* singular parent: use the clip sample */ }
+        if (previous && !swapped) try { expected.copy(relative(new Matrix4().fromArray(previous.matrix), before.pose.get(node.parent), true)); } catch { /* singular parent: use the clip sample */ }
         const shown = expected.clone();
         if (node.parent && after.has(node.parent)) expected.premultiply(parentValue.fromArray(after.get(node.parent)!.matrix));
         const parentBefore = before.pose.get(node.parent), parentAfter = after.get(node.parent);
@@ -671,7 +675,7 @@ export function recordAnimationTransform(root: Group, before?: AnimationSnapshot
         if (unchanged && propertiesChanged && index > 0 && isDisplayReplacement(track.keys, index)) {
             // A stationary replacement's center/size fitting must arrive together with its model.
             if (close(previousLocal, transformMatrix(track.keys[index - 1].transform))) setKeyCurve(track.keys[index], 'all', 'step');
-            fitReplacementTranslation(track, index, previousLocal, value, data.tickRate, keyTransform(matrix(old)));
+            fitReplacement(track, index, previousLocal, value, data.tickRate, keyTransform(matrix(old)));
         }
     }
     root.userData.animation = project;
@@ -679,19 +683,34 @@ export function recordAnimationTransform(root: Group, before?: AnimationSnapshot
 }
 
 // The fitting offset belongs to the new model only: the old model keeps its path into the key,
-// and later keys recorded for the old model take the same offset in their own local frame.
-function fitReplacementTranslation(track: AnimationTrack, index: number, unfitted: Matrix4, fitted: Matrix4, rate: number | undefined, base: AnimationTransform): void {
+// and later keys recorded for the old model take the same offset and size change (a head's 0.5 render scale) in their own local frame.
+// The next model key (recorded keys carry their model) shows its own model at its own size; the new model keeps its fit on the way there.
+// shortcut: a fit that turns the model (camera icon) carries only its translation and scale into later keys; carry the rotation too if that matters.
+function fitReplacement(track: AnimationTrack, index: number, unfitted: Matrix4, fitted: Matrix4, rate: number | undefined, base: AnimationTransform): void {
     const from = new Vector3().setFromMatrixPosition(unfitted), delta = new Vector3().setFromMatrixPosition(fitted).sub(from);
-    if (delta.lengthSq() < 1e-20) return;
+    const scale = (value: Matrix4) => [0, 1, 2].map(axis => channelValue(keyTransform(value), 'scale', axis));
+    const scaleFrom = scale(unfitted), scaleTo = scale(fitted);
+    const moved = delta.lengthSq() >= 1e-20, scaled = scaleFrom.some((value, axis) => Math.abs(scaleTo[axis] - value) >= 1e-10);
+    if (!moved && !scaled) return;
     const key = track.keys[index];
-    if (keyCurve(key, 'translation') !== 'step') (key.pre ??= {}).translation = from.toArray() as AnimationVector;
+    if (moved && keyCurve(key, 'translation') !== 'step') (key.pre ??= {}).translation = from.toArray() as AnimationVector;
     const linear = new Matrix3().setFromMatrix4(unfitted);
     if (linear.determinant() === 0) return;
     const local = delta.applyMatrix3(linear.invert());
-    const later: typeof track.keys = [];
-    for (let i = index + 1; i < track.keys.length && !track.keys[i].properties; i++) later.push(track.keys[i]);
-    const offsets = later.map(entry => local.clone().applyMatrix3(new Matrix3().setFromMatrix4(sampleTrack(track.keys, entry.tick, rate, base))).toArray());
-    later.forEach((entry, i) => offsetAnimationChannel({ ...track, keys: [entry] }, 'translation', [0, 0, 0], offsets[i]));
+    let end = index + 1;
+    while (end < track.keys.length && !track.keys[end].properties) end++;
+    const later = track.keys.slice(index + 1, end), next = track.keys[end];
+    // Without its own scale the next model would inherit the fitted one; its key holds the size it was recorded with.
+    if (scaled && next?.channels && !next.channels.includes('scale')) next.channels.push('scale');
+    const offsets = [...later, ...next ? [next] : []].map(entry => local.clone().applyMatrix3(new Matrix3().setFromMatrix4(sampleTrack(track.keys, entry.tick, rate, base))).toArray());
+    later.forEach((entry, i) => {
+        offsetAnimationChannel({ ...track, keys: [entry] }, 'translation', [0, 0, 0], offsets[i]);
+        offsetAnimationChannel({ ...track, keys: [entry] }, 'scale', scaleFrom, scaleTo);
+    });
+    if (!moved || !next || !keyHasChannel(next, 'translation') || keyCurve(next, 'translation') === 'step') return;
+    const offset = offsets[later.length];
+    const into = next.pre?.translation ?? next.values?.translation ?? [0, 1, 2].map(axis => channelValue(next.transform, 'translation', axis));
+    (next.pre ??= {}).translation = into.map((value, axis) => typeof value === 'string' ? `(${value})+(${offset[axis]})` : value + offset[axis]) as AnimationVector;
 }
 
 function sameProperties(a?: AnimationProperties, b?: AnimationProperties): boolean {

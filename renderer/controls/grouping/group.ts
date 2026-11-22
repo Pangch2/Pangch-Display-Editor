@@ -344,7 +344,8 @@ type GroupChildrenCache = {
 };
 // var, created on first use: mirroring's dev self-check calls getAllGroupChildren while this module is still evaluating.
 // eslint-disable-next-line no-var
-var groupChildrenCaches: WeakMap<Group, Map<string, GroupChildrenCache>> | undefined;
+// Keyed by the project's groups map (loadedObjectGroup outlives every project), so a closed project's entries go with it.
+var groupChildrenCaches: WeakMap<Map<string, GroupData>, Map<string, GroupChildrenCache>> | undefined;
 
 function isGroupChildrenCacheCurrent(cache: GroupChildrenCache, groups: Map<string, GroupData>, store: GroupChildrenCache['store']): boolean {
     if (cache.groups !== groups || cache.store !== store || cache.storeVersion !== store?.version) return false;
@@ -362,8 +363,8 @@ export function getAllGroupChildren(loadedObjectGroup: Group, groupId: string): 
     const group = groups.get(groupId);
     if (!group) return [];
     const store = loadedObjectGroup.userData.objectUuidToInstance as GroupChildrenCache['store'];
-    let caches = (groupChildrenCaches ??= new WeakMap()).get(loadedObjectGroup);
-    if (!caches) groupChildrenCaches.set(loadedObjectGroup, caches = new Map());
+    let caches = (groupChildrenCaches ??= new WeakMap()).get(groups);
+    if (!caches) groupChildrenCaches.set(groups, caches = new Map());
     const cached = caches.get(groupId);
     if (cached && isGroupChildrenCacheCurrent(cached, groups, store)) return cached.children;
 
@@ -461,12 +462,29 @@ export function createGroupStructure(
         scale: new Vector3(1, 1, 1)
     };
 
+    const selectedGroupSet = new Set(selectedGroupIds);
+    const outermostSelectedGroup = (groupId: string | null | undefined): string | undefined => {
+        if (!selectedGroupSet.size) return undefined;
+        let outermost: string | undefined;
+        while (groupId) {
+            if (selectedGroupSet.has(groupId)) outermost = groupId;
+            groupId = groups.get(groupId)?.parent;
+        }
+        return outermost;
+    };
+
+    // The wrapper takes the selected ancestor's place, even when the primary item is inside it.
+    if (primaryId && selectedGroupSet.size) {
+        primaryId = outermostSelectedGroup(groups.has(primaryId) ? primaryId : objectToGroup.get(primaryId)) ?? primaryId;
+    }
+    for (const id of selectedGroupSet) {
+        if (outermostSelectedGroup(groups.get(id)?.parent)) selectedGroupSet.delete(id);
+    }
     const selectedUuids = new Set<string>();
     for (const { mesh, instanceId } of selectedObjects) {
         const uuid = objectUuidAt(loadedObjectGroup, mesh, instanceId);
-        if (uuid) selectedUuids.add(uuid);
+        if (uuid && !outermostSelectedGroup(objectToGroup.get(uuid))) selectedUuids.add(uuid);
     }
-    const selectedGroupSet = new Set(selectedGroupIds);
 
     let insertionIndex = -1;
     const insertionLocation = (() => {
@@ -475,7 +493,7 @@ export function createGroupStructure(
             return _findObjectLocationForCreate(loadedObjectGroup, primaryId);
         }
 
-        for (const gid of selectedGroupIds) {
+        for (const gid of selectedGroupSet) {
             const location = _findGroupLocationForCreate(loadedObjectGroup, gid);
             if (location) return location;
         }
@@ -527,7 +545,7 @@ export function createGroupStructure(
         ids.add(id);
     };
 
-    for (const childGroupId of selectedGroupIds) {
+    for (const childGroupId of selectedGroupSet) {
         const childGroup = groups.get(childGroupId);
         if (!childGroup) continue;
 

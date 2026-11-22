@@ -647,6 +647,15 @@ export function ensurePlayerHeadAtlas(): void {
     if (!getProjectPlayerHeadAtlases().length) createPlayerHeadAtlas();
 }
 
+/** Frees the active project's atlases before a load replaces the list; liveAtlases would keep them otherwise. */
+export function disposeProjectPlayerHeadAtlases(): void {
+    for (const material of (loadedObjectGroup.userData.playerHeadAtlasMaterials as Material[] | undefined) ?? []) {
+        playerHeadAtlases.get(material)?.texture.dispose();
+        material.dispose();
+    }
+    loadedObjectGroup.userData.playerHeadAtlasMaterials = [];
+}
+
 export function takePlayerHeadSlot(atlas: PlayerHeadAtlas): number | undefined {
     for (let index = atlas.freeSlots.length - 1; index >= 0; index--) {
         const slot = atlas.freeSlots[index];

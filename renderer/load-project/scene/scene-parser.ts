@@ -300,7 +300,8 @@ function specialItemGeometryModelId(model: any, itemName: string): string | null
 function getHardcodedModelCandidates(modelId) {
     const { path } = nsAndPathFromId(modelId);
     if (!path) return [];
-    const normalized = path.replace(/^\/+/, '');
+    // Wall heads share the floor head geometry; wall placement is applied by the skull model matrix.
+    const normalized = path.replace(/^\/+/, '').replace(/_wall_(head|skull)$/, '_$1');
     const candidates = new Set();
 
     const push = (suffix) => {
@@ -308,7 +309,6 @@ function getHardcodedModelCandidates(modelId) {
     };
 
     push(normalized);
-    if (/_wall_(head|skull)$/.test(normalized)) push(normalized.replace(/_wall_(head|skull)$/, '_$1'));
 
     if (normalized.startsWith('item/')) {
         const withoutItem = normalized.slice('item/'.length);
@@ -2500,7 +2500,8 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array | P
                 mainNBT: typeof project.mainNBT === 'string' ? project.mainNBT : '',
                 nbt: typeof project.nbt === 'string' ? project.nbt : '',
                 parentEntity: typeof project.parentEntity === 'string' ? project.parentEntity : 'item_display',
-                summonPosition: typeof project.summonPosition === 'string' ? project.summonPosition : '~ ~ ~'
+                summonPosition: typeof project.summonPosition === 'string' ? project.summonPosition : '~ ~ ~',
+                datapackName: typeof project.datapackName === 'string' ? project.datapackName : ''
             }
         };
         const packElapsedMs = performance.now() - packStartMs;

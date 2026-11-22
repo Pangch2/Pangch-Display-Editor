@@ -43,7 +43,7 @@ export const shortcutDefinitions = [
   { id: 'newProject', category: '열기', label: '새 프로젝트 탭', defaults: ['N'] },
   { id: 'openProject', category: '열기', label: '프로젝트 열기', defaults: ['Ctrl+O'] },
   { id: 'openSettings', category: '열기', label: '설정 열기', defaults: ['Tab'] },
-  { id: 'openSummonCommand', category: '열기', label: '소환 명령어 내보내기', defaults: ['E'] },
+  { id: 'openSummonCommand', category: '열기', label: '내보내기 (소환 명령어 / 데이터팩)', defaults: ['E'] },
   { id: 'openBlockSearch', category: '열기', label: '블록 창 열기', defaults: [] },
   { id: 'openItemSearch', category: '열기', label: '아이템 창 열기', defaults: [] },
   { id: 'toggleShading', category: '보기', label: '셰이딩 전환', defaults: ['L'] },

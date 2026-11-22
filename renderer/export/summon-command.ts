@@ -8,10 +8,15 @@ import { parseSnbt, snbtNumber, SnbtLiteral, stringifySnbt, type SnbtValue } fro
 import { decomposeDisplayTransformation, preserveDisplayTransformation } from './display-transformation';
 import { animationCameraItem } from '../animation/animation-data';
 
-type Compound = { [key: string]: SnbtValue };
+export type Compound = { [key: string]: SnbtValue };
 export type SummonExportMode = 'command' | 'datapack' | 'separate';
 // 26.3: AbstractCommandBlockEditScreen.setMaxLength / CommandFunction.checkCommandLineLength.
 export const summonCommandLimits = { command: 32_500, datapack: 2_000_000, separate: 32_500 } as const;
+// 26.3: each passenger tick runs hasPassenger (contains) + getDefaultPassengerAttachmentPoint (indexOf) over its vehicle's
+// passenger list, so one vehicle costs O(n²) per tick on server and client. Headless 26.3, one vehicle: 500 → 0.7 ms,
+// 1000 → 2.6 ms, 2000 → 12.6 ms, 4000 → 98 ms, 8000 → 500 ms/tick; the n² part passes the base tick cost near 300.
+// 8000 displays split 50 per sub-parent run at the ~5-7 ms floor; 50 also keeps the root's own list small up to ~20k.
+export const rootExpansionSize = 50;
 function getSummonPrefix(project: Group, entity = project.userData.projectDetails?.parentEntity?.trim() || 'item_display'): string {
   const position = project.userData.projectDetails?.summonPosition?.trim() || '~ ~ ~';
   if (!/^(?:[a-z0-9_.-]+:)?[a-z0-9_./-]+$/.test(entity)) throw new Error('부모 엔티티 ID가 올바르지 않습니다.');
@@ -29,10 +34,10 @@ const argb = (color: string, alpha: number) => (alphaByte(alpha) << 24) | Number
 const isCompound = (value: SnbtValue | undefined): value is Compound => !!value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof SnbtLiteral);
 const coloredBlockPattern = /^(white|orange|magenta|light_blue|yellow|lime|pink|gray|light_gray|cyan|purple|blue|brown|green|red|black)_(bed|banner)$/;
 // Minecraft 26.3: Entity.load and Display.readAdditionalSaveData in resources/client.
-const numericDefaults = Object.entries({ interpolation_duration: 0, start_interpolation: 0, teleport_duration: 0,
+const numericDefaults = new Map(Object.entries({ interpolation_duration: 0, start_interpolation: 0, teleport_duration: 0,
   view_range: 1, shadow_radius: 0, shadow_strength: 1, width: 0, height: 0, glow_color_override: -1,
   Fire: 0, Air: 300, OnGround: 0, Invulnerable: 0, invulnerable_time: 0, PortalCooldown: 0,
-  CustomNameVisible: 0, Silent: 0, NoGravity: 0, Glowing: 0, TicksFrozen: 0, HasVisualFire: 0, fall_distance: 0 });
+  CustomNameVisible: 0, Silent: 0, NoGravity: 0, Glowing: 0, TicksFrozen: 0, HasVisualFire: 0, fall_distance: 0 }));
 const textDefaults = Object.entries({ line_width: 200, text_opacity: -1, background: 0x40000000,
   shadow: 0, see_through: 0, default_background: 0 });
 const numberListEquals = (value: SnbtValue | undefined, expected: readonly number[]) => Array.isArray(value)
@@ -92,7 +97,8 @@ export function itemExportCorrection(id: string, name: string, display: string, 
 
 function omitDisplayDefaults(entity: Compound): Compound {
   const type = entity.id ?? 'item_display';
-  for (const [key, value] of numericDefaults) if (snbtNumber(entity[key]) === value) delete entity[key];
+  // Walks the entity's few keys rather than every default.
+  for (const key of Object.keys(entity)) if (numericDefaults.has(key) && snbtNumber(entity[key]) === numericDefaults.get(key)) delete entity[key];
   if (type === 'text_display') {
     for (const [key, value] of textDefaults) if (snbtNumber(entity[key]) === value) delete entity[key];
     if (entity.alignment === 'center') delete entity.alignment;
@@ -204,7 +210,7 @@ function textNbt(name: string, options: TextDisplayOptions): Compound {
 
 type NbtChunks = Generator<string | undefined>;
 
-function* createSummonCommands(project: Group, limit: number, separate = false): NbtChunks {
+function* createSummonCommands(project: Group, limit: number, separate = false, collect?: (entity: Compound) => void, expandRoot = false): NbtChunks {
   const summonPrefix = separate ? '' : getSummonPrefix(project);
   const data = project.userData;
   const refs = data.objectUuidToInstance as Map<string, ObjectRef> | undefined;
@@ -338,6 +344,8 @@ function* createSummonCommands(project: Group, limit: number, separate = false):
     // Checkpoints pass through grouping and packing without retaining the entity.
     yield undefined;
   };
+  // Collecting needs no checkpoints, so objects skip the generators.
+  const collectObject = (uuid: string, inheritedNbt: Compound = {}) => { for (const entity of exportObject(uuid, inheritedNbt)) collect!(entity); };
   const exportGroup = function* (id: string, available: number, inheritedNbt: Compound = {}): NbtChunks {
     if (visitingGroups.has(id)) throw new Error(`그룹 ${id}: 순환 그룹 구조입니다.`);
     if (seenGroups.has(id)) return;
@@ -350,6 +358,7 @@ function* createSummonCommands(project: Group, limit: number, separate = false):
     // so no wrapper entity (and no nested Passengers list) is emitted.
     for (const child of group.children) {
       if (child.type === 'group') yield* exportGroup(child.id, available, groupNbt);
+      else if (collect) collectObject(child.id, groupNbt);
       else yield* exportObjects(child.id, available, groupNbt);
     }
     visitingGroups.delete(id);
@@ -358,14 +367,20 @@ function* createSummonCommands(project: Group, limit: number, separate = false):
   const passengers = function* (available: number): NbtChunks {
     for (const entry of data.sceneOrder ?? []) {
       if (entry.type === 'group') yield* exportGroup(entry.id, available);
+      else if (collect) collectObject(entry.id);
       else yield* exportObjects(entry.id, available);
     }
     for (const [id, group] of groups ?? []) if (!group.parent) yield* exportGroup(id, available);
     for (const id of groups?.keys() ?? []) yield* exportGroup(id, available);
-    for (const uuid of refs?.keys() ?? []) if (!seenObjects.has(uuid)) yield* exportObjects(uuid, available);
+    for (const uuid of refs?.keys() ?? []) if (!seenObjects.has(uuid)) {
+      if (collect) collectObject(uuid);
+      else yield* exportObjects(uuid, available);
+    }
   };
+  // Root expansion: displays ride sub-parents, which ride the root, so no vehicle exceeds the per-vehicle cost cliff.
+  const subParents = (available: number) => splitPassengers({ id: 'item_display' }, passengers, available, '루트 확장 부모', floatCache, rootExpansionSize);
   const chunks = separate ? passengers(limit)
-    : splitPassengers(omitDisplayDefaults(root), passengers, limit - summonPrefix.length, '프로젝트 mainNBT', floatCache);
+    : splitPassengers(omitDisplayDefaults(root), expandRoot ? subParents : passengers, limit - summonPrefix.length, '프로젝트 mainNBT', floatCache);
   for (const chunk of chunks) yield chunk === undefined ? undefined : summonPrefix + chunk;
 }
 
@@ -374,9 +389,16 @@ export function generateSummonCommand(project: Group): string {
   throw new Error('소환 명령을 생성할 수 없습니다.');
 }
 
-const oversizedEntity = (target: string) => new Error(`${target}: 단일 디스플레이 또는 NBT가 글자 수 제한을 초과해 나눌 수 없습니다.`);
+/** Every passenger's NBT in summon order, for exporters that compare poses. */
+export function summonPassengerEntities(project: Group): Compound[] {
+  const entities: Compound[] = [];
+  for (const _ of createSummonCommands(project, Infinity, false, entity => entities.push(entity))) { /* drained for its side effect */ }
+  return entities;
+}
 
-function* splitPassengers(entity: Compound, passengers: (limit: number) => NbtChunks, limit: number, target: string, floatCache: Map<number, string>): NbtChunks {
+const oversizedEntity =(target: string) => new Error(`${target}: 단일 디스플레이 또는 NBT가 글자 수 제한을 초과해 나눌 수 없습니다.`);
+
+function* splitPassengers(entity: Compound, passengers: (limit: number) => NbtChunks, limit: number, target: string, floatCache: Map<number, string>, maxCount = Infinity): NbtChunks {
   const nbt = stringifySnbt(entity, floatCache);
   const prefix = nbt.slice(0, -1) + (Object.keys(entity).length ? ',' : '') + 'Passengers:[';
   const suffix = ']}';
@@ -387,7 +409,7 @@ function* splitPassengers(entity: Compound, passengers: (limit: number) => NbtCh
     if (part === undefined) { yield undefined; continue; }
     if (part.length > available) throw oversizedEntity(target);
     const added = part.length + (chunk.length ? 1 : 0);
-    if (length + added > available) {
+    if (length + added > available || chunk.length === maxCount) {
       if ('UUID' in entity) throw new Error(`${target}: UUID를 지정한 엔티티는 여러 summon으로 나눌 수 없습니다.`);
       yield prefix + chunk.join(',') + suffix;
       chunk = [];
@@ -397,34 +419,35 @@ function* splitPassengers(entity: Compound, passengers: (limit: number) => NbtCh
     chunk.push(part);
   }
   if (chunk.length) yield prefix + chunk.join(',') + suffix;
-  else {
+  // Only the summon root is emitted bare; an empty sub-parent would be a stray entity.
+  else if (maxCount === Infinity) {
     if (nbt.length > limit) throw oversizedEntity(target);
     yield nbt;
   }
 }
 
-function* summonCommands(project: Group, mode: SummonExportMode): NbtChunks {
+function* summonCommands(project: Group, mode: SummonExportMode, expandRoot: boolean): NbtChunks {
   if (!project.userData.objectUuidToInstance?.size) return;
   const limit = summonCommandLimits[mode];
   try {
-    yield* createSummonCommands(project, limit, mode === 'separate');
+    yield* createSummonCommands(project, limit, mode === 'separate', undefined, expandRoot);
   } catch (error) {
     throw new Error(`${mode === 'command' ? 'Command' : mode === 'datapack' ? 'DataPack' : 'Separate'} · 최대 ${limit.toLocaleString()}자: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-export function generateSummonCommands(project: Group, mode: SummonExportMode = 'command'): string[] {
+export function generateSummonCommands(project: Group, mode: SummonExportMode = 'command', expandRoot = false): string[] {
   const commands: string[] = [];
-  for (const command of summonCommands(project, mode)) if (command !== undefined) commands.push(command);
+  for (const command of summonCommands(project, mode, expandRoot)) if (command !== undefined) commands.push(command);
   return commands;
 }
 
-export async function generateSummonCommandsAsync(project: Group, mode: SummonExportMode = 'command', signal?: AbortSignal): Promise<string[]> {
+export async function generateSummonCommandsAsync(project: Group, mode: SummonExportMode = 'command', expandRoot = false, signal?: AbortSignal): Promise<string[]> {
   signal?.throwIfAborted();
   const commands: string[] = [];
   let deadline = performance.now() + 8;
   let steps = 0;
-  for (const command of summonCommands(project, mode)) {
+  for (const command of summonCommands(project, mode, expandRoot)) {
     signal?.throwIfAborted();
     if (command !== undefined) commands.push(command);
     if (++steps % 128 === 0 && performance.now() >= deadline) {

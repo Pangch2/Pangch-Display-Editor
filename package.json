@@ -1,6 +1,6 @@
 {
   "name": "pangch-display-editor",
-  "version": "0.1.0",
+  "version": "0.5.1",
   "main": "electron-dist/main.js",
   "type": "module",
   "scripts": {
@@ -17,7 +17,7 @@
     "typescript": "^7.0.2",
     "concurrently": "^10.0.7",
     "cross-env": "^10.1.0",
-    "electron": "^45.3.3",
+    "electron": "^45.4.1",
     "electron-builder": "^26.18.0",
     "vite": "^8.3.8",
     "nodemon": "^3.1.14",
@@ -40,7 +40,7 @@
         "to": "Pangch-Face.ico"
       }
     ],
-    "productName": "pde-010",
+    "productName": "pde-051",
     "asar": true,
     "directories": {
       "output": "dist"

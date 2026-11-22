@@ -394,6 +394,35 @@
   cursor: default;
 }
 
+.summon-command-expand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-right: auto;
+  color: #bbb;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Narrow dialogs truncate the label instead of pushing the save button out of the toolbar. */
+.summon-command-expand span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.summon-command-expand:has(input:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.summon-command-expand input {
+  flex: none;
+  position: relative;
+  top: 1px;
+  margin: 0;
+}
+
 #summon-command-save {
   min-width: 30px;
   padding: 0 8px;
@@ -434,6 +463,53 @@
   overflow-x: auto;
   scrollbar-color: #4a4a50 #1e1e21;
   scrollbar-width: thin;
+}
+
+#animation-export-text {
+  flex: 1;
+  height: auto;
+}
+
+.settings-window.summon-command-window#animation-export-dialog {
+  height: min(640px, calc(100vh - 32px));
+}
+
+.animation-export-options {
+  display: grid;
+  flex: none;
+  gap: 8px;
+}
+
+.animation-export-options input[type='checkbox'] {
+  justify-self: start;
+  margin: 0;
+}
+
+.animation-export-quality input[type='range'] {
+  appearance: auto;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.animation-export-stops {
+  display: flex;
+  justify-content: space-between;
+}
+
+.animation-export-stops button {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: #999;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.animation-export-stops button:hover,
+.animation-export-stops button[aria-pressed="true"] {
+  color: #70c7ff;
 }
 
 .summon-command-body textarea:focus {
