@@ -42,7 +42,7 @@ declare interface IpcApi {
   openAutoSaveDirectory(): Promise<{ success: boolean; error?: string }>;
   openMinecraftEula(): Promise<{ success: boolean; error?: string }>;
   saveMcfunction(name: string, commands: string[]): Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
-  saveDatapack(name: string, data: Uint8Array, folder: boolean, lastPath?: string): Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
+  saveDatapack(name: string, data: Uint8Array, folder: boolean, lastPath?: string, directory?: string): Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
   decompressPdeProject(data: Uint8Array): Promise<Uint8Array>;
   writeProjectClipboard(data: Uint8Array): Promise<void>;
   readProjectClipboard(): Promise<Uint8Array<ArrayBuffer> | undefined>;

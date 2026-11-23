@@ -189,9 +189,16 @@ export function remapBlockAtlasMetadata(
         part.atlasKey = atlasKey;
         part.texPath = `${isTranslucentAtlasTexturePath(part.texPath) ? '__ATLAS_TRANSLUCENT__' : '__ATLAS__'}PAGE_${pageIndex}`;
     }
+    // Instances of one template share their transform arrays; remapping each array once keeps them shared.
+    const remapped = new Map<object, object>();
+    const remap = <T extends object>(source: T, create: () => T): T => {
+        let result = remapped.get(source) as T | undefined;
+        if (!result) remapped.set(source, result = create());
+        return result;
+    };
     for (const batch of geometryBatches ?? []) for (const instance of batch.instances) {
-        if (instance.atlasUvTransform) instance.atlasUvTransform = composeAtlasTransform(instance.atlasUvTransform, pageTransform);
-        if (instance.atlasUvTransforms) instance.atlasUvTransforms = instance.atlasUvTransforms.map(transform => composeAtlasTransform(transform, pageTransform));
+        if (instance.atlasUvTransform) instance.atlasUvTransform = remap(instance.atlasUvTransform, () => composeAtlasTransform(instance.atlasUvTransform!, pageTransform));
+        if (instance.atlasUvTransforms) instance.atlasUvTransforms = remap(instance.atlasUvTransforms, () => instance.atlasUvTransforms!.map(transform => remap(transform, () => composeAtlasTransform(transform, pageTransform))));
     }
 }
 

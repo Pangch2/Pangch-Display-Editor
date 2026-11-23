@@ -362,29 +362,32 @@ export function* encodePdeProjectSteps(project: PdeProject): Generator<void, Uin
         for (const [id, partner] of [...project.editorState.objectMirrorPairs, ...project.editorState.groupMirrorPairs]) mirrors.set(id, partner);
         for (const [id, plane] of project.editorState.mirrorPlanes ?? []) mirrorPlanes.set(id, plane);
     }
-    const collectNodes = function* (nodes: PdeNode[]): Generator<void, Record<string, any>[]> {
-        const collected: Record<string, any>[] = [];
-        for (const { uuid, ...node } of nodes) {
-            if (nodeIds.has(uuid)) throw new Error(`중복 PDE UUID: ${uuid}`);
-            nodeIds.set(uuid, nodeIds.size);
+    // Preorder ids and texture counts first; each node's saved form is built only when it is written (savedNode),
+    // so the scene is not held a second time.
+    const indexNodes = function* (nodes: PdeNode[]): Generator<void, void> {
+        for (const node of nodes) {
+            if (nodeIds.has(node.uuid)) throw new Error(`중복 PDE UUID: ${node.uuid}`);
+            nodeIds.set(node.uuid, nodeIds.size);
             if (typeof node.paintTexture === 'string') counts.set(node.paintTexture, (counts.get(node.paintTexture) ?? 0) + 1);
-            const options = node.isTextDisplay && node.options ? omitDefaults(node.options, textDefaults) : node.options;
-            // Empty pages are content, not an omitted option's fallback to the node name.
-            if (node.isTextDisplay && node.options?.pages !== undefined && options) options.pages = node.options.pages;
-            const children = node.children ? yield* collectNodes(node.children) : undefined;
-            collected.push(omitDefaults({ ...node,
-                brightness: node.brightness ? nonempty(omitDefaults(node.brightness, brightnessDefaults)) : undefined,
-                options: options ? nonempty(options) : undefined,
-                editorState: nonempty(omitDefaults({ ...editors.get(uuid), hidden: hidden.has(uuid) ? true : undefined, mirrorId: mirrors.get(uuid),
-                    mirrorPlane: mirrorPlanes.get(uuid) },
-                    node.isCollection ? groupDefaults : objectDefaults)),
-                children
-            }, { transforms: identityMatrix, nbt: '', children: [] }));
+            if (node.children) yield* indexNodes(node.children);
             if (++work % stepSize === 0) yield;
         }
-        return collected;
     };
-    const children = indexed ? yield* collectNodes(project.children) : project.children;
+    const savedNode = ({ uuid, ...node }: PdeNode): Record<string, any> => {
+        const options = node.isTextDisplay && node.options ? omitDefaults(node.options, textDefaults) : node.options;
+        // Empty pages are content, not an omitted option's fallback to the node name.
+        if (node.isTextDisplay && node.options?.pages !== undefined && options) options.pages = node.options.pages;
+        return omitDefaults({ ...node,
+            brightness: node.brightness ? nonempty(omitDefaults(node.brightness, brightnessDefaults)) : undefined,
+            options: options ? nonempty(options) : undefined,
+            editorState: nonempty(omitDefaults({ ...editors.get(uuid), hidden: hidden.has(uuid) ? true : undefined, mirrorId: mirrors.get(uuid),
+                mirrorPlane: mirrorPlanes.get(uuid) },
+                node.isCollection ? groupDefaults : objectDefaults)),
+            children: node.children
+        }, { transforms: identityMatrix, nbt: '', children: [] });
+    };
+    if (indexed) yield* indexNodes(project.children);
+    const children = project.children;
     const textures = [...counts].filter(([, count]) => count > 1).map(([texture]) => texture);
     const textureIds = new Map(textures.map((texture, index) => [texture, index]));
     const reference = (uuid: string): number => {
@@ -428,57 +431,60 @@ export function* encodePdeProjectSteps(project: PdeProject): Generator<void, Uin
         return result;
     };
     // Same text as JSON.stringify([prepare('', saved)]), written node by node so the work can pause.
-    const pieces: string[] = [];
+    // Pieces are whole JSON tokens, so encoding them in ~1 MB batches as they come gives the same bytes as one string,
+    // without holding the whole text as strings.
+    let pieces: string[] = [], pending = 0;
+    const parts: Uint8Array[] = [];
+    const flush = () => { parts.push(strToU8(pieces.join(''))); pieces = []; pending = 0; };
+    const push = (piece: string) => { pieces.push(piece); if ((pending += piece.length) >= 1 << 20) flush(); };
     const writeObject = function* (value: Record<string, unknown>): Generator<void, void> {
         let first = true;
-        pieces.push('{');
+        push('{');
         for (const key of Object.keys(value)) {
             const entry = key === 'children' && Array.isArray(value[key]) ? value[key] : prepare(key, value[key]);
             if (entry === undefined || typeof entry === 'function' || typeof entry === 'symbol') continue;
-            pieces.push(`${first ? '' : ','}${JSON.stringify(key)}:`);
+            push(`${first ? '' : ','}${JSON.stringify(key)}:`);
             first = false;
-            if (key === 'children' && Array.isArray(entry)) yield* writeNodes(entry);
-            else pieces.push(JSON.stringify(entry));
+            if (key === 'children' && Array.isArray(entry)) yield* writeNodes(entry, indexed);
+            else push(JSON.stringify(entry));
         }
-        pieces.push('}');
+        push('}');
     };
-    const writeNodes = function* (nodes: unknown[]): Generator<void, void> {
-        pieces.push('[');
+    const writeNodes = function* (nodes: unknown[], scene = false): Generator<void, void> {
+        push('[');
         for (let index = 0; index < nodes.length; index++) {
-            if (index) pieces.push(',');
-            const node = nodes[index] as Record<string, unknown> | undefined;
+            if (index) push(',');
+            const node = (scene ? savedNode(nodes[index] as PdeNode) : nodes[index]) as Record<string, unknown> | undefined;
             if (node !== null && typeof node === 'object' && Array.isArray(node.children)) yield* writeObject(node);
-            else pieces.push(JSON.stringify(prepare('', node)) ?? 'null');
+            else push(JSON.stringify(prepare('', node)) ?? 'null');
             if (++work % stepSize === 0) yield;
         }
-        pieces.push(']');
+        push(']');
     };
     yield* writeNodes([saved]);
-    // Pieces are whole JSON tokens, so encoding them in batches gives the same bytes as one string.
-    const parts: Uint8Array[] = [];
-    let batch = 0, length = 0;
-    for (let index = 0; index <= pieces.length; index++) {
-        if (index < pieces.length && (length += pieces[index].length) < 1 << 20) continue;
-        parts.push(strToU8(pieces.slice(batch, index + 1).join('')));
-        batch = index + 1;
-        length = 0;
-        yield;
-    }
-    const json = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-    let offset = 0;
-    for (const part of parts) {
-        json.set(part, offset);
-        offset += part.length;
+    flush();
+    // Parts go straight into the archive and are dropped as copied, so the text is never held twice.
+    const raw = archiveFor(parts.reduce((sum, part) => sum + part.length, 0));
+    for (let index = 0, offset = 18; index < parts.length; index++) {
+        raw.set(parts[index], offset);
+        offset += parts[index].length;
+        parts[index] = new Uint8Array(0);
         if (++work % 16 === 0) yield;
     }
     yield;
-    return encodeProjectArchive(json);
+    return raw;
+}
+
+/** A PRJ2 archive with its scene.json header written; the text goes at offset 18. */
+function archiveFor(length: number): Uint8Array {
+    const raw = new Uint8Array(18 + length);
+    raw.set(strToU8('PRJ2scene.json'));
+    new DataView(raw.buffer).setUint32(14, length, true);
+    return raw;
 }
 
 export function encodeProjectArchive(json: Uint8Array): Uint8Array {
-    const raw = new Uint8Array(18 + json.length);
-    raw.set(strToU8('PRJ2scene.json'));
-    new DataView(raw.buffer).setUint32(14, json.length, true);
+    const raw = archiveFor(json.length);
     raw.set(json, 18);
     return raw;
 }

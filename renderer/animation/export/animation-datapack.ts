@@ -21,9 +21,9 @@ export function clipFunctionNames(clips: string[]): string[] {
 
 /**
  * The data pack's files by path. Functions under zz/ are internal; the rest run as the summoned root entity.
- * Playing roots are listed by UUID in storage, spread over lanes; each tick reaches every one with `execute as <uuid>` through
- * its lane's macro, so no tick scans entities. MacroFunction keeps 8 instantiations per function, so up to 8 roots per lane play
- * without parsing. A root counts its clip tick (t) in a score and plays c<clip>/<tick>/b at the ticks with frames.
+ * Playing roots hold slots in pages of 8 UUIDs in storage, spread over lanes; each tick a page is one macro call reaching its roots
+ * with `execute as <uuid>`, so no tick scans entities or rebuilds a list. MacroFunction keeps 8 instantiations per function, so up to
+ * 8 pages per lane (1,024 roots) play without parsing. A root counts its clip tick (t) in a score and plays c<clip>/<tick>/b at the ticks with frames.
  *
  * c<clip>/<tick>/b runs as the root and holds the frame's data as literals, which the game parses once at load, and hands out
  * the entries. An animated passenger's index (i) is its rank in baked.parts.
@@ -63,9 +63,9 @@ export function animationDatapackFiles(baked: BakedAnimation, summon: string, ns
         if (entry.k) {
             swaps = true;
             // An entity cannot change type: a new one takes over the index and the seat, then the old one is removed.
-            // With expansion the seat is on the old entity's sub-parent, whose UUID zz/uuid leaves in u.u.
-            fn(`${name}_new`, [`data merge entity @s ${snbt(entry.f ?? {})}`, `scoreboard players set @s ${ns}.i ${rank.get(index)}`, `function ${ns}:zz/ride with storage ${rt} ${expandRoot ? 'u' : 'w[-1]'}`]);
-            if (expandRoot) lines.push(`execute unless entity @s[type=${entry.k}] on vehicle run function ${ns}:zz/uuid`);
+            // The seat's UUID goes to u.u: the root reads it from its slot; a sub-parent has none, so zz/uuid converts its UUID.
+            fn(`${name}_new`, [`data merge entity @s ${snbt(entry.f ?? {})}`, `scoreboard players set @s ${ns}.i ${rank.get(index)}`, `function ${ns}:zz/ride with storage ${rt} u`]);
+            lines.push(`execute unless entity @s[type=${entry.k}] on vehicle run function ${ns}:zz/${expandRoot ? 'uuid' : 'self'}`);
             lines.push(`execute unless entity @s[type=${entry.k}] at @s summon ${entry.k} run function ${ns}:${name}_new`, `execute unless entity @s[type=${entry.k}] run kill @s`);
         }
         return { merged, lines };
@@ -73,6 +73,7 @@ export function animationDatapackFiles(baked: BakedAnimation, summon: string, ns
     const head = `data modify storage ${rt} q set value [`;
     // A line per entry checks every passenger for its rank; a run's storage list checks them once, but each entry it hands out
     // costs about 18 checks more (measured on a 26.3 server: 4 passengers favor lines, 20 the list). Unknown passengers: always a list.
+    // shortcut: 18 was measured with the older four-line zz/take, so small models may use lines where a list is now cheaper; measure again to tune.
     const listed = (size: number) => baked.passengers === undefined || (size - 1) * baked.passengers >= 18 * size;
     // An 8-way tree of score ranges, run as the root: the key in `score` runs `leaf(key)`.
     const tree = (name: string, score: string, keys: number[], leaf: (key: number) => string): void => {
@@ -122,7 +123,7 @@ export function animationDatapackFiles(baked: BakedAnimation, summon: string, ns
                 for (let from = 0; from < values.length;) {
                     let to = from + 1, length = head.length + values[from].length + 1;
                     while (to < values.length && length + values[to].length + 1 <= lineLimit) length += values[to++].length + 1;
-                    show.push(head + values.slice(from, to).reverse().join(',') + ']', `scoreboard players set #q ${ns}.i ${run[from][0]}`,
+                    show.push(head + values.slice(from, to).reverse().join(',') + ']',
                         `execute ${riders} if score @s ${ns}.i matches ${run[from][0]}..${run[to - 1][0]} run function ${ns}:zz/take_${lone ? 't' : 'm'}`);
                     from = to;
                 }
@@ -139,42 +140,78 @@ export function animationDatapackFiles(baked: BakedAnimation, summon: string, ns
     // Roots numbered by another export of this pack stop (zz/step) and are numbered again when played (zz/p<clip>).
     let stamp = 0;
     for (const text of files.values()) for (let index = 0; index < text.length; index++) stamp = Math.imul(stamp ^ text.charCodeAt(index), 16777619);
-    // 16 lanes keep 128 roots parsed (8 each); a root joins one round robin (zz/add).
-    const lanes = 16;
-    fn('load', [...['t', 'c', 'i', 'v', 'm', 'p'].map(id => `scoreboard objectives add ${ns}.${id} dummy`), `scoreboard players set #256 ${ns}.m 256`,
-        `scoreboard players set #lanes ${ns}.m ${lanes}`,
+    // Slot k is slot k % 8 of page k / 8; pages go to the lanes in turn, so 16 lanes keep 1,024 roots parsed.
+    const lanes = 16, slots = 8, empty = '00000000-0000-0000-0000-000000000000';
+    const laneIds = Array.from({ length: lanes }, (_, lane) => lane), slotIds = Array.from({ length: slots }, (_, slot) => slot);
+    fn('load', [...['t', 'c', 'i', 'v', 'm', 's'].map(id => `scoreboard objectives add ${ns}.${id} dummy`), `scoreboard players set #256 ${ns}.m 256`,
+        `scoreboard players set #8 ${ns}.m ${slots}`, `scoreboard players set #lanes ${ns}.m ${lanes}`,
+        // #n: slots handed out, #live: roots holding one, #c: the next page to sweep. They describe the pages in storage, so a reload keeps them.
+        ...['#n', '#live', '#c'].map(name => `scoreboard players add ${name} ${ns}.m 0`),
+        // zz/check frees a slot whose UUID has no entity and no score; the empty UUID's score keeps empty slots out.
+        `scoreboard players set ${empty} ${ns}.s 0`,
         `data modify storage ${rt} hex set value [${Array.from({ length: 256 }, (_, value) => `"${value.toString(16).padStart(2, '0')}"`).join(',')}]`,
         // The animated passenger indices, lowest last, for zz/init.
         `data modify storage ${anim} a set value [${[-1, ...[...baked.parts].sort((a, b) => b - a)].join(',')}]`,
         // shortcut: clears only as many frame lists of the oldest storage format as this export has clips, and the playing and waiting lists of older formats; drop once old packs are gone.
-        ...baked.clips.map((_, index) => `data remove storage ${anim} c${index}`), ...['run', 'wait', 'f'].map(list => `data remove storage ${rt} ${list}`),
-        `scoreboard players set #v ${ns}.v ${stamp}`]);
+        ...baked.clips.map((_, index) => `data remove storage ${anim} c${index}`), ...['run', 'wait', 'f', ...laneIds.map(lane => `p${lane}`)].map(list => `data remove storage ${rt} ${list}`),
+        `scoreboard players set #v ${ns}.v ${stamp}`,
+        // A disabled pack loses its scheduled sweep.
+        `execute if score #live ${ns}.m matches 1.. run schedule function ${ns}:zz/sweep 20t`]);
 
-    // p<lane>: the roots playing, as {u: UUID}, rebuilt each tick from the roots still playing (w[-1] is the root being played).
-    // An unloaded root keeps its scores (only Scoreboard.entityRemoved drops them), so it stays and waits where it was; a killed one is dropped.
-    fn('tick', Array.from({ length: lanes }, (_, lane) => `execute if data storage ${rt} p${lane}[0] run function ${ns}:zz/l${lane}/0`));
-    for (let lane = 0; lane < lanes; lane++) {
-        fn(`zz/l${lane}/0`, [`data modify storage ${rt} w set from storage ${rt} p${lane}`, `data modify storage ${rt} p${lane} set value []`, `function ${ns}:zz/l${lane}/1`]);
-        fn(`zz/l${lane}/1`, [`execute store result score #k ${ns}.t run function ${ns}:zz/l${lane}/as with storage ${rt} w[-1]`,
-            `execute if score #k ${ns}.t matches 1 run data modify storage ${rt} p${lane} append from storage ${rt} w[-1]`,
-            `data remove storage ${rt} w[-1]`, `execute if data storage ${rt} w[0] run function ${ns}:zz/l${lane}/1`]);
-        fn(`zz/l${lane}/as`, [`$execute as $(u) run return run function ${ns}:zz/step`, `$execute if score $(u) ${ns}.p matches 1 run return 1`, 'return 0']);
+    // g<lane>: the lane's pages, each {a0..a7: UUID}. They change only when a root takes or frees a slot.
+    // An unloaded root keeps its scores (only Scoreboard.entityRemoved drops them), so it keeps its slot and waits where it was.
+    fn('tick', laneIds.map(lane => `execute if data storage ${rt} g${lane}[0] run function ${ns}:zz/l${lane}/0`));
+    for (const lane of laneIds) {
+        fn(`zz/l${lane}/0`, [`data modify storage ${rt} w set from storage ${rt} g${lane}`, `function ${ns}:zz/l${lane}/1`]);
+        fn(`zz/l${lane}/1`, [`function ${ns}:zz/s${lane} with storage ${rt} w[-1]`, `data remove storage ${rt} w[-1]`, `execute if data storage ${rt} w[0] run function ${ns}:zz/l${lane}/1`]);
+        fn(`zz/s${lane}`, slotIds.map(slot => `$execute as $(a${slot}) run function ${ns}:zz/step`));
     }
-    // One clip tick of a playing root (c: its clip, -1 when stopped); returns 1 while it plays on.
+    // #k's lane, page and slot, in x for the macros that reach it.
+    fn('zz/locate', [`scoreboard players operation #s ${ns}.m = #k ${ns}.m`, `scoreboard players operation #s ${ns}.m %= #8 ${ns}.m`,
+        `execute store result storage ${rt} x.s int 1 run scoreboard players get #s ${ns}.m`,
+        `scoreboard players operation #g ${ns}.m = #k ${ns}.m`, `scoreboard players operation #g ${ns}.m /= #8 ${ns}.m`,
+        `scoreboard players operation #l ${ns}.m = #g ${ns}.m`, `scoreboard players operation #l ${ns}.m %= #lanes ${ns}.m`,
+        `execute store result storage ${rt} x.l int 1 run scoreboard players get #l ${ns}.m`,
+        `scoreboard players operation #g ${ns}.m /= #lanes ${ns}.m`, `execute store result storage ${rt} x.g int 1 run scoreboard players get #g ${ns}.m`]);
+    // A root takes a freed slot (o), or the next one, which may start a page. `return run function` ends the caller only if the function returns.
+    fn('zz/claim', [`execute if data storage ${rt} o[0] run return run function ${ns}:zz/reuse`, `function ${ns}:zz/grow`]);
+    fn('zz/reuse', [`execute store result score #k ${ns}.m run data get storage ${rt} o[-1]`, `data remove storage ${rt} o[-1]`, `function ${ns}:zz/locate`, 'return 1']);
+    fn('zz/grow', [`scoreboard players operation #k ${ns}.m = #n ${ns}.m`, `scoreboard players add #n ${ns}.m 1`, `function ${ns}:zz/locate`,
+        `execute if score #s ${ns}.m matches 0 run function ${ns}:zz/page with storage ${rt} x`]);
+    fn('zz/page', [`$data modify storage ${rt} g$(l) append value {${slotIds.map(slot => `a${slot}:"${empty}"`).join(',')}}`]);
+    fn('zz/put', [`$data modify storage ${rt} g$(l)[$(g)].a$(s) set value "$(u)"`]);
+    // Freeing slot #k; with no root left the pages go, so an idle tick only checks the lanes.
+    fn('zz/leave', [`scoreboard players operation #k ${ns}.m = @s ${ns}.s`, `scoreboard players reset @s ${ns}.s`, `function ${ns}:zz/release`]);
+    fn('zz/release', [`function ${ns}:zz/locate`, `function ${ns}:zz/clear with storage ${rt} x`, `data modify storage ${rt} o append value 0`,
+        `execute store result storage ${rt} o[-1] int 1 run scoreboard players get #k ${ns}.m`, `scoreboard players remove #live ${ns}.m 1`,
+        `execute if score #live ${ns}.m matches ..0 run function ${ns}:zz/reset`]);
+    fn('zz/clear', [`$data modify storage ${rt} g$(l)[$(g)].a$(s) set value "${empty}"`]);
+    fn('zz/reset', [...laneIds.map(lane => `data remove storage ${rt} g${lane}`), `data remove storage ${rt} o`, `scoreboard players set #n ${ns}.m 0`, `scoreboard players set #c ${ns}.m 0`]);
+    // A killed root cannot free its slot: once a second one page is checked for UUIDs with no entity and no score.
+    fn('zz/sweep', [`execute if score #live ${ns}.m matches ..0 run return 0`, `scoreboard players operation #p ${ns}.m = #n ${ns}.m`, `scoreboard players add #p ${ns}.m ${slots - 1}`,
+        `scoreboard players operation #p ${ns}.m /= #8 ${ns}.m`, `execute if score #c ${ns}.m >= #p ${ns}.m run scoreboard players set #c ${ns}.m 0`,
+        `scoreboard players operation #k ${ns}.m = #c ${ns}.m`, `scoreboard players operation #k ${ns}.m *= #8 ${ns}.m`, `scoreboard players operation #base ${ns}.m = #k ${ns}.m`,
+        `scoreboard players add #c ${ns}.m 1`, `function ${ns}:zz/locate`, `function ${ns}:zz/sweep_page with storage ${rt} x`,
+        `execute if score #live ${ns}.m matches 1.. run schedule function ${ns}:zz/sweep 20t`]);
+    fn('zz/sweep_page', [`$function ${ns}:zz/check with storage ${rt} g$(l)[$(g)]`]);
+    fn('zz/check', slotIds.map(slot => `$execute unless entity $(a${slot}) unless score $(a${slot}) ${ns}.s matches 0.. run function ${ns}:zz/drop {i:${slot}}`));
+    fn('zz/drop', [`$scoreboard players set #k ${ns}.m $(i)`, `scoreboard players operation #k ${ns}.m += #base ${ns}.m`, `function ${ns}:zz/release`]);
+    // One clip tick of a playing root (c: its clip, -1 when stopped).
     const clips = baked.clips.map((_, index) => index);
     if (clips.length > 8) tree('zz/clip', `${ns}.c`, clips, index => `${ns}:c${index}/d`);
     fn('zz/step', [`execute unless score @s ${ns}.v = #v ${ns}.v run function ${ns}:zz/stop`, `scoreboard players add @s ${ns}.t 1`,
         ...clips.length > 8 ? [`function ${ns}:zz/clip`] : clips.map(index => `execute if score @s ${ns}.c matches ${index} run function ${ns}:c${index}/d`),
-        `execute if score @s ${ns}.c matches 0.. run return 1`, `scoreboard players reset @s ${ns}.p`, 'return 0']);
-    // A run's passengers come in rank order (#q: the next rank). One ahead of #q drops the entries of parts that are gone;
-    // one behind it, out of order, gets nothing. skip returns so take stops (`return run function` ends only on a return).
+        `execute unless score @s ${ns}.c matches 0.. run function ${ns}:zz/leave`]);
+    // A run's passengers come in rank order, so each takes the next entry.
+    // shortcut: a part removed alone during playback shifts the rest of its run, re-summon the model to recover.
     for (const [kind, line] of [['t', `data modify entity @s transformation set from storage ${rt} q[-1].t`], ['m', `data modify entity @s {} merge from storage ${rt} q[-1]`]]) {
-        fn(`zz/take_${kind}`, [`execute unless score @s ${ns}.i = #q ${ns}.i run return run function ${ns}:zz/skip_${kind}`, line,
-            `data remove storage ${rt} q[-1]`, `scoreboard players add #q ${ns}.i 1`]);
-        fn(`zz/skip_${kind}`, [`execute if score @s ${ns}.i > #q ${ns}.i run function ${ns}:zz/drop_${kind}`, 'return 0']);
-        fn(`zz/drop_${kind}`, [`data remove storage ${rt} q[-1]`, `scoreboard players add #q ${ns}.i 1`, `function ${ns}:zz/take_${kind}`]);
+        fn(`zz/take_${kind}`, [line, `data remove storage ${rt} q[-1]`]);
     }
-    if (swaps) fn('zz/ride', ['$ride @s mount $(u)']);
+    if (swaps) {
+        fn('zz/ride', ['$ride @s mount $(u)']);
+        fn('zz/self', [`scoreboard players operation #k ${ns}.m = @s ${ns}.s`, `function ${ns}:zz/locate`, `function ${ns}:zz/read with storage ${rt} x`]);
+        fn('zz/read', [`$data modify storage ${rt} u.u set from storage ${rt} g$(l)[$(g)].a$(s)`]);
+    }
 
     // The root's UUID as a selector string: each int splits into four bytes, each byte looks up two hex digits.
     const uuid = [`data modify storage ${rt} u.s set from entity @s UUID`];
@@ -215,18 +252,17 @@ export function animationDatapackFiles(baked: BakedAnimation, summon: string, ns
     // A root first played, or numbered by another export of this pack, is numbered here. Its first frame is the next tick.
     names.forEach((name, index) => {
         fn(`play/${name}`, onRoot(`zz/p${index}`));
-        fn(`zz/p${index}`, [`execute unless score @s ${ns}.v = #v ${ns}.v run function ${ns}:zz/init`, `execute unless score @s ${ns}.p matches 1 run function ${ns}:zz/add`,
+        fn(`zz/p${index}`, [`execute unless score @s ${ns}.v = #v ${ns}.v run function ${ns}:zz/init`, `execute unless score @s ${ns}.s matches 0.. run function ${ns}:zz/add`,
             `scoreboard players set @s ${ns}.c ${index}`, `scoreboard players set @s ${ns}.t -1`, `tag @s add ${ns}.on`]);
     });
-    // p: the root is in a lane until zz/step drops it, so playing again, or right after stop, adds no second entry.
-    fn('zz/add', [`function ${ns}:zz/uuid`, `data modify storage ${rt} e.u set from storage ${rt} u.u`, `scoreboard players set @s ${ns}.p 1`,
-        `scoreboard players add #lane ${ns}.m 1`, `scoreboard players operation #lane ${ns}.m %= #lanes ${ns}.m`,
-        ...Array.from({ length: lanes }, (_, lane) => `execute if score #lane ${ns}.m matches ${lane} run data modify storage ${rt} p${lane} append from storage ${rt} e`)]);
+    // s: the root's slot until zz/step frees it, so playing again, or right after stop, takes no second one.
+    fn('zz/add', [`function ${ns}:zz/uuid`, `function ${ns}:zz/claim`, `data modify storage ${rt} x.u set from storage ${rt} u.u`, `function ${ns}:zz/put with storage ${rt} x`,
+        `scoreboard players operation @s ${ns}.s = #k ${ns}.m`, `scoreboard players add #live ${ns}.m 1`,
+        `execute if score #live ${ns}.m matches 1 run schedule function ${ns}:zz/sweep 20t`]);
     fn('stop', onRoot('zz/stop', ` if entity @s[tag=${ns}.on]`));
     fn('zz/stop', [`scoreboard players set @s ${ns}.c -1`, `tag @s remove ${ns}.on`]);
-    // A killed root loses its scores, so its lane entry is dropped.
     fn('remove', onRoot('zz/remove'));
-    fn('zz/remove', [...expandRoot ? [`execute ${riders} run kill @s`] : [], 'execute on passengers run kill @s', 'kill @s']);
+    fn('zz/remove', [`execute if score @s ${ns}.s matches 0.. run function ${ns}:zz/leave`, ...expandRoot ? [`execute ${riders} run kill @s`] : [], 'execute on passengers run kill @s', 'kill @s']);
     for (const tag of ['load', 'tick']) files.set(`data/minecraft/tags/function/${tag}.json`, JSON.stringify({ values: [`${ns}:${tag}`] }));
     files.set('pack.mcmeta', JSON.stringify({ pack: { description: `${ns} animation (PDE)`, min_format: dataFormat, max_format: dataFormat } }));
     files.set('README.txt', [`function ${ns}:summon — 모델 소환`, '아래 함수는 소환된 부모 엔티티로 실행합니다 (execute as <부모> run function ...).',

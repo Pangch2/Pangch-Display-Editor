@@ -2161,13 +2161,15 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array | P
 
     try {
         const archiveStartMs = performance.now();
-        const project = fileContent instanceof ArrayBuffer || fileContent instanceof Uint8Array
+        let project = fileContent instanceof ArrayBuffer || fileContent instanceof Uint8Array
             ? (await import('../../save/pde-format')).decodeProject(fileContent) : fileContent;
+        // The decoded tree replaces the bytes; dropping them lets the parse below reuse that memory.
+        fileContent = null!;
         const archiveElapsedMs = performance.now() - archiveStartMs;
 
         // 렌더링에 필요한 필드만 남기도록 씬 트리를 단순화한다.
         const sceneStartMs = performance.now();
-        const processedChildren = split_children(project.children);
+        let processedChildren = split_children(project.children);
 
         const identityMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         processedChildren.forEach((node: any, i: number) => { node._rootIndex = i; });
@@ -2186,6 +2188,9 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array | P
             }
             processNode(frame.nodes[frame.index++], frame.transform, frame.groupId, renderList, stack, frame.refs, project.pdeFormatVersion);
         }
+        // Render items carry what is left to do; the node tree (the largest structure here) is released, input left intact.
+        processedChildren = [];
+        project = { ...project, children: undefined };
         const sceneTraverseElapsedMs = performance.now() - sceneTraverseStartMs;
 
         const sceneOrderStartMs = performance.now();
@@ -2383,6 +2388,9 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array | P
             templateBatches.set(item.models, { batch, atlasUvTransform, atlasUvTransforms, partTints, modelTransform });
         }
 
+        // Batches now hold the geometry items; each batch's are dropped once copied into metadata below.
+        renderList.length = 0;
+        geometryItems.length = 0;
         const useUint32Indices = totalVertices > 65535;
         const indexElementSize = useUint32Indices ? 4 : 2;
 
@@ -2484,6 +2492,7 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array | P
                     brightness: item.brightness
                 }))
             });
+            batch.instances = [];
         }
 
         const metadataPayload = {

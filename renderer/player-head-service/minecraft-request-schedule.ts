@@ -59,7 +59,6 @@ export class MinecraftRequestSchedule {
     const account = this.account(uuid);
     account.jobMs = account.jobMs * 0.75 + Math.max(1, ms) * 0.25;
   }
-  observeBackup(uuid: string, hasSkin: boolean): void { this.account(uuid).overhead = hasSkin ? 1 : 2; }
   private completionAt(requests: RequestEntry[], limit: number, count: number, at: number, ms: number, windowMs: number): number {
     const history = requests.map(request => ({ ...request }));
     for (let index = 0; index < count; index++) {

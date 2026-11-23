@@ -131,7 +131,6 @@ export function initHeadTextureService(win: BrowserWindow): () => Promise<() => 
         if (backups.has(uuid)) return;
         // Public profiles are only used before mutation; reconciliation needs the authenticated state.
         const skin = activeSkin(confirmedProfile ??= await account.publicProfile(uuid));
-        schedule.observeBackup(uuid, !!skin);
         const original: SkinBackup = { uuid, variant: skin?.variant.toLowerCase() === 'slim' ? 'slim' : 'classic', dirty: false };
         if (skin) {
           original.url = textureUrl(skin.url);
@@ -189,7 +188,9 @@ export function initHeadTextureService(win: BrowserWindow): () => Promise<() => 
         } else {
           if (skin) {
             confirmedProfile = undefined;
-            await request('/minecraft/profile/skins/active', { method: 'DELETE' });
+            // An empty (204) response falls back to the GET below.
+            const result = await request<MinecraftProfile | undefined>('/minecraft/profile/skins/active', { method: 'DELETE' });
+            if (result && accountUuid(result.id) === uuid) confirmedProfile = result;
           }
           if (activeSkin(confirmedProfile ?? await profile())) throw new Error('기본 스킨 복원을 아직 확인하지 못했습니다.');
         }

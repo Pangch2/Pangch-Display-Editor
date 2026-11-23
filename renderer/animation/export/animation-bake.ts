@@ -27,18 +27,17 @@ const tolerance = 0.002;
 
 /**
  * merge: a tick that continues the previous tick's motion (the same straight path) is not exported; without it every changed tick is.
- * quantize: a step is dropped, and the running step's interpolation lengthened to reach its target, when the lengthened one stays
- * within this of every pose on the way (per matrix element, blocks for translation). 0 turns it off.
+ * quantize: poses are sent every this many game ticks and the game's interpolation carries the move between them. 1 is every tick.
  * preroll: a part about to move after a hold gets its held pose again one tick earlier, so the move starts from a settled pose.
  * It only applies with merge; without it every moving tick is sent anyway.
  */
 export type BakeQuality = { merge: boolean; preroll: boolean; quantize: number };
 export const bakeQualities = {
-    performance: { merge: true, preroll: false, quantize: 0.01 },
-    balanced: { merge: true, preroll: true, quantize: 0 },
-    quality: { merge: false, preroll: false, quantize: 0 }
+    performance: { merge: true, preroll: false, quantize: 2 },
+    balanced: { merge: true, preroll: true, quantize: 1 },
+    quality: { merge: false, preroll: false, quantize: 1 }
 } satisfies Record<string, BakeQuality>;
-const defaultQuality: BakeQuality = { merge: true, preroll: false, quantize: 0 };
+const defaultQuality: BakeQuality = { merge: true, preroll: false, quantize: 1 };
 const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const removed = new SnbtLiteral('1b');
 // The editor fits rotation and scale to a replacement model at its key, so a pose change with one of these is a jump.
@@ -156,7 +155,7 @@ export function bakePart(samples: BakedSample[], ticks: number[], dirtyKeys: str
 }
 
 type PreparedPart = { samples: BakedSample[]; ticks: number[]; snap: boolean[]; forced: boolean[]; base: Map<number, BakedEntry>;
-    linear: (from: number, to: number, limit?: number) => boolean; elements: (index: number) => number[] | undefined };
+    linear: (from: number, to: number) => boolean };
 
 /** The part of bakePart that does not depend on breaks or quality, so the restart passes of bakeAnimation share it. */
 function preparePart(samples: BakedSample[], ticks: number[], dirtyKeys: string[], swaps: boolean): PreparedPart {
@@ -222,7 +221,7 @@ function preparePart(samples: BakedSample[], ticks: number[], dirtyKeys: string[
     }
     const matrices = samples.map(elementsOf);
     // Display.createInterpolatedRenderState: the game interpolates the decomposed parts linearly, as two plain keys do here.
-    const isLinear = (from: number, to: number, limit: number): boolean => {
+    const isLinear = (from: number, to: number): boolean => {
         const a = samples[from].matrix, b = samples[to].matrix;
         if (!a || !b) return false;
         let at: ((amount: number) => number[]) | undefined;
@@ -231,21 +230,19 @@ function preparePart(samples: BakedSample[], ticks: number[], dirtyKeys: string[
             if (!wanted) return false;
             const amount = (ticks[index] - ticks[from]) / (ticks[to] - ticks[from]);
             const actual = amount > 0 && amount < 1 ? (at ??= chord(a, b))(amount) : sampleTrack([{ tick: 0, transform: a }, { tick: 1, transform: b }], amount).elements;
-            for (let element = 0; element < 16; element++) if (Math.abs(actual[element] - wanted[element]) > limit) return false;
+            for (let element = 0; element < 16; element++) if (Math.abs(actual[element] - wanted[element]) > tolerance) return false;
         }
         return true;
     };
     // The restart passes ask the same spans again.
-    const known = new Map<number, Map<number, boolean>>();
-    const linear = (from: number, to: number, limit = tolerance): boolean => {
-        let spans = known.get(limit);
-        if (!spans) known.set(limit, spans = new Map());
+    const known = new Map<number, boolean>();
+    const linear = (from: number, to: number): boolean => {
         const span = from * samples.length + to;
-        let value = spans.get(span);
-        if (value === undefined) spans.set(span, value = isLinear(from, to, limit));
+        let value = known.get(span);
+        if (value === undefined) known.set(span, value = isLinear(from, to));
         return value;
     };
-    return { samples, ticks, snap, forced, base: entries, linear, elements: index => matrices[index] };
+    return { samples, ticks, snap, forced, base: entries, linear };
 }
 
 /** sampleTrack between two keys at 0 and 1, for 0 < amount < 1: the same lerps, slerps and compose, set up once per pair. */
@@ -261,7 +258,7 @@ function chord(a: AnimationTransform, b: AnimationTransform): (amount: number) =
 }
 
 /** The entries of a prepared part for these breaks, and where its steps start: a new break at a step start changes nothing. */
-function bakePrepared({ samples, ticks, snap, forced, base, linear, elements }: PreparedPart, breaks: Set<number> | undefined,
+function bakePrepared({ samples, ticks, snap, forced, base, linear }: PreparedPart, breaks: Set<number> | undefined,
     quality: BakeQuality): { entries: Map<number, BakedEntry>; starts: number[] } {
     const entries = new Map<number, BakedEntry>();
     // Sends below add to `m`, so each bake gets its own.
@@ -301,24 +298,6 @@ function bakePrepared({ samples, ticks, snap, forced, base, linear, elements }: 
         steps.push({ index, to });
         index = to === index ? index + 1 : to;
     }
-    // Quantization: the next step is dropped and the running one interpolates on to its target while that stays within `quantize`
-    // of every pose on the way, so a move keeps its speed and a hold stays a hold. Through a tick where other parts restart it must
-    // also move under `quantize` per tick: tick jitter there delays the restarting parts by a tick, but not this one.
-    const slow = (from: number, to: number) => {
-        const a = elements(from), b = elements(to);
-        return !!a && !!b && a.every((value, element) => Math.abs(b[element] - value) <= quality.quantize * (ticks[to] - ticks[from]));
-    };
-    // breaksBefore[index]: how many breaks lie below sample `index`.
-    const breaksBefore = [0];
-    if (quality.quantize > 0) for (let index = 0; index <= last; index++) breaksBefore.push(breaksBefore[index] + (breaks?.has(index) ? 1 : 0));
-    for (let position = 1; quality.quantize > 0 && position < steps.length; position++) {
-        const running = steps[position - 1], next = steps[position];
-        if (running.snap || next.snap || running.index === running.to || next.index !== running.to || forced[next.index]) continue;
-        const passes = breaksBefore[next.to] > breaksBefore[running.index + 1];
-        if (!linear(running.index, next.to, quality.quantize) || passes && !slow(running.index, next.to)) continue;
-        running.to = next.to;
-        steps.splice(position--, 1);
-    }
     steps.forEach(({ index, to, snap: snapped }) => {
         if (snapped) {
             // A new entity is summoned with its pose; anything else is set here and moves on from the next tick.
@@ -337,6 +316,26 @@ function bakePrepared({ samples, ticks, snap, forced, base, linear, elements }: 
         }
     });
     return { entries, starts: steps.map(step => step.index) };
+}
+
+/**
+ * The samples left on a grid of `step` game ticks, shared by all parts so they restart together, plus the last one.
+ * A model or entity swap keeps its tick and both neighbors: it cannot be interpolated, and a move resumes the tick after it.
+ * shortcut: another NBT change shorter than `step` can fall between samples, keep its ticks too if that shows up.
+ */
+export function quantizeSamples(parts: BakedSample[][], ticks: number[], step: number): { parts: BakedSample[][]; ticks: number[] } {
+    if (step <= 1) return { parts, ticks };
+    const last = ticks.length - 1;
+    // The grid starts at tick 1: tick 0 snaps, so that is where the first move can start.
+    const keep = ticks.map((tick, index) => !index || index === last || Math.floor((tick - 1) / step) !== Math.floor((ticks[index - 1] - 1) / step));
+    const swapped = (a: BakedSample, b: BakedSample) => a !== b && (a.id !== b.id || [...modelKeys].some(key => a.keys.get(key) !== b.keys.get(key)));
+    for (let index = 1; index <= last; index++) {
+        if (!parts.some(list => swapped(list[index - 1], list[index]))) continue;
+        keep[index - 1] = keep[index] = true;
+        if (index < last) keep[index + 1] = true;
+    }
+    const kept = ticks.flatMap((_, index) => keep[index] ? [index] : []);
+    return { parts: parts.map(list => kept.map(index => list[index])), ticks: kept.map(index => ticks[index]) };
 }
 
 /**
@@ -409,7 +408,8 @@ export async function bakeAnimation(root: Group, signal?: AbortSignal, quality: 
     if (!animated.length) throw new Error('애니메이션에서 움직이는 디스플레이가 없습니다.');
     // The client starts an interpolation on its first tick after the packet, which drifts against server ticks.
     // Parts restarting in different ticks drift apart, so every part restarts wherever any part does, until no part adds a tick.
-    for (const [index, { parts, ticks }] of sampled.entries()) {
+    for (const [index, clip] of sampled.entries()) {
+        const { parts, ticks } = quantizeSamples(clip.parts, clip.ticks, quality.quantize);
         const sampleIndex = new Map(ticks.map((tick, position) => [tick, position])), breaks = new Set<number>(), added: number[] = [];
         const prepared: PreparedPart[] = [];
         for (const { part, dirtyKeys, swaps } of animated) {

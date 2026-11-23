@@ -541,11 +541,15 @@ function createWindow() {
     });
   });
 
-  ipcMain.handle('save-datapack', (event, name: string, data: Uint8Array, folder: boolean, lastPath?: string) => {
+  ipcMain.handle('save-datapack', (event, name: string, data: Uint8Array, folder: boolean, lastPath?: string, directory?: string) => {
     if (event.sender !== win.webContents) return { success: false, error: 'Invalid datapack save sender' };
-    // Both formats open where the last pack (zip or folder) was saved, so switching format keeps the location.
-    const directory = typeof lastPath === 'string' && path.isAbsolute(lastPath) ? path.dirname(lastPath) : undefined;
     return saveDatapackFile(name, data, folder === true, async defaultName => {
+      if (directory) {
+        if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new Error('저장할 폴더의 절대 경로를 입력해 주세요.');
+        if (!(await fs.stat(directory).catch(() => undefined))?.isDirectory()) throw new Error('저장 폴더를 찾을 수 없습니다. 경로를 확인해 주세요.');
+      } else if (typeof lastPath === 'string' && path.isAbsolute(lastPath)) {
+        directory = path.dirname(lastPath);
+      }
       if (folder === true) {
         const result = await dialog.showOpenDialog(win, { title: `데이터팩 폴더(${defaultName})를 만들 위치`, defaultPath: directory, properties: ['openDirectory', 'createDirectory'] });
         return result.canceled ? undefined : result.filePaths[0];

@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('ipcApi', {
   openAutoSaveDirectory: () => ipcRenderer.invoke('open-auto-save-directory'),
   openMinecraftEula: () => ipcRenderer.invoke('open-minecraft-eula'),
   saveMcfunction: (name: string, commands: string[]) => ipcRenderer.invoke('save-mcfunction', name, commands),
-  saveDatapack: (name: string, data: Uint8Array, folder: boolean, lastPath?: string) => ipcRenderer.invoke('save-datapack', name, data, folder, lastPath),
+  saveDatapack: (name: string, data: Uint8Array, folder: boolean, lastPath?: string, directory?: string) => ipcRenderer.invoke('save-datapack', name, data, folder, lastPath, directory),
   decompressPdeProject:(data: Uint8Array) => ipcRenderer.invoke('decompress-pde-project', data),
   writeProjectClipboard: (data: Uint8Array) => ipcRenderer.invoke('write-project-clipboard', data),
   readProjectClipboard: () => ipcRenderer.invoke('read-project-clipboard'),

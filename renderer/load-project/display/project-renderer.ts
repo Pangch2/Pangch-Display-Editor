@@ -205,11 +205,14 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
 
         const parseStartMs = performance.now();
         const bytes = fileBuffer && new Uint8Array(fileBuffer);
-        const raw = Array.isArray(file) ? { children: file } : file instanceof File ? schematicFilePattern.test(file.name)
+        let raw = Array.isArray(file) ? { children: file } : file instanceof File ? schematicFilePattern.test(file.name)
             ? await parseSchematic(bytes!, file.name.replace(schematicFilePattern, '')) : file.name.toLowerCase().endsWith('.pde')
             ? await window.ipcApi.decompressPdeProject(bytes) : gunzipSync(bytes) : undefined;
         if (myGen !== currentLoadGen) return new Map<Object3D, Set<number>>();
-        const { metadata, geometryBuffer } = 'geometryBuffer' in file ? file : await parsePbdeProject(raw, mainThreadAssetProvider);
+        const parsed = 'geometryBuffer' in file ? file : parsePbdeProject(raw!, mainThreadAssetProvider);
+        // The parser drops the decoded input as soon as it can; this frame must not keep it alive through the render.
+        raw = undefined;
+        const { metadata, geometryBuffer } = await parsed;
         const parseElapsedMs = performance.now() - parseStartMs;
         if (myGen !== currentLoadGen) {
             return new Map<Object3D, Set<number>>();
@@ -838,6 +841,9 @@ async function renderPbdeProject(file: File | PdeNode[] | ParsedPbdeProject, isM
                         }
                     }
                 const meshBuildElapsedMs = performance.now() - meshBuildStartMs;
+                // The batches hold every instance now; drop the parser's per-instance records before the steps below allocate.
+                for (const group of signatureGroups.values()) group.instances = [];
+                for (const batch of activeGeometryBatches ?? []) batch.instances = [];
 
                 if (materialUpdates.length > 0) {
                     const materialUpdateStartMs = performance.now();

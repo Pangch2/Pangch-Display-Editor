@@ -3,8 +3,8 @@ import { getPlayerHeadTexture } from '../../load-project/display/player-head-atl
 import { bakeAnimation, type BakeQuality } from './animation-bake';
 import { animationDatapackFiles, animationNamespace, zipAnimationDatapack } from './animation-datapack';
 
-/** lastPath: the previous export, whose directory the save dialog opens in. expandRoot: summon root expansion. */
-export type AnimationExportOptions = { name: string; folder: boolean; quality: BakeQuality; expandRoot?: boolean; lastPath?: string };
+/** The save dialog starts in directory or, when blank, the parent of lastPath. */
+export type AnimationExportOptions = { name: string; folder: boolean; quality: BakeQuality; expandRoot?: boolean; lastPath?: string; directory?: string };
 
 /** Saves every animation clip as a data pack (zip or folder); resolves to the saved path, or undefined when the dialog is canceled. */
 export async function exportAnimationDatapack(root: Group, options: AnimationExportOptions, signal?: AbortSignal): Promise<string | undefined> {
@@ -16,7 +16,7 @@ export async function exportAnimationDatapack(root: Group, options: AnimationExp
     // Passenger indices are counted on one root.
     if (baked.summon.length !== 1) throw new Error('소환 명령이 여러 개로 나뉘는 프로젝트는 애니메이션을 내보낼 수 없습니다.');
     const zip = zipAnimationDatapack(animationDatapackFiles(baked, baked.summon[0], animationNamespace(options.name), options.expandRoot));
-    const result = await window.ipcApi.saveDatapack(options.name, zip, options.folder, options.lastPath);
+    const result = await window.ipcApi.saveDatapack(options.name, zip, options.folder, options.lastPath, options.directory);
     if (!result.success && !result.canceled) throw new Error(result.error ?? '데이터팩을 저장할 수 없습니다.');
     return result.path;
 }

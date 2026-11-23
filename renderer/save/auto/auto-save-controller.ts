@@ -4,7 +4,7 @@ import type { ProjectSaveResult } from '../project-file-store.js';
 export type AutoSaveSnapshot = { name: string; data: Uint8Array };
 /** Returns the snapshot, or a generator that yields between pieces of work and yields `true` once the scene has been read. */
 export type AutoSaveCapture = () => AutoSaveSnapshot | Iterator<unknown, AutoSaveSnapshot>;
-type AutoSaveProject = { capture: AutoSaveCapture; baseline?: Uint8Array; ready: Promise<void>; revision: number; suspended: boolean; error?: string };
+type AutoSaveProject = { capture: AutoSaveCapture; baseline?: string; ready: Promise<void>; revision: number; suspended: boolean; error?: string };
 
 // Work per slice before the page gets a turn; long captures stay under a frame or two at a time.
 const sliceMs = 8;
@@ -12,15 +12,23 @@ const sliceMs = 8;
 const hidden = () => typeof document !== 'undefined' && document.hidden;
 const pageTurn = () => new Promise(resolve => setTimeout(resolve));
 
-/** Byte comparison in slices, so a large project's comparison doesn't stall the page. */
-async function sameBytes(a: Uint8Array | undefined, b: Uint8Array): Promise<boolean> {
-    if (!a || a.length !== b.length) return false;
-    for (let start = 0; start < a.length; start += 1 << 22) {
-        const end = Math.min(a.length, start + (1 << 22));
-        for (let index = start; index < end; index++) if (a[index] !== b[index]) return false;
-        if (end < a.length && !hidden()) await pageTurn();
+/**
+ * Length + two independent 32-bit hash lanes, in slices so a large project doesn't stall the page. A baseline keeps
+ * this instead of a full copy of the project bytes (tens of MB on big scenes).
+ * shortcut: a 64-bit hash, not a byte comparison; an accidental collision (~2^-64) skips one cycle's save until the next edit.
+ */
+async function contentHash(bytes: Uint8Array): Promise<string> {
+    let a = 0x811c9dc5, b = 0x9747b28c;
+    for (let start = 0; start < bytes.length; start += 1 << 22) {
+        const end = Math.min(bytes.length, start + (1 << 22));
+        for (let index = start; index < end; index++) {
+            a = Math.imul(a ^ bytes[index], 0x01000193);
+            b = Math.imul(b ^ bytes[index], 0x5bd1e995);
+            b ^= b >>> 15;
+        }
+        if (end < bytes.length && !hidden()) await pageTurn();
     }
-    return true;
+    return `${bytes.length}:${(a >>> 0).toString(16)}:${(b >>> 0).toString(16)}`;
 }
 
 export class AutoSaveController {
@@ -85,12 +93,12 @@ export class AutoSaveController {
                     if (snapshot) snapshots.push({ ...request, snapshot });
                 } catch (error) { if (current(request)) request.project.error = String(error); }
             }
-            const changed: typeof snapshots = [];
+            const changed: (typeof snapshots[number] & { hash: string })[] = [];
             for (const request of snapshots) {
-                const same = await sameBytes(request.project.baseline, request.snapshot.data);
+                const hash = await contentHash(request.snapshot.data);
                 if (!current(request)) continue;
-                if (same) request.project.error = undefined;
-                else changed.push(request);
+                if (hash === request.project.baseline) request.project.error = undefined;
+                else changed.push({ ...request, hash });
             }
             for (const request of changed) {
                 if (!current(request)) continue;
@@ -98,7 +106,7 @@ export class AutoSaveController {
                 try {
                     const result = await this.save(id, snapshot, this.settings.maximum);
                     if (!current(request)) continue;
-                    if (result.success) { project.baseline = snapshot.data; project.error = undefined; }
+                    if (result.success) { project.baseline = request.hash; project.error = undefined; }
                     else if (!result.canceled) project.error = `${snapshot.name || '새 프로젝트'}: ${result.error ?? '자동저장 실패'}`;
                 } catch (error) { if (current(request)) project.error = String(error); }
             }
@@ -113,7 +121,7 @@ export class AutoSaveController {
         const valid = (read: boolean) => this.projects.get(id) === project && project.revision === revision && (read || this.changes() === changes);
         try {
             const snapshot = await this.capture(project.capture, valid);
-            if (snapshot) project.baseline = snapshot.data;
+            if (snapshot) project.baseline = await contentHash(snapshot.data);
         } catch (error) { if (valid(true)) project.error = String(error); }
         this.reportErrors();
     }
