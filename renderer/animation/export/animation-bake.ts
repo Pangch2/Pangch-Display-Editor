@@ -30,8 +30,10 @@ const tolerance = 0.002;
  * quantize: poses are sent every this many game ticks and the game's interpolation carries the move between them. 1 is every tick.
  * preroll: a part about to move after a hold gets its held pose again one tick earlier, so the move starts from a settled pose.
  * It only applies with merge; without it every moving tick is sent anyway.
+ * poseError: with merge, all parts update at the same ticks, chosen as far apart as keeps every display's corners within this many
+ * blocks of its sampled pose; a part staying that close is not written. 0 or unset keeps each part's own merged steps.
  */
-export type BakeQuality = { merge: boolean; preroll: boolean; quantize: number };
+export type BakeQuality = { merge: boolean; preroll: boolean; quantize: number; poseError?: number };
 export const bakeQualities = {
     performance: { merge: true, preroll: false, quantize: 2 },
     balanced: { merge: true, preroll: true, quantize: 1 },
@@ -155,7 +157,8 @@ export function bakePart(samples: BakedSample[], ticks: number[], dirtyKeys: str
 }
 
 type PreparedPart = { samples: BakedSample[]; ticks: number[]; snap: boolean[]; forced: boolean[]; base: Map<number, BakedEntry>;
-    linear: (from: number, to: number) => boolean };
+    linear: (from: number, to: number) => boolean; matrices: (number[] | undefined)[] };
+type BakeStep = { index: number; to: number; snap?: boolean };
 
 /** The part of bakePart that does not depend on breaks or quality, so the restart passes of bakeAnimation share it. */
 function preparePart(samples: BakedSample[], ticks: number[], dirtyKeys: string[], swaps: boolean): PreparedPart {
@@ -242,7 +245,7 @@ function preparePart(samples: BakedSample[], ticks: number[], dirtyKeys: string[
         if (value === undefined) known.set(span, value = isLinear(from, to));
         return value;
     };
-    return { samples, ticks, snap, forced, base: entries, linear };
+    return { samples, ticks, snap, forced, base: entries, linear, matrices };
 }
 
 /** sampleTrack between two keys at 0 and 1, for 0 < amount < 1: the same lerps, slerps and compose, set up once per pair. */
@@ -259,7 +262,7 @@ function chord(a: AnimationTransform, b: AnimationTransform): (amount: number) =
 
 /** The entries of a prepared part for these breaks, and where its steps start: a new break at a step start changes nothing. */
 function bakePrepared({ samples, ticks, snap, forced, base, linear }: PreparedPart, breaks: Set<number> | undefined,
-    quality: BakeQuality): { entries: Map<number, BakedEntry>; starts: number[] } {
+    quality: BakeQuality, shared?: BakeStep[]): { entries: Map<number, BakedEntry>; starts: number[] } {
     const entries = new Map<number, BakedEntry>();
     // Sends below add to `m`, so each bake gets its own.
     for (const [tick, value] of base) entries.set(tick, value.m ? { ...value, m: { ...value.m } } : { ...value });
@@ -280,8 +283,8 @@ function bakePrepared({ samples, ticks, snap, forced, base, linear }: PreparedPa
         pose = target.pose;
     };
     // Steps: from `index` the part interpolates to the pose of `to`; a snap step sets its pose at once.
-    const steps: { index: number; to: number; snap?: boolean }[] = [];
-    for (let index = 0; index <= last;) {
+    const steps = shared ?? [];
+    if (!shared) for (let index = 0; index <= last;) {
         if (snap[index]) {
             steps.push({ index, to: index, snap: true });
             if (++index > last || snap[index]) continue;
@@ -316,6 +319,92 @@ function bakePrepared({ samples, ticks, snap, forced, base, linear }: PreparedPa
         }
     });
     return { entries, starts: steps.map(step => step.index) };
+}
+
+// A display's box in its own space. shortcut: an item model larger than a block is measured as a block, use its real bounds if its error shows.
+function cornerRange({ id, entity }: BakedSample): [number, number] {
+    if (id.endsWith('block_display')) return [0, 1];
+    if (!id.endsWith('text_display')) return [-0.5, 0.5];
+    // A text line is at most line_width pixels of 1/40 block, centered on the origin.
+    const half = (snbtNumber(entity.line_width) ?? 200) / 80;
+    return [-half, half];
+}
+
+/** True when every corner of the box stays within `limit` blocks between two column-major matrices. */
+function cornersWithin(a: ArrayLike<number>, b: ArrayLike<number>, [low, high]: [number, number], limit: number): boolean {
+    for (let corner = 0; corner < 8; corner++) {
+        const x = corner & 1 ? high : low, y = corner & 2 ? high : low, z = corner & 4 ? high : low;
+        const dx = (a[0] - b[0]) * x + (a[4] - b[4]) * y + (a[8] - b[8]) * z + a[12] - b[12];
+        const dy = (a[1] - b[1]) * x + (a[5] - b[5]) * y + (a[9] - b[9]) * z + a[13] - b[13];
+        const dz = (a[2] - b[2]) * x + (a[6] - b[6]) * y + (a[10] - b[10]) * z + a[14] - b[14];
+        if (dx * dx + dy * dy + dz * dz > limit * limit) return false;
+    }
+    return true;
+}
+
+/**
+ * Steps for parts that all restart at the same ticks, since the client's start of a move drifts against server ticks.
+ * From each shared tick it takes the furthest sample every part can reach in one straight move, or rest through, within `limit` blocks.
+ * `shown` is the sample a part displays: a part resting within the limit keeps showing an older one.
+ */
+async function sharedSteps(prepared: PreparedPart[], limit: number, pause: () => Promise<void>): Promise<BakeStep[][]> {
+    const { ticks } = prepared[0], last = ticks.length - 1, sampleAt = new Map(ticks.map((tick, index) => [tick, index]));
+    // Written changes keep their samples, and a move resumes on the sample after a snap.
+    const fixed = new Set([last]);
+    for (const { base, snap } of prepared) {
+        for (const tick of base.keys()) fixed.add(sampleAt.get(tick)!);
+        for (let index = 0; index < last; index++) if (snap[index]) fixed.add(index).add(index + 1);
+    }
+    const rests = ({ samples, matrices }: PreparedPart, shown: number, from: number, to: number) => {
+        const box = cornerRange(samples[shown]), held = matrices[shown];
+        for (let index = from + 1; index <= to; index++) {
+            if (samples[index].pose === samples[shown].pose) continue;
+            const wanted = matrices[index];
+            if (!held || !wanted || !cornersWithin(held, wanted, box, limit)) return false;
+        }
+        return true;
+    };
+    const moves = ({ samples, matrices }: PreparedPart, shown: number, from: number, to: number) => {
+        if (to === from + 1) return true;
+        const a = samples[shown].matrix, b = samples[to].matrix;
+        if (!a || !b) return false;
+        const along = chord(a, b), box = cornerRange(samples[to]);
+        for (let index = from + 1; index < to; index++) {
+            const wanted = matrices[index];
+            if (!wanted || !cornersWithin(along((ticks[index] - ticks[from]) / (ticks[to] - ticks[from])), wanted, box, limit)) return false;
+        }
+        return true;
+    };
+    const shown = prepared.map(() => 0), steps: BakeStep[][] = prepared.map(() => []);
+    for (let from = 0; from < last;) {
+        let to = from + 1;
+        while (!fixed.has(to)) to++;
+        for (const [position, part] of prepared.entries()) {
+            if (to === from + 1) break;
+            // A part that snaps here starts moving on the next sample, which is already a shared tick.
+            if (part.snap[from]) continue;
+            let reach = from + 1;
+            while (reach < to && (!part.forced[from] && rests(part, shown[position], from, reach + 1) || moves(part, shown[position], from, reach + 1))) reach++;
+            to = reach;
+            if (!(position & 63)) await pause();
+        }
+        prepared.forEach((part, position) => {
+            if (part.snap[from]) {
+                steps[position].push({ index: from, to: from, snap: true });
+                shown[position] = from;
+            } else if (part.forced[from] || !rests(part, shown[position], from, to)) {
+                steps[position].push({ index: from, to });
+                shown[position] = to;
+            }
+        });
+        from = to;
+        await pause();
+    }
+    prepared.forEach((part, position) => {
+        if (part.snap[last]) steps[position].push({ index: last, to: last, snap: true });
+        else if (part.forced[last]) steps[position].push({ index: last, to: last });
+    });
+    return steps;
 }
 
 /**
@@ -415,6 +504,11 @@ export async function bakeAnimation(root: Group, signal?: AbortSignal, quality: 
         for (const { part, dirtyKeys, swaps } of animated) {
             prepared.push(preparePart(parts[part], ticks, dirtyKeys, swaps));
             await pause();
+        }
+        if (quality.merge && (quality.poseError ?? 0) > 0) {
+            const shared = await sharedSteps(prepared, quality.poseError!, pause);
+            animated.forEach(({ part }, position) => { for (const [gameTick, entry] of bakePrepared(prepared[position], undefined, quality, shared[position]).entries) clips[index].frames[gameTick].set(part, entry); });
+            continue;
         }
         // seen: how many of `added` the part was baked with. A part is baked again only when a newer break is not one of its step starts.
         const baked: { entries: Map<number, BakedEntry>; starts: Set<number>; seen: number }[] = [];

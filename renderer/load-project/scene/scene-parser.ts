@@ -2510,7 +2510,8 @@ export async function parsePbdeProject(fileContent: ArrayBuffer | Uint8Array | P
                 nbt: typeof project.nbt === 'string' ? project.nbt : '',
                 parentEntity: typeof project.parentEntity === 'string' ? project.parentEntity : 'item_display',
                 summonPosition: typeof project.summonPosition === 'string' ? project.summonPosition : '~ ~ ~',
-                datapackName: typeof project.datapackName === 'string' ? project.datapackName : ''
+                datapackName: typeof project.datapackName === 'string' ? project.datapackName : '',
+                animationExport: project.animationExport && typeof project.animationExport === 'object' && !Array.isArray(project.animationExport) ? project.animationExport : undefined
             }
         };
         const packElapsedMs = performance.now() - packStartMs;

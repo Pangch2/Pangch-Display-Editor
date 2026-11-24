@@ -149,6 +149,7 @@ export function* serializeProjectSteps(root: Group, selection?: ProjectSelection
         parentEntity: data.projectDetails?.parentEntity ?? 'item_display',
         summonPosition: data.projectDetails?.summonPosition ?? '~ ~ ~',
         datapackName: data.projectDetails?.datapackName || undefined,
+        animationExport: data.projectDetails?.animationExport,
         children, editorState: state
     };
     return project;

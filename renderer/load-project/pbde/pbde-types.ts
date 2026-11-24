@@ -106,6 +106,8 @@ export interface ProjectDetails {
     summonPosition: string;
     /** Animation export name; empty follows `name`. */
     datapackName?: string;
+    /** Animation export dialog options (see StoredOptions in animation-export dialog). */
+    animationExport?: Record<string, string | boolean>;
 }
 
 export interface WorkerMetadata {

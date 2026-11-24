@@ -64,6 +64,8 @@ export type PdeProject = {
     parentEntity?: string;
     summonPosition?: string;
     datapackName?: string;
+    /** Animation export dialog options; the dialog checks each value when it applies them. */
+    animationExport?: Record<string, string | boolean>;
     children: PdeNode[];
     editorState: PdeEditorState;
 };
@@ -160,6 +162,8 @@ export function* validatePdeProjectSteps(project: any): Generator<void, void> {
     if ([project.parentEntity, project.summonPosition, project.datapackName].some(value => value !== undefined && !string(value))) {
         throw new Error('잘못된 PDE 소환 설정입니다.');
     }
+    if (project.animationExport !== undefined && (!record(project.animationExport)
+        || !Object.values(project.animationExport).every(value => string(value) || boolean(value)))) throw new Error('잘못된 PDE 애니메이션 내보내기 설정입니다.');
     const textures = project.refs?.paintTextures;
     if (project.refs !== undefined && (!record(project.refs) || !Array.isArray(textures) || !textures.every(paintTexture))) {
         throw new Error('잘못된 PDE 헤드 텍스처 목록입니다.');

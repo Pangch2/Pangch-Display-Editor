@@ -8,7 +8,6 @@ import { animationData, animationSession, captureAnimationSnapshot, previewAnima
     recordAnimationTransform, setAnimationEnabled, syncAnimationTargets, selectAnimationClip, previewAnimationPlayback, previewCamera } from '../animation/animation-state';
 import { animationEasings, animationChannels, animationEndTick, animationLayers, animationPlayback, channelKeys, keyHasChannel, keyCurve, setKeyCurve, keyChannelValues, animationExpression,
     copyKeyChannels, removeKeyChannels, mergeAnimationKey, offsetAnimationChannel, keyTransform, animationTimelineEnd, ticksPerSecond, type AnimationChannel, type AnimationClip, type AnimationCurve, type AnimationKey, type AnimationTrack, type AnimationVector } from '../animation/animation-data';
-import { openAnimationExport } from './dialogs/animation-export';
 import { animationGraphLayout, graphHeight, renderAnimationGraph, type GraphChannel, type GraphLayout } from './animation-graph';
 import { insertCurvePoint, moveCurveControl, removeCurvePoint, toBezierCurve, type CurveTarget } from '../animation/animation-curve';
 import { initAnimationClipControls } from './animation-clips';
@@ -17,6 +16,7 @@ import { captureHistoryUiState, recordCreationChange, recordReplacementChange, r
 import { flushProjectEdits, queueProjectEdit, startProjectEdit } from '../save/pending-edits';
 import { getShortcuts, matchesPointerShortcut, matchesShortcut } from '../controls/input/shortcuts';
 import { handleExpandCollapseShortcut } from './common/expand-collapse';
+import { closeColorPicker } from './common/color-picker';
 import { getSelectAllSceneSelection, type PrimarySelection } from '../controls/selection/select';
 import { getObjectLabel } from './scene-panel/scene-panel-model';
 import { isSceneItemEnabled, setSceneItemEnabled } from '../controls/scene-visibility';
@@ -46,7 +46,7 @@ panel.innerHTML = `<div class="details-resizer animation-resizer" role="separato
     <div class="animation-tools animation-toolbar" role="toolbar" aria-label="타임라인 편집">
         <div class="animation-view-tools" role="group" aria-label="타임라인 보기">
             <button id="animation-graph-toggle" type="button" aria-pressed="false" title="키프레임 / 그래프 보기 전환">그래프</button>
-            <button id="animation-export" type="button" title="애니메이션 내보내기 창 열기 (애니메이션 모드에서는 소환 명령어 단축키)">데이터팩</button>
+            <button id="animation-global-interpolation" type="button" aria-pressed="false" title="켜면 각 파츠가 이전 키 자세를 유지하다가, 클립 전체에서 다음 키 직전의 마지막 키프레임부터 다음 키까지 보간합니다. 끄면 파츠별 이전 키부터 보간합니다.">전체 보간</button>
         </div>
         <div class="animation-actions" role="group" aria-label="키프레임 편집">
         <button id="animation-add" type="button" title="선택한 파츠의 현재 포즈를 키프레임으로 추가" disabled>◇ 키 추가</button>
@@ -164,6 +164,7 @@ const previousKeyButton = panel.querySelector<HTMLButtonElement>('#animation-pre
 const pauseButton = panel.querySelector<HTMLButtonElement>('#animation-pause')!;
 const nextKeyButton = panel.querySelector<HTMLButtonElement>('#animation-next-key')!;
 const graphButton = panel.querySelector<HTMLButtonElement>('#animation-graph-toggle')!;
+const globalInterpolationButton = panel.querySelector<HTMLButtonElement>('#animation-global-interpolation')!;
 const channelSelect = panel.querySelector<HTMLSelectElement>('#animation-channel')!;
 channelSelect.value = 'all:0';
 const channelLabel = panel.querySelector<HTMLElement>('#animation-channel-label')!;
@@ -364,6 +365,7 @@ async function settle(): Promise<boolean> {
     const current = revision;
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && (activeElement.matches('input, textarea, select') || activeElement.isContentEditable)) activeElement.blur();
+    closeColorPicker(); // a text color is keyed when its picker closes, so close it before the tick moves
     window.dispatchEvent(new Event('pde:finish-transform'));
     await flushProjectEdits(flushAnimationEdits);
     return current === revision;
@@ -850,6 +852,7 @@ export function syncAnimationPanel(): void {
     if (visibilityChanged) window.dispatchEvent(new Event('resize'));
     if (!session.enabled) return;
     graphButton.setAttribute('aria-pressed', String(graphMode));
+    globalInterpolationButton.setAttribute('aria-pressed', String(!!data!.globalInterpolation));
     panel.classList.toggle('animation-graph-active', graphMode);
     channelLabel.hidden = false;
     channelLabel.title = `다이아몬드·선·원형 핸들: 키프레임 좌표와 틱을 유지하며 중간 변화 조절 · ${getShortcuts('ungroup').join(' / ')}: 앞 구간 끊기 · ${getShortcuts('group').join(' / ')}: 앞 구간 연결`;
@@ -1231,7 +1234,10 @@ zoomValue.onkeydown = event => {
 };
 panel.querySelector<HTMLButtonElement>('#animation-zoom-in')!.onclick = () => setTimelineZoom(pixelsPerTick * 1.25);
 panel.querySelector<HTMLButtonElement>('#animation-zoom-out')!.onclick = () => setTimelineZoom(pixelsPerTick / 1.25);
-panel.querySelector<HTMLButtonElement>('#animation-export')!.onclick = openAnimationExport;
+globalInterpolationButton.onclick = () => editAnimation(() => {
+    const clip = animationData(root)!;
+    clip.globalInterpolation = !clip.globalInterpolation || undefined;
+});
 panel.querySelector<HTMLButtonElement>('#animation-fit')!.onclick = () => {
     setTimelineZoom(Math.max(1, timelineScroll.clientWidth - 258) / Math.max(20, lastKeyTick), 0);
     timelineScroll.scrollLeft = 0;

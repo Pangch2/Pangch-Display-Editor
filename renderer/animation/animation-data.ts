@@ -40,7 +40,7 @@ function lastLayerStart(timing: AnimationLayerTiming, index = timing.starts.leng
 }
 export type AnimationClip = { id?: string; name?: string; duration: number; tickRate?: number; tracks: AnimationTrack[];
     loopMode?: 'once' | 'hold' | 'loop'; loopDelay?: number; endTick?: number; transitionTicks?: number; excludedNodes?: string[];
-    layers?: string[]; layerTimings?: AnimationLayerTiming[] };
+    layers?: string[]; layerTimings?: AnimationLayerTiming[]; globalInterpolation?: boolean };
 // The original timeline remains the first clip so old projects retain their data. `camera` is the object the view follows.
 export type AnimationData = AnimationClip & { clips?: AnimationClip[]; activeClip?: string; camera?: string };
 export const ticksPerSecond = 20;
@@ -311,6 +311,21 @@ function interpolatePivot(value: Matrix4, pivot: number[] | null | undefined, fr
     return value.setPosition(position.add(offset).sub(point));
 }
 
+// With global interpolation a part holds its previous key until the clip's last key before its next one, then interpolates.
+export function clipKeyTicks(clip: AnimationClip | undefined): number[] | undefined {
+    if (!clip?.globalInterpolation) return undefined;
+    const excluded = new Set(clip.excludedNodes);
+    return [...new Set(clip.tracks.flatMap(track => excluded.has(track.id) ? [] : track.keys.map(key => key.tick)))].sort((a, b) => a - b);
+}
+export function interpolationTick(keys: AnimationKey[], tick: number, ticks?: number[]): number {
+    const next = ticks ? keys.findIndex(key => key.tick > tick) : -1;
+    if (next <= 0) return tick;
+    const previous = keys[next - 1].tick, target = keys[next].tick;
+    let start = previous;
+    for (const value of ticks!) if (value > start && value < target) start = value;
+    return tick <= start ? previous : previous + (tick - start) / (target - start) * (target - previous);
+}
+
 export function sampleTrack(keys: AnimationKey[], tick: number, rate = ticksPerSecond, base?: AnimationTransform, pivot?: number[] | null): Matrix4 {
     const keyedPivot = samplePivot(keys, tick);
     if (keyedPivot !== undefined) pivot = keyedPivot;
@@ -466,6 +481,7 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
     if (value.id !== undefined && (typeof value.id !== 'string' || !value.id.length || value.id.length > 128)
         || value.name !== undefined && (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 120)
         || value.loopMode !== undefined && !['once', 'hold', 'loop'].includes(value.loopMode)
+        || value.globalInterpolation !== undefined && typeof value.globalInterpolation !== 'boolean'
         || ['loopDelay', 'endTick', 'transitionTicks'].some(name => value[name] !== undefined && (!Number.isSafeInteger(value[name]) || value[name] < 0))
         || value.excludedNodes !== undefined && (!Array.isArray(value.excludedNodes) || new Set(value.excludedNodes).size !== value.excludedNodes.length
             || value.excludedNodes.some(id => !objects.has(id) && !groups.has(id)))) throw new Error('잘못된 애니메이션 설정입니다.');

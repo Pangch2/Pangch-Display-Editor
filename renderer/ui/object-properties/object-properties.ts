@@ -37,7 +37,7 @@ import { getHeadGridValue, setHeadGridOverride } from '../head-editor/head-paint
 import { hexToRgb, openColorPicker, rgbToHex } from '../common/color-picker';
 import { isValidSpriteReference, openSpriteAtlasPicker, openSpritePicker, resolveSpriteReference } from '../common/sprite-atlas-picker';
 import { evaluateMathExpression } from '../../math-expression';
-import { normalizeTransformInput } from './transform-input-value';
+import { normalizeTransformInput, turnMatrix } from './transform-input-value';
 import { initDragAlignInput, initDragValueInput } from '../common/drag-value-input';
 import { renderModelTransform } from '../../animation/animation-state';
 import { getInstancePivot, hasInstanceHatData, objectRef, objectSlots, objectUuidAt, objectWorldMatrix, setInstancePivot, type ObjectBatch } from '../../scene-store/object-access';
@@ -776,6 +776,8 @@ function renderMultiSelectionProperties(selection?: SelectionState, pivotWorld?:
                 else scale[axis] = next;
                 applyMatrix(rowIndex === 2 && previousScale !== 0
                     ? selectionMatrix.clone().scale(new Vector3(1, 1, 1).setComponent('xyz'.indexOf(axis), next / previousScale))
+                    : rowIndex === 0 ? selectionMatrix.clone().setPosition(position)
+                    : rowIndex === 1 ? turnMatrix(selectionMatrix, new Euler().setFromQuaternion(quaternion), rotation)
                     : new Matrix4().compose(position, quaternion.setFromEuler(rotation), scale));
             }, captureTransformHistory, rowIndex === 1 ? 'rotation' : 'transform'));
         });
@@ -961,7 +963,9 @@ function renderObject(mesh: ObjectBatch, instanceId: number, index: number, pivo
                 else scale[axis] = next;
                 if (rowIndex === 2 && previousScale !== 0) {
                     matrix.scale(new Vector3(1, 1, 1).setComponent('xyz'.indexOf(axis), next / previousScale));
-                } else matrix.compose(position, quaternion.setFromEuler(rotation), scale);
+                } else if (rowIndex === 0) matrix.setPosition(position);
+                else if (rowIndex === 1) matrix.copy(turnMatrix(currentMatrix, new Euler().setFromQuaternion(quaternion), rotation));
+                else matrix.compose(position, quaternion.setFromEuler(rotation), scale);
                 let transformPivot = currentPivotWorld
                     ?.clone().applyMatrix4(loadedObjectGroup.matrixWorld.clone().invert()).applyMatrix4(currentMatrix.clone().invert())
                     ?? localPivot;
@@ -1481,17 +1485,19 @@ function renderObject(mesh: ObjectBatch, instanceId: number, index: number, pivo
             button.style.background = value;
             button.onclick = () => {
                 const before = captureTextEditorState();
+                let updating: Promise<void> = Promise.resolve();
                 openColorPicker(button, hexToRgb(value), color => {
                     value = rgbToHex(color);
                     button.style.background = value;
-                    void updateColor(value);
+                    updating = updateColor(value);
                 }, {
                     oklch: mode.value === 'oklch',
                     onOklchChange: enabled => {
                         mode.value = enabled ? 'oklch' : 'hex';
                         localStorage.setItem(colorModeKey, mode.value);
                     },
-                    onClose: () => recordTextEditorChange(before)
+                    // The key reads the scene, so wait for the last color to reach it; tracked so a pending tick change waits too.
+                    onClose: () => void trackProjectEdit(updating.catch(() => {}).then(() => recordTextEditorChange(before)))
                 });
             };
             picker.append(button);
@@ -1718,6 +1724,7 @@ function renderGroup(groupId: string, group: GroupData, index: number, pivotWorl
                 else groupScale[axis] = next;
                 const nextMatrix = rowIndex === 2 && previousScale !== 0
                     ? groupMatrix.clone().scale(new Vector3(1, 1, 1).setComponent('xyz'.indexOf(axis), next / previousScale))
+                    : rowIndex === 1 ? turnMatrix(groupMatrix, new Euler().setFromQuaternion(groupQuaternion), groupRotation)
                     : new Matrix4().compose(groupPosition, groupQuaternion.setFromEuler(groupRotation), groupScale);
                 let transformPivot = currentPivotWorld?.clone().applyMatrix4(groupMatrix.clone().invert()) ?? localPivot;
                 if (rowIndex === 2) transformPivot = getScalePivot(transformPivot, Overlay.getGroupLocalBoundingBox(groupId), axis, direction);

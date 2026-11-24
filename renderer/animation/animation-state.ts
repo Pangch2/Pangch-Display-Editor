@@ -2,7 +2,7 @@ import { Group, Matrix3, Matrix4, Quaternion, Vector3 } from 'three/webgpu';
 import { deferredPlayerHeadTexture, getPlayerHeadRenderMatrix, getPlayerHeadTexture, previewPlayerHeadTextures } from '../load-project/display/player-head-atlas';
 import { getGroupWorldMatrix, shouldUseGroupPivot, normalizePivotToVector3, type GroupData } from '../controls/grouping/group';
 import { activeAnimation, animationClips, minecraftTransformParts, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyCurve, keyHasChannel, keyTransform, putKey, sampleTrack, setKeyCurve,
-    sampleChannelValues, offsetAnimationChannel, sampleTexture, sampleProperties, samplePivot, transformMatrix, type AnimationData, type AnimationClip, type AnimationChannel,
+    sampleChannelValues, offsetAnimationChannel, sampleTexture, clipKeyTicks, interpolationTick, sampleProperties, samplePivot, transformMatrix, type AnimationData, type AnimationClip, type AnimationChannel,
     type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationTransform, type AnimationLayerTiming, type AnimationLayerCarry, layerRanges, setLayerRanges } from './animation-data';
 import { decomposeDisplayMatrix } from './display-transformation';
 import { animationCameraObject, isAnimationCameraPreview, previewAnimationCamera, setAnimationCameraPreview } from './animation-camera';
@@ -190,9 +190,10 @@ export function evaluateAnimation(local: AnimationPose, data: AnimationClip | un
     type TrackEntry = { track: AnimationTrack; tick: number; rate: number; carry?: AnimationLayerCarry; below?: TrackEntry };
     const tracks = new Map<string, TrackEntry>();
     for (const layer of layers) {
-        const excluded = new Set(layer.clip.excludedNodes);
+        const excluded = new Set(layer.clip.excludedNodes), ticks = clipKeyTicks(layer.clip);
         for (const track of layer.clip.tracks) {
-            if (!excluded.has(track.id)) tracks.set(track.id, { track, tick: layer.tick, rate: layer.clip.tickRate ?? 20, carry: layer.carry, below: tracks.get(track.id) });
+            if (!excluded.has(track.id)) tracks.set(track.id, { track, tick: interpolationTick(track.keys, layer.tick, ticks), rate: layer.clip.tickRate ?? 20,
+                carry: layer.carry && ticks ? { ...layer.carry, tick: interpolationTick(track.keys, layer.carry.tick, ticks) } : layer.carry, below: tracks.get(track.id) });
         }
     }
     const matrices = new Map<string, Matrix4>();
@@ -587,6 +588,7 @@ export function recordAnimationTransform(root: Group, before?: AnimationSnapshot
     const data = activeAnimation(project);
     const forced = new Set(targets);
     const oldTracks = new Map(before.data && activeAnimation(before.data).tracks.map(track => [track.id, track]));
+    const oldTicks = clipKeyTicks(before.data && activeAnimation(before.data));
     const localValue = new Matrix4(), expected = new Matrix4(), parentValue = new Matrix4(), worldValue = new Matrix4();
     for (const [id, node] of after) {
         const old = before.local.get(id);
@@ -594,22 +596,24 @@ export function recordAnimationTransform(root: Group, before?: AnimationSnapshot
         const previous = before.pose.get(id);
         const unchanged = previous && previous.matrix.every((component, index) => component === node.matrix[index]);
         const oldTrack = oldTracks.get(id);
+        // The shown pose samples old keys at the global-interpolation tick; the new key lands at session.tick.
+        const oldTick = oldTrack ? interpolationTick(oldTrack.keys, session.tick, oldTicks) : session.tick;
         let pivotChanged = false, pivot: number[] | null | undefined;
         if (previous && (!(unchanged || node.type === 'object') || !samePivot(previous.pivot, node.pivot)
             || previous.animatePivot !== node.animatePivot)) {
-            const sampled = oldTrack && samplePivot(oldTrack.keys, session.tick);
+            const sampled = oldTrack && samplePivot(oldTrack.keys, oldTick);
             const previousPivot = sampled === undefined ? pivotKey(previous) : sampled;
             pivot = pivotKey(node, previousPivot);
             pivotChanged = !samePivot(previousPivot, pivot);
         }
-        const textureChanged = node.texture !== (oldTrack ? sampleTexture(oldTrack.keys, session.tick, old.texture) : old.texture);
-        const oldProperties = oldTrack ? sampleProperties(oldTrack.keys, session.tick, old.properties) : old.properties;
+        const textureChanged = node.texture !== (oldTrack ? sampleTexture(oldTrack.keys, oldTick, old.texture) : old.texture);
+        const oldProperties = oldTrack ? sampleProperties(oldTrack.keys, oldTick, old.properties) : old.properties;
         const propertiesChanged = !sameProperties(node.properties, oldProperties);
         // History snapshots a model swap after it ran, so `previous` already shows the new model's fit; only the clip sample tells the fit apart.
         // shortcut: a swap while a layer clip plays bakes that layer's offset into the key; pass the pose from before the swap to separate them.
         const swapped = unchanged && (node.properties?.name !== oldProperties?.name || node.properties?.displayType !== oldProperties?.displayType);
         if (unchanged && !textureChanged && !propertiesChanged && !pivotChanged && !forced.has(id)) continue;
-        const previousLocal = oldTrack ? sampleTrack(oldTrack.keys, session.tick, data.tickRate, keyTransform(matrix(old)), pivotKey(before.base.get(id) ?? old)) : localValue.fromArray(old.matrix);
+        const previousLocal = oldTrack ? sampleTrack(oldTrack.keys, oldTick, data.tickRate, keyTransform(matrix(old)), pivotKey(before.base.get(id) ?? old)) : localValue.fromArray(old.matrix);
         // Compare against the displayed local, which includes playing layers, so a layer's pose is never baked into this clip.
         expected.copy(previousLocal);
         if (previous && !swapped) try { expected.copy(relative(new Matrix4().fromArray(previous.matrix), before.pose.get(node.parent), true)); } catch { /* singular parent: use the clip sample */ }
@@ -631,7 +635,7 @@ export function recordAnimationTransform(root: Group, before?: AnimationSnapshot
         if (!channels && !changedChannels.length && !close(value, previousLocal)) changedChannels.push(...animationChannels);
         putKey(track, session.tick, value, matrix(old), changedChannels);
         if (changedChannels.includes('rotation')) {
-            const previousAngles = oldTrack ? sampleChannelValues(oldTrack.keys, 'rotation', session.tick, data.tickRate) : [0, 1, 2].map(axis => channelValue(previousTransform, 'rotation', axis));
+            const previousAngles = oldTrack ? sampleChannelValues(oldTrack.keys, 'rotation', oldTick, data.tickRate) : [0, 1, 2].map(axis => channelValue(previousTransform, 'rotation', axis));
             const rotation = [0, 1, 2].map(axis => channelValue(transform, 'rotation', axis));
             // At gimbal lock only X +/- Z is defined; retain the previous split between those axes.
             if (Math.abs(Math.abs(rotation[1]) - 90) < 1e-5) {
@@ -926,7 +930,7 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
         const ids = new Map<string, string>();
         const legacy = !data.clips?.length && !data.name && !data.id && !data.loopMode && data.endTick === undefined;
         const compatible = (a: AnimationClip, b: AnimationClip) =>
-            (['name', 'tickRate', 'loopMode', 'loopDelay', 'endTick', 'transitionTicks'] as const).every(field => a[field] === b[field]);
+            (['name', 'tickRate', 'loopMode', 'loopDelay', 'endTick', 'transitionTicks', 'globalInterpolation'] as const).every(field => a[field] === b[field]);
         for (const clip of animationClips(data)) {
             const target = animationClips(old).find(entry => clip.id && entry.id === clip.id && compatible(entry, clip))
                 ?? (clip === data && compatible(old, clip) ? old : undefined)

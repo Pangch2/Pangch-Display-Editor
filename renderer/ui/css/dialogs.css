@@ -480,6 +480,18 @@
   gap: 8px;
 }
 
+.animation-export-error {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.animation-export-error output {
+  color: #999;
+  font-size: 12px;
+}
+
 .animation-export-options input[type='checkbox'] {
   justify-self: start;
   margin: 0;
