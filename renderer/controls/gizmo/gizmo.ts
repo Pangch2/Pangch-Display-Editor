@@ -580,6 +580,14 @@ function snapFromStart(current: number, start: number, step: number): number {
     return start + Math.round((current - start) / step) * step;
 }
 
+// Selection scale along each scale-frame axis: after a 90° turn a world-space handle scales another property axis.
+function getFrameAxisScale(selection: Matrix4, frame: Matrix4, out: Vector3): Vector3 {
+    out.setFromMatrixScale(selection);
+    if (!selection.determinant()) return out;
+    const inverse = _TMP_VEC3_B.setFromMatrixScale(_TMP_MAT4_B.copy(selection).invert().multiply(frame));
+    return out.set(1 / inverse.x, 1 / inverse.y, 1 / inverse.z);
+}
+
 function applyRelativeDragSnap(): void {
     if (!selectionHelper || !transformControls) return;
     const fineAdjust = isShortcutPressed('fineAdjust');
@@ -607,7 +615,7 @@ function applyRelativeDragSnap(): void {
             scaleMatrix.multiply(renderModelTransform(loadedObjectGroup, primary.uuid,
                 primaryRef.mesh, primaryRef.instanceId, _TMP_MAT4_B).invert());
         }
-        const sourceScale = _TMP_VEC3_A.setFromMatrixScale(scaleMatrix);
+        const sourceScale = getFrameAxisScale(scaleMatrix, dragScaleFrame, _TMP_VEC3_A);
         const uniformScale = Math.max(sourceScale.x, sourceScale.y, sourceScale.z);
         if (fineAdjust !== scaleSnapFine) {
             // Toggling fine adjust restarts the drag here, so snapping needs a full step from this value.
@@ -647,6 +655,8 @@ function applyRelativeDragSnap(): void {
 
 if (import.meta.env.DEV) {
     console.assert(Math.abs(snapFromStart(0.63, 0.37, 0.5) - 0.87) < 1e-9, 'Relative gizmo snapping moved the drag start value.');
+    console.assert(Math.abs(getFrameAxisScale(new Matrix4().makeRotationY(Math.PI / 2).scale(new Vector3(1, 1, 0.5)), new Matrix4(), new Vector3()).x - 0.5) < 1e-9,
+        'World-space scale snapping read the wrong axis after a 90° turn.');
 }
 function getItemUuid({ mesh, instanceId }: Select.SelectedItem): string | undefined {
     return objectUuidAt(loadedObjectGroup, mesh, instanceId);

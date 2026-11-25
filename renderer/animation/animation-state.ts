@@ -3,7 +3,7 @@ import { deferredPlayerHeadTexture, getPlayerHeadRenderMatrix, getPlayerHeadText
 import { getGroupWorldMatrix, shouldUseGroupPivot, normalizePivotToVector3, type GroupData } from '../controls/grouping/group';
 import { activeAnimation, animationClips, minecraftTransformParts, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyCurve, keyHasChannel, keyTransform, putKey, sampleTrack, setKeyCurve,
     sampleChannelValues, offsetAnimationChannel, sampleTexture, clipKeyTicks, interpolationTick, sampleProperties, samplePivot, transformMatrix, type AnimationData, type AnimationClip, type AnimationChannel,
-    type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationTransform, type AnimationLayerTiming, type AnimationLayerCarry, layerRanges, setLayerRanges } from './animation-data';
+    type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationCurve, type AnimationTransform, type AnimationLayerTiming, type AnimationLayerCarry, layerRanges, setLayerRanges } from './animation-data';
 import { decomposeDisplayMatrix } from './display-transformation';
 import { animationCameraObject, isAnimationCameraPreview, previewAnimationCamera, setAnimationCameraPreview } from './animation-camera';
 import { applySceneVisibility } from '../controls/scene-visibility';
@@ -856,6 +856,8 @@ export function rebaseAnimationStructure(root: Group, before?: AnimationSnapshot
                 key.pivot = original?.keys.find(key => key.tick === tick)?.pivot;
                 previous = world;
             }
+            const sources = [original, ...changedParents.map(parent => originalClip.tracks.find(entry => entry.id === parent))].filter((entry): entry is AnimationTrack => !!entry);
+            simplifyBakedKeys(track, sources, clipKeyTicks(originalClip) ?? [], pivotKey(nextBase.get(id)!));
             if (originalClip.tracks.length) nextTracks.push(track);
         }
         clip.tracks = nextTracks;
@@ -876,6 +878,43 @@ function animationBakeTicks(clip: AnimationClip): number[] {
     // shortcut: procedural hierarchy conversion bakes whole ticks, stream the bake before allowing more than 100,000 frames.
     if (end > 100_000) throw new Error('계층 변환에 필요한 애니메이션이 100,000틱을 초과합니다. 클립을 나눈 뒤 다시 시도해 주세요.');
     return Array.from({ length: end + 1 }, (_, tick) => tick);
+}
+
+// Baking samples every tick so curves, expressions and a turning parent's arc survive; keep the source key ticks
+// and only the samples their interpolation cannot rebuild.
+// shortcut: with global interpolation the extra keys a turning parent leaves also split other parts' segments; fit against the final clip ticks if that matters.
+function simplifyBakedKeys(track: AnimationTrack, sources: AnimationTrack[], fixedTicks: number[], nodePivot: number[] | null): void {
+    const { keys } = track, fixed = new Set([...fixedTicks, ...sources.flatMap(source => source.keys.map(key => key.tick))]);
+    const kept = keys.map((key, index) => index === 0 || index === keys.length - 1 || fixed.has(key.tick)
+        || key.texture !== undefined || !!key.properties || key.pivot !== undefined);
+    const exact = keys.map(key => transformMatrix(key.transform).elements);
+    for (let start = 0, end = 1; end < keys.length; end++) {
+        if (!kept[end]) continue;
+        // Interior keys carry no pivot or model, so every piece of this span samples from the same context.
+        const before = keys.slice(0, start + 1).reverse();
+        const context = { pivot: before.find(key => key.pivot !== undefined)?.pivot, properties: before.find(key => key.properties)?.properties };
+        const worst = (a: number, b: number, curve?: AnimationCurve) => {
+            const span = [{ ...keys[a], ...context }, { ...keys[b], curve }];
+            let index = -1, error = 1e-5;
+            for (let i = a + 1; i < b; i++) {
+                const sampled = sampleTrack(span, keys[i].tick, undefined, undefined, nodePivot).elements;
+                const value = Math.max(...sampled.map((component, k) => Math.abs(component - exact[i][k])));
+                if (value > error) { error = value; index = i; }
+            }
+            return index;
+        };
+        // An eased or stepped source segment keeps its curve instead of extra keys.
+        const curves = [undefined, ...new Set(sources.flatMap(source => source.keys.filter(key => key.tick === keys[end].tick)
+            .flatMap(key => [key.curve, ...Object.values(key.curves ?? {})])).filter(curve => curve !== undefined))];
+        const fit = curves.findIndex(curve => worst(start, end, curve) < 0);
+        if (fit > 0) keys[end].curve = curves[fit];
+        else if (fit < 0) for (const parts = [[start, end]]; parts.length;) {
+            const [a, b] = parts.pop()!, index = worst(a, b);
+            if (index >= 0) { kept[index] = true; parts.push([a, index], [index, b]); }
+        }
+        start = end;
+    }
+    track.keys = keys.filter((_, index) => kept[index]);
 }
 
 export function serializeAnimation(root: Group, objects: Set<string>, groups: Set<string>, selection: boolean): AnimationData | undefined {
