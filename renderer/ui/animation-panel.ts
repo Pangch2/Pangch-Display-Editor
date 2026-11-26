@@ -46,7 +46,7 @@ panel.innerHTML = `<div class="details-resizer animation-resizer" role="separato
     <div class="animation-tools animation-toolbar" role="toolbar" aria-label="타임라인 편집">
         <div class="animation-view-tools" role="group" aria-label="타임라인 보기">
             <button id="animation-graph-toggle" type="button" aria-pressed="false" title="키프레임 / 그래프 보기 전환">그래프</button>
-            <button id="animation-global-interpolation" type="button" aria-pressed="false" title="켜면 각 파츠가 이전 키 자세를 유지하다가, 클립 전체에서 다음 키 직전의 마지막 키프레임부터 다음 키까지 보간합니다. 끄면 파츠별 이전 키부터 보간합니다.">전체 보간</button>
+            <button id="animation-global-interpolation" type="button" aria-pressed="false" title="켜면 멈춰 있던 파츠가 이전 키 자세를 유지하다가, 클립 전체에서 다음 키 직전의 마지막 키프레임부터 다음 키까지 보간합니다. 움직이며 도착한 키에서는 멈추지 않고 이어집니다. 끄면 파츠별 이전 키부터 보간합니다.">전체 보간</button>
         </div>
         <div class="animation-actions" role="group" aria-label="키프레임 편집">
         <button id="animation-add" type="button" title="선택한 파츠의 현재 포즈를 키프레임으로 추가" disabled>◇ 키 추가</button>

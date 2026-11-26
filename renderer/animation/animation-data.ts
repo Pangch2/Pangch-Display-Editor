@@ -311,15 +311,18 @@ function interpolatePivot(value: Matrix4, pivot: number[] | null | undefined, fr
     return value.setPosition(position.add(offset).sub(point));
 }
 
-// With global interpolation a part holds its previous key until the clip's last key before its next one, then interpolates.
+// With global interpolation a part at rest holds its previous key until the clip's last key before its next one, then interpolates.
 export function clipKeyTicks(clip: AnimationClip | undefined): number[] | undefined {
     if (!clip?.globalInterpolation) return undefined;
     const excluded = new Set(clip.excludedNodes);
     return [...new Set(clip.tracks.flatMap(track => excluded.has(track.id) ? [] : track.keys.map(key => key.tick)))].sort((a, b) => a - b);
 }
+const keyPose = (key: AnimationKey) => JSON.stringify([key.transform, key.values, key.pre]);
 export function interpolationTick(keys: AnimationKey[], tick: number, ticks?: number[]): number {
     const next = ticks ? keys.findIndex(key => key.tick > tick) : -1;
     if (next <= 0) return tick;
+    // A part that reached its previous key moving carries on instead of stopping there.
+    if (next > 1 && keys[next - 1].curve !== 'step' && keyPose(keys[next - 2]) !== keyPose(keys[next - 1])) return tick;
     const previous = keys[next - 1].tick, target = keys[next].tick;
     let start = previous;
     for (const value of ticks!) if (value > start && value < target) start = value;
