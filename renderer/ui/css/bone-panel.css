@@ -1,0 +1,35 @@
+#bone-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  color: #ddd;
+  font-size: 12px;
+}
+#bone-panel .bone-panel-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+#bone-panel button {
+  color: inherit;
+  background: var(--ui-control-bg);
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  padding: 4px 8px;
+  cursor: pointer;
+  font: inherit;
+}
+#bone-panel button:disabled { opacity: .45; cursor: default; }
+#bone-panel .bone-tree { display: flex; flex-direction: column; max-height: 220px; overflow: auto; border: 1px solid #3a3a40; border-radius: 4px; }
+#bone-panel .bone-tree-row { display: flex; align-items: center; gap: 2px; padding-block: 1px; }
+#bone-panel .bone-tree-row button { border: 0; border-radius: 0; background: transparent; padding: 2px 4px; }
+#bone-panel .bone-tree-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left; }
+#bone-panel .bone-tree-toggle { flex: none; width: 18px; text-align: center; }
+#bone-panel .bone-tree-row.bone-tree-drop { outline: 1px solid #6cb8ff; outline-offset: -1px; }
+#bone-panel .bone-tree-row:hover { background: #313138; }
+#bone-panel .bone-tree-row[aria-selected="true"] { background: #3b4a63; }
+#bone-panel .bone-properties { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+#bone-panel :is(.bone-properties, .bone-binding) label { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+#bone-panel .bone-properties :is(input, select) { width: 130px; min-width: 0; }
+#bone-panel .bone-vector { display: grid; grid-template-columns: 30px repeat(3, minmax(0, 1fr)); align-items: center; gap: 4px; }
+#bone-panel .bone-vector label { gap: 2px; }
+#bone-panel .bone-vector input { width: 100%; }
+#bone-panel .bone-binding { display: flex; flex-direction: column; gap: 6px; }
+#bone-panel .bone-binding input { width: 70px; }
+#bone-panel .bone-panel-hint { margin: 0; color: #9a9aa2; line-height: 1.4; }

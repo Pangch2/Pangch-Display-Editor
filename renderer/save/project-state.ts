@@ -6,6 +6,7 @@ import type { GroupData } from '../controls/grouping/group';
 import { runSteps, validatePdeProject, type PdeEditorState, type PdeNode, type PdeProject, type ObjectEditorState } from './pde-format';
 import { animationCameraObject } from '../animation/animation-camera';
 import { animationSession, serializeAnimation, importAnimation, renderModelTransform } from '../animation/animation-state';
+import { rigNodeIds, type RigData } from '../rig/rig-data';
 import { getDisplayType, getInstanceHasHat, getInstanceMatrix, hasInstanceHatData, objectHeadValues, objectIsCustomPivot, objectPivot, setInstanceHasHat,
     setObjectHeadValues, setObjectIsCustomPivot, setObjectPivot, type ObjectRef } from '../scene-store/object-access';
 
@@ -143,6 +144,10 @@ export function* serializeProjectSteps(root: Group, selection?: ProjectSelection
         .map(([a, b]) => [a, getMirrorPlane(root, a, b)] as [string, Matrix4])
         .filter(([, plane]) => plane !== worldXReflection).map(([id, plane]) => [id, plane.toArray()]);
     state.animation = serializeAnimation(root, seenObjects, seenGroups, !!selection);
+    // shortcut: copy/paste leaves bones behind, carry the armatures of copied displays if that is needed.
+    const rig = data.rig as RigData | undefined;
+    if (!selection && rig?.armatures.length) state.rig = { armatures: rig.armatures.map(armature => ({ ...structuredClone(armature),
+        weights: Object.fromEntries(Object.entries(armature.weights).filter(([id]) => seenObjects.has(id)).map(([id, weights]) => [id, { ...weights }])) })) };
     const project: PdeProject = {
         pdeFormatVersion: 1, name: data.projectDetails?.name ?? '', mainNBT: data.projectDetails?.mainNBT ?? '',
         nbt: data.projectDetails?.nbt ?? '',
@@ -201,6 +206,24 @@ export function restoreEditorState(root: Group, state: PdeEditorState | undefine
         if (b) setMirrorPlane(root, a, b, new Matrix4().fromArray(plane));
     }
     if (!isMerge) data.globalBrightness = state.globalBrightness;
-    importAnimation(root, state.animation, isMerge, objectIds, groupIds);
+    // A merged rig whose ids are taken gets new ones; bone tracks follow through the object id map.
+    const rigIds = new Map<string, string>();
+    if (!isMerge) { delete data.rig; delete data.rigPose; }
+    if (state.rig?.armatures.length) {
+        const taken = isMerge ? new Set([...rigNodeIds(root), ...(data.rig as RigData | undefined)?.armatures.map(armature => armature.id) ?? []]) : new Set<string>();
+        const fresh = (id: string) => taken.has(id) ? rigIds.get(id) ?? rigIds.set(id, crypto.randomUUID()).get(id)! : id;
+        const node = (id: string) => rigIds.get(id) ?? id;
+        const armatures = structuredClone(state.rig.armatures);
+        for (const armature of armatures) {
+            armature.id = fresh(armature.id);
+            for (const entry of [...armature.bones, ...armature.nulls]) entry.id = fresh(entry.id);
+            for (const entry of [...armature.bones, ...armature.nulls]) if (entry.parent) entry.parent = node(entry.parent);
+            for (const point of armature.nulls) for (const key of ['ikTarget', 'ikSource', 'ikPole'] as const) if (point[key]) point[key] = node(point[key]!);
+            armature.weights = Object.fromEntries(Object.entries(armature.weights).map(([id, weights]) =>
+                [objectId(id), Object.fromEntries(Object.entries(weights).map(([bone, weight]) => [node(bone), weight]))]));
+        }
+        data.rig = { armatures: [...isMerge ? (data.rig as RigData | undefined)?.armatures ?? [] : [], ...armatures] } satisfies RigData;
+    }
+    importAnimation(root, state.animation, isMerge, rigIds.size ? new Map([...objectIds, ...rigIds]) : objectIds, groupIds);
     applySceneVisibility(root);
 }

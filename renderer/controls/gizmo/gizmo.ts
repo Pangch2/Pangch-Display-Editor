@@ -1,4 +1,5 @@
 import { setupGizmo } from './gizmo-setup';
+import { readGizmoDragValues } from './drag-values';
 import { assertAnimationParentsInvertible, renderModelTransform } from '../../animation/animation-state';
 import type { GizmoLines, GizmoMaterial, GizmoPlaneDirection, GizmoPlaneName, GizmoPlanes } from './gizmo-setup';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
@@ -282,19 +283,16 @@ function applyRotationDragValue(): void {
 }
 
 function applyGizmoDragValues(): void {
-    const value = (key: string, defaultValue = '0.0001'): number | null => {
-        const stored = Number(localStorage.getItem(key) ?? defaultValue);
-        return Number.isFinite(stored) && stored > 0 ? stored : null;
-    };
-    positionDragValue = value('pdePositionDragValue');
-    rotationDragValue = value('pdeRotationDragValue');
-    scaleDragValue = value('pdeScaleDragValue');
-    finePositionDragValue = value('pdeFinePositionDragValue', '0');
-    fineRotationDragValue = value('pdeFineRotationDragValue', '0');
-    fineScaleDragValue = value('pdeFineScaleDragValue', '0');
-    dragAlign = localStorage.getItem('pdeDragAlign') === 'true';
-    rotationSensitivity = value('pdeRotationSensitivity', '1') ?? 1;
-    gizmoDistanceScale = localStorage.getItem('pdeGizmoDistanceScale') !== 'false';
+    const values = readGizmoDragValues();
+    positionDragValue = values.position;
+    rotationDragValue = values.rotation;
+    scaleDragValue = values.scale;
+    finePositionDragValue = values.finePosition;
+    fineRotationDragValue = values.fineRotation;
+    fineScaleDragValue = values.fineScale;
+    dragAlign = values.align;
+    rotationSensitivity = values.rotationSensitivity;
+    gizmoDistanceScale = values.distanceScale;
     transformControls?.setTranslationSnap(null);
     applyRotationDragValue();
     transformControls?.setScaleSnap(null);
@@ -2057,6 +2055,8 @@ export function initGizmo({
 
     transformControls.addEventListener('mouseDown', () => {
         dragControls.abortMarquee();
+        // A press on a gizmo handle is not a selection click, even when the pointer never moves.
+        mouseDownPos = null;
     });
 
     transformControls.addEventListener('objectChange', () => {
@@ -2139,6 +2139,8 @@ export function initGizmo({
     renderer.domElement.addEventListener('pointerdown', (event: PointerEvent) => {
         if (isGizmoBusy) return;
         if (event.button !== 0) return;
+        // A press on the bone gizmo or a bone (rig/rig-view.ts) is not a selection click.
+        if (renderer.domElement.dataset.rigPointer) { mouseDownPos = null; return; }
         const headPainterTool = renderer.domElement.dataset.headPainterTool;
         if (headPainterTool && headPainterTool !== 'select') {
             mouseDownPos = null;

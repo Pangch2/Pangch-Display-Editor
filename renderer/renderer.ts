@@ -40,6 +40,8 @@ import './ui/scene-panel/scene-panel';
 import './ui/layout/panel-layout';
 import './ui/object-properties/object-properties';
 import './ui/animation-panel';
+import './ui/bone-panel';
+import { initRigView, updateRigView } from './rig/rig-view';
 import { bindAnimationCamera, isAnimationCameraPreview, lockAnimationCameraControls, setAnimationCameraPreview } from './animation/animation-camera';
 import { addCameraDirection, updateCameraDirection } from './animation/camera-direction';
 import { initHeadPainter, updateHeadPainter } from './ui/head-editor/head-painter';
@@ -664,6 +666,9 @@ async function initScene(): Promise<void> {
         } 
     });
 
+    initRigView({ scene, renderer: renderer as unknown as Renderer, getCamera: () => camera, getControls: () => controls, root: loadedObjectGroup,
+        editor: gizmoModule.getTransformControls(), isVertexMode: () => !!gizmoModule?.getTransformToolbarState().vertexMode });
+
     // 8. 헬퍼(Helper)
     coordinateAxes = createFullAxesHelper(150);
     coordinateAxes.renderOrder = 1;
@@ -750,6 +755,7 @@ function animate(): void {
     if (gizmoModule) gizmoModule.updateGizmo();
     updateTransformToolbar();
     updateHeadPainter();
+    updateRigView();
     if (renderer && scene && camera && !scenePrecompileInProgress) {
         viewHelper.center.copy(controls.target);
         viewHelperTimer.update();

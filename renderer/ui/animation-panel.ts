@@ -21,6 +21,8 @@ import { getSelectAllSceneSelection, type PrimarySelection } from '../controls/s
 import { getObjectLabel } from './scene-panel/scene-panel-model';
 import { isSceneItemEnabled, setSceneItemEnabled } from '../controls/scene-visibility';
 import { record } from '../controls/undo-redo/undo-redo';
+import { findRigNode, rigNodeIds, type RigData } from '../rig/rig-data';
+import { selectRigNode } from '../rig/rig-view';
 
 const button = document.getElementById('animation-button') as HTMLButtonElement;
 const panel = document.createElement('section');
@@ -186,7 +188,7 @@ let timelineEnd = 100;
 let followPlayback = true;
 let lastKeyTick = 0;
 let zoomAnchor: { clientX: number; tick: number; scrollLeft: number } | undefined;
-let timelineRows: Array<{ type: 'group' | 'object' | 'clip'; id: string; depth: number; clip?: AnimationClip; animated?: boolean; inheritedAnimation?: boolean }> = [];
+let timelineRows: Array<{ type: 'group' | 'object' | 'bone' | 'null' | 'clip'; id: string; depth: number; clip?: AnimationClip; animated?: boolean; inheritedAnimation?: boolean }> = [];
 let timelineTracks = new Map<string, AnimationTrack>();
 const renderedRows = new Map<number, HTMLElement>();
 const expandedGroupIds = new Set<string>();
@@ -224,9 +226,10 @@ nameFilterInput.addEventListener('input', () => {
     syncAnimationPanel();
 });
 
+const rigName = (id: string): string | undefined => { const found = findRigNode(root, id); return (found?.bone ?? found?.null)?.name; };
 function matchesTargetFilter(id: string): boolean {
     if (targetFilter && !targetFilter.has(id)) return false;
-    const name = root.userData.groups?.get(id)?.name ?? getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
+    const name = root.userData.groups?.get(id)?.name ?? rigName(id) ?? getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
     return !nameFilter || name.toLocaleLowerCase().includes(nameFilter);
 }
 
@@ -943,6 +946,20 @@ function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
     for (const entry of root.userData.sceneOrder ?? []) visit(entry.type, entry.id, 0);
     for (const [id, group] of groups) if (!group.parent) visit('group', id, 0);
     for (const id of refs.keys()) visit('object', id, 0);
+    // Bones and nulls follow the scene, nested by bone; a selected one shows even before its first key.
+    for (const armature of (root.userData.rig as RigData | undefined)?.armatures ?? []) {
+        const visitRig = (parent: string | null, depth: number) => {
+            for (const [type, node] of [...armature.bones.map(bone => ['bone', bone] as const), ...armature.nulls.map(point => ['null', point] as const)]) {
+                if (node.parent !== parent || visited.has(node.id)) continue;
+                visited.add(node.id);
+                const animated = !!tracks.get(node.id)?.keys.length;
+                if (filtering && matchesTargetFilter(node.id) && (!keyframesOnlyInput.checked || animated)) matchingRows.add(node.id);
+                timelineRows.push({ type, id: node.id, depth, animated, inheritedAnimation: selectionIds.has(node.id) });
+                if (type === 'bone') visitRig(node.id, depth + 1);
+            }
+        };
+        visitRig(null, 0);
+    }
     timelineRows = timelineRows.filter(row => row.type === 'clip' || (filtering ? matchingRows.has(row.id) : row.animated || row.inheritedAnimation));
     timelineTracks = filtering ? new Map([...tracks].filter(([id]) => matchesTargetFilter(id))) : tracks;
     renderedRows.clear(); rows.replaceChildren();
@@ -950,7 +967,8 @@ function renderAnimationRows(tracks: Map<string, AnimationTrack>): void {
     renderVisibleAnimationRows();
     deleteButton.disabled = !selectedKeys.size;
     duplicateButton.disabled = !selectedKeys.size;
-    addButton.disabled = ![...selectionIds].some(id => refs.has(id) || groups.has(id));
+    const rigNodes = rigNodeIds(root);
+    addButton.disabled = ![...selectionIds].some(id => refs.has(id) || groups.has(id) || rigNodes.has(id));
     const entries = selectedKeyEntries();
     selectionCount.textContent = `키 ${entries.length}개 선택`;
     const curves = new Set(entries.filter(({ track, key }) => visibleKeys(track).indexOf(key) > 0).map(({ key }) => {
@@ -994,10 +1012,12 @@ function renderVisibleAnimationRows(): void {
         part.style.paddingLeft = `${10 + depth * 16}px`;
         const label = document.createElement('button'); label.type = 'button';
         label.className = 'animation-part';
-        label.textContent = type === 'group' ? groups.get(id).name : getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
+        const rigRow = type === 'bone' || type === 'null';
+        label.textContent = type === 'group' ? groups.get(id).name : rigRow ? rigName(id) ?? id : getObjectLabel(root.userData, id) ?? root.userData.objectNames?.get(id) ?? id;
         label.title = label.textContent;
         label.onclick = event => {
             selectedKeys.clear();
+            if (rigRow) { selectRigNode(id); syncAnimationPanel(); panel.focus(); return; }
             const additive = matchesPointerShortcut(event, 'multiSelect'), boxSelect = matchesPointerShortcut(event, 'boxSelect');
             if (!(additive && boxSelect && selectPartRange(type, id))) selectPart(type, id, additive || boxSelect);
             syncAnimationPanel(); panel.focus();
@@ -1020,27 +1040,29 @@ function renderVisibleAnimationRows(): void {
             part.append(toggle);
         }
         part.append(label);
-        const visibility = document.createElement('button');
-        visibility.type = 'button';
-        visibility.className = 'animation-visibility lucide-icon';
-        const enabled = isSceneItemEnabled(root, type, id);
-        visibility.textContent = enabled ? '\uE0BA' : '\uE0BB';
-        visibility.title = `${label.textContent}: ${enabled ? '숨기기' : '보이기'}`;
-        visibility.setAttribute('aria-label', visibility.title);
-        visibility.setAttribute('aria-pressed', String(enabled));
-        visibility.onpointerdown = event => event.stopPropagation();
-        visibility.onclick = event => {
-            event.stopPropagation();
-            void enqueue(async () => {
-                if (!await settle()) return;
-                const next = !isSceneItemEnabled(root, type, id);
-                const apply = (value: boolean) => setSceneItemEnabled(root, type, id, value);
-                apply(next);
-                record({ undo: () => apply(!next), redo: () => apply(next) });
-                rows.querySelector<HTMLButtonElement>(`[data-id="${CSS.escape(id)}"] .animation-visibility`)?.focus();
-            });
-        };
-        part.append(visibility);
+        if (!rigRow) {
+            const visibility = document.createElement('button');
+            visibility.type = 'button';
+            visibility.className = 'animation-visibility lucide-icon';
+            const enabled = isSceneItemEnabled(root, type, id);
+            visibility.textContent = enabled ? '\uE0BA' : '\uE0BB';
+            visibility.title = `${label.textContent}: ${enabled ? '숨기기' : '보이기'}`;
+            visibility.setAttribute('aria-label', visibility.title);
+            visibility.setAttribute('aria-pressed', String(enabled));
+            visibility.onpointerdown = event => event.stopPropagation();
+            visibility.onclick = event => {
+                event.stopPropagation();
+                void enqueue(async () => {
+                    if (!await settle()) return;
+                    const next = !isSceneItemEnabled(root, type, id);
+                    const apply = (value: boolean) => setSceneItemEnabled(root, type, id, value);
+                    apply(next);
+                    record({ undo: () => apply(!next), redo: () => apply(next) });
+                    rows.querySelector<HTMLButtonElement>(`[data-id="${CSS.escape(id)}"] .animation-visibility`)?.focus();
+                });
+            };
+            part.append(visibility);
+        }
         if (type === 'group' && animated) {
             part.classList.add('has-animation');
             const indicator = document.createElement('span');
@@ -1486,7 +1508,7 @@ timelineScroll.addEventListener('wheel', event => {
     zoomAnchor.scrollLeft = timelineScroll.scrollLeft;
 }, { passive: false });
 window.addEventListener('pde:selection-changed', (event: CustomEvent) => {
-    selectionIds = new Set([...event.detail?.groups ?? [], ...event.detail?.objects ?? []]);
+    selectionIds = new Set([...event.detail?.groups ?? [], ...event.detail?.objects ?? [], ...event.detail?.rig ?? []]);
     selectionPrimary = event.detail?.primary ?? null;
     for (const id of selectedKeys.keys()) if (!selectionIds.has(id)) selectedKeys.delete(id);
     syncAnimationPanel();

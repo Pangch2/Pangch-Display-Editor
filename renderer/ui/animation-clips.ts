@@ -1,5 +1,7 @@
 import { loadedObjectGroup as root } from '../load-project/display/display-instancing';
-import { animationData, animationProjectData, animationSession, createAnimationClip, deleteAnimationClip, moveAnimationClip, placeAnimationLayer } from '../animation/animation-state';
+import { animationData, animationProjectData, animationSession, createAnimationClip, deleteAnimationClip, moveAnimationClip, placeAnimationLayer, selectAnimationClip } from '../animation/animation-state';
+import { exportAnimationFile, importAnimationFile } from '../animation/animation-retarget';
+import { initAnimationIkControls } from './animation-ik-controls';
 import { animationClips, animationEndTick, animationLayers, layerRanges, setLayerRanges, type AnimationLayerRange, type AnimationLayerTiming } from '../animation/animation-data';
 
 export function initAnimationClipControls(selection: () => Set<string>, edit: (action: () => void) => void, select: (id: string) => void) {
@@ -15,6 +17,8 @@ export function initAnimationClipControls(selection: () => Set<string>, edit: (a
                 <button type="button" id="animation-clip-add">새 동작</button>
                 <button type="button" id="animation-clip-copy">동작 복제</button>
                 <button type="button" id="animation-clip-delete">동작 삭제</button>
+                <button type="button" id="animation-clip-export" title="체크한 동작(없으면 현재 동작)의 본(그룹) 키프레임과 IK를 .pdeanim 파일로 저장합니다">동작 내보내기</button>
+                <button type="button" id="animation-clip-import" title=".pdeanim 동작을 이름이 같은 본(그룹)에 새 동작으로 가져옵니다">동작 가져오기</button>
             </div>
             </section>
             <section class="animation-settings-section" aria-label="재생 설정"><strong>재생</strong>
@@ -81,6 +85,25 @@ export function initAnimationClipControls(selection: () => Set<string>, edit: (a
         }
         checkedClips.clear();
     });
+    element.querySelector<HTMLButtonElement>('#animation-clip-export')!.onclick = () => {
+        try {
+            const clips = targetClips(), link = document.createElement('a');
+            link.href = URL.createObjectURL(new Blob([exportAnimationFile(root, clips)], { type: 'application/json' }));
+            link.download = `${clips.length === 1 ? clips[0].name ?? '기본' : 'animation'}.pdeanim`;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+        } catch (error) { window.alert(error instanceof Error ? error.message : String(error)); }
+    };
+    const importInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.pdeanim,application/json', hidden: true });
+    element.append(importInput);
+    element.querySelector<HTMLButtonElement>('#animation-clip-import')!.onclick = () => importInput.click();
+    importInput.onchange = () => {
+        const file = importInput.files?.[0];
+        importInput.value = '';
+        if (file) void file.text().then(text => edit(() => selectAnimationClip(root, importAnimationFile(root, JSON.parse(text)))));
+    };
+    const ik = initAnimationIkControls(edit);
+    element.querySelector('.animation-settings-body')!.append(ik.element);
     click('#animation-clip-delete', () => {
         for (const clip of targetClips()) deleteAnimationClip(root, clip.id ?? 'default');
         checkedClips.clear();
@@ -139,6 +162,7 @@ export function initAnimationClipControls(selection: () => Set<string>, edit: (a
     function sync(): void {
         const project = animationProjectData(root), current = animationData(root);
         if (!project || !current) return;
+        ik.sync();
         const clips = animationClips(project), next = JSON.stringify(clips.map(clip => [clip.id, clip.name]));
         if (signature !== next) {
             signature = next;

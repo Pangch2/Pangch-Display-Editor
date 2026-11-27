@@ -19,6 +19,8 @@ export type AnimationMeshPreview = {
     objects: Map<string, { mesh: ObjectBatch; instanceId: number }>;
     groups: unknown;
     groupCount: number;
+    /** Bones and nulls: posed like groups, with no batch of their own. */
+    rigCount: number;
     animatedGroups: Set<string>;
     local: AnimationPose;
     groupBase: AnimationPose;
@@ -30,7 +32,7 @@ export function createAnimationMeshPreview(root: Group, local: AnimationPose, ba
     const objects = root.userData.objectUuidToInstance as AnimationMeshPreview['objects'];
     if (!objects) return undefined;
     const preview: AnimationMeshPreview = {
-        source: local, base, size: local.size, objects, groups: root.userData.groups, groupCount: root.userData.groups?.size ?? 0, animatedGroups,
+        source: local, base, size: local.size, objects, groups: root.userData.groups, groupCount: root.userData.groups?.size ?? 0, rigCount: 0, animatedGroups,
         local: new Map(), groupBase: new Map(), meshes: new Map(), valid: true
     };
     const counts = new Map<ObjectBatch, number>();
@@ -41,9 +43,10 @@ export function createAnimationMeshPreview(root: Group, local: AnimationPose, ba
         return parents.get(id)!;
     };
     for (const [id, node] of local) {
-        if (node.type === 'group') {
+        if (node.type !== 'object') {
             preview.local.set(id, node);
             preview.groupBase.set(id, base.get(id)!);
+            if (node.type !== 'group') preview.rigCount++;
             continue;
         }
         const ref = objects.get(id);
@@ -70,7 +73,7 @@ export function createAnimationMeshPreview(root: Group, local: AnimationPose, ba
 export function canReuseAnimationMeshPreview(root: Group, preview: AnimationMeshPreview, local: AnimationPose, base: AnimationPose, animatedGroups: Set<string>): boolean {
     if (!preview.valid || preview.source !== local || preview.base !== base || preview.size !== local.size
         || preview.objects !== root.userData.objectUuidToInstance || preview.groups !== root.userData.groups
-        || preview.groupCount !== (root.userData.groups?.size ?? 0) || local.size !== preview.objects.size + preview.groupCount
+        || preview.groupCount !== (root.userData.groups?.size ?? 0) || local.size !== preview.objects.size + preview.groupCount + preview.rigCount
         || preview.animatedGroups.size !== animatedGroups.size || [...animatedGroups].some(id => !preview.animatedGroups.has(id))) return false;
     for (const state of preview.meshes.values()) {
         if (state.mesh.parent !== root || getBatchMatrixVersion(state.mesh) !== state.version || getInstanceCount(state.mesh) !== state.count) return false;

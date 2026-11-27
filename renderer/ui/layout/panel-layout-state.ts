@@ -1,11 +1,11 @@
 export type DockSide = 'left' | 'right';
-export type PanelId = 'player-head-atlas' | 'scene-objects' | 'project-details' | 'head-painter';
+export type PanelId = 'player-head-atlas' | 'scene-objects' | 'project-details' | 'head-painter' | 'bone-panel';
 export type PanelGroup = { panels: PanelId[]; activePanelId: PanelId };
 export type PanelLayout = { version: 2; left: PanelGroup[]; right: PanelGroup[] };
 export type DropPlacement = { side: DockSide; mode: 'split'; index: number }
     | { side: DockSide; mode: 'merge'; targetPanelId: PanelId };
 
-export const panelIds: PanelId[] = ['player-head-atlas', 'scene-objects', 'project-details', 'head-painter'];
+export const panelIds: PanelId[] = ['player-head-atlas', 'scene-objects', 'project-details', 'head-painter', 'bone-panel'];
 export const dockSides: DockSide[] = ['left', 'right'];
 
 export function singlePanelGroup(id: PanelId): PanelGroup {
@@ -32,6 +32,11 @@ export function restorePanelLayout(saved: string | null, fallback: PanelLayout, 
         }
         const ids = dockSides.flatMap(side => layout[side].flatMap(group => group.panels));
         if (new Set(ids).size !== ids.length) return fallback;
+        if (!ids.includes('bone-panel')) {
+            // Layouts saved before the bone panel get it as a tab beside scene objects.
+            dockSides.flatMap(side => layout[side]).find(group => group.panels.includes('scene-objects'))?.panels.push('bone-panel');
+            ids.push('bone-panel');
+        }
         if (legacy && ids.length === panelIds.length - 1 && !ids.includes('head-painter')) {
             const side = layout.left.some(group => group.panels.includes('project-details')) ? 'left' : 'right';
             const index = layout[side].findIndex(group => group.panels.includes('project-details'));

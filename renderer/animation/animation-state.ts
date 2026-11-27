@@ -3,7 +3,10 @@ import { deferredPlayerHeadTexture, getPlayerHeadRenderMatrix, getPlayerHeadText
 import { getGroupWorldMatrix, shouldUseGroupPivot, normalizePivotToVector3, type GroupData } from '../controls/grouping/group';
 import { activeAnimation, animationClips, minecraftTransformParts, animationLayers, animationLayerPlayback, animationTimelineEnd, animationChannels, animationPlayback, channelValue, isDisplayReplacement, keyCurve, keyHasChannel, keyTransform, putKey, sampleTrack, setKeyCurve,
     sampleChannelValues, offsetAnimationChannel, sampleTexture, clipKeyTicks, interpolationTick, sampleProperties, samplePivot, transformMatrix, type AnimationData, type AnimationClip, type AnimationChannel,
-    type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationCurve, type AnimationTransform, type AnimationLayerTiming, type AnimationLayerCarry, layerRanges, setLayerRanges } from './animation-data';
+    type AnimationTrack, type AnimationProperties, type AnimationVector, type AnimationCurve, type AnimationTransform, type AnimationLayerTiming, type AnimationLayerCarry, type AnimationIk, layerRanges, setLayerRanges } from './animation-data';
+import { applyAnimationIk, ikBones } from './animation-ik';
+import { applyRigPose, hasRigSkin, rigPoseNodes } from '../rig/rig-pose';
+import { rigNodeIds, type RigData } from '../rig/rig-data';
 import { decomposeDisplayMatrix } from './display-transformation';
 import { animationCameraObject, isAnimationCameraPreview, previewAnimationCamera, setAnimationCameraPreview } from './animation-camera';
 import { applySceneVisibility } from '../controls/scene-visibility';
@@ -14,7 +17,7 @@ import { dragDeltaMatrix, dragSelectedAttributeName } from '../entity-material';
 import { getBatchMatrixVersion, getDisplayType, getInstanceHasHat, getInstanceLocalBox, getInstanceValue, getInstanceIsCustomPivot, getInstanceMatrix, getInstanceModelMatrix, getInstancePivot, getInstanceWorldMatrix, invalidateBatchBounds,
     objectRef, readInstanceMatrix, setInstanceIsCustomPivot, setInstanceMatrix, setInstancePivot, type ObjectBatch } from '../scene-store/object-access';
 
-type PoseNode = { type: 'group' | 'object'; parent: string | null; matrix: number[]; texture?: string; hasHat?: boolean; properties?: AnimationProperties;
+type PoseNode = { type: 'group' | 'object' | 'bone' | 'null'; parent: string | null; matrix: number[]; texture?: string; hasHat?: boolean; properties?: AnimationProperties;
     pivot?: number[]; isCustomPivot?: boolean; animatePivot?: boolean; matrixAutoUpdate?: boolean };
 export type AnimationPose = Map<string, PoseNode>;
 type AnimationSession = { enabled: boolean; tick: number; base: AnimationPose; local: AnimationPose; playbackTick?: number;
@@ -73,7 +76,21 @@ export function captureAnimationPose(root: Group): AnimationPose {
             texture: data.objectNames?.get(id)?.split('[')[0].replace(/^minecraft:/, '') === 'player_head'
                 ? texture === deferredPlayerHeadTexture ? getPlayerHeadTexture(id, data) : texture : undefined });
     }
+    for (const [id, node] of rigPoseNodes(root)) pose.set(id, node);
     return pose;
+}
+
+// Bones and nulls have no scene object; the preview keeps their shown pose for drawing, picking and key recording.
+function storeRigPose(root: Group, pose: AnimationPose): boolean {
+    let changed = false;
+    for (const [id, node] of pose) {
+        if (node.type !== 'bone' && node.type !== 'null') continue;
+        const posed: Map<string, number[]> = root.userData.rigPose ??= new Map();
+        if (posed.get(id)?.every((value, index) => value === node.matrix[index])) continue;
+        posed.set(id, [...node.matrix]);
+        changed = true;
+    }
+    return changed;
 }
 
 function matrix(node: PoseNode): Matrix4 { return new Matrix4().fromArray(node.matrix); }
@@ -183,8 +200,10 @@ function isUnchangedObjectTrack(track: AnimationTrack, tick: number, node: PoseN
     return true;
 }
 
+/** `display` (group IK, bone IK and skinning) is only passed for what is shown; key conversions keep the authored (FK) pose. */
 export function evaluateAnimation(local: AnimationPose, data: AnimationClip | undefined, tick: number, base?: AnimationPose,
-    layers: Array<{ clip: AnimationClip; tick: number; carry?: AnimationLayerCarry }> = data ? [{ clip: data, tick }] : []): AnimationPose {
+    layers: Array<{ clip: AnimationClip; tick: number; carry?: AnimationLayerCarry }> = data ? [{ clip: data, tick }] : [],
+    display?: { ik?: AnimationIk[]; rig?: RigData }): AnimationPose {
     const world: AnimationPose = new Map();
     base = layers.some(layer => layer.clip.tracks.length) ? base ?? evaluateAnimation(local, undefined, 0) : undefined;
     type TrackEntry = { track: AnimationTrack; tick: number; rate: number; carry?: AnimationLayerCarry; below?: TrackEntry };
@@ -244,6 +263,8 @@ export function evaluateAnimation(local: AnimationPose, data: AnimationClip | un
         return result;
     };
     local.forEach((_, id) => visit(id));
+    applyAnimationIk(world, display?.ik);
+    applyRigPose(world, display?.rig);
     return world;
 }
 
@@ -280,6 +301,7 @@ export function applyAnimationPose(root: Group, pose: AnimationPose, restoreBase
     const modelTransform = new Matrix4();
     for (const [id, node] of pose) {
         if (pending.has(id)) continue;
+        if (node.type === 'bone' || node.type === 'null') continue;
         const value = matrix(node);
         if (node.type === 'group') {
             changed = applyGroupPose(root, id, node, value) || changed;
@@ -307,6 +329,7 @@ export function applyAnimationPose(root: Group, pose: AnimationPose, restoreBase
         meshes.add(mesh);
     }
     meshes.forEach(invalidateBatchBounds);
+    changed = storeRigPose(root, pose) || changed;
     if (changed || meshes.size) data.animationPreviewRevision = (data.animationPreviewRevision ?? 0) + 1;
     root.updateMatrixWorld(true);
     previewPlayerHeadTextures(root, new Map([...pose].flatMap(([id, node]) => node.texture ? [[id, node.texture] as const] : [])));
@@ -316,11 +339,11 @@ export function syncAnimationTargets(root: Group): void {
     const session = animationSession(root);
     if (!session.enabled || root.userData.animationPreviewObjectIds?.size) return;
     if (session.meshPreview) session.meshPreview.valid = false;
-    const { groups, objectUuidToInstance: objects } = root.userData;
-    if (session.local.size === (groups?.size ?? 0) + (objects?.size ?? 0) && session.base.size === session.local.size) {
+    const { groups, objectUuidToInstance: objects } = root.userData, rigNodes = rigNodeIds(root);
+    if (session.local.size === (groups?.size ?? 0) + (objects?.size ?? 0) + rigNodes.size && session.base.size === session.local.size) {
         let unchanged = true;
         for (const [id, node] of session.local) {
-            if (!(node.type === 'group' ? groups : objects)?.has(id)) { unchanged = false; break; }
+            if (!(node.type === 'group' ? groups : node.type === 'object' ? objects : rigNodes)?.has(id)) { unchanged = false; break; }
         }
         if (unchanged) return;
     }
@@ -349,6 +372,7 @@ export function setAnimationEnabled(root: Group, enabled: boolean): void {
         setAnimationCameraPreview(root, false);
         syncAnimationTargets(root);
         applyAnimationPose(root, session.base, true);
+        delete root.userData.rigPose;
         session.enabled = false;
     }
     const camera = root.userData.animation?.camera as string | undefined;
@@ -363,11 +387,13 @@ function applyPreview(root: Group, tick: number, layers?: Array<{ clip: Animatio
     if (!Number.isFinite(tick) || !Number.isSafeInteger(nextTick)) throw new Error('잘못된 애니메이션 시간입니다.');
     if (nextTick !== session.tick) window.dispatchEvent(new Event('pde:before-animation-preview'));
     const clip = animationData(root);
-    const groupOnly = !session.transition && !hasPendingAnimationProperties(root) && (layers ?? (clip ? [{ clip, tick }] : [])).every(({ clip, tick }) =>
+    const groupOnly = !session.transition && !hasPendingAnimationProperties(root) && !hasRigSkin(root) && (layers ?? (clip ? [{ clip, tick }] : [])).every(({ clip, tick }) =>
         clip.tracks.every(track => track.type !== 'object' || !track.keys.length || clip.excludedNodes?.includes(track.id)
             || isUnchangedObjectTrack(track, tick, session.local.get(track.id))));
-    const animatedGroups = new Set((layers ?? (clip ? [{ clip, tick }] : [])).flatMap(({ clip }) =>
-        clip.tracks.filter(track => track.type === 'group' && track.keys.length && !clip.excludedNodes?.includes(track.id)).map(track => track.id)));
+    const ik = animationProjectData(root)?.ik, display = { ik, rig: root.userData.rig as RigData | undefined };
+    const animatedGroups = new Set([...(layers ?? (clip ? [{ clip, tick }] : [])).flatMap(({ clip }) =>
+        clip.tracks.filter(track => track.type === 'group' && track.keys.length && !clip.excludedNodes?.includes(track.id)).map(track => track.id)),
+        ...ikBones(session.local, ik)]);
     let preview = session.meshPreview;
     if (!preview || !groupOnly || !canReuseAnimationMeshPreview(root, preview, session.local, session.base, animatedGroups)) {
         syncAnimationTargets(root);
@@ -381,16 +407,16 @@ function applyPreview(root: Group, tick: number, layers?: Array<{ clip: Animatio
     }
     session.tick = nextTick;
     if (preview && groupOnly) {
-        const pose = evaluateAnimation(preview.local, clip, session.tick, preview.groupBase, layers);
+        const pose = evaluateAnimation(preview.local, clip, session.tick, preview.groupBase, layers, display);
         applyAnimationProperties(root, pose);
-        let changed = false;
+        let changed = storeRigPose(root, pose);
         for (const [id, node] of pose) changed = applyGroupPose(root, id, node) || changed;
         if (changed) root.userData.animationPreviewRevision = (root.userData.animationPreviewRevision ?? 0) + 1;
         applyAnimationMeshPreview(root, preview, pose);
         previewCamera(root);
         return;
     }
-    let pose = evaluateAnimation(session.local, animationData(root), session.tick, session.base, layers);
+    let pose = evaluateAnimation(session.local, animationData(root), session.tick, session.base, layers, display);
     if (session.transition) {
         const amount = Math.min(1, elapsed / session.transition.duration);
         pose = new Map([...pose].map(([id, node]) => {
@@ -521,7 +547,7 @@ export function createAnimationClip(root: Group, name: string, duplicate: boolea
     name = name.trim();
     if (!project || !current || !name || name.length > 120 || animationClips(project).some(clip => (clip.name ?? '기본') === name)) throw new Error('애니메이션 이름은 중복되지 않는 1~120자여야 합니다.');
     const source = duplicate === true ? current : duplicate || undefined;
-    const clip: AnimationClip = source ? structuredClone({ ...source, clips: undefined, activeClip: undefined, camera: undefined,
+    const clip: AnimationClip = source ? structuredClone({ ...source, clips: undefined, activeClip: undefined, camera: undefined, ik: undefined,
         layers: animationLayers(project, source).map(clip => clip.id ?? 'default') })
         : { duration: 100, tickRate: current.tickRate, tracks: [], loopMode: 'hold', layers: [] };
     clip.id = crypto.randomUUID(); clip.name = name;
@@ -532,9 +558,9 @@ export function createAnimationClip(root: Group, name: string, duplicate: boolea
 
 // The first clip is the project object itself, so reordering rebuilds it; project-only fields must not leak into sub-clips.
 function setAnimationClips(root: Group, clips: AnimationClip[], activeClip: string): void {
-    const { camera } = animationProjectData(root)!;
-    const [first, ...rest] = clips.map(({ clips: _clips, activeClip: _active, camera: _camera, ...clip }: AnimationData) => clip);
-    root.userData.animation = { ...first, clips: rest, activeClip, ...camera === undefined ? {} : { camera } } satisfies AnimationData;
+    const { camera, ik } = animationProjectData(root)!;
+    const [first, ...rest] = clips.map(({ clips: _clips, activeClip: _active, camera: _camera, ik: _ik, ...clip }: AnimationData) => clip);
+    root.userData.animation = { ...first, clips: rest, activeClip, ...camera === undefined ? {} : { camera }, ...ik === undefined ? {} : { ik } } satisfies AnimationData;
 }
 
 export function deleteAnimationClip(root: Group, id?: string): void {
@@ -883,7 +909,7 @@ function animationBakeTicks(clip: AnimationClip): number[] {
 // Baking samples every tick so curves, expressions and a turning parent's arc survive; keep the source key ticks
 // and only the samples their interpolation cannot rebuild.
 // shortcut: with global interpolation the extra keys a turning parent leaves also split other parts' segments; fit against the final clip ticks if that matters.
-function simplifyBakedKeys(track: AnimationTrack, sources: AnimationTrack[], fixedTicks: number[], nodePivot: number[] | null): void {
+export function simplifyBakedKeys(track: AnimationTrack, sources: AnimationTrack[], fixedTicks: number[], nodePivot: number[] | null): void {
     const { keys } = track, fixed = new Set([...fixedTicks, ...sources.flatMap(source => source.keys.map(key => key.tick))]);
     const kept = keys.map((key, index) => index === 0 || index === keys.length - 1 || fixed.has(key.tick)
         || key.texture !== undefined || !!key.properties || key.pivot !== undefined);
@@ -920,7 +946,8 @@ function simplifyBakedKeys(track: AnimationTrack, sources: AnimationTrack[], fix
 export function serializeAnimation(root: Group, objects: Set<string>, groups: Set<string>, selection: boolean): AnimationData | undefined {
     const data = animationProjectData(root);
     if (!data) return undefined;
-    const ids = new Set([...objects, ...groups]);
+    // Bones and nulls are saved with the whole project only.
+    const ids = new Set([...objects, ...groups, ...selection ? [] : rigNodeIds(root)]);
     const result = structuredClone(data);
     const snapshot = selection ? captureAnimationSnapshot(root)! : undefined;
     const needsRebase = selection && [...ids].some(id => {
@@ -928,6 +955,9 @@ export function serializeAnimation(root: Group, objects: Set<string>, groups: Se
         return parent && !ids.has(parent);
     });
     if (result.camera && !objects.has(result.camera)) delete result.camera;
+    // Bones deleted since the chain was made are dropped here, so saving never fails on them.
+    if (result.ik) result.ik = result.ik.filter(entry => groups.has(entry.bone) && groups.has(entry.target));
+    if (!result.ik?.length) delete result.ik;
     for (const clip of animationClips(result)) {
         const source = animationClips(data).find(entry => (entry.id ?? 'default') === (clip.id ?? 'default'))!;
         clip.tracks = clip.tracks.filter(track => ids.has(track.id));
@@ -958,6 +988,7 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
     objects: Map<string, string>, groups: Map<string, string>): void {
     const data = value && structuredClone(value);
     if (data?.camera) data.camera = objects.get(data.camera) ?? data.camera;
+    if (data?.ik) data.ik = data.ik.map(entry => ({ ...entry, bone: groups.get(entry.bone) ?? entry.bone, target: groups.get(entry.target) ?? entry.target }));
     if (data) for (const clip of animationClips(data)) {
         for (const track of clip.tracks) track.id = (track.type === 'group' ? groups : objects).get(track.id) ?? track.id;
         if (clip.excludedNodes) clip.excludedNodes = clip.excludedNodes.map(id => objects.get(id) ?? groups.get(id) ?? id);
@@ -966,6 +997,8 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
     if (merge && old && data) {
         const destination = activeAnimation(old), source = activeAnimation(data);
         if (data.camera && !animationCameraObject(root)) old.camera = data.camera;
+        const rigged = data.ik?.filter(entry => !old.ik?.some(other => other.bone === entry.bone));
+        if (rigged?.length) old.ik = [...(old.ik ?? []), ...rigged];
         const ids = new Map<string, string>();
         const legacy = !data.clips?.length && !data.name && !data.id && !data.loopMode && data.endTick === undefined;
         const compatible = (a: AnimationClip, b: AnimationClip) =>
@@ -981,7 +1014,7 @@ export function importAnimation(root: Group, value: AnimationData | undefined, m
                 continue;
             }
             const copy = structuredClone(clip) as AnimationData;
-            delete copy.clips; delete copy.layers; delete copy.layerTimings; delete copy.activeClip;
+            delete copy.clips; delete copy.layers; delete copy.layerTimings; delete copy.activeClip; delete copy.ik;
             copy.id = crypto.randomUUID();
             const originalName = copy.name ?? '기본';
             let suffix = 2;

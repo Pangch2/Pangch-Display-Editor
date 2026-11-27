@@ -30,9 +30,10 @@ const oldOrder: PanelId[] = localStorage.getItem('project-details-first') === 't
     ? ['project-details', 'scene-objects']
     : ['scene-objects', 'project-details'];
 oldOrder.splice(oldOrder.indexOf('project-details') + Number(headPainterAfterDetails), 0, 'head-painter');
+const oldGroups = oldOrder.map((id): PanelGroup => id === 'scene-objects' ? { panels: [id, 'bone-panel'], activePanelId: id } : singlePanelGroup(id));
 const fallbackLayout: PanelLayout = oldSide === 'left'
-    ? { version: 2, left: [singlePanelGroup('player-head-atlas'), ...oldOrder.map(singlePanelGroup)], right: [] }
-    : { version: 2, left: [singlePanelGroup('player-head-atlas')], right: oldOrder.map(singlePanelGroup) };
+    ? { version: 2, left: [singlePanelGroup('player-head-atlas'), ...oldGroups], right: [] }
+    : { version: 2, left: [singlePanelGroup('player-head-atlas')], right: oldGroups };
 let layout = restorePanelLayout(localStorage.getItem('panel-layout'), fallbackLayout, headPainterAfterDetails);
 
 function applyLayout(): void {
@@ -552,5 +553,10 @@ function movePanel(panelId: PanelId, placement: DropPlacement): void {
     renderLayout();
 }
 
-window.addEventListener('pde:panel-visibility-changed', renderLayout);
+window.addEventListener('pde:panel-visibility-changed', event => {
+    const id = (event as CustomEvent<PanelId | undefined>).detail;
+    // A panel that just opened (bone mode) becomes the active tab of its group.
+    if (id && !panels[id].hidden) findPanelGroup(id).activePanelId = id;
+    renderLayout();
+});
 renderLayout();

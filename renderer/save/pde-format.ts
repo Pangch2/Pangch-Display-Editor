@@ -2,6 +2,7 @@ import { strFromU8, strToU8 } from 'fflate';
 import { MathUtils } from 'three/webgpu';
 import { animationCameraItem, animationClips, transformMatrix, validateAnimation, type AnimationClip, type AnimationData } from '../animation/animation-data';
 import { defaultTextDisplayOptions, type TextDisplayOptions } from '../load-project/display/text-display';
+import { validateRig, type RigData } from '../rig/rig-data';
 
 export type ObjectEditorState = {
     uuid: string;
@@ -41,6 +42,8 @@ export type PdeEditorState = {
     /** Name of each head atlas, by atlas index ('' = default name). */
     headAtlasNames?: string[];
     animation?: AnimationData;
+    /** Armatures; indexed files list each armature's weights as [node index, weights] pairs. */
+    rig?: RigData;
 };
 export type PdeNode = {
     uuid: string;
@@ -259,6 +262,11 @@ export function* validatePdeProjectSteps(project: any): Generator<void, void> {
             state.mirrorPlanes = state.mirrorPlanes.map(([id, plane]) => [resolve(id), plane]);
         }
         state.version = 1;
+        if (state.rig !== undefined) {
+            if (!record(state.rig) || !Array.isArray(state.rig.armatures) || !state.rig.armatures.every(armature => record(armature) && Array.isArray(armature.weights)
+                && armature.weights.every(entry => Array.isArray(entry) && entry.length === 2))) throw new Error('잘못된 본 가중치 참조입니다.');
+            for (const armature of state.rig.armatures) armature.weights = Object.fromEntries(armature.weights.map(([id, weights]) => [resolve(id), weights]));
+        }
         if (state.animation !== undefined) {
             if (!record(state.animation) || !Array.isArray(state.animation.tracks)
                 || state.animation.clips !== undefined && !Array.isArray(state.animation.clips)) throw new Error('잘못된 애니메이션 트랙입니다.');
@@ -267,20 +275,27 @@ export function* validatePdeProjectSteps(project: any): Generator<void, void> {
                 for (const track of clip.tracks) {
                     if (!record(track)) throw new Error('잘못된 애니메이션 대상입니다.');
                     // Legacy camera tracks kept a literal id; migrateAnimationCamera replaces them.
-                    if ((track.type as string) !== 'camera') track.id = resolve(track.id);
+                    if (!['camera', 'bone', 'null'].includes(track.type as string)) track.id = resolve(track.id);
                 }
                 if (clip.excludedNodes !== undefined) {
                     if (!Array.isArray(clip.excludedNodes)) throw new Error('잘못된 애니메이션 제외 대상입니다.');
-                    clip.excludedNodes = clip.excludedNodes.map(resolve);
+                    // Bone and null ids are strings; node references are indices.
+                    clip.excludedNodes = clip.excludedNodes.map(id => typeof id === 'string' ? id : resolve(id));
                 }
             }
             if (state.animation.camera !== undefined) state.animation.camera = resolve(state.animation.camera);
+            if (state.animation.ik !== undefined) {
+                if (!Array.isArray(state.animation.ik) || !state.animation.ik.every(record)) throw new Error('잘못된 IK 설정입니다.');
+                state.animation.ik = state.animation.ik.map(entry => ({ ...entry, bone: resolve(entry.bone), target: resolve(entry.target) }));
+            }
         }
     }
     const seenObjects = new Set<string>();
+    if (state.rig !== undefined) validateRig(state.rig, objectIds);
+    const rigIds = new Set<string>((state.rig as RigData | undefined)?.armatures.flatMap(armature => [...armature.bones, ...armature.nulls].map(node => node.id)) ?? []);
     if (state.animation !== undefined) {
         if (record(state.animation)) migrateAnimationCamera(project, objectIds);
-        validateAnimation(state.animation, objectIds, groupIds);
+        validateAnimation(state.animation, objectIds, groupIds, rigIds);
         for (const clip of animationClips(state.animation)) for (const track of clip.tracks) for (const key of track.keys) {
             if (key.properties?.options !== undefined) validateTextDisplayOptions(key.properties.options, key.properties.name!);
         }
@@ -405,15 +420,18 @@ export function* encodePdeProjectSteps(project: PdeProject): Generator<void, Uin
     }
     for (const id of hidden) reference(id);
     for (const [id, partner] of mirrors) { reference(id); reference(partner); }
-    const animation = project.editorState?.animation;
-    const saveClip = (clip: AnimationClip) => ({ ...clip, tracks: clip.tracks.map(track => ({ ...track, id: reference(track.id) })),
-        excludedNodes: clip.excludedNodes?.map(reference) });
+    const animation = project.editorState?.animation, rig = project.editorState?.rig;
+    const rigIds = new Set(rig?.armatures.flatMap(armature => [...armature.bones, ...armature.nulls].map(node => node.id)));
+    const saveClip = (clip: AnimationClip) => ({ ...clip, tracks: clip.tracks.map(track => ({ ...track, id: rigIds.has(track.id) ? track.id : reference(track.id) })),
+        excludedNodes: clip.excludedNodes?.map(id => rigIds.has(id) ? id : reference(id)) });
     const savedAnimation = animation && indexed ? { ...animation, ...saveClip(animation), clips: animation.clips?.map(saveClip),
-        camera: animation.camera === undefined ? undefined : reference(animation.camera) } : animation;
+        camera: animation.camera === undefined ? undefined : reference(animation.camera),
+        ik: animation.ik?.map(entry => ({ ...entry, bone: reference(entry.bone), target: reference(entry.target) })) } : animation;
     // Editor links use preorder indices; UUIDs exist only while editing.
     const saved = indexed ? omitDefaults({ ...project, children, editorState: omitDefaults({
         version: animation ? 5 : 4,
         animation: savedAnimation,
+        rig: rig?.armatures.length ? { armatures: rig.armatures.map(armature => ({ ...armature, weights: Object.entries(armature.weights).map(([id, weights]) => [reference(id), weights]) })) } : undefined,
         globalBrightness: project.editorState.globalBrightness ? nonempty(omitDefaults(project.editorState.globalBrightness, globalBrightnessDefaults)) : undefined,
         headAtlasSizes: project.editorState.headAtlasSizes,
         headAtlasNames: project.editorState.headAtlasNames

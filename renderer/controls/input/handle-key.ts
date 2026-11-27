@@ -27,6 +27,7 @@ import { isShortcutPressed, matchesShortcut, toggleFineAdjust, type ShortcutId }
 import { isAnimationCameraPreview } from '../../animation/animation-camera';
 import { copySelection, pasteSelection, isSelectionPastePending } from './selection-clipboard';
 import type { ObjectBatch } from '../../scene-store/object-access';
+import { clearRigClipboard, rigEditAction, rigSelectAll, rigSelectionBox, selectedRigNode } from '../../rig/rig-view';
 
 // ─── Local types ──────────────────────────────────────────────────────────────
 
@@ -375,9 +376,12 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
         if (p.state.isGizmoBusy || interactionBlocked() || (fromToolbar && p.getTransformControls().dragging)) return;
         // Shading is a view toggle, so the head painter must not block it like transform shortcuts.
         if (key !== 'undo' && key !== 'redo' && key !== 'toggleShading' && painterBlocksTransforms()) return;
+        // A bone or null selected in bone mode (and no display) takes delete, duplicate and copy.
+        if (!p.hasAnySelection() && rigEditAction(key)) return;
         if (fromToolbar && (key === 'group' || key === 'duplicate' || key === 'deleteSelection') && !p.hasAnySelection()) return;
         if (key === 'copySelection') {
             if (p.getTransformControls().dragging) return;
+            clearRigClipboard();
             p.state.isGizmoBusy = true;
             void copySelection(p.currentSelection).catch(reportClipboardError).finally(() => { p.state.isGizmoBusy = false; });
             return;
@@ -433,7 +437,8 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
             event.preventDefault();
             if (event.repeat || event.isComposing || p.loadedObjectGroup.userData.headPainterActive || p.state.isGizmoBusy || p.getTransformControls().dragging) return;
             if (matchesShortcut(event, 'copySelection')) executeAction('copySelection');
-            else void pasteSelection(p.currentSelection).catch(reportClipboardError);
+            // Bones copied last paste as bones (rig/rig-view.ts).
+            else if (!rigEditAction('pasteSelection')) void pasteSelection(p.currentSelection).catch(reportClipboardError);
             return;
         }
         if (isSelectionPastePending()) { event.preventDefault(); return; }
@@ -448,12 +453,13 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
         if (matchesShortcut(event, 'focusSelection')) {
             event.preventDefault();
             if (isAnimationCameraPreview(p.loadedObjectGroup)) return; // the view belongs to the camera object while previewing
+            const rigBox = p.hasAnySelection() ? undefined : rigSelectionBox();
             focusCameraOnSelection(
                 p.camera,
                 p.state.controls,
-                p.hasAnySelection(),
-                p.getSelectionBoundingBox,
-                (out) => p.getSelectionCenterWorld(out)
+                p.hasAnySelection() || !!rigBox,
+                rigBox ? () => rigBox : p.getSelectionBoundingBox,
+                (out) => rigBox ? rigBox.getCenter(out) : p.getSelectionCenterWorld(out)
             );
             return;
         }
@@ -478,6 +484,7 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
 
         if (matchesShortcut(event, 'selectAll')) {
             event.preventDefault();
+            if (!p.hasAnySelection() && rigSelectAll()) return;
             const selection = getSelectAllSceneSelection(p.loadedObjectGroup);
             p.replaceSelectionWithGroupsAndObjects(selection.groups, selection.objects, { anchorMode: selection.anchorMode });
             return;
@@ -665,7 +672,7 @@ export function initHandleKey(p: HandleKeyParams): TransformToolbarControls {
             disabled: interactionBlocked() || p.getTransformControls().dragging || painterBlocksTransforms(),
             canUndo: !interactionBlocked() && !p.state.isGizmoBusy && !p.getTransformControls().dragging && canUndo(),
             canRedo: !interactionBlocked() && !p.state.isGizmoBusy && !p.getTransformControls().dragging && canRedo(),
-            hasSelection: p.hasAnySelection()
+            hasSelection: p.hasAnySelection() || selectedRigNode() !== null
         })
     };
 }

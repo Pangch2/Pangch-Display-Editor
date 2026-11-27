@@ -21,7 +21,8 @@ export type AnimationKey = { tick: number; transform: AnimationTransform; curve?
     values?: Partial<Record<AnimationChannel, AnimationVector>>; pre?: Partial<Record<AnimationChannel, AnimationVector>> };
 // Item name of the camera object's default model, drawn from the lucide camera glyph (pbde/camera-item-assets.ts).
 export const animationCameraItem = 'pde:camera';
-export type AnimationTrack = { type: 'group' | 'object'; id: string; keys: AnimationKey[] };
+/** bone and null tracks move armature bones and null objects (renderer/rig). */
+export type AnimationTrack = { type: 'group' | 'object' | 'bone' | 'null'; id: string; keys: AnimationKey[] };
 // With `interval`, each start opens a repeat range; `ends[i]` (inclusive) bounds it, a missing last end repeats forever.
 export type AnimationLayerTiming = { id: string; starts: number[]; interval?: number; ends?: number[] };
 export type AnimationLayerRange = [start: number, end: number | undefined];
@@ -42,7 +43,9 @@ export type AnimationClip = { id?: string; name?: string; duration: number; tick
     loopMode?: 'once' | 'hold' | 'loop'; loopDelay?: number; endTick?: number; transitionTicks?: number; excludedNodes?: string[];
     layers?: string[]; layerTimings?: AnimationLayerTiming[]; globalInterpolation?: boolean };
 // The original timeline remains the first clip so old projects retain their data. `camera` is the object the view follows.
-export type AnimationData = AnimationClip & { clips?: AnimationClip[]; activeClip?: string; camera?: string };
+export type AnimationData = AnimationClip & { clips?: AnimationClip[]; activeClip?: string; camera?: string; ik?: AnimationIk[] };
+/** Groups are bones and a group's custom pivot (else its origin) its joint: the `chain` groups above `bone` turn to put its joint on `target`'s. */
+export type AnimationIk = { bone: string; target: string; chain: number };
 export const ticksPerSecond = 20;
 
 export function animationClips(data: AnimationData): AnimationClip[] { return [data, ...(data.clips ?? [])]; }
@@ -474,7 +477,7 @@ export function putKey(track: AnimationTrack, tick: number, matrix: Matrix4, bas
     track.keys.sort((a, b) => a.tick - b.tick);
 }
 
-function validateAnimationClip(value: any, objects: Set<string>, groups: Set<string>): void {
+function validateAnimationClip(value: any, objects: Set<string>, groups: Set<string>, rig: Set<string>): void {
     const vector = (entry: unknown, size: number): entry is number[] => Array.isArray(entry) && entry.length === size
         && entry.every(n => typeof n === 'number' && Number.isFinite(n) && Number.isFinite(Math.fround(n)));
     const quaternion = (entry: unknown) => vector(entry, 4) && Math.abs(Math.hypot(...entry) - 1) < 1e-4;
@@ -487,10 +490,10 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
         || value.globalInterpolation !== undefined && typeof value.globalInterpolation !== 'boolean'
         || ['loopDelay', 'endTick', 'transitionTicks'].some(name => value[name] !== undefined && (!Number.isSafeInteger(value[name]) || value[name] < 0))
         || value.excludedNodes !== undefined && (!Array.isArray(value.excludedNodes) || new Set(value.excludedNodes).size !== value.excludedNodes.length
-            || value.excludedNodes.some(id => !objects.has(id) && !groups.has(id)))) throw new Error('잘못된 애니메이션 설정입니다.');
+            || value.excludedNodes.some(id => !objects.has(id) && !groups.has(id) && !rig.has(id)))) throw new Error('잘못된 애니메이션 설정입니다.');
     const seen = new Set<string>();
     for (const track of value.tracks) {
-        if (!track || !['object', 'group'].includes(track.type) || !(track.type === 'group' ? groups : objects).has(track.id)
+        if (!track || !['object', 'group', 'bone', 'null'].includes(track.type) || !(track.type === 'group' ? groups : track.type === 'object' ? objects : rig).has(track.id)
             || seen.has(track.id) || !Array.isArray(track.keys) || !track.keys.length) throw new Error('잘못된 애니메이션 대상입니다.');
         seen.add(track.id);
         let previous = -1;
@@ -514,7 +517,7 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
                 const p = key.properties;
                 if (!p || typeof p !== 'object' || Array.isArray(p) || typeof p.nbt !== 'string'
                     || Object.keys(p).some(name => !['nbt', 'brightness', 'name', 'displayType', 'options'].includes(name))
-                    || (track.type === 'group' ? Object.keys(p).some(name => name !== 'nbt')
+                    || track.type === 'bone' || track.type === 'null' || (track.type === 'group' ? Object.keys(p).some(name => name !== 'nbt')
                         : typeof p.name !== 'string' || !['block_display', 'item_display', 'text_display'].includes(p.displayType)
                             || p.brightness !== null && (!p.brightness || typeof p.brightness !== 'object'
                                 || ['sky', 'block'].some(name => !Number.isInteger(p.brightness[name]) || p.brightness[name] < 0 || p.brightness[name] > 15)))
@@ -533,14 +536,16 @@ function validateAnimationClip(value: any, objects: Set<string>, groups: Set<str
     }
 }
 
-export function validateAnimation(value: any, objects: Set<string>, groups: Set<string>): asserts value is AnimationData {
+export function validateAnimation(value: any, objects: Set<string>, groups: Set<string>, rig = new Set<string>()): asserts value is AnimationData {
     if (!value || value.clips !== undefined && !Array.isArray(value.clips)) throw new Error('잘못된 애니메이션 목록입니다.');
     if (value.camera !== undefined && !objects.has(value.camera)) throw new Error('잘못된 애니메이션 카메라입니다.');
+    if (value.ik !== undefined && (!Array.isArray(value.ik) || value.ik.some((entry: any) => !entry || !groups.has(entry.bone) || !groups.has(entry.target)
+        || entry.bone === entry.target || !Number.isSafeInteger(entry.chain) || entry.chain < 1 || entry.chain > 64))) throw new Error('잘못된 IK 설정입니다.');
     const clips = animationClips(value);
     const ids = new Set<string>();
     for (const clip of clips) {
         if (clip !== value && (!clip || (clip as AnimationData).clips !== undefined)) throw new Error('잘못된 애니메이션 클립입니다.');
-        validateAnimationClip(clip, objects, groups);
+        validateAnimationClip(clip, objects, groups, rig);
         const id = clip.id ?? 'default';
         if (ids.has(id)) throw new Error('중복된 애니메이션 ID입니다.');
         ids.add(id);

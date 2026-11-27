@@ -252,7 +252,7 @@
   display: none !important;
 }
 
-.panel-group :is(#project-details, #head-painter, #player-head-atlas-scroll, .player-head-atlas-box) {
+.panel-group :is(#project-details, #head-painter, #bone-panel, #player-head-atlas-scroll, .player-head-atlas-box) {
   scrollbar-width: none;
 }
 

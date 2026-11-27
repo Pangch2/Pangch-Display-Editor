@@ -1,5 +1,6 @@
 #scene-toolbar i.head-painter-active,
-#animation-button[aria-pressed="true"] {
+#animation-button[aria-pressed="true"],
+#bone-button[aria-pressed="true"] {
   color: var(--ui-accent);
 }
 
